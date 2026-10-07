@@ -33,8 +33,9 @@ import { compactNumber, featureFlagsText, featureName, FEATURES, modelName, outp
 import { resultText, toInput, type PendingResult } from "./input.ts";
 import { cellsOf } from "./dots.ts";
 import { diceFrame, diceSize } from "./mascots/dice.ts";
+import { brailleFrame, type Mood } from "./mascots/pingo.ts";
 import { AGENT_MASCOTS, isMascot, mascotFrame, pickMascot, type MascotId } from "./mascots/agents.ts";
-import { renderAgentPane, renderBand, renderPane, type Actions, type View } from "./ui.tsx";
+import { moodOf, pingoSize, renderAgentPane, renderBand, renderPane, type Actions, type View } from "./ui.tsx";
 
 const PANE = "jev";
 const events = atom({ plugin: "jev", key: "events" } as const, [] as RouteEvent[]);
@@ -92,6 +93,8 @@ let sessionKey = "";
 let modelBroken = false;
 /** Dice at the top of the live tab: drawn while that tab shows. */
 let dice: { columns: number; rows: number } | undefined;
+/** Pingo in the dashboard header: its terminal frame follows the latest Jev status. */
+let pingo: { mood: Mood; columns: number; rows: number } | undefined;
 /** Each open subagent pane's mascot, by pane id. */
 const agentArt = new Map<string, { mascot: MascotId; columns: number; rows: number }>();
 const MASCOT_FPS = 10;
@@ -293,6 +296,11 @@ async function animateMascots($: EngineInterface): Promise<void> {
     const { columns, rows } = dice;
     const result = await $.ui.blit({ requestId: PANE, key: "dice", cells: cellsOf(diceFrame(t, columns, rows)), columns, rows });
     if (result.deny !== undefined) dice = undefined;
+  }
+  if (pingo) {
+    const { mood, columns, rows } = pingo;
+    const result = await $.ui.blit({ requestId: PANE, key: "pingo", cells: cellsOf(brailleFrame(mood, t, columns, rows)), columns, rows });
+    if (result.deny !== undefined) pingo = undefined;
   }
   for (const [requestId, art] of agentArt) {
     const result = await $.ui.blit({ requestId, key: "mascot", cells: cellsOf(mascotFrame(art.mascot, t, art.columns, art.rows)), columns: art.columns, rows: art.rows });
@@ -1039,6 +1047,7 @@ export const register: Register = (on, given) => {
     const rows = e.props.scroll?.bodyRows ?? e.viewport?.rows ?? 30;
     const key = await scrollKeyOf($, PANE);
     const shown = await view($, width, rows, e.surface, key);
+    pingo = e.surface === "terminal" ? { mood: moodOf(shown), ...pingoSize(width) } : undefined;
     dice = e.surface === "terminal" && shown.tab === "live" ? diceSize(width) : undefined;
     return renderPane(els, shown, actions($, key));
   });

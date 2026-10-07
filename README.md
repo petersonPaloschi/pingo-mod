@@ -4,6 +4,8 @@ Jev is a Claude Code plugin that asks TypeSafe's Jev model for tool-routing sugg
 
 Jev provides a hint. Claude remains in control and can ignore it.
 
+The dashboard header includes Pingo, Jev's dotted mascot. Its expression follows the current routing status.
+
 ## Requirements
 
 - Claude Code 2.1.292 or newer.

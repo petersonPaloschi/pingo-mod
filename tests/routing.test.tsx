@@ -205,7 +205,7 @@ describe("routing in a session", () => {
     expect(await ui.find({ type: "Text", text: /changed request 1: model opus-5-5→sonnet-5-5, effort high→max/ })).toBeDefined();
     expect(await ui.find({ type: "Text", text: /“Done\.”/ })).toBeDefined();
     // Each speaker is named in the gutter: Jev and Claude.
-    expect(await ui.find({ type: "Text", text: /^◆\s+Jev\s*$/ })).toBeDefined();
+    expect(await ui.find({ type: "Text", text: /^\(\^‿\^\)\s+Jev\s*$/ })).toBeDefined();
     expect(await ui.find({ type: "Text", text: /^✻\s+Claude\s*$/ })).toBeDefined();
     await ui.unmount();
   });
@@ -244,7 +244,7 @@ describe("routing in a session", () => {
     expect(sent[0]).toEqual({ model: "claude-opus-5-5", effort: "max", agentId: "agent-1" });
   });
 
-  test("the live status shows while Jev chooses a subagent model", async ($, on) => {
+  test("Pingo shows the asking mood while Jev chooses a subagent model", async ($, on) => {
     mock.clock(on, { now: Date.parse("2026-10-06T12:00:00Z") });
     mock.store(on, { provider: "typesafe", features: all({ agents: true }) });
     mock.env(on, { TYPESAFE_API_KEY: "test-key" });
@@ -279,7 +279,8 @@ describe("routing in a session", () => {
       fork: false,
     } as never);
     await fetchStarted;
-    const asking = await ui.find({ type: "Text", text: /Asking Jev/ });
+    const asking = await ui.find({ type: "Text", text: /\(◌_◌\)/ });
+    expect(await ui.find({ type: "Raster", key: "pingo" } as never)).toBeDefined();
     finishFetch({
       value: {
         status: 200,

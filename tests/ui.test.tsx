@@ -74,6 +74,26 @@ test("the Dice mascot is drawn and blitted only while the live tab shows", async
   await ui.unmount();
 });
 
+test("Pingo stays in the dashboard header and animates in the terminal", async ($, on) => {
+  const clock = mock.clock(on, { now: Date.parse("2026-10-06T12:00:00Z") });
+  mock.store(on);
+  mock.env(on, {});
+  on("command.register", async () => ({ value: {} }));
+  on("session.id", async () => ({ value: "session-mascot" }));
+  on("session.model", async () => ({ value: "claude-opus-5-5" }));
+  const blits: string[] = [];
+  on("ui.blit", async (_$, e) => {
+    blits.push(e.key);
+    return { value: {} };
+  });
+  await $.session.start({ cwd: "/workspace" } as never).catch(() => undefined);
+  const ui = await $.ui.mount({ plugin: "jev", surface: "terminal", component: "Pane", requestId: "jev", props: PANE_PROPS });
+  expect(await ui.find({ type: "Raster", key: "pingo" } as never)).toBeDefined();
+  await clock.advance(100);
+  expect(blits).toContain("pingo");
+  await ui.unmount();
+});
+
 test("the band shows the status line", async ($, on) => {
   mock.clock(on, { now: Date.parse("2026-10-06T12:00:00Z") });
   mock.store(on);

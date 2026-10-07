@@ -30,6 +30,7 @@ The palette and shared drawing functions live in `hooks/dots.ts`.
 
 ## Mascots
 
+- **Pingo** represents Jev. Its dotted sphere and eyes change with routing, passthrough, failure, idle, and baseline states; the terminal draws braille and the desktop app draws SVG circles.
 - **Dice** represents the user in the live log. Its cube of dots is drawn as braille in the terminal and as SVG circles on the desktop.
 - **Tetra**, **Gem**, **Can**, **Coil**, and **Top** represent concurrent subagents. Each uses a different solid and color so their activity is easy to follow.
 - Subagent mascots appear in the Agents tab, their live panes, and the band above the prompt.
@@ -38,7 +39,7 @@ The renderers live in `hooks/mascots/dice.ts` and `hooks/mascots/agents.ts`. Mas
 
 ## Dashboard
 
-- **Header:** Jev's text status, confidence meter, routed-request rail, routing toggle, and tabs.
+- **Header:** Pingo, Jev's text status, confidence meter, routed-request rail, routing toggle, and tabs.
 - **Overview:** request totals, token usage, routing results, and a request timeline.
 - **Live:** visible events grouped by speaker. The feed does not display internal model reasoning.
 - **Agents:** subagent state, model, effort, tool and request counts, and recent activity.

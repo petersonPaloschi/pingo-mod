@@ -27,6 +27,7 @@ import { cellsOf, constellation, DOT, hex, meter, rail } from "./dots.ts";
 import { flowLines } from "./flow.ts";
 import { rowsOf } from "./layout.ts";
 import { DICE, diceFrame, diceSize, diceSvg } from "./mascots/dice.ts";
+import { brailleFrame, MOODS, pingoSvg, type Mood } from "./mascots/pingo.ts";
 import { AGENT_MASCOTS, isMascot, MASCOT_ORDER, mascotFrame, mascotSvg, type AgentMascot } from "./mascots/agents.ts";
 
 /** The pane needs Select and Input, which the terminal and the desktop app draw. */
@@ -56,12 +57,12 @@ const INK = {
   claude: hex(DOT.claude),
 };
 
-const STATUS_INK: Record<StatusKind, string> = {
-  routing: INK.route,
-  passthrough: INK.pass,
-  failing: INK.fail,
-  idle: INK.dim,
-  baseline: hex(DOT.base),
+const MOOD_OF: Record<StatusKind, Mood> = {
+  routing: "routing",
+  passthrough: "passthrough",
+  failing: "failing",
+  idle: "idle",
+  baseline: "baseline",
 };
 const CATEGORY_DOT: Record<Category, [glyph: string, color: number]> = {
   hint: ["●", DOT.route],
@@ -161,27 +162,53 @@ function routedRail(els: Els | ElementTable, part: number, whole: number, color:
   );
 }
 
+/** Pingo's mood: thinking while Jev is being asked, otherwise the routing status. */
+export function moodOf(view: Pick<View, "events" | "routing" | "now" | "live">): Mood {
+  if (view.live.asking) return "thinking";
+  return MOOD_OF[status(view.events, view.routing, view.now).kind];
+}
+
+/** Pingo's size in the pane header, in cells: the render and the animation must agree. */
+export function pingoSize(width: number): { columns: number; rows: number } {
+  return width >= 60 ? { columns: 18, rows: 8 } : { columns: 14, rows: 6 };
+}
+
+/** Pingo: braille in the terminal, SVG circles on the desktop. */
+function pingoArt(els: Els, view: View, mood: Mood) {
+  if (view.surface === "terminal" && "Raster" in els) {
+    const { Raster } = els as ElementTable<"terminal">;
+    const { columns, rows } = pingoSize(view.width);
+    return <Raster key="pingo" columns={columns} rows={rows} cells={cellsOf(brailleFrame(mood, view.now / 1000, columns, rows))} />;
+  }
+  if (view.surface === "desktop" && "Svg" in els) {
+    const { Svg } = els as ElementTable<"desktop">;
+    return <Svg source={pingoSvg(mood, view.now / 1000)} alt={`Pingo, ${MOODS[mood].label}`} />;
+  }
+  return null;
+}
+
 function header(els: Els, view: View, act: Actions) {
   const { Box, Button, Text } = els;
   const state = status(view.events, view.routing, view.now);
-  const statusInk = STATUS_INK[state.kind];
-  const statusText = view.live.asking ? "Asking Jev…" : state.title;
-  const statusIcon = view.live.asking ? "◌" : state.icon;
+  const mood = moodOf(view);
+  const moodInk = hex(MOODS[mood].color);
   const { recent, confidence, latency, routedCount } = recentStats(view);
   return (
     <Box flexDirection="column">
       <Box flexDirection="row" columnGap={2} flexWrap="wrap">
+        {pingoArt(els, view, mood)}
         <Box flexDirection="column" flexGrow={1} flexShrink={1}>
           <Text wrap="truncate">
             <Text bold color={INK.ink}>⠿ jev</Text>
+            <Text color={INK.faint}>{mood === "thinking" ? "  · asking Jev…" : "  · Pingo"}</Text>
           </Text>
-          <Text bold color={statusInk} wrap="truncate">{`${statusIcon} ${statusText}`}</Text>
+          <Text bold color={moodInk} wrap="truncate">{`${MOODS[mood].face} ${state.icon} ${state.title}`}</Text>
           <Text wrap="truncate">
-            {confidenceMeter(els, confidence, statusInk)}
+            {confidenceMeter(els, confidence, moodInk)}
             <Text color={INK.dim}>{confidence === undefined ? "  confidence –" : `  confidence ${confidence.toFixed(2)}`}</Text>
           </Text>
           <Text wrap="truncate">
-            {routedRail(els, routedCount, recent.length, statusInk)}
+            {routedRail(els, routedCount, recent.length, moodInk)}
             <Text color={INK.dim}>{`  ${routedCount}/${recent.length} routed · 5 min${latency === undefined ? "" : ` · ${latency} ms`}`}</Text>
           </Text>
         </Box>
@@ -566,8 +593,8 @@ export function speaker(entry: Pick<FeedEntry, "who" | "name" | "tone" | "mascot
     case "you":
       return { face: DICE.face, name: "You", color: INK.you };
     case "jev": {
-      const color = entry.tone === "bad" ? INK.fail : entry.tone === "muted" ? INK.dim : INK.route;
-      return { face: "◆", name: "Jev", color };
+      const mood: Mood = entry.tone === "bad" ? "failing" : entry.tone === "muted" ? "passthrough" : "routing";
+      return { face: MOODS[mood].face, name: "Jev", color: hex(MOODS[mood].color) };
     }
     case "claude":
       return { face: "✻", name: "Claude", color: INK.claude };
@@ -712,7 +739,6 @@ function liveView(els: Els, view: View, act: Actions, rows: number) {
 function liveTop(els: Els, view: View) {
   const { Box, Text } = els;
   const state = status(view.events, view.routing, view.now);
-  const stateInk = STATUS_INK[state.kind];
   const running = view.agents.filter((run) => run.state === "running").length;
   return (
     <Box flexDirection="column" flexShrink={0}>
@@ -725,8 +751,8 @@ function liveTop(els: Els, view: View) {
             <Text color={INK.dim}>{` · ${DICE.name}, your dotted die`}</Text>
           </Text>
           <Text wrap="wrap">
-            <Text bold color={stateInk}>{`${view.live.asking ? "◌" : state.icon} Jev`}</Text>
-            <Text color={INK.dim}>{` · ${view.live.asking ? "Asking" : state.title}`}</Text>
+            <Text bold color={hex(MOODS[moodOf(view)].color)}>{`${MOODS[moodOf(view)].face} Jev`}</Text>
+            <Text color={INK.dim}>{` · Pingo, Jev's mascot · ${view.live.asking ? "asking" : state.title}`}</Text>
           </Text>
           <Text wrap="wrap">
             <Text bold color={INK.claude}>✻ Claude</Text>
@@ -1073,7 +1099,8 @@ function tabBody(els: Els, view: View, act: Actions, rows: number) {
 export function renderBand(els: ElementTable, view: View) {
   const { Box, Text } = els;
   const state = status(view.events, view.routing, view.now);
-  const statusInk = STATUS_INK[state.kind];
+  const mood = moodOf(view);
+  const moodInk = hex(MOODS[mood].color);
   const { recent, confidence, latency, routedCount } = recentStats(view);
   const input = recent.reduce((s, event) => s + (event.usage?.input ?? 0), 0);
   const cached = recent.reduce((s, event) => s + (event.usage?.cached ?? 0), 0);
@@ -1089,9 +1116,9 @@ export function renderBand(els: ElementTable, view: View) {
   return (
     <Box flexDirection="column">
       <Box flexDirection="row" columnGap={1} flexWrap="wrap">
-        <Text bold color={statusInk}>{view.live.asking ? "◌ Asking Jev…" : `${state.icon} Jev: ${state.title}`}</Text>
-        {confidenceMeter(els, confidence, statusInk, 5)}
-        {routedRail(els, routedCount, recent.length, statusInk, 10)}
+        <Text bold color={moodInk}>{`${MOODS[mood].face} Jev: ${view.live.asking ? "Asking Jev…" : state.title}`}</Text>
+        {confidenceMeter(els, confidence, moodInk, 5)}
+        {routedRail(els, routedCount, recent.length, moodInk, 10)}
         <Text color={INK.dim}>{parts.join(" · ")}</Text>
       </Box>
       <Box flexDirection="row" columnGap={1} flexWrap="wrap">

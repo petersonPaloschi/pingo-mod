@@ -2,8 +2,11 @@
 import { describe, expect, test } from "claude-code/testing";
 
 import { brailleBit, brailleChar, constellation, DOT, meter, rail } from "../hooks/dots.ts";
+import { brailleFrame, brailleText, eyeAt, MOODS, pingoSvg, scene, type Mood } from "../hooks/mascots/pingo.ts";
 import { cube, DICE, diceFrame, diceSvg, faceAt } from "../hooks/mascots/dice.ts";
 import { AGENT_MASCOTS, MASCOT_ORDER, mascotFrame, mascotScene, mascotSvg, pickMascot } from "../hooks/mascots/agents.ts";
+
+const ALL_MOODS = Object.keys(MOODS) as Mood[];
 
 describe("dots", () => {
   test("a braille cell is a 2×4 grid: dot (0,0) is ⠁, a full cell is ⣿", () => {
@@ -36,6 +39,45 @@ describe("dots", () => {
     expect(bottom[0]![1]).toBe(DOT.fail);
     expect(bottom.map(([text]) => text).join("")).toHaveLength(4);
     expect(bottom.at(-1)![0]).toContain("⠤");
+  });
+});
+
+describe("Pingo", () => {
+  test("every mood draws a frame with its eyes in the mood's color", () => {
+    for (const mood of ALL_MOODS) {
+      const frame = brailleFrame(mood, 1, 18, 8);
+      expect(frame).toHaveLength(8);
+      for (const row of frame) expect(row).toHaveLength(18);
+      expect(frame.flat().some(([, color]) => color === MOODS[mood].color)).toBe(true);
+      expect(brailleText(frame).trim().length > 0).toBe(true);
+    }
+  });
+
+  test("the same moment draws the same frame", () => {
+    expect(brailleText(brailleFrame("failing", 3.3, 14, 6))).toBe(brailleText(brailleFrame("failing", 3.3, 14, 6)));
+  });
+
+  test("the eyes change shape with the mood", () => {
+    expect(eyeAt("pill", 0.3, 0.1, 0)).toBe(true);
+    expect(eyeAt("happy", 0.3, 0.1, 0)).toBe(false);
+    expect(eyeAt("x", 0.3, 0.1, 0)).toBe(true);
+    expect(eyeAt("line", 0.3, 0.3, 0)).toBe(false);
+  });
+
+  test("only thinking has the orbit ring and the scene is sorted far to near", () => {
+    expect(scene("thinking", 0).some((dot) => dot.kind === "ring")).toBe(true);
+    expect(scene("routing", 0).some((dot) => dot.kind === "ring")).toBe(false);
+    const dots = scene("idle", 2);
+    expect(dots.every((dot, i) => i === 0 || dots[i - 1]!.z <= dot.z)).toBe(true);
+  });
+
+  test("the desktop gets SVG circles within the character limit", () => {
+    for (const mood of ALL_MOODS) {
+      const svg = pingoSvg(mood, 0);
+      expect(svg).toStartWith("<svg");
+      expect((svg.match(/<circle /g) ?? []).length > 500).toBe(true);
+      expect(svg.length).toBeLessThanOrEqual(131_072);
+    }
   });
 });
 
