@@ -558,14 +558,22 @@ async function optionRow($: EngineInterface, field: string): Promise<string | un
   }
 }
 
-/** Writes the api_key option (secure storage); `""` removes it. Says why when Claude Code refused. */
+/** Sensitive options have no /config row; the CLI saves them through Claude Code's secure storage. */
 async function saveKey($: EngineInterface, key: string): Promise<string | undefined> {
   const config = await getSettings($);
-  const row = await optionRow($, "api_key");
+  const row = await optionRow($, "provider");
   if (!row) return text("ui.setup.noSecureOption", config.locale, { env: PROVIDERS[config.provider].keyEnv });
   try {
-    const result = await $.config.set({ key: row, value: key });
-    return result.deny ? redact(result.deny, key) : undefined;
+    const result = await $.process.run(
+      ["claude", "--plugin-dir", $.plugin.root, "plugin", "configure", row.slice(0, -".provider".length), "--values-stdin", "--json"],
+      { stdin: JSON.stringify({ api_key: key }), timeoutMs: 15_000 },
+    );
+    if (result.exitCode !== 0) return redact(result.stderr || result.stdout, key) || text("ui.setup.saveNotConfirmed", config.locale);
+    const saved = JSON.parse(result.stdout) as { saved?: string[]; unconfigured?: string[] };
+    if (!saved.saved?.includes("api_key") || (key ? saved.unconfigured?.includes("api_key") : !saved.unconfigured?.includes("api_key"))) return text("ui.setup.saveNotConfirmed", config.locale);
+    options = { ...options, api_key: key };
+    settings = undefined;
+    return undefined;
   } catch (error) {
     return redact(error instanceof Error ? error.message : String(error), key);
   }

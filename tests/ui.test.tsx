@@ -208,12 +208,18 @@ test("setup does not call a provider without a key", async ($, on) => {
   await ui.unmount();
 });
 
-/** A /config with the plugin's sensitive api_key row; what is written there is recorded. */
+/** /config excludes sensitive options; the CLI's secure writes are recorded instead. */
 function configRows(on: Parameters<Parameters<typeof test>[1]>[1], written: unknown[]) {
-  on("config.list", async () => ({ value: [{ key: "jev@inline.api_key", label: "Jev API key" }] }) as never);
-  on("config.set", async (_$, e) => {
-    written.push(e.value);
-    return { value: e.value };
+  on("config.list", async () => ({ value: [{ key: "jev@inline.provider", label: "Jev provider" }] }) as never);
+  on("config.set", async (_$, e) => ({ value: e.value }));
+  on("process.run", async (_$, e) => {
+    expect(e.argv.slice(0, 2)).toEqual(["claude", "--plugin-dir"]);
+    expect(e.argv.slice(3)).toEqual(["plugin", "configure", "jev@inline", "--values-stdin", "--json"]);
+    const { api_key } = JSON.parse(e.init?.stdin ?? "{}");
+    expect(e.argv.join(" ")).not.toContain(api_key || "dummy-test");
+    written.push(api_key);
+    // The CLI ignores empty inputs; it does not delete an existing sensitive option.
+    return { value: { exitCode: 0, stdout: JSON.stringify({ saved: api_key ? ["api_key"] : [], unconfigured: [] }), stderr: "" } };
   });
 }
 
@@ -261,7 +267,7 @@ test("a refused key is neither saved nor used", async ($, on) => {
   await ui.unmount();
 });
 
-test("a saved key can be replaced, and removed", { options: { api_key: "old-key-aaaa" } }, async ($, on) => {
+test("a saved key can be replaced, and an unsupported removal keeps it in use", { options: { api_key: "old-key-aaaa" } }, async ($, on) => {
   mock.clock(on, { now: Date.parse("2026-10-06T12:00:00Z") });
   mock.store(on);
   mock.env(on, {});
@@ -277,7 +283,25 @@ test("a saved key can be replaced, and removed", { options: { api_key: "old-key-
   expect(await ui.find({ type: "Text", text: /••••bbbb/ })).toBeDefined();
   await ui.press({ key: "forget" });
   expect(written).toEqual(["new-key-bbbb", ""]);
-  expect(await ui.find({ type: "Text", text: /Saved key removed/ })).toBeDefined();
+  expect(await ui.find({ type: "Text", text: /could not be removed/ })).toBeDefined();
+  expect(await status($)).toContain("Key source: plugin settings");
+  expect(await ui.find({ type: "Text", text: /••••bbbb/ })).toBeDefined();
+  await ui.unmount();
+});
+
+test("a restarted session uses the saved key without testing it again", { options: { provider: "openrouter", api_key: "saved-restart-1234" } }, async ($, on) => {
+  mock.clock(on, { now: Date.parse("2026-10-06T12:00:00Z") });
+  mock.store(on);
+  mock.env(on, {});
+  on("http.fetch", async () => { throw new Error("opening Setup must not revalidate a saved key"); });
+  const ui = await $.ui.mount({ plugin: "jev", surface: "terminal", component: "Pane", requestId: "jev", props: PANE_PROPS });
+  await ui.press({ key: "tab-setup" });
+  expect(await ui.find({ type: "Text", text: /••••1234/ })).toBeDefined();
+  const shown = await status($);
+  expect(shown).toContain("Provider: OpenRouter");
+  expect(shown).toContain("Key source: plugin settings");
+  expect(shown).not.toContain("saved-restart-1234");
+  expect(JSON.stringify(await ui.drawn())).not.toContain("saved-restart-1234");
   await ui.unmount();
 });
 

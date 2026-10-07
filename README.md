@@ -146,7 +146,7 @@ The explicit `provider` option takes precedence over `JEV_PROVIDER`. Under `auto
 
 Set the provider to match the issuer of `api_key`. Pingo cannot infer the issuer from the key. With neither an explicit provider nor `JEV_PROVIDER`, the sensitive option is treated as a TypeSafe key. A provider auto-detected from its environment variable gets that variable's key, never a key saved for a different provider.
 
-Setup tests a pasted key before saving it through Claude Code's sensitive `api_key` option. Keys are never written to Pingo's own state or store. The setup field is masked and shows only the last four characters after saving; `/jev status` reports the source without revealing the key. **Remove key** clears the saved option.
+Setup tests a pasted key before saving it through Claude Code's sensitive `api_key` option, using `claude plugin configure --values-stdin`. A successful save restores the key automatically in future sessions; you do not need to paste or test it on every launch. Keys are never written to Pingo's own state or store. The setup field is masked and shows only the last four characters after saving; `/jev status` reports the source without revealing the key. **Remove key** reports a failure if the runtime cannot clear the saved option; the configuration CLI currently keeps existing values when given an empty input.
 
 If the runtime cannot save the option, the validated key works for the current session and Setup explains how to save it with `/plugin configure jev@inline`. If only the provider option cannot be saved, Pingo keeps a provider fallback in its store until `provider` or `JEV_PROVIDER` changes.
 

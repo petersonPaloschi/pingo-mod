@@ -190,11 +190,16 @@ test("the session reads JEV_MIN_CONFIDENCE and JEV_TIMEOUT_MS", async ($, on) =>
 });
 
 /** A /config with this plugin's rows (and any others given); what is written there is recorded. */
-function configRows(on: Parameters<Parameters<typeof test>[1]>[1], written: [string, unknown][], keys = ["jev@inline.api_key", "jev@inline.provider"]) {
+function configRows(on: Parameters<Parameters<typeof test>[1]>[1], written: [string, unknown][], keys = ["jev@inline.provider"]) {
   on("config.list", async () => ({ value: keys.map((key) => ({ key, label: key })) }) as never);
   on("config.set", async (_$, e) => {
     written.push([e.key, e.value]);
     return { value: e.value };
+  });
+  on("process.run", async (_$, e) => {
+    const { api_key } = JSON.parse(e.init?.stdin ?? "{}");
+    written.push([`${e.argv[5]}.api_key`, api_key]);
+    return { value: { exitCode: 0, stdout: JSON.stringify({ saved: ["api_key"] }), stderr: "" } };
   });
 }
 
@@ -273,10 +278,15 @@ describe("Setup", () => {
     mock.store(on);
     mock.env(on, {});
     const written: [string, unknown][] = [];
-    on("config.list", async () => ({ value: ["jev@inline.api_key", "jev@inline.provider"].map((key) => ({ key, label: key })) }) as never);
+    on("config.list", async () => ({ value: [{ key: "jev@inline.provider", label: "Jev provider" }] }) as never);
     on("config.set", async (_$, e) => {
       written.push([e.key, e.value]);
-      return e.key.endsWith(".api_key") ? ({ deny: "keychain locked" } as never) : { value: e.value };
+      return { value: e.value };
+    });
+    on("process.run", async (_$, e) => {
+      const { api_key } = JSON.parse(e.init?.stdin ?? "{}");
+      written.push([`${e.argv[5]}.api_key`, api_key]);
+      return { value: { exitCode: 1, stdout: "", stderr: "keychain locked" } };
     });
     const auth: (string | undefined)[] = [];
     on("http.fetch", async (_$, e) => {
@@ -306,12 +316,36 @@ describe("Setup", () => {
     expect(await status($)).toContain("Provider: Vercel AI Gateway");
   });
 
-  test("the key is saved only to this plugin's own option row", async ($, on) => {
+  test("a successful CLI exit with an unconfigured key is reported as unsaved", async ($, on) => {
     mock.clock(on, { now: Date.parse("2026-10-06T12:00:00Z") });
     mock.store(on);
     mock.env(on, {});
     const written: [string, unknown][] = [];
-    configRows(on, written, ["jevtools.api_key", "jev@inline.api_key", "jev@other.api_key"]);
+    on("config.list", async () => ({ value: [{ key: "jev@inline.provider", label: "Jev provider" }] }) as never);
+    on("config.set", async (_$, e) => {
+      written.push([e.key, e.value]);
+      return { value: e.value };
+    });
+    on("process.run", async () => ({ value: { exitCode: 0, stdout: JSON.stringify({ saved: ["api_key"], unconfigured: ["api_key"] }), stderr: "" } }));
+    on("http.fetch", async () => ({ value: { status: 200, ok: true, headers: {}, text: "{}" } }));
+    const ui = await $.ui.mount({ plugin: "jev", surface: "terminal", component: "Pane", requestId: "jev", props: PANE_PROPS });
+    await ui.press({ key: "tab-setup" });
+    await ui.select({ key: "provider", value: "openrouter" });
+    await ui.input({ key: "api-key", kind: "change", text: "unpersisted-test-0000" });
+    await ui.press({ key: "validate" });
+    expect(await ui.find({ type: "Text", text: /not saved: Claude Code did not confirm/ })).toBeDefined();
+    expect(written).toEqual([["jev@inline.provider", "openrouter"], ["jev@inline.provider", "auto"]]);
+    expect(await status($)).toContain("Provider: OpenRouter");
+    expect(JSON.stringify(await ui.drawn())).not.toContain("unpersisted-test-0000");
+    await ui.unmount();
+  });
+
+  test("the key is never saved to an ambiguous plugin configuration", async ($, on) => {
+    mock.clock(on, { now: Date.parse("2026-10-06T12:00:00Z") });
+    mock.store(on);
+    mock.env(on, {});
+    const written: [string, unknown][] = [];
+    configRows(on, written, ["jevtools.provider", "jev@inline.provider", "jev@other.provider"]);
     on("http.fetch", async () => ({ value: { status: 200, ok: true, headers: {}, text: "{}" } }));
     const ui = await $.ui.mount({ plugin: "jev", surface: "terminal", component: "Pane", requestId: "jev", props: PANE_PROPS });
     await ui.press({ key: "tab-setup" });
