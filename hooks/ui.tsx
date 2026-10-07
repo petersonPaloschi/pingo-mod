@@ -94,6 +94,8 @@ export interface View {
    */
   scroll: number;
   fixed: boolean;
+  /** Where the key in use comes from, its last four characters, and the provider in use. */
+  key: { source: string; tail: string; provider: string };
 }
 
 export interface Actions {
@@ -112,6 +114,10 @@ export interface Actions {
   /** Takes a finished subagent off the Agents tab, or every finished one. */
   removeAgent: (n: number) => void;
   clearAgents: () => void;
+  /** The key field: each change (drawn masked), Enter, and removing the saved key. */
+  typeKey: (value: string) => void;
+  submitKey: (value: string) => void;
+  forgetKey: () => void;
   /** How far the body can scroll as drawn, and whether it counts from the newest line up. */
   layout: (max: number, fromEnd: boolean) => void;
 }
@@ -158,18 +164,27 @@ function routedRail(els: Els | ElementTable, part: number, whole: number, color:
 function header(els: Els, view: View, act: Actions) {
   const { Box, Button, Text } = els;
   const state = status(view.events, view.routing, view.now);
-  const stateInk = STATUS_INK[state.kind];
-  const stateLabel = view.live.asking ? "Asking Jev…" : state.title;
-  const stateIcon = view.live.asking ? "◌" : state.icon;
+  const statusInk = STATUS_INK[state.kind];
+  const statusText = view.live.asking ? "Asking Jev…" : state.title;
+  const statusIcon = view.live.asking ? "◌" : state.icon;
   const { recent, confidence, latency, routedCount } = recentStats(view);
-  // Kept short: it stays on screen above every tab while the body scrolls under it.
   return (
     <Box flexDirection="column">
-      <Box flexDirection="row" flexWrap="wrap" columnGap={2}>
-        <Text wrap="truncate">
-          <Text bold color={INK.ink}>⠿ jev </Text>
-          <Text bold color={stateInk}>{`${stateIcon} ${stateLabel}`}</Text>
-        </Text>
+      <Box flexDirection="row" columnGap={2} flexWrap="wrap">
+        <Box flexDirection="column" flexGrow={1} flexShrink={1}>
+          <Text wrap="truncate">
+            <Text bold color={INK.ink}>⠿ jev</Text>
+          </Text>
+          <Text bold color={statusInk} wrap="truncate">{`${statusIcon} ${statusText}`}</Text>
+          <Text wrap="truncate">
+            {confidenceMeter(els, confidence, statusInk)}
+            <Text color={INK.dim}>{confidence === undefined ? "  confidence –" : `  confidence ${confidence.toFixed(2)}`}</Text>
+          </Text>
+          <Text wrap="truncate">
+            {routedRail(els, routedCount, recent.length, statusInk)}
+            <Text color={INK.dim}>{`  ${routedCount}/${recent.length} routed · 5 min${latency === undefined ? "" : ` · ${latency} ms`}`}</Text>
+          </Text>
+        </Box>
         <Button
           key="routing"
           label={view.routing ? "Turn Jev off (r)" : "Turn Jev on (r)"}
@@ -177,12 +192,6 @@ function header(els: Els, view: View, act: Actions) {
           onPress={() => act.routing(!view.routing)}
         />
       </Box>
-      <Text wrap="truncate">
-        {confidenceMeter(els, confidence, stateInk)}
-        <Text color={INK.dim}>{confidence === undefined ? " confidence –  " : ` confidence ${confidence.toFixed(2)}  `}</Text>
-        {routedRail(els, routedCount, recent.length, stateInk)}
-        <Text color={INK.dim}>{` ${routedCount}/${recent.length} routed · 5 min${latency === undefined ? "" : ` · ${latency} ms`}`}</Text>
-      </Text>
       <Box flexDirection="row" flexWrap="wrap" columnGap={2} marginTop={1}>
         {TABS.map(([id, label, hotkey]) => (
           <Button
@@ -426,37 +435,105 @@ function logView(els: Els, view: View) {
   );
 }
 
+/** One step of the setup: a number, a label column, and what is set there. */
+function step(els: Els, n: number, label: string, done: boolean, body: RenderChildren) {
+  const { Box, Text } = els;
+  return (
+    <Box flexDirection="row" columnGap={1}>
+      <Box width={13} flexShrink={0}>
+        <Text wrap="truncate">
+          <Text bold color={done ? INK.route : INK.dim}>{done ? "● " : `${n} `}</Text>
+          <Text bold color={INK.ink}>{label}</Text>
+        </Text>
+      </Box>
+      <Box flexDirection="column" flexGrow={1} flexShrink={1}>
+        {body}
+      </Box>
+    </Box>
+  );
+}
+
 function setupView(els: Els, view: View, act: Actions) {
-  const { Box, Text, Button, Select } = els;
-  const chosen = PROVIDER_IDS.includes(view.setup.provider as never) ? view.setup.provider : "typesafe";
+  const { Box, Text, Button, Select, Input } = els;
+  const chosen = PROVIDER_IDS.includes(view.setup.provider as never) ? view.setup.provider : PROVIDER_IDS.includes(view.key.provider as never) ? view.key.provider : "typesafe";
   const info = PROVIDERS[chosen as keyof typeof PROVIDERS];
+  const saved = view.key.source !== "none";
+  const typed = view.setup.typed ?? "";
+  const message = view.setup.message;
   return (
     <Box flexDirection="column" rowGap={1}>
       <Box flexDirection="column">
         {section(els, "Setup")}
-        <Text color={INK.ink} wrap="wrap">{`Choose ${info.label}, configure its key securely, then test the connection.`}</Text>
+        <Text color={INK.dim} wrap="wrap">Pick a provider, paste its key, and the mod tests it before saving.</Text>
       </Box>
-      {view.setup.message ? (
-        <Text bold color={view.setup.isOk ? INK.route : INK.fail} wrap="wrap">
-          {`${view.setup.isOk ? "●" : "×"} ${view.setup.message}`}
-        </Text>
-      ) : null}
-      <Select
-        key="provider"
-        label="Provider"
-        value={chosen}
-        options={PROVIDER_IDS.map((id) => ({ value: id, label: `${PROVIDERS[id].label}: ${PROVIDERS[id].note}` }))}
-        onSelect={(value) => act.provider(value)}
-      />
-      <Text color={INK.faint} wrap="wrap">{`Get a key at ${info.keyUrl}. Set the sensitive api_key option with /plugin configure jev@inline, or use ${info.keyEnv}. The plugin never writes keys to its own state.`}</Text>
+      {step(
+        els,
+        1,
+        "Provider",
+        true,
+        <Box flexDirection="column">
+          <Select
+            key="provider"
+            value={chosen}
+            options={PROVIDER_IDS.map((id) => ({ value: id, label: PROVIDERS[id].label }))}
+            onSelect={(value) => act.provider(value)}
+          />
+          <Text color={INK.faint} wrap="wrap">{`${info.note} · keys at ${info.keyUrl}`}</Text>
+        </Box>,
+      )}
+      {step(
+        els,
+        2,
+        "API key",
+        saved && !typed,
+        <Box flexDirection="column">
+          {saved ? (
+            <Text wrap="wrap">
+              <Text color={INK.route}>{`••••${view.key.tail}`}</Text>
+              <Text color={INK.dim}>{` in use, from the ${view.key.source}`}</Text>
+            </Text>
+          ) : (
+            <Text color={INK.pass} wrap="wrap">{`No key yet: paste one below, or set ${info.keyEnv}.`}</Text>
+          )}
+          <Input
+            key="api-key"
+            value={typed}
+            placeholder={saved ? "paste a new key to replace it" : "paste your key"}
+            submitLabel="test and save"
+            onInput={(value) => act.typeKey(value)}
+            onSubmit={(value) => act.submitKey(value)}
+          />
+          <Text color={INK.faint} wrap="wrap">
+            Shown masked. Saved in Claude Code's secure plugin storage (the sensitive api_key option), never in the mod's own state.
+          </Text>
+        </Box>,
+      )}
+      {step(
+        els,
+        3,
+        "Connection",
+        view.setup.isOk && Boolean(message) && !view.setup.busy,
+        <Box flexDirection="column">
+          <Box flexDirection="row" columnGap={2} flexWrap="wrap">
+            <Button key="validate" label={typed ? "Test and save (v)" : "Test connection (v)"} hotkey="v" onPress={() => act.validate()} />
+            {saved && view.key.source === "plugin settings" ? <Button key="forget" label="Remove key (f)" hotkey="f" onPress={() => act.forgetKey()} /> : null}
+          </Box>
+          {message ? (
+            <Text bold color={view.setup.busy ? INK.dim : view.setup.isOk ? INK.route : INK.fail} wrap="wrap">
+              {`${view.setup.busy ? "◌" : view.setup.isOk ? "●" : "×"} ${message}`}
+            </Text>
+          ) : null}
+        </Box>,
+      )}
       <Text color={INK.pass} wrap="wrap">
-        {"Requests send recent conversation and tool data to the selected provider. Review the privacy details in the README before enabling routing."}
+        Routing sends recent conversation and tool data to the selected provider. See the README's privacy details.
       </Text>
-      <Box flexDirection="row" columnGap={2} flexWrap="wrap">
-        <Button key="validate" label="Test connection (v)" hotkey="v" onPress={() => act.validate()} />
-        <Button key="clear" label="Clear history (c)" hotkey="c" onPress={() => act.clear()} />
+      <Box flexDirection="column">
+        <Text color={INK.faint} wrap="wrap">{view.meta}</Text>
+        <Box flexDirection="row">
+          <Button key="clear" label="Clear history (c)" hotkey="c" onPress={() => act.clear()} />
+        </Box>
       </Box>
-      <Text color={INK.faint} wrap="wrap">{view.meta}</Text>
     </Box>
   );
 }
@@ -1012,7 +1089,7 @@ export function renderBand(els: ElementTable, view: View) {
   return (
     <Box flexDirection="column">
       <Box flexDirection="row" columnGap={1} flexWrap="wrap">
-        <Text bold color={statusInk}>{`${view.live.asking ? "◌ Asking Jev…" : `${state.icon} Jev: ${state.title}`}`}</Text>
+        <Text bold color={statusInk}>{view.live.asking ? "◌ Asking Jev…" : `${state.icon} Jev: ${state.title}`}</Text>
         {confidenceMeter(els, confidence, statusInk, 5)}
         {routedRail(els, routedCount, recent.length, statusInk, 10)}
         <Text color={INK.dim}>{parts.join(" · ")}</Text>

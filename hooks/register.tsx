@@ -82,6 +82,12 @@ const agentTypes = new Map<string, AgentType>();
 /** Running subagents by id: their type, model and the effort Jev chose. */
 const agentRuns = new Map<string, { type: string; model: string; effort?: Effort; description: string; mascot?: MascotId }>();
 const toolStarts = new Map<string, number>();
+/**
+ * The key being typed in Setup, and the key accepted this session. Only here, in the module: the
+ * pane's state holds a masked copy, and a saved key goes to Claude Code's secure plugin storage.
+ */
+let draftKey = "";
+let sessionKey = "";
 /** Set when a model Jev chose was refused: model changes stop for the session. */
 let modelBroken = false;
 /** Dice at the top of the live tab: drawn while that tab shows. */
@@ -137,7 +143,7 @@ async function storedSettings($: EngineInterface): Promise<StoredSettings> {
 }
 
 async function getSettings($: EngineInterface): Promise<Settings> {
-  settings ??= resolveSettings(options, await processEnv($), await storedSettings($));
+  settings ??= resolveSettings(sessionKey ? { ...options, api_key: sessionKey } : options, await processEnv($), await storedSettings($));
   return settings;
 }
 
@@ -388,8 +394,71 @@ async function statusText($: EngineInterface): Promise<string> {
   ].join("\n");
 }
 
+/** Keep short invalid inputs fully masked and reveal only the last four characters of longer keys. */
+const maskKey = (key: string) => (key.length > 4 ? "•".repeat(key.length - 4) + key.slice(-4) : "•".repeat(key.length));
+
+/**
+ * The key field changed. It is drawn masked, so what comes back is the mask plus what was typed
+ * or pasted at its end, or the mask cut short by backspace; the real key is rebuilt from that.
+ */
+function applyTyped(value: string): void {
+  const shown = maskKey(draftKey);
+  if (value.startsWith(shown)) draftKey += value.slice(shown.length);
+  else if (shown.startsWith(value)) draftKey = draftKey.slice(0, [...value].length);
+  else if (!value.includes("•")) draftKey = value;
+  draftKey = draftKey.replace(/\s+/g, "");
+}
+
+async function typeKey($: EngineInterface, value: string): Promise<void> {
+  applyTyped(value);
+  await update($, setup, (d) => ({ ...d, typed: maskKey(draftKey), message: "" }));
+}
+
+/** The `/config` row of this plugin's sensitive api_key option, as `$.config` names it. */
+async function keyRow($: EngineInterface): Promise<string | undefined> {
+  try {
+    const rows = await $.config.list();
+    return rows.find((row) => /^jev(@[^.]*)?\.api_key$/.test(row.key))?.key;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Writes the api_key option (secure storage); `""` removes it. Says why when Claude Code refused. */
+async function saveKey($: EngineInterface, key: string): Promise<string | undefined> {
+  const safe = (message: string) => (key ? message.replaceAll(key, "[redacted]") : message);
+  const row = await keyRow($);
+  if (!row) return "this Claude Code has no api_key option for the plugin";
+  try {
+    const result = await $.config.set({ key: row, value: key });
+    return result.deny ? safe(result.deny) : undefined;
+  } catch (error) {
+    return safe(error instanceof Error ? error.message : String(error));
+  }
+}
+
+/** Removes the saved key: the option, and this session's copy. The environment's stays. */
+async function forgetKey($: EngineInterface): Promise<void> {
+  draftKey = "";
+  sessionKey = "";
+  const refused = await saveKey($, "");
+  settings = undefined;
+  const config = await getSettings($);
+  await update($, setup, (d) => ({
+    ...d,
+    typed: "",
+    isOk: !refused,
+    message: refused
+      ? `The saved key could not be removed: ${refused}. Use /plugin configure jev@inline.`
+      : config.apiKey
+        ? `Saved key removed. The key from the ${config.keySource} is in use now.`
+        : "Saved key removed. Paste a new one to route again.",
+  }));
+}
+
 async function checkSetup($: EngineInterface): Promise<void> {
   const draft = await read($, setup);
+  if (draftKey) return submitKey($, draft.provider);
   const current = await getSettings($);
   const id = isProvider(draft.provider) ? draft.provider : current.provider;
   try {
@@ -425,6 +494,42 @@ async function checkSetup($: EngineInterface): Promise<void> {
   }));
 }
 
+/** Tests the typed key with the chosen provider; a key that works is saved and used at once. */
+async function submitKey($: EngineInterface, provider: string): Promise<void> {
+  const key = draftKey.trim();
+  const current = await getSettings($);
+  const id = isProvider(provider) ? provider : current.provider;
+  if (!key) {
+    await update($, setup, (d) => ({ ...d, message: "Paste a key first.", isOk: false }));
+    return;
+  }
+  await update($, setup, (d) => ({ ...d, provider: id, busy: true, isOk: true, message: `Testing the key with ${PROVIDERS[id].label}…` }));
+  const check = await validateKey(id, key, transport($), resolveModel(id, options.model?.trim()));
+  if (!check.ok) {
+    await update($, setup, (d) => ({
+      ...d,
+      busy: false,
+      isOk: false,
+      message: check.refused ? `${PROVIDERS[id].label} refused this key: ${check.message}` : `Could not reach ${PROVIDERS[id].label}: ${check.message}`,
+    }));
+    return;
+  }
+  await $.store.set(STORE_PROVIDER, id).catch(() => undefined);
+  sessionKey = key;
+  draftKey = "";
+  settings = undefined;
+  const refused = await saveKey($, key);
+  await update($, setup, (d) => ({
+    ...d,
+    busy: false,
+    typed: "",
+    isOk: true,
+    message: refused
+      ? `Key works (${check.ms} ms) and is in use for this session, but it was not saved: ${refused}. Save it for good with /plugin configure jev@inline.`
+      : `Key works (${check.ms} ms) and is saved in Claude Code's secure plugin storage.`,
+  }));
+}
+
 function actions($: EngineInterface, scrollKey = ""): Actions {
   return {
     layout: (max, fromEnd) => void scrollRoom.set(scrollKey, { max, fromEnd }),
@@ -435,6 +540,13 @@ function actions($: EngineInterface, scrollKey = ""): Actions {
     provider: (id) => void update($, setup, (draft) => ({ ...draft, provider: id, message: "" })),
     clear: () => void clearHistory($),
     validate: () => void checkSetup($),
+    typeKey: (value) => void typeKey($, value),
+    submitKey: (value) => {
+      // Enter carries the field as it stands: take it in first, then test.
+      applyTyped(value);
+      void read($, setup).then((draft) => submitKey($, draft.provider));
+    },
+    forgetKey: () => void forgetKey($),
     openAgent: (n) =>
       void read($, agents).then((list) => {
         const run = list.find((one) => one.n === n);
@@ -474,6 +586,7 @@ async function view($: EngineInterface, width: number, rows: number, surface: st
     rows,
     surface,
     meta: `${PROVIDERS[config.provider].label} · ${config.jevModel} · minimum confidence ${config.minConfidence} · key source: ${config.keySource}`,
+    key: { source: config.keySource, tail: config.apiKey ? config.apiKey.slice(-4) : "", provider: config.provider },
   };
 }
 
@@ -487,6 +600,8 @@ function actor(agentId: string | undefined): Speaker {
 export const register: Register = (on, given) => {
   options = given as ModOptions;
   settings = undefined;
+  draftKey = "";
+  sessionKey = "";
 
   on("session.start", async ($, e, next) => {
     sessionId = (await $.session.id()).slice(0, 8);

@@ -41,7 +41,7 @@ test("every tab draws on the terminal and the desktop app", async ($, on) => {
       ["tab-reasons", /Why requests were not routed/],
       ["tab-baseline", /with Jev routing vs. baseline/],
       ["tab-log", /Newest first/],
-      ["tab-setup", /configure its key securely/],
+      ["tab-setup", /paste its key/],
     ] as const) {
       await ui.press({ key });
       expect(await ui.find({ type: "Text", text })).toBeDefined();
@@ -113,7 +113,7 @@ test("saved routing and feature switches return after /clear", async ($, on) => 
   await ui.unmount();
 });
 
-test("setup never renders an API key input and does not call a provider without a configured key", async ($, on) => {
+test("setup does not call a provider without a key", async ($, on) => {
   mock.clock(on, { now: Date.parse("2026-10-06T12:00:00Z") });
   mock.store(on);
   mock.env(on, {});
@@ -124,12 +124,83 @@ test("setup never renders an API key input and does not call a provider without 
   });
   const ui = await $.ui.mount({ plugin: "jev", surface: "terminal", component: "Pane", requestId: "jev", props: PANE_PROPS });
   await ui.press({ key: "tab-setup" });
-
-  expect(await ui.find({ type: "Text", text: /plugin configure jev@inline/ })).toBeDefined();
-  expect(await ui.find({ key: "api-key" })).toBeUndefined();
+  expect(await ui.find({ type: "Text", text: /No key yet/ })).toBeDefined();
   await ui.press({ key: "validate" });
   expect(requests).toBe(0);
   expect(await ui.find({ type: "Text", text: /No key is configured/ })).toBeDefined();
+  await ui.unmount();
+});
+
+/** A /config with the plugin's sensitive api_key row; what is written there is recorded. */
+function configRows(on: Parameters<Parameters<typeof test>[1]>[1], written: unknown[]) {
+  on("config.list", async () => ({ value: [{ key: "jev@inline.api_key", label: "Jev API key" }] }) as never);
+  on("config.set", async (_$, e) => {
+    written.push(e.value);
+    return { value: e.value };
+  });
+}
+
+test("a pasted key is shown masked, tested, saved in secure plugin storage and used at once", async ($, on) => {
+  mock.clock(on, { now: Date.parse("2026-10-06T12:00:00Z") });
+  mock.store(on);
+  mock.env(on, {});
+  const written: unknown[] = [];
+  configRows(on, written);
+  const auth: (string | undefined)[] = [];
+  on("http.fetch", async (_$, e) => {
+    auth.push(e.init?.headers?.authorization);
+    return { value: { status: 200, ok: true, headers: {}, text: "{}" } };
+  });
+  const ui = await $.ui.mount({ plugin: "jev", surface: "terminal", component: "Pane", requestId: "jev", props: PANE_PROPS });
+  await ui.press({ key: "tab-setup" });
+  await ui.input({ key: "api-key", kind: "change", text: "dummy-test-1234" });
+  // The field holds only the mask; nothing in the tree carries the key.
+  const drawn = JSON.stringify(await ui.drawn());
+  expect(drawn).not.toContain("dummy-test");
+  expect(drawn).toContain("•••••••••••1234");
+  await ui.input({ key: "api-key", kind: "submit", text: "•••••••••••1234" });
+  expect(auth).toEqual(["Bearer dummy-test-1234"]);
+  expect(written).toEqual(["dummy-test-1234"]);
+  expect(await ui.find({ type: "Text", text: /saved in Claude Code's secure plugin storage/ })).toBeDefined();
+  expect(await status($)).toContain("Key source: plugin settings");
+  expect(await status($)).not.toContain("dummy-test-1234");
+  await ui.unmount();
+});
+
+test("a refused key is neither saved nor used", async ($, on) => {
+  mock.clock(on, { now: Date.parse("2026-10-06T12:00:00Z") });
+  mock.store(on);
+  mock.env(on, {});
+  const written: unknown[] = [];
+  configRows(on, written);
+  on("http.fetch", async () => ({ value: { status: 401, ok: false, headers: {}, text: '{"error":"bad key"}' } }));
+  const ui = await $.ui.mount({ plugin: "jev", surface: "terminal", component: "Pane", requestId: "jev", props: PANE_PROPS });
+  await ui.press({ key: "tab-setup" });
+  await ui.input({ key: "api-key", kind: "change", text: "sk-wrong-0000" });
+  await ui.press({ key: "validate" });
+  expect(written).toEqual([]);
+  expect(await ui.find({ type: "Text", text: /refused this key/ })).toBeDefined();
+  expect(await status($)).toContain("Key source: none");
+  await ui.unmount();
+});
+
+test("a saved key can be replaced, and removed", { options: { api_key: "old-key-aaaa" } }, async ($, on) => {
+  mock.clock(on, { now: Date.parse("2026-10-06T12:00:00Z") });
+  mock.store(on);
+  mock.env(on, {});
+  const written: unknown[] = [];
+  configRows(on, written);
+  on("http.fetch", async () => ({ value: { status: 200, ok: true, headers: {}, text: "{}" } }));
+  const ui = await $.ui.mount({ plugin: "jev", surface: "terminal", component: "Pane", requestId: "jev", props: PANE_PROPS });
+  await ui.press({ key: "tab-setup" });
+  expect(await ui.find({ type: "Text", text: /••••aaaa/ })).toBeDefined();
+  await ui.input({ key: "api-key", kind: "change", text: "new-key-bbbb" });
+  await ui.press({ key: "validate" });
+  expect(written).toEqual(["new-key-bbbb"]);
+  expect(await ui.find({ type: "Text", text: /••••bbbb/ })).toBeDefined();
+  await ui.press({ key: "forget" });
+  expect(written).toEqual(["new-key-bbbb", ""]);
+  expect(await ui.find({ type: "Text", text: /Saved key removed/ })).toBeDefined();
   await ui.unmount();
 });
 

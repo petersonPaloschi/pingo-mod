@@ -42,7 +42,15 @@ export type FlowState = {
 };
 
 /** The setup pane selects a provider and reports the connection check. */
-export type SetupDraft = { provider: string; message: string; isOk: boolean };
+export type SetupDraft = {
+  provider: string;
+  message: string;
+  isOk: boolean;
+  /** The key being typed, masked ("••••••a1b2"): the key itself stays in the module, never in state. */
+  typed?: string;
+  /** A check or a save is in flight. */
+  busy?: boolean;
+};
 
 /** The features the person switches on and off, by id (see hooks/core/plan.ts). */
 export type FeatureFlags = {

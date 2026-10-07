@@ -32,13 +32,15 @@ On Windows, separate multiple plugin directories with semicolons.
 
 Jev supports TypeSafe, OpenRouter, Vercel AI Gateway, and OpenCode.
 
-The recommended method is Claude Code's sensitive plugin configuration:
+From the dashboard:
 
-1. Run `/plugin configure jev@inline`.
-2. Set `api_key` and choose the matching `provider`.
-3. Open `/jev setup` and select **Test connection**.
+1. Open `/jev setup` and pick the provider.
+2. Paste the key in the **API key** field and press Enter (or **Test and save**, `v`). The field stays masked and shows only the final four characters after save.
+3. Jev tests the key with that provider first. A key that works is saved through Claude Code's sensitive `api_key` plugin option and used for the current session. A refused key is neither saved nor used.
 
-The `api_key` option is marked sensitive in the plugin manifest. The plugin does not provide a key-entry field and never writes API keys to its own state. You can also provide a key through the matching environment variable:
+To change the key, paste a new one in the same field. **Remove key** (`f`) clears the saved option. If Claude Code does not let the mod write the option, the key still works for the session, and the message says to save it with `/plugin configure jev@inline` (set `api_key` and the matching `provider` there).
+
+The `api_key` option is marked sensitive in the plugin manifest. Pasted keys stay in module memory while being tested and are saved through Claude Code's sensitive configuration; they never go into the plugin's own state or store. You can also provide a key through the matching environment variable:
 
 | Provider | Environment variable | Default model |
 | --- | --- | --- |

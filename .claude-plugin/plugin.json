@@ -17,7 +17,7 @@
     "api_key": {
       "type": "string",
       "title": "Jev API key",
-      "description": "Optional sensitive credential. Configure it through Claude Code, never through this plugin's UI or state. Set provider to match the key's issuer; auto cannot infer the provider from api_key. Jev sends recent conversation/tool data and composed Claude instructions to the selected provider. If empty, the plugin reads the selected provider's environment variable.",
+      "description": "Optional sensitive credential. The masked Setup field can save it through Claude Code's sensitive plugin configuration; the plugin never writes it to its own state. Set provider to match the key's issuer; auto cannot infer the provider from api_key. Jev sends recent conversation/tool data and composed Claude instructions to the selected provider. If empty, the plugin reads the selected provider's environment variable.",
       "sensitive": true,
       "required": false
     },

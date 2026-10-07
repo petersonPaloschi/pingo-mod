@@ -98,7 +98,7 @@ test("/jev flow opens the pane on the Flow tab", async ($, on) => {
   const opened: string[] = [];
   on("ui.open", async (_$, e) => {
     opened.push(e.id);
-    return { value: {} };
+    return { value: {} } as never;
   });
   await $.command.run({ command: "jev", args: "flow", origin: { kind: "composer" }, presentation: { isFullscreen: true, columns: 160 } } as never);
   expect(opened).toContain("jev");
