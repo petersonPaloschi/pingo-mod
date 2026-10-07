@@ -1,0 +1,45 @@
+{
+  "name": "jev",
+  "version": "0.1.0",
+  "description": "Jev tool routing for Claude Code, with a live dashboard and optional model and subagent planning.",
+  "author": { "name": "Peterson Paloschi" },
+  "license": "MIT",
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "provider": {
+      "type": "string",
+      "title": "Jev provider",
+      "description": "Where to reach Jev: auto (first key found), typesafe, openrouter, vercel or opencode",
+      "options": ["auto", "typesafe", "openrouter", "vercel", "opencode"],
+      "default": "auto",
+      "required": false
+    },
+    "api_key": {
+      "type": "string",
+      "title": "Jev API key",
+      "description": "Optional sensitive credential. Configure it through Claude Code, never through this plugin's UI or state. Set provider to match the key's issuer; auto cannot infer the provider from api_key. Jev sends recent conversation/tool data and composed Claude instructions to the selected provider. If empty, the plugin reads the selected provider's environment variable.",
+      "sensitive": true,
+      "required": false
+    },
+    "model": {
+      "type": "string",
+      "title": "Jev model",
+      "description": "Jev model id; empty uses the provider's default",
+      "required": false
+    },
+    "min_confidence": {
+      "type": "number",
+      "title": "Minimum confidence",
+      "description": "Below this, Jev's pick is ignored and Claude decides alone (JEV_MIN_CONFIDENCE)",
+      "default": 0.7,
+      "required": false
+    },
+    "timeout_ms": {
+      "type": "number",
+      "title": "Jev timeout (ms)",
+      "description": "How long to wait for Jev before failing open (JEV_TIMEOUT_MS)",
+      "default": 4000,
+      "required": false
+    }
+  }
+}

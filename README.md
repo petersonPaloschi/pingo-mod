@@ -94,7 +94,7 @@ When routing is enabled and a key is configured, the selected provider receives 
 
 The Live and Flow views display observable requests, decisions, tool activity, visible response text, and a shortened view of the active request. They do not read or display the model's internal reasoning.
 
-The persisted request history contains metadata such as timestamps, model names, tool counts, routing results, latency, and token usage. It does not include conversation prompts, tool arguments, or API keys.
+The persisted request history contains metadata such as timestamps, model names, tool counts, normalized routing reason codes, latency, and token usage. It does not include conversation prompts, tool arguments, provider error bodies, or API keys.
 
 ## Development and validation
 
