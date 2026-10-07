@@ -2,60 +2,53 @@
 // visible messages, Jev's answers). Never the model's reasoning: thinking is not read here.
 import type { FeatureFlags } from "../types";
 import type { FeatureId } from "./core/plan.ts";
+import { formatCompact, formatNumber, localeFor, text, type Locale, type LocaleKey } from "./i18n.ts";
 
 /** Each feature, its one-click toggle key, and a short description. */
-export const FEATURES: readonly { id: FeatureId; name: string; hotkey: string; description: string }[] = [
+const FEATURE_KEYS: readonly { id: FeatureId; name: LocaleKey; hotkey: string; description: LocaleKey }[] = [
   {
     id: "tools",
-    name: "Tool hints",
+    name: "feature.tools.name",
     hotkey: "t",
-    description:
-      "Before each model request, Jev selects the most relevant tool (Read, Bash, Edit…) and adds " +
-      "that suggestion as context. Claude remains free to ignore it.",
+    description: "feature.tools.description",
   },
   {
     id: "participation",
-    name: "Automatic participation",
+    name: "feature.participation.name",
     hotkey: "p",
-    description:
-      "Jev decides whether to participate in each request. For simple requests it stays out: no tool or " +
-      "delegation hint is added, while the selected model and effort still apply.",
+    description: "feature.participation.description",
   },
   {
     id: "model",
-    name: "Model per turn",
+    name: "feature.model.name",
     hotkey: "m",
-    description:
-      "At the start of each turn, Jev selects Haiku, Sonnet, or Opus based on the request's complexity. " +
-      "The whole turn uses that model. Switching models rebuilds the prompt cache for that turn.",
+    description: "feature.model.description",
   },
   {
     id: "effort",
-    name: "Effort per turn",
+    name: "feature.effort.name",
     hotkey: "e",
-    description:
-      "Jev selects the turn's effort level (low, medium, high, xhigh, max). This applies only to models " +
-      "that support effort; other models keep their existing settings.",
+    description: "feature.effort.description",
   },
   {
     id: "delegation",
-    name: "Subagent delegation",
+    name: "feature.delegation.name",
     hotkey: "d",
-    description:
-      "Jev decides whether part of a request should go to a subagent (Explore, Plan…) and suggests it to Claude. " +
-      "Claude starts the subagent with its Agent tool; this plugin never starts tasks on its own.",
+    description: "feature.delegation.description",
   },
   {
     id: "agents",
-    name: "Subagent model and effort",
+    name: "feature.agents.name",
     hotkey: "g",
-    description:
-      "When a subagent is about to start, Jev reads its task and selects a model and effort. If Claude " +
-      "already requested a specific model, that choice is respected.",
+    description: "feature.agents.description",
   },
 ];
 
-export const featureName = (id: FeatureId) => FEATURES.find((feature) => feature.id === id)?.name ?? id;
+export const features = (locale: Locale = localeFor()) => FEATURE_KEYS.map((feature) => ({
+  ...feature,
+  name: text(feature.name, locale),
+  description: text(feature.description, locale),
+}));
 
 export const short = (text: string, max = 80) => {
   const line = text.replace(/\s+/g, " ").trim();
@@ -81,49 +74,49 @@ export function toolSummary(tool: string, input: Record<string, unknown>): strin
  * A tool call's finer points, for the small line under it: the whole command, the search and
  * where it looks, the range read, the size of an edit. Empty when the summary already says it all.
  */
-export function toolDetails(tool: string, input: Record<string, unknown>): string {
-  const text = (key: string) => (typeof input[key] === "string" ? (input[key] as string) : undefined);
+export function toolDetails(tool: string, input: Record<string, unknown>, locale: Locale = localeFor()): string {
+  const fieldText = (key: string) => (typeof input[key] === "string" ? (input[key] as string) : undefined);
   const number = (key: string) => (typeof input[key] === "number" ? (input[key] as number) : undefined);
   const lines = (value: string | undefined) => (value === undefined ? 0 : value.split("\n").length);
   const parts: (string | undefined)[] = [];
   switch (tool) {
     case "Bash":
     case "PowerShell": {
-      const command = text("command") ?? "";
+      const command = fieldText("command") ?? "";
       if (command.length > 60) parts.push(short(command, 240));
-      parts.push(text("description"), input.run_in_background ? "in the background" : undefined);
+      parts.push(fieldText("description"), input.run_in_background ? text("feed.detail.background", locale) : undefined);
       const timeout = number("timeout");
-      if (timeout) parts.push(`timeout ${Math.round(timeout / 1000)}s`);
+      if (timeout) parts.push(text("feed.detail.timeout", locale, { seconds: formatNumber(Math.round(timeout / 1000), locale) }));
       break;
     }
     case "Read": {
       const offset = number("offset");
       const limit = number("limit");
-      if (offset !== undefined || limit !== undefined) parts.push(`lines ${offset ?? 1}–${limit === undefined ? "end" : (offset ?? 1) + limit - 1}`);
-      parts.push(text("pages") ? `pages ${text("pages")}` : undefined);
+      if (offset !== undefined || limit !== undefined) parts.push(text("feed.detail.lines", locale, { start: formatNumber(offset ?? 1, locale), end: limit === undefined ? "end" : formatNumber((offset ?? 1) + limit - 1, locale) }));
+      parts.push(fieldText("pages") ? text("feed.detail.pages", locale, { pages: fieldText("pages")! }) : undefined);
       break;
     }
     case "Edit":
-      parts.push(`−${lines(text("old_string"))} +${lines(text("new_string"))} lines`, input.replace_all ? "every match" : undefined);
+      parts.push(text("feed.detail.editLines", locale, { removed: formatNumber(lines(fieldText("old_string")), locale), added: formatNumber(lines(fieldText("new_string")), locale) }), input.replace_all ? text("feed.detail.everyMatch", locale) : undefined);
       break;
     case "Write":
-      parts.push(`${lines(text("content"))} lines`);
+      parts.push(text("feed.output.lines", locale, { count: formatNumber(lines(fieldText("content")), locale) }));
       break;
     case "Grep":
-      parts.push(text("path") ? `in ${text("path")}` : undefined, text("glob") ? `glob ${text("glob")}` : undefined, text("type") ? `type ${text("type")}` : undefined, text("output_mode"));
+      parts.push(fieldText("path") ? text("feed.detail.path", locale, { path: fieldText("path")! }) : undefined, fieldText("glob") ? text("feed.detail.glob", locale, { glob: fieldText("glob")! }) : undefined, fieldText("type") ? text("feed.detail.type", locale, { type: fieldText("type")! }) : undefined, fieldText("output_mode"));
       break;
     case "Glob":
-      parts.push(text("path") ? `in ${text("path")}` : undefined);
+      parts.push(fieldText("path") ? text("feed.detail.path", locale, { path: fieldText("path")! }) : undefined);
       break;
     case "Agent":
     case "Task":
-      parts.push(text("subagent_type"), text("model") ? `model ${text("model")}` : undefined, text("prompt") ? short(text("prompt")!, 160) : undefined);
+      parts.push(fieldText("subagent_type"), fieldText("model") ? text("feed.detail.model", locale, { model: fieldText("model")! }) : undefined, fieldText("prompt") ? short(fieldText("prompt")!, 160) : undefined);
       break;
     case "WebFetch":
-      parts.push(text("prompt") ? short(text("prompt")!, 160) : undefined);
+      parts.push(fieldText("prompt") ? short(fieldText("prompt")!, 160) : undefined);
       break;
     case "Skill":
-      parts.push(text("args") ? short(text("args")!, 120) : undefined);
+      parts.push(fieldText("args") ? short(fieldText("args")!, 120) : undefined);
       break;
     default: {
       // Any other tool: its short scalar arguments, by name.
@@ -138,17 +131,18 @@ export function toolDetails(tool: string, input: Record<string, unknown>): strin
 }
 
 /** How big a tool's output was, in a few words: "120 lines", "3.4k chars", "empty". */
-export function outputSize(text: string): string {
-  if (!text.trim()) return "empty";
-  const lines = text.split("\n").length;
-  return lines > 1 ? `${compactNumber(lines)} lines` : `${compactNumber(text.length)} chars`;
+export function outputSize(value: string, locale: Locale = localeFor()): string {
+  if (!value.trim()) return text("feed.output.empty", locale);
+  const lines = value.split("\n").length;
+  return lines > 1
+    ? text("feed.output.lines", locale, { count: formatCompact(lines, locale) })
+    : text("feed.output.chars", locale, { count: formatCompact(value.length, locale) });
 }
-
-/** "950", "12.3k", "1.2M". */
-export const compactNumber = (n: number) => (n < 1000 ? String(n) : n < 1e6 ? `${(n / 1000).toFixed(n < 1e4 ? 1 : 0)}k` : `${(n / 1e6).toFixed(1)}M`);
 
 /** "claude-opus-5-5" → "opus-5-5": the part of an id that tells models apart. */
 export const modelName = (id: string | undefined) => (id ? id.replace(/^claude-/, "").replace(/-\d{8}$/, "") : "?");
 
-export const featureFlagsText = (flags: FeatureFlags) =>
-  FEATURES.filter((feature) => flags[feature.id]).map((feature) => feature.name).join(", ") || "none";
+export const featureFlagsText = (flags: FeatureFlags, locale: Locale = localeFor()) => {
+  const names = features(locale).filter((feature) => flags[feature.id]).map((feature) => feature.name);
+  return names.length ? new Intl.ListFormat(locale === "pt" ? "pt-BR" : "en-US", { style: "short", type: "conjunction" }).format(names) : text("feed.none", locale);
+};

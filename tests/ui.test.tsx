@@ -50,6 +50,20 @@ test("every tab draws on the terminal and the desktop app", async ($, on) => {
   }
 });
 
+test("the dashboard follows the configured Portuguese locale", { options: { locale: "pt" } }, async ($, on) => {
+  mock.clock(on, { now: Date.parse("2026-10-06T12:00:00Z") });
+  mock.store(on, { events: [EVENT] });
+  mock.env(on, {});
+  const ui = await $.ui.mount({ plugin: "jev", surface: "terminal", component: "Pane", requestId: "jev", props: PANE_PROPS });
+  await ui.press({ key: "tab-features" });
+  expect(await ui.find({ type: "Text", text: "Sugestões de ferramentas" })).toBeDefined();
+  await ui.press({ key: "tab-setup" });
+  expect(await ui.find({ type: "Text", text: "Configuração do provedor" })).toBeDefined();
+  await ui.press({ key: "tab-flow" });
+  expect(await ui.find({ type: "Text", text: /VERIFICAÇÃO ANTES DO ENVIO/ })).toBeDefined();
+  await ui.unmount();
+});
+
 test("the Dice mascot is drawn and blitted only while the live tab shows", async ($, on) => {
   const clock = mock.clock(on, { now: Date.parse("2026-10-06T12:00:00Z") });
   mock.store(on);

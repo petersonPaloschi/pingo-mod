@@ -190,7 +190,7 @@ describe("commands", () => {
   test("/jev status reports routing and the credential source without showing the key", { options: { api_key: "test-key" } }, async ($, on) => {
     world(on);
     const off = await $.command.run({ command: "jev", args: "routing off", origin: COMPOSER, presentation: PRESENTATION });
-    expect(off.text).toBe("Jev routing is off: baseline mode, tokens still metered.");
+    expect(off.text).toBe("Jev routing turned off; running in baseline mode.");
     const status = await $.command.run({ command: "jev", args: "status", origin: COMPOSER, presentation: PRESENTATION });
     expect(status.text).toContain("Routing: off (baseline)");
     expect(status.text).toContain("Key source: plugin settings");

@@ -420,7 +420,7 @@ describe("subagents, each with its own live", () => {
     // Running: it cannot be removed yet.
     expect(await pane.find({ type: "Button", key: "agent-remove-1" } as never)).toBeUndefined();
     expect(await pane.find({ type: "Text", text: "  ● running" })).toBeDefined();
-    expect(await pane.find({ type: "Text", text: /1 tool · 1 request/ })).toBeDefined();
+    expect(await pane.find({ type: "Text", text: /1 tool call · 1 request/ })).toBeDefined();
     await pane.unmount();
 
     const own = await $.ui.mount({ plugin: "jev", surface: "terminal", component: "Pane", requestId: "jev-agent-1", props: PANE_PROPS });
@@ -500,7 +500,7 @@ describe("subagents, each with its own live", () => {
     expect(await pane.find({ type: "Text", text: "  Explore #2" })).toBeUndefined();
     expect(await pane.find({ type: "Text", text: "  Explore #3" })).toBeDefined();
     const none = await $.command.run({ command: "jev", args: "agents clear", ...ASK });
-    expect(none.text).toBe("No finished subagent to remove.");
+    expect(none.text).toBe("No finished subagents to remove.");
     await pane.unmount();
   });
 });

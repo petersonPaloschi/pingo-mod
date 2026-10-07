@@ -3,7 +3,7 @@
 import { brailleBit, brailleChar, DEPTH, DOT, hex } from "../dots.ts";
 import type { BrailleCell } from "../dots.ts";
 
-export const DICE = { name: "Dice", face: "[•‿•]", color: DOT.you, label: "Dice, a cube of dots: you" } as const;
+export const DICE = { name: "Dice", face: "[•‿•]", color: DOT.you } as const;
 
 type Kind = "edge" | "face";
 /** A projected dot: x and y in cube half-widths (y up), z from back to front. */

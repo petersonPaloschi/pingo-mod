@@ -15,7 +15,7 @@ import type { EngineInterface, Register } from "claude-code";
 import type { AgentRun, FeatureFlags, FeedEntry, FlowState, PaneScroll, FeedKind, FeedSpeaker, FeedTone, JevTab, LiveNow, RouteEvent, SetupDraft } from "../types";
 import { resolveSettings, type ModOptions, type Settings, type StoredSettings } from "./config.ts";
 import { decide, hintText, type Decision } from "./core/decide.ts";
-import { createAskJev, isProvider, PROVIDERS, resolveModel, validateKey, type Transport } from "./core/jev.ts";
+import { createAskJev, isProvider, PROVIDERS, redact, resolveModel, validateKey, type Transport } from "./core/jev.ts";
 import {
   DEFAULT_FEATURES,
   planAgent,
@@ -29,13 +29,14 @@ import {
   type TurnPlan,
 } from "./core/plan.ts";
 import { KEPT_EVENTS, RANGES, reasonKey } from "./events.ts";
-import { compactNumber, featureFlagsText, featureName, FEATURES, modelName, outputSize, short, toolDetails, toolSummary } from "./feed.ts";
+import { featureFlagsText, features as featureList, modelName, outputSize, short, toolDetails, toolSummary } from "./feed.ts";
 import { resultText, toInput, type PendingResult } from "./input.ts";
 import { cellsOf } from "./dots.ts";
 import { diceFrame, diceSize } from "./mascots/dice.ts";
 import { brailleFrame, type Mood } from "./mascots/pingo.ts";
 import { AGENT_MASCOTS, isMascot, mascotFrame, pickMascot, type MascotId } from "./mascots/agents.ts";
 import { moodOf, pingoSize, renderAgentPane, renderBand, renderPane, type Actions, type View } from "./ui.tsx";
+import { formatCompact, formatDecimal, formatDuration, formatNumber, formatPercent, reasonTitle, text, type Locale, type LocaleKey } from "./i18n.ts";
 
 const PANE = "jev";
 const events = atom({ plugin: "jev", key: "events" } as const, [] as RouteEvent[]);
@@ -64,9 +65,6 @@ const FEED_SIZE = 1000;
 const KEPT_AGENTS = 40;
 /** Each subagent's own live pane: `jev-agent-<n>`. */
 const AGENT_PANE = "jev-agent-";
-const USAGE =
-  "Usage: /jev [dashboard|live|agents [clear]|agent [n|type|mascot] [remove]|flow|features|reasons|baseline|logs|setup [provider]|status|routing on|off|feature <id> on|off|clear]";
-
 // Module state: lost on a reload, which is fine for each of these.
 let options: ModOptions = {};
 let settings: Settings | undefined;
@@ -99,7 +97,7 @@ let pingo: { mood: Mood; columns: number; rows: number } | undefined;
 const agentArt = new Map<string, { mascot: MascotId; columns: number; rows: number }>();
 const MASCOT_FPS = 10;
 
-function transport($: EngineInterface): Transport {
+function transport($: EngineInterface, locale?: Locale): Transport {
   return {
     post: async (url, headers, body) => {
       const reply = await $.http.fetch(url, { method: "POST", headers, body });
@@ -108,7 +106,7 @@ function transport($: EngineInterface): Transport {
     sleep: (ms) => $.clock.sleep(ms),
     within: (ms, work) =>
       new Promise((resolve, reject) => {
-        const timer = $.clock.after(ms, () => reject(new Error(`timed out after ${ms} ms`)));
+        const timer = $.clock.after(ms, () => reject(new Error(text("provider.timeout", locale, { ms: formatNumber(ms, locale ?? "en") }))));
         work.then(
           (value) => {
             timer.cancel();
@@ -329,7 +327,7 @@ async function planFor($: EngineInterface, userText: string): Promise<TurnPlan> 
   const [messages, roster] = await Promise.all([$.session.messages(), $.tool.list()]);
   lastToolCount = roster.length;
   const input = toInput(await systemText($), messages, roster, config.maxMessageChars, { userText });
-  return asking($, () => planTurn(input, config, createAskJev(config, transport($)), flags, [...agentTypes.values()]));
+  return asking($, () => planTurn(input, config, createAskJev(config, transport($, config.locale)), flags, [...agentTypes.values()]));
 }
 
 /** After a tool batch: only the next tool, when that feature is on and Jev did not stay out. */
@@ -342,7 +340,7 @@ async function routeTool($: EngineInterface, extra: { pending?: PendingResult })
   const [messages, roster] = await Promise.all([$.session.messages(), $.tool.list()]);
   lastToolCount = roster.length;
   const input = toInput(await systemText($), messages, roster, config.maxMessageChars, extra);
-  return asking($, () => decide(input, config, createAskJev(config, transport($))));
+  return asking($, () => decide(input, config, createAskJev(config, transport($, config.locale))));
 }
 
 async function record($: EngineInterface, event: Omit<RouteEvent, "seq">): Promise<void> {
@@ -366,15 +364,18 @@ async function restoreStoredState($: EngineInterface): Promise<void> {
 // --- Settings, features, setup ---
 
 async function setRouting($: EngineInterface, enabled: boolean): Promise<void> {
+  const locale = (await getSettings($)).locale;
   await $.store.set(STORE_ROUTING, enabled);
   await update($, routing, () => enabled);
-  await log($, "you", "feature", enabled ? "good" : "warn", enabled ? "Jev routing enabled" : "Jev routing disabled (baseline)");
+  await log($, "you", "feature", enabled ? "good" : "warn", text(enabled ? "feed.routing.enabled" : "feed.routing.disabled", locale));
 }
 
 async function setFeature($: EngineInterface, id: FeatureId, enabled: boolean): Promise<void> {
+  const locale = (await getSettings($)).locale;
   const flags = await update($, features, (current) => ({ ...current, [id]: enabled }));
   await $.store.set(STORE_FEATURES, flags);
-  await log($, "you", "feature", enabled ? "good" : "muted", `${featureName(id)}: ${enabled ? "enabled" : "disabled"}`);
+  const name = featureList(locale).find((feature) => feature.id === id)?.name ?? id;
+  await log($, "you", "feature", enabled ? "good" : "muted", text("feed.feature.state", locale, { name, state: text(enabled ? "feed.feature.enabled" : "feed.feature.disabled", locale) }));
 }
 
 async function clearHistory($: EngineInterface): Promise<void> {
@@ -392,13 +393,15 @@ async function openPane($: EngineInterface, which: JevTab): Promise<void> {
 async function statusText($: EngineInterface): Promise<string> {
   const config = await getSettings($);
   const list = await read($, events);
+  const locale = config.locale;
   return [
-    `Routing: ${(await read($, routing)) ? "on" : "off (baseline)"}`,
-    `Provider: ${PROVIDERS[config.provider].label} (${config.url})`,
-    `Model: ${config.jevModel} · minimum confidence ${config.minConfidence} · timeout ${config.timeoutMs} ms`,
-    `Key source: ${config.keySource}`,
-    `Features: ${featureFlagsText(await read($, features))}`,
-    `Requests logged: ${list.length} (the last ${KEPT_EVENTS}, shared by every session)`,
+    text("ui.status.heading", locale),
+    text("ui.status.routingLine", locale, { state: text((await read($, routing)) ? "ui.status.on" : "ui.status.offBaseline", locale) }),
+    text("ui.status.providerLine", locale, { provider: PROVIDERS[config.provider].label, url: config.url }),
+    text("ui.status.modelLine", locale, { model: config.jevModel, confidence: formatNumber(config.minConfidence, locale, 2), timeout: formatNumber(config.timeoutMs, locale) }),
+    text("ui.status.keySourceLine", locale, { source: text(`source.${config.keySource}` as LocaleKey, locale) }),
+    text("ui.status.featuresLine", locale, { features: featureFlagsText(await read($, features), locale) }),
+    text("ui.status.requestsLine", locale, { count: formatNumber(list.length, locale), kept: formatNumber(KEPT_EVENTS, locale) }),
   ].join("\n");
 }
 
@@ -434,14 +437,14 @@ async function keyRow($: EngineInterface): Promise<string | undefined> {
 
 /** Writes the api_key option (secure storage); `""` removes it. Says why when Claude Code refused. */
 async function saveKey($: EngineInterface, key: string): Promise<string | undefined> {
-  const safe = (message: string) => (key ? message.replaceAll(key, "[redacted]") : message);
+  const config = await getSettings($);
   const row = await keyRow($);
-  if (!row) return "this Claude Code has no api_key option for the plugin";
+  if (!row) return text("ui.setup.noSecureOption", config.locale, { env: PROVIDERS[config.provider].keyEnv });
   try {
     const result = await $.config.set({ key: row, value: key });
-    return result.deny ? safe(result.deny) : undefined;
+    return result.deny ? redact(result.deny, key) : undefined;
   } catch (error) {
-    return safe(error instanceof Error ? error.message : String(error));
+    return redact(error instanceof Error ? error.message : String(error), key);
   }
 }
 
@@ -457,10 +460,10 @@ async function forgetKey($: EngineInterface): Promise<void> {
     typed: "",
     isOk: !refused,
     message: refused
-      ? `The saved key could not be removed: ${refused}. Use /plugin configure jev@inline.`
+      ? text("ui.setup.removeFailed", config.locale, { reason: refused })
       : config.apiKey
-        ? `Saved key removed. The key from the ${config.keySource} is in use now.`
-        : "Saved key removed. Paste a new one to route again.",
+        ? text("ui.setup.savedKeyRemoved", config.locale, { source: text(`source.${config.keySource}`, config.locale) })
+        : text("ui.setup.removedNoKey", config.locale),
   }));
 }
 
@@ -472,7 +475,7 @@ async function checkSetup($: EngineInterface): Promise<void> {
   try {
     await $.store.set(STORE_PROVIDER, id);
   } catch {
-    await update($, setup, (d) => ({ ...d, message: "The provider selection could not be saved.", isOk: false }));
+    await update($, setup, (d) => ({ ...d, message: text("ui.setup.providerSaveFailed", current.locale), isOk: false }));
     return;
   }
   settings = undefined;
@@ -481,24 +484,24 @@ async function checkSetup($: EngineInterface): Promise<void> {
     await update($, setup, (d) => ({
       ...d,
       provider: id,
-      message: `No key is configured. Set the sensitive api_key option or ${PROVIDERS[id].keyEnv}, then test the connection.`,
+      message: text("ui.setup.envHelp", config.locale, { env: PROVIDERS[id].keyEnv }),
       isOk: false,
     }));
     return;
   }
-  await update($, setup, (d) => ({ ...d, provider: id, message: `Checking the connection to ${PROVIDERS[id].label}…`, isOk: true }));
-  const check = await validateKey(id, config.apiKey, transport($), resolveModel(id, options.model?.trim()));
+  await update($, setup, (d) => ({ ...d, provider: id, message: text("ui.setup.checking", config.locale, { provider: PROVIDERS[id].label }), isOk: true }));
+  const check = await validateKey(id, config.apiKey, transport($, config.locale), resolveModel(id, options.model?.trim()), config.locale);
   if (!check.ok) {
     const message = check.refused
-      ? `${PROVIDERS[id].label} refused the configured key. ${check.message}`
-      : `Could not check the connection: ${check.message}`;
+      ? text("ui.setup.refused", config.locale, { provider: PROVIDERS[id].label, message: check.message })
+      : text("ui.setup.couldNotCheck", config.locale, { message: check.message });
     await update($, setup, (d) => ({ ...d, message, isOk: false }));
     return;
   }
   await update($, setup, (d) => ({
     ...d,
     isOk: true,
-    message: `Connection successful: ${PROVIDERS[id].label} responded in ${check.ms} ms. The key remains in secure plugin configuration or your environment.`,
+    message: text("ui.setup.success", config.locale, { provider: PROVIDERS[id].label, ms: formatNumber(check.ms, config.locale) }),
   }));
 }
 
@@ -506,19 +509,22 @@ async function checkSetup($: EngineInterface): Promise<void> {
 async function submitKey($: EngineInterface, provider: string): Promise<void> {
   const key = draftKey.trim();
   const current = await getSettings($);
+  const locale = current.locale;
   const id = isProvider(provider) ? provider : current.provider;
   if (!key) {
-    await update($, setup, (d) => ({ ...d, message: "Paste a key first.", isOk: false }));
+    await update($, setup, (d) => ({ ...d, message: text("ui.setup.enterKey", locale), isOk: false }));
     return;
   }
-  await update($, setup, (d) => ({ ...d, provider: id, busy: true, isOk: true, message: `Testing the key with ${PROVIDERS[id].label}…` }));
-  const check = await validateKey(id, key, transport($), resolveModel(id, options.model?.trim()));
+  await update($, setup, (d) => ({ ...d, provider: id, busy: true, isOk: true, message: text("ui.setup.testing", locale, { provider: PROVIDERS[id].label }) }));
+  const check = await validateKey(id, key, transport($, locale), resolveModel(id, options.model?.trim()), locale);
   if (!check.ok) {
     await update($, setup, (d) => ({
       ...d,
       busy: false,
       isOk: false,
-      message: check.refused ? `${PROVIDERS[id].label} refused this key: ${check.message}` : `Could not reach ${PROVIDERS[id].label}: ${check.message}`,
+      message: check.refused
+        ? text("ui.setup.refusedKey", locale, { provider: PROVIDERS[id].label, message: check.message })
+        : text("ui.setup.couldNotReach", locale, { provider: PROVIDERS[id].label, message: check.message }),
     }));
     return;
   }
@@ -533,8 +539,8 @@ async function submitKey($: EngineInterface, provider: string): Promise<void> {
     typed: "",
     isOk: true,
     message: refused
-      ? `Key works (${check.ms} ms) and is in use for this session, but it was not saved: ${refused}. Save it for good with /plugin configure jev@inline.`
-      : `Key works (${check.ms} ms) and is saved in Claude Code's secure plugin storage.`,
+      ? text("ui.setup.keyWorksSaveRefused", locale, { ms: formatNumber(check.ms, locale), reason: refused })
+      : text("ui.setup.savedKeySuccess", locale, { ms: formatNumber(check.ms, locale) }),
   }));
 }
 
@@ -575,6 +581,7 @@ async function scrollKeyOf($: EngineInterface, requestId: string): Promise<strin
 async function view($: EngineInterface, width: number, rows: number, surface: string, scrollKey = ""): Promise<View> {
   const config = await getSettings($);
   return {
+    locale: config.locale,
     scroll: scrollKey ? ((await read($, scroll))[scrollKey] ?? 0) : 0,
     // The terminal draws the header fixed and the body scrolled by the mod; other surfaces flow.
     fixed: Boolean(scrollKey) && surface === "terminal",
@@ -593,7 +600,7 @@ async function view($: EngineInterface, width: number, rows: number, surface: st
     width,
     rows,
     surface,
-    meta: `${PROVIDERS[config.provider].label} · ${config.jevModel} · minimum confidence ${config.minConfidence} · key source: ${config.keySource}`,
+    meta: text("ui.meta", config.locale, { provider: PROVIDERS[config.provider].label, model: config.jevModel, confidence: formatNumber(config.minConfidence, config.locale, 2), source: text(`source.${config.keySource}`, config.locale) }),
     key: { source: config.keySource, tail: config.apiKey ? config.apiKey.slice(-4) : "", provider: config.provider },
   };
 }
@@ -613,17 +620,17 @@ export const register: Register = (on, given) => {
 
   on("session.start", async ($, e, next) => {
     sessionId = (await $.session.id()).slice(0, 8);
-    await getSettings($);
+    const config = await getSettings($);
     await restoreStoredState($);
     await setLive($, { model: await $.session.model() });
     // "Idle" and the 5-minute windows move with the clock, not only with events.
-    $.clock.every(5000, () => $.ui.invalidate("ui.render"));
+    $.clock.every(1000, () => $.ui.invalidate("ui.render"));
     // Visible mascot animations stop when their pane is closed.
     $.clock.every(1000 / MASCOT_FPS, () => void animateMascots($));
     await $.command.register({
       name: "jev",
-      description: "Jev routing: dashboard, live log, features, routing on|off, status, setup",
-      argumentHint: "[dashboard|live|agents [clear]|agent [n|type|mascot] [remove]|flow|features|reasons|baseline|logs|setup|status|routing on|off|feature <id> on|off|clear]",
+      description: text("ui.command.description", config.locale),
+      argumentHint: text("ui.command.argumentHint", config.locale),
       immediate: true,
     });
     return next(e);
@@ -644,6 +651,7 @@ export const register: Register = (on, given) => {
 
   // The turn's routing point: decide on the conversation plus the prompt being submitted.
   on("prompt.submit", async ($, e, next) => {
+    const config = await getSettings($);
     const plan = await planFor($, e.text);
     pending = plan.decision;
     const reason = plan.decision.mode === "passthrough" ? plan.decision.reason : "";
@@ -658,25 +666,26 @@ export const register: Register = (on, given) => {
     }
     const failed = reason.startsWith("jev_error") || reason === "jev_unexpected_answer";
     const asked = plan.jev !== undefined || failed;
-    const summary = asked ? planSummary(plan) : reason;
+    const summary = asked ? planSummary(plan, config.locale) : reasonTitle(reason, config.locale);
     if (turnPlan) turnPlan.summary = summary;
     await setLive($, { decision: summary, jevUsed: asked });
     if (asked) {
-      await log($, "jev", "jev", failed ? "bad" : "good", `consulted: ${summary}`, undefined, {
-        ...(plan.jev ? { meta: `${plan.jev.latencyMs} ms`, detail: `confidence ${plan.jev.confidence.toFixed(2)} · ${compactNumber(plan.jev.inputTokens)} tokens in · pick ${plan.jev.choice}` } : {}),
+      await log($, "jev", "jev", failed ? "bad" : "good", text("feed.request.consulted", config.locale, { summary }), undefined, {
+        ...(plan.jev ? { meta: `${formatNumber(plan.jev.latencyMs, config.locale)} ms`, detail: text("feed.request.confidence", config.locale, { value: formatDecimal(plan.jev.confidence, config.locale), tokens: formatCompact(plan.jev.inputTokens, config.locale), choice: plan.jev.choice }) } : {}),
       });
     } else {
-      await log($, "jev", "jev", "muted", `not consulted: ${summary}`, undefined, { minor: true });
+      await log($, "jev", "jev", "muted", text("feed.request.notConsulted", config.locale, { summary }), undefined, { minor: true });
     }
-    const hint = planHint(plan, hintText);
+    const hint = planHint(plan, hintText, config.locale);
     if (!hint) return next(e);
     return next({ ...e, context: [...(e.context ?? []), `<system-reminder>${hint}</system-reminder>`] });
   }).catch((_$, e, next) => next(e));
 
   on("turn.start", async ($, e, next) => {
+    const locale = (await getSettings($)).locale;
     if (e.text.trim()) await log($, "you", "turn", "info", short(e.text, 600));
-    else await log($, "you", "turn", "muted", "continues the turn", undefined, { minor: true });
-    await setLive($, { activity: "waiting for the model" });
+    else await log($, "you", "turn", "muted", text("feed.request.continues", locale), undefined, { minor: true });
+    await setLive($, { activity: text("feed.activity.waiting", locale) });
     // A turn you start once the wave has come back is your go-ahead for the fixes.
     const ended = await waveEnded($);
     await update($, flow, (f) => ({ ...f, turn: f.turn + 1, working: true, prompt: e.text, confirmed: f.confirmed || ended }));
@@ -684,14 +693,15 @@ export const register: Register = (on, given) => {
   });
 
   on("turn.complete", async ($, e, next) => {
-    const seconds = `${(e.durationMs / 1000).toFixed(1)}s`;
-    const tokens = e.usage ? ` · in ${compactNumber(e.usage.input_tokens + (e.usage.cache_read_input_tokens ?? 0) + (e.usage.cache_creation_input_tokens ?? 0))} · out ${compactNumber(e.usage.output_tokens)}` : "";
+    const locale = (await getSettings($)).locale;
+    const seconds = formatDuration(e.durationMs, locale);
+    const tokens = e.usage ? text("feed.usage.tokens", locale, { input: formatCompact(e.usage.input_tokens + (e.usage.cache_read_input_tokens ?? 0) + (e.usage.cache_creation_input_tokens ?? 0), locale), output: formatCompact(e.usage.output_tokens, locale), cache: "" }) : "";
     if (e.agentId) {
       const id = e.agentId;
       const state = e.isAborted ? "aborted" : e.reason === "error" ? "error" : "done";
-      await log($, actor(id), "agent", state === "done" ? "good" : "bad", `■ ${state}${e.answer?.trim() ? `: “${short(e.answer, 160)}”` : ""}`, undefined, {
+      await log($, actor(id), "agent", state === "done" ? "good" : "bad", text("feed.turn.agentState", locale, { state: text(`feed.turn.state.${state}`, locale), answer: e.answer?.trim() ? text("feed.turn.answer", locale, { text: short(e.answer, 160) }) : "" }), undefined, {
         meta: seconds,
-        detail: `${tokens.slice(3) || "no usage reported"}${e.reason && e.reason !== "answer" ? ` · ended by ${e.reason}` : ""}`,
+        detail: `${tokens || text("feed.turn.noUsage", locale)}${e.reason && e.reason !== "answer" ? text("feed.turn.endedBy", locale, { reason: ["error", "refusal", "aborted"].includes(e.reason) ? text(`feed.turn.reason.${e.reason}` as LocaleKey, locale) : e.reason }) : ""}`,
       });
       const endedAt = await $.clock.now();
       await updateRun($, id, (one) => {
@@ -704,12 +714,12 @@ export const register: Register = (on, given) => {
         };
       });
       agentRuns.delete(id);
-      await setLive($, { activity: agentRuns.size ? `${agentRuns.size} subagent(s) running` : "waiting for the model" });
+      await setLive($, { activity: agentRuns.size ? text("feed.activity.agentCount", locale, { count: formatNumber(agentRuns.size, locale), unit: text(agentRuns.size === 1 ? "unit.agent" : "unit.agents", locale) }) : text("feed.activity.waiting", locale) });
       return next(e);
     }
     const state = e.isAborted ? "aborted" : e.reason === "error" ? "failed" : e.reason === "refusal" ? "refused" : "completed";
     const troubled = e.isAborted || e.reason !== "answer";
-    await log($, "mod", "turn", troubled ? "warn" : "muted", `■ turn ${state}`, undefined, {
+    await log($, "mod", "turn", troubled ? "warn" : "muted", text("feed.turn.ended", locale, { state: text(`feed.turn.state.${state}`, locale) }), undefined, {
       meta: seconds,
       ...(tokens ? { detail: tokens.slice(3) } : {}),
       minor: !troubled,
@@ -722,22 +732,23 @@ export const register: Register = (on, given) => {
 
   // Tools: log each call; after the batch's last result, route the next tool.
   on("tool.call", async ($, e, next) => {
+    const locale = (await getSettings($)).locale;
     const who = actor(e.agentId);
     const summary = toolSummary(e.tool, e as unknown as Record<string, unknown>);
     toolStarts.set(e.tool_use_id, await $.clock.now());
     // One line per call: written as it starts, rewritten with its outcome when it ends.
     const input = e as unknown as Record<string, unknown>;
-    const toolDetail = toolDetails(e.tool, input);
-    const line = await log($, who, "tool", "info", `▸ ${summary}`, e.agentId, { meta: "running", ...(toolDetail ? { detail: toolDetail } : {}) });
-    if (!e.agentId) await setLive($, { activity: `running ${short(summary, 40)}` });
-    else await updateRun($, e.agentId, (run) => ({ ...run, tools: run.tools + 1, activity: `▸ ${short(summary, 60)}` }));
+    const toolDetail = toolDetails(e.tool, input, locale);
+    const line = await log($, who, "tool", "info", `▸ ${summary}`, e.agentId, { meta: text("feed.tool.running", locale), ...(toolDetail ? { detail: toolDetail } : {}) });
+    if (!e.agentId) await setLive($, { activity: text("feed.activity.running", locale, { activity: short(summary, 40) }) });
+    else await updateRun($, e.agentId, (run) => ({ ...run, tools: run.tools + 1, activity: text("feed.activity.agentTool", locale, { activity: short(summary, 60) }) }));
     const result = await next(e);
-    const took = `${(((await $.clock.now()) - (toolStarts.get(e.tool_use_id) ?? 0)) / 1000).toFixed(1)}s`;
+    const took = formatDuration((await $.clock.now()) - (toolStarts.get(e.tool_use_id) ?? 0), locale);
     toolStarts.delete(e.tool_use_id);
     if (result.deny !== undefined) {
-      await patch($, line, { text: `⊘ ${summary}`, tone: "warn", meta: "denied", detail: [toolDetail, `denied: ${short(result.deny, 160)}`].filter(Boolean).join("\n") });
+      await patch($, line, { text: `⊘ ${summary}`, tone: "warn", meta: text("feed.tool.deniedLabel", locale), detail: [toolDetail, text("feed.tool.denied", locale, { message: short(result.deny, 160) })].filter(Boolean).join("\n") });
     } else {
-      const outcome = result.isError ? `error: ${short(String(result.text ?? ""), 160)}` : outputSize(resultText(result.result));
+      const outcome = result.isError ? text("feed.tool.error", locale, { message: short(String(result.text ?? ""), 160) }) : outputSize(resultText(result.result), locale);
       await patch($, line, {
         text: `${result.isError ? "✗" : "✓"} ${summary}`,
         tone: result.isError ? "bad" : "good",
@@ -745,10 +756,10 @@ export const register: Register = (on, given) => {
         detail: [toolDetail, outcome].filter(Boolean).join(" → "),
       });
     }
-    if (e.agentId) await updateRun($, e.agentId, (run) => ({ ...run, activity: "waiting for the model" }));
+    if (e.agentId) await updateRun($, e.agentId, (run) => ({ ...run, activity: text("feed.activity.waiting", locale) }));
     if (!e.agentId && EDIT_TOOLS.has(e.tool) && result.deny === undefined && !result.isError) await countEdit($, e as unknown as Record<string, unknown>);
     if (e.agentId || result.deny !== undefined) return result;
-    await setLive($, { activity: "waiting for the model" });
+    await setLive($, { activity: text("feed.activity.waiting", locale) });
     const messages = await $.session.messages();
     const batch = [...messages].reverse().find((message) => message.toolUses?.some((use) => use.tool_use_id === e.tool_use_id));
     const stillRunning = batch?.toolUses.some((use) => use.tool_use_id !== e.tool_use_id && use.text === undefined);
@@ -763,18 +774,26 @@ export const register: Register = (on, given) => {
     if (!decision) return result;
     pending = decision;
     if (decision.jev) {
-      const what = decision.mode === "hint" ? `next tool ${decision.tool} (${decision.confidence.toFixed(2)})` : `no hint (${decision.reason})`;
-      await log($, "jev", "jev", "good", `consulted: ${what}`, undefined, {
-        meta: `${decision.jev.latencyMs} ms`,
-        detail: `after ${e.tool} · confidence ${decision.jev.confidence.toFixed(2)} · pick ${decision.jev.choice}${decision.jev.shortlist ? ` · shortlist of ${decision.jev.shortlist.length}` : ""}`,
+      const what = decision.mode === "hint"
+        ? text("feed.tool.next", locale, { tool: decision.tool, confidence: formatDecimal(decision.confidence, locale) })
+        : text("feed.tool.noHint", locale, { reason: reasonTitle(decision.reason, locale) });
+      await log($, "jev", "jev", "good", text("feed.request.consulted", locale, { summary: what }), undefined, {
+        meta: `${formatNumber(decision.jev.latencyMs, locale)} ms`,
+        detail: text("feed.tool.after", locale, {
+          tool: e.tool,
+          confidence: formatDecimal(decision.jev.confidence, locale),
+          choice: decision.jev.choice,
+          shortlist: decision.jev.shortlist ? text("feed.tool.shortlist", locale, { count: formatNumber(decision.jev.shortlist.length, locale) }) : "",
+        }),
       });
       await setLive($, { decision: what, jevUsed: true });
     } else if (decision.mode === "passthrough" && decision.reason.startsWith("jev_error")) {
-      await log($, "jev", "jev", "bad", `failed: ${short(decision.reason.slice(11), 80)}`);
-      await setLive($, { decision: "Jev failed", jevUsed: true });
+      const message = short(decision.reason.slice("jev_error: ".length), 80);
+      await log($, "jev", "jev", "bad", text("feed.request.failed", locale, { message }));
+      await setLive($, { decision: text("ui.band.jevFailed", locale), jevUsed: true });
     }
     if (decision.mode !== "hint") return result;
-    return { ...result, context: [...(result.context ?? []), hintText(decision.tool)] };
+    return { ...result, context: [...(result.context ?? []), hintText(decision.tool, locale)] };
   }).catch((_$, e, next) => next(e));
 
   // Subagents: Jev picks the model and effort, unless Claude asked for a model itself.
@@ -785,11 +804,11 @@ export const register: Register = (on, given) => {
     const routingOn = await read($, routing);
     const plan =
       flags.agents && routingOn && config.apiKey && !e.fork && !e.model
-        ? await asking($, () => planAgent(e, config, createAskJev(config, transport($)), flags))
+        ? await asking($, () => planAgent(e, config, createAskJev(config, transport($, config.locale)), flags))
         : {};
     const result = await next(plan.model ? { ...e, model: plan.model.value } : e);
     if (result.deny !== undefined) {
-      await log($, "claude", "agent", "warn", `◆ Subagent ${e.subagentType} was not started: ${short(result.deny, 80)}`);
+      await log($, "claude", "agent", "warn", text("feed.subagent.denied", config.locale, { type: e.subagentType, message: short(result.deny, 80) }));
       return result;
     }
     const id = result.agentId ?? e.tool_use_id;
@@ -798,10 +817,12 @@ export const register: Register = (on, given) => {
     const ignoredEffort = plan.effortIgnored ?? (haikuTarget ? plan.effort : undefined);
     agentRuns.set(id, { type: e.subagentType, model: result.model, ...(appliedEffort ? { effort: appliedEffort.value } : {}), description: e.description });
     const chosen = [
-      plan.model ? `model ${plan.model.value} (Jev ${plan.model.confidence.toFixed(2)})` : `model ${modelName(result.model)}${e.model ? " (requested by Claude)" : ""}`,
-      appliedEffort ? `effort ${appliedEffort.value} (Jev)` : undefined,
+      plan.model
+        ? text("feed.subagent.jevModel", config.locale, { model: plan.model.value, confidence: formatDecimal(plan.model.confidence, config.locale) })
+        : text("feed.subagent.model", config.locale, { model: modelName(result.model) }) + (e.model ? text("feed.subagent.requested", config.locale) : ""),
+      appliedEffort ? text("feed.subagent.jevEffort", config.locale, { effort: appliedEffort.value }) : undefined,
     ].filter(Boolean);
-    const jevChose = [plan.model ? `model ${plan.model.value}` : "", appliedEffort ? `effort ${appliedEffort.value}` : ""].filter(Boolean).join(" · ");
+    const jevChose = [plan.model ? text("feed.subagent.model", config.locale, { model: plan.model.value }) : "", appliedEffort ? text("feed.subagent.effort", config.locale, { effort: appliedEffort.value }) : ""].filter(Boolean).join(text("feed.usage.separator", config.locale));
     const run = await addRun($, {
       id,
       type: e.subagentType,
@@ -816,11 +837,11 @@ export const register: Register = (on, given) => {
       requests: 0,
       tokensIn: 0,
       tokensOut: 0,
-      activity: "starting",
+      activity: text("feed.activity.starting", config.locale),
     });
-    if (plan.error) await log($, "jev", "jev", "bad", `failed to choose a model for ${e.subagentType}: ${short(plan.error, 80)}`, id);
-    else if (plan.latencyMs !== undefined) await log($, "jev", "jev", "good", `chose for ${e.subagentType}: ${jevChose || "nothing confident"}`, id, { meta: `${plan.latencyMs} ms` });
-    if (ignoredEffort) await log($, "mod", "feature", "warn", `Ignored ${ignoredEffort.value} effort: ${modelName(result.model)} does not support it.`, id);
+    if (plan.error) await log($, "jev", "jev", "bad", text("feed.subagent.failedModel", config.locale, { type: e.subagentType, message: short(plan.error, 80) }), id);
+    else if (plan.latencyMs !== undefined) await log($, "jev", "jev", "good", text("feed.subagent.chose", config.locale, { type: e.subagentType, choice: jevChose || text("feed.subagent.nothingConfident", config.locale) }), id, { meta: `${formatNumber(plan.latencyMs, config.locale)} ms` });
+    if (ignoredEffort) await log($, "mod", "feature", "warn", text("feed.subagent.ignoredEffort", config.locale, { effort: ignoredEffort.value, model: modelName(result.model) }), id);
     if (isMascot(run.mascot)) agentRuns.get(id)!.mascot = run.mascot;
     // The first subagent of a turn starts a new wave; the rest of that turn's join it.
     await update($, flow, (f) =>
@@ -828,16 +849,18 @@ export const register: Register = (on, given) => {
         ? { ...f, wave: [...f.wave, run.n] }
         : { ...f, wave: [run.n], waveTurn: f.turn, ...(f.prompt ? { text: short(f.prompt, 200) } : {}), confirmed: false, edits: 0, files: [] },
     );
-    await log($, actor(id), "agent", "info", `◆ started as ${e.subagentType} #${run.n}: “${short(e.description, 80)}”`, undefined, {
+    await log($, actor(id), "agent", "info", text("feed.subagent.started", config.locale, { type: e.subagentType, number: formatNumber(run.n, config.locale), description: short(e.description, 80) }), undefined, {
       meta: `/jev agent ${run.n}`,
-      detail: `${chosen.join(" · ")} · task: ${short(e.prompt, 220)}`,
+      detail: `${chosen.join(text("feed.usage.separator", config.locale))} · ${text("feed.subagent.task", config.locale, { prompt: short(e.prompt, 220) })}`,
     });
-    await setLive($, { activity: `subagent ${e.subagentType} (${modelName(result.model)})` });
+    await setLive($, { activity: text("ui.band.agent", config.locale, { name: `${e.subagentType} (${modelName(result.model)})` }) });
     return result;
   }).catch((_$, e, next) => next(e));
 
   // Each model request: apply Jev's model and effort, then meter it.
   on("turn.step", async function* ($, e, next) {
+    const config = await getSettings($);
+    const locale = config.locale;
     const startedAt = await $.clock.now();
     let decision: Decision;
     let model = e.model;
@@ -849,16 +872,16 @@ export const register: Register = (on, given) => {
       const haikuTarget = model.toLowerCase().includes("haiku");
       if (haikuTarget) {
         const ignoredEffort = run?.effort ?? (typeof e.effort === "string" ? e.effort : undefined);
-        if (ignoredEffort) changes.push(`ignored ${ignoredEffort} effort: ${modelName(model)} does not support it`);
+        if (ignoredEffort) changes.push(text("feed.change.ignoredEffort", locale, { effort: ignoredEffort, model: modelName(model) }));
         effort = undefined;
       } else if (run?.effort) {
         if (typeof e.effort === "string") {
           if (e.effort !== run.effort) {
             effort = run.effort;
-            changes.push(`effort ${e.effort}→${run.effort}`);
+            changes.push(text("feed.change.effortSwitched", locale, { from: e.effort, to: run.effort }));
           }
         } else {
-          changes.push(`effort ${run.effort} not applied: model does not support it`);
+          changes.push(text("feed.change.effortNotApplied", locale, { effort: run.effort }));
         }
       }
     } else {
@@ -866,37 +889,37 @@ export const register: Register = (on, given) => {
       pending = undefined;
       if (turnPlan?.model && !modelBroken && turnPlan.model !== e.model) {
         model = turnPlan.model;
-        changes.push(`model ${modelName(e.model)}→${modelName(model)}`);
+        changes.push(text("feed.change.modelSwitched", locale, { from: modelName(e.model), to: modelName(model) }));
       }
       const haikuTarget = model.toLowerCase().includes("haiku");
       if (haikuTarget) {
         const ignoredEffort = turnPlan?.effortIgnored ?? turnPlan?.effort ?? (typeof e.effort === "string" ? e.effort : undefined);
-        if (ignoredEffort) changes.push(`ignored ${ignoredEffort} effort: ${modelName(model)} does not support it`);
+        if (ignoredEffort) changes.push(text("feed.change.ignoredEffort", locale, { effort: ignoredEffort, model: modelName(model) }));
         effort = undefined;
       } else if (turnPlan?.effort) {
         if (typeof e.effort === "string" || model !== e.model) {
           if (e.effort !== turnPlan.effort) {
             effort = turnPlan.effort;
-            changes.push(`effort ${e.effort ?? "default"}→${turnPlan.effort}`);
+            changes.push(text("feed.change.effortSwitched", locale, { from: e.effort ?? text("feed.change.effortDefault", locale), to: turnPlan.effort }));
           }
         } else {
-          changes.push(`effort ${turnPlan.effort} not applied: model does not support it`);
+          changes.push(text("feed.change.effortNotApplied", locale, { effort: turnPlan.effort }));
         }
       }
     }
     const who = actor(e.agentId);
-    const effortText = effort === undefined ? "" : ` · effort ${effort}`;
-    const loop = typeof who === "string" ? "" : ` of ${who.agent}`;
-    if (changes.length) await log($, "jev", "step", "warn", `changed request ${e.index + 1}${loop}: ${changes.join(", ")}`, e.agentId);
+    const effortText = effort === undefined ? "" : text("feed.request.effort", locale, { effort });
+    const loop = typeof who === "string" ? "" : text("feed.request.loop", locale, { agent: who.agent });
+    if (changes.length) await log($, "jev", "step", "warn", text("feed.change.request", locale, { number: formatNumber(e.index + 1, locale), loop, changes: changes.join(text("feed.change.separator", locale)) }), e.agentId);
     // Bookkeeping: drawn faint, filled in with its tokens and time once the model answers.
-    const requestLine = await log($, "mod", "step", "muted", `→ request ${e.index + 1}${loop} · ${modelName(model)}${effortText}`, e.agentId, { minor: true, meta: "…" });
-    if (e.agentId) await updateRun($, e.agentId, (run) => ({ ...run, model, requests: run.requests + 1, activity: "model responding" }));
+    const requestLine = await log($, "mod", "step", "muted", text("feed.request.line", locale, { number: formatNumber(e.index + 1, locale), loop, model: modelName(model), effort: effortText }), e.agentId, { minor: true, meta: "…" });
+    if (e.agentId) await updateRun($, e.agentId, (run) => ({ ...run, model, requests: run.requests + 1, activity: text("feed.activity.responding", locale) }));
     if (!e.agentId) {
       await setLive($, {
         model,
         effort: effort === undefined ? undefined : String(effort),
         changed: changes.length ? changes.join(", ") : undefined,
-        activity: "model responding",
+        activity: text("feed.activity.responding", locale),
       });
     }
     let sent = e;
@@ -908,7 +931,7 @@ export const register: Register = (on, given) => {
     // A model Jev picked that this account cannot use comes back empty: stop changing models.
     if (model !== e.model && result.stopReason === null && !result.usage) {
       modelBroken = true;
-      await log($, "mod", "error", "bad", `Model ${modelName(model)} did not respond; model switching is disabled for this session.`);
+      await log($, "mod", "error", "bad", text("feed.model.failed", locale, { model: modelName(model) }));
     }
     if (result.answer.trim()) {
       await log($, who, "message", "info", `“${short(result.answer, 600)}”`, e.agentId);
@@ -918,13 +941,13 @@ export const register: Register = (on, given) => {
     const inTokens = usage ? usage.input_tokens + cacheRead + (usage.cache_creation_input_tokens ?? 0) : 0;
     const asked = [...new Set(result.toolUses.map((use) => use.name))];
     await patch($, requestLine, {
-      meta: `${(((await $.clock.now()) - startedAt) / 1000).toFixed(1)}s`,
+      meta: formatDuration((await $.clock.now()) - startedAt, locale),
       detail: [
-        usage ? `in ${compactNumber(inTokens)} · out ${compactNumber(usage.output_tokens)}${inTokens ? ` · cache ${Math.round((100 * cacheRead) / inTokens)}%` : ""}` : "no usage reported",
-        result.toolUses.length ? `asks for ${result.toolUses.length} tool${result.toolUses.length === 1 ? "" : "s"}: ${asked.join(", ")}` : result.stopReason ? `stop: ${result.stopReason}` : "",
+        usage ? text("feed.usage.tokens", locale, { input: formatCompact(inTokens, locale), output: formatCompact(usage.output_tokens, locale), cache: inTokens ? text("feed.usage.cache", locale, { percent: formatPercent(cacheRead, inTokens, locale) }) : "" }) : text("feed.turn.noUsage", locale),
+        result.toolUses.length ? text("feed.usage.tools", locale, { count: formatNumber(result.toolUses.length, locale), unit: text(result.toolUses.length === 1 ? "unit.toolCall" : "unit.toolCalls", locale), tools: asked.join(", ") }) : result.stopReason ? text("feed.usage.stop", locale, { reason: result.stopReason }) : "",
       ]
         .filter(Boolean)
-        .join(" · "),
+        .join(text("feed.usage.separator", locale)),
     });
     if (e.agentId) {
       await updateRun($, e.agentId, (run) => ({
@@ -932,7 +955,7 @@ export const register: Register = (on, given) => {
         tokensIn: run.tokensIn + (usage ? usage.input_tokens + (usage.cache_read_input_tokens ?? 0) + (usage.cache_creation_input_tokens ?? 0) : 0),
         tokensOut: run.tokensOut + (usage?.output_tokens ?? 0),
         ...(result.answer.trim() ? { text: short(result.answer, 2000) } : {}),
-        ...(run.state === "running" && result.toolUses.length === 0 ? { activity: "writing a response" } : {}),
+        ...(run.state === "running" && result.toolUses.length === 0 ? { activity: text("feed.activity.writing", locale) } : {}),
       }));
     }
     await record($, {
@@ -973,6 +996,7 @@ export const register: Register = (on, given) => {
   });
 
   on("command.run", { command: "jev" }, async ($, e) => {
+    const locale = (await getSettings($)).locale;
     const [verb = "", arg = "", value = ""] = e.args.trim().toLowerCase().split(/\s+/);
     const tabFor: Record<string, JevTab> = {
       "": "overview",
@@ -990,7 +1014,7 @@ export const register: Register = (on, given) => {
     };
     if (verb === "agents" && arg === "clear") {
       const removed = await removeRuns($, () => true);
-      return { text: removed.length ? `Removed ${removed.length} finished subagent(s) from the Agents tab.` : "No finished subagent to remove." };
+      return { text: removed.length === 1 ? text("ui.command.agentRemovedFromTab", locale) : removed.length > 1 ? text("ui.command.agentsRemoved", locale, { count: formatNumber(removed.length, locale) }) : text("ui.command.noFinished", locale) };
     }
     const which = tabFor[verb];
     if (which === "setup") {
@@ -1005,26 +1029,26 @@ export const register: Register = (on, given) => {
     }
     if (verb === "routing" && (arg === "on" || arg === "off")) {
       await setRouting($, arg === "on");
-      return { text: arg === "on" ? "Jev routing is on." : "Jev routing is off: baseline mode, tokens still metered." };
+      return { text: text(arg === "on" ? "ui.command.routingOn" : "ui.command.routingOff", locale) };
     }
     if (verb === "feature") {
-      const feature = FEATURES.find((one) => one.id === arg);
+      const feature = featureList(locale).find((one) => one.id === arg);
       if (!feature || (value !== "on" && value !== "off")) {
-        return { text: `Usage: /jev feature <${FEATURES.map((one) => one.id).join("|")}> on|off` };
+        return { text: text("ui.command.featureUsage", locale, { features: featureList(locale).map((one) => one.id).join("|") }) };
       }
       await setFeature($, feature.id, value === "on");
-      return { text: `${feature.name}: ${value === "on" ? "enabled" : "disabled"}.` };
+      return { text: text(value === "on" ? "ui.command.featureEnabled" : "ui.command.featureDisabled", locale, { name: feature.name }) };
     }
     if (verb === "agent") {
       const list = await read($, agents);
       const run = findRun(list, arg);
       if (!run) {
-        return { text: list.length ? `No subagent "${arg}". /jev agents lists them.` : "No subagent has run in this session yet." };
+        return { text: list.length ? text("ui.command.noSubagent", locale, { name: arg }) : text("ui.command.noAgentsRun", locale) };
       }
       if (value === "remove") {
-        if (run.state === "running") return { text: `${agentTitle(run)} is still running; remove it once it ends.` };
+        if (run.state === "running") return { text: text("ui.command.removeRunning", locale, { agent: agentTitle(run) }) };
         await removeRuns($, (one) => one.id === run.id);
-        return { text: `Removed ${agentTitle(run)} from the Agents tab.` };
+        return { text: text("ui.command.removedFromTab", locale, { agent: agentTitle(run) }) };
       }
       await openAgentPane($, run);
       return {};
@@ -1032,9 +1056,9 @@ export const register: Register = (on, given) => {
     if (verb === "status") return { text: await statusText($) };
     if (verb === "clear") {
       await clearHistory($);
-      return { text: "Jev request history cleared." };
+      return { text: text("ui.command.clearHistory", locale) };
     }
-    return { text: USAGE };
+    return { text: text("ui.command.usage", locale) };
   });
 
   on("ui.render", { component: "Pane", requestId: PANE }, async ($, e) => {
@@ -1062,7 +1086,9 @@ export const register: Register = (on, given) => {
     const run = shown.agents.find((one) => one.n === n);
     if (e.surface !== "terminal" && e.surface !== "desktop") {
       const { Text } = $.ui.resolve(e);
-      return <Text>{run ? `${agentTitle(run)}: ${run.state}${run.activity ? ` · ${run.activity}` : ""}` : `Subagent #${n} is no longer kept.`}</Text>;
+      return <Text>{run
+        ? text("ui.features.status", shown.locale, { name: agentTitle(run), state: text(`ui.agents.state.${run.state}` as LocaleKey, shown.locale), activity: run.activity ?? "" })
+        : text("ui.features.agentNotKept", shown.locale, { number: formatNumber(n, shown.locale) })}</Text>;
     }
     if (e.surface === "terminal" && run && isMascot(run.mascot)) agentArt.set(e.requestId, { mascot: run.mascot, ...diceSize(width) });
     else agentArt.delete(e.requestId);

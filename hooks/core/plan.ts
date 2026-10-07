@@ -5,6 +5,7 @@
 import { decide, type AskJev, type DecideConfig, type Decision, type JevTrace } from "./decide.ts";
 import { buildState, truncate } from "./state.ts";
 import type { Answer, Questions, RouterInput } from "./types.ts";
+import { formatDecimal, localeFor, reasonTitle, text, type Locale, type LocaleKey } from "../i18n.ts";
 
 export type FeatureId = "tools" | "participation" | "model" | "effort" | "delegation" | "agents";
 export type Features = Record<FeatureId, boolean>;
@@ -37,18 +38,21 @@ export const EFFORT_KEY = "effort";
 export const DELEGATE_KEY = "delegate";
 export const NO_DELEGATION = "no_delegation";
 
-const MODEL_CRITERIA: Record<Tier, string> = {
-  haiku: "A quick, simple step: a lookup, a small mechanical edit, a short factual answer.",
-  sonnet: "Ordinary coding work: implement or fix something well-scoped, explain code, run and read tests.",
-  opus: "Hard work: design or architecture, a subtle bug, a large multi-file change, or an ambiguous request.",
+const MODEL_CRITERIA: Record<Tier, LocaleKey> = {
+  haiku: "planning.model.haiku",
+  sonnet: "planning.model.sonnet",
+  opus: "planning.model.opus",
 };
-const EFFORT_CRITERIA: Record<Effort, string> = {
-  low: "Trivial: the answer or the edit is obvious.",
-  medium: "Routine: some reading and a few straightforward steps.",
-  high: "Demanding: several steps that depend on each other, or care needed to get it right.",
-  xhigh: "Very demanding: long, intricate reasoning or a change with many interacting parts.",
-  max: "Maximum effort: the hardest tasks, when the deepest reasoning is worth the extra time and token use.",
+const EFFORT_CRITERIA: Record<Effort, LocaleKey> = {
+  low: "planning.effort.low",
+  medium: "planning.effort.medium",
+  high: "planning.effort.high",
+  xhigh: "planning.effort.xhigh",
+  max: "planning.effort.max",
 };
+
+const criteria = (keys: Record<string, LocaleKey>, locale?: Locale) =>
+  Object.fromEntries(Object.entries(keys).map(([key, value]) => [key, text(value, locale)]));
 
 /** A subagent type Claude Code offers, as `agent.offer` reports it. */
 export interface AgentType {
@@ -57,39 +61,35 @@ export interface AgentType {
 }
 
 /** The extra questions a turn's routing point asks, for the features that are on. */
-export function turnQuestions(features: Features, agents: readonly AgentType[]): Questions {
+export function turnQuestions(features: Features, agents: readonly AgentType[], locale?: Locale): Questions {
   const questions: Questions = {};
   if (features.participation) {
     questions[PARTICIPATE_KEY] = {
       type: "noul",
-      instructions:
-        "Is the user's latest request substantial enough that choosing tools, model, effort or delegation " +
-        "for it matters, rather than a trivial exchange best left to the assistant as it is?",
+      instructions: text("planning.participation.question", locale),
     };
   }
   if (features.model) {
     questions[MODEL_KEY] = {
       type: "choice",
-      instructions: "Which model size fits the user's latest request best?",
-      criteria: { ...MODEL_CRITERIA },
+      instructions: text("planning.model.question", locale),
+      criteria: criteria(MODEL_CRITERIA, locale),
     };
   }
   if (features.effort) {
     questions[EFFORT_KEY] = {
       type: "choice",
-      instructions: "How much thinking effort does the user's latest request need?",
-      criteria: { ...EFFORT_CRITERIA },
+      instructions: text("planning.effort.question", locale),
+      criteria: criteria(EFFORT_CRITERIA, locale),
     };
   }
   if (features.delegation && agents.length > 0) {
     const criteria: Record<string, string | null> = {};
-    for (const agent of agents.slice(0, 40)) criteria[agent.name] = truncate(agent.description, 400) || null;
-    criteria[NO_DELEGATION] = "The assistant should do the work itself; no part of it is worth handing to a subagent.";
+    for (const agent of agents.slice(0, 40)) criteria[agent.name] = truncate(agent.description, 400, locale) || null;
+    criteria[NO_DELEGATION] = text("planning.delegation.none", locale);
     questions[DELEGATE_KEY] = {
       type: "choice",
-      instructions:
-        "Should the assistant hand part of the user's latest request to one of these subagents, " +
-        "which run separately and report back?",
+      instructions: text("planning.delegation.question", locale),
       criteria,
     };
   }
@@ -97,11 +97,11 @@ export function turnQuestions(features: Features, agents: readonly AgentType[]):
 }
 
 /** The questions for one subagent about to start: its model and its effort. */
-export function agentQuestions(features: Features): Questions {
+export function agentQuestions(features: Features, locale?: Locale): Questions {
   if (!features.agents) return {};
   return {
-    [MODEL_KEY]: { type: "choice", instructions: "Which model size fits this subagent's task best?", criteria: { ...MODEL_CRITERIA } },
-    [EFFORT_KEY]: { type: "choice", instructions: "How much thinking effort does this subagent's task need?", criteria: { ...EFFORT_CRITERIA } },
+    [MODEL_KEY]: { type: "choice", instructions: text("planning.agent.model.question", locale), criteria: criteria(MODEL_CRITERIA, locale) },
+    [EFFORT_KEY]: { type: "choice", instructions: text("planning.agent.effort.question", locale), criteria: criteria(EFFORT_CRITERIA, locale) },
   };
 }
 
@@ -138,7 +138,7 @@ export async function planTurn(
   agents: readonly AgentType[],
   now: () => number = () => Date.now(),
 ): Promise<TurnPlan> {
-  const extra = turnQuestions(features, agents);
+  const extra = turnQuestions(features, agents, config.locale);
   let decision: Decision;
   if (features.tools) {
     decision = await decide(input, config, askJev, now, extra);
@@ -212,15 +212,15 @@ export async function planAgent(
   features: Features,
   now: () => number = () => Date.now(),
 ): Promise<AgentPlan> {
-  const questions = agentQuestions(features);
+  const questions = agentQuestions(features, config.locale);
   if (Object.keys(questions).length === 0) return {};
   const startedAt = now();
   try {
     const result = await askJev({
       state: {
         agent_type: task.subagentType,
-        task_description: truncate(task.description, 400),
-        task_prompt: truncate(task.prompt, config.maxMessageChars),
+      task_description: truncate(task.description, 400, config.locale),
+      task_prompt: truncate(task.prompt, config.maxMessageChars, config.locale),
       },
       questions,
       model: config.jevModel,
@@ -241,32 +241,31 @@ export async function planAgent(
 }
 
 /** The context Claude reads for a turn: the tool hint and the delegation hint, in one note. */
-export function planHint(plan: TurnPlan, toolHint: (tool: string) => string): string | undefined {
+export function planHint(plan: TurnPlan, toolHint: (tool: string, locale?: Locale) => string, locale?: Locale): string | undefined {
   const parts: string[] = [];
-  if (plan.decision.mode === "hint") parts.push(toolHint(plan.decision.tool));
+  if (plan.decision.mode === "hint") parts.push(toolHint(plan.decision.tool, locale));
   if (plan.delegate && plan.delegate.value !== NO_DELEGATION) {
-    parts.push(
-      `It also suggests handing part of this request to the "${plan.delegate.value}" subagent (the Agent tool, ` +
-        `subagent_type "${plan.delegate.value}"). Ignore this if doing the work directly is simpler.`,
-    );
+    parts.push(text("planning.hint.delegate", locale, { agent: plan.delegate.value }));
   }
-  return parts.length ? parts.join(" ") : undefined;
+  return parts.length ? parts.join(text("planning.hint.separator", locale)) : undefined;
 }
 
 /** One short line saying what Jev decided: the summary the live log and the band show. */
-export function planSummary(plan: TurnPlan): string {
+export function planSummary(plan: TurnPlan, locale?: Locale): string {
   const d = plan.decision;
-  if (d.mode === "passthrough" && d.reason.startsWith("jev_error")) return `failed: ${d.reason.slice(11, 70)}`;
+  if (d.mode === "passthrough" && d.reason.startsWith("jev_error")) {
+    return text("planning.summary.failed", locale, { message: d.reason.slice("jev_error: ".length, 70) });
+  }
   const parts = [
     d.mode === "hint"
-      ? `tool ${d.tool} (${d.confidence.toFixed(2)})`
+      ? text("planning.summary.tool", locale, { tool: d.tool, confidence: formatDecimal(d.confidence, localeFor(locale), 2) })
       : d.reason === "jev_declined"
-        ? `stayed out (participate ${plan.participate?.toFixed(2)})`
-        : `no tool hint (${d.reason})`,
-    plan.model ? `model ${plan.model.value}` : undefined,
-    plan.effort ? `effort ${plan.effort.value}` : undefined,
-    plan.effortIgnored ? `effort ${plan.effortIgnored.value} ignored (Haiku 4.5 does not support effort)` : undefined,
-    plan.delegate && plan.delegate.value !== NO_DELEGATION ? `delegate → ${plan.delegate.value}` : undefined,
+        ? text("planning.summary.declined", locale, { confidence: formatDecimal(plan.participate ?? 0, localeFor(locale), 2) })
+        : text("planning.summary.noTool", locale, { reason: reasonTitle(d.reason, locale) }),
+    plan.model ? text("planning.summary.model", locale, { model: plan.model.value }) : undefined,
+    plan.effort ? text("planning.summary.effort", locale, { effort: plan.effort.value }) : undefined,
+    plan.effortIgnored ? text("planning.summary.effortIgnored", locale, { effort: plan.effortIgnored.value }) : undefined,
+    plan.delegate && plan.delegate.value !== NO_DELEGATION ? text("planning.summary.delegate", locale, { agent: plan.delegate.value }) : undefined,
   ].filter(Boolean);
-  return parts.join(" · ");
+  return parts.join(text("planning.summary.separator", locale));
 }

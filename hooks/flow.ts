@@ -5,6 +5,7 @@
 import type { AgentRun, FlowState } from "../types";
 import { AGENT_MASCOTS, isMascot } from "./mascots/agents.ts";
 import { DOT, hex } from "./dots.ts";
+import { formatDuration, formatNumber, localeFor, text, type Locale, type LocaleKey } from "./i18n.ts";
 
 export type FlowStep = "plan" | "check" | "review" | "fix" | "done";
 
@@ -20,7 +21,9 @@ const STAGE: Record<FlowStep, number> = { plan: 0, check: 1, review: 2, fix: 3, 
 
 /** The wave's subagents still kept on the Agents tab, in the order they started. */
 export function waveOf(flow: FlowState, agents: readonly AgentRun[]): AgentRun[] {
-  return flow.wave.map((n) => agents.find((run) => run.n === n)).filter((run): run is AgentRun => run !== undefined);
+  const members = flow.wave.map((n) => agents.find((run) => run.n === n)).filter((run): run is AgentRun => run !== undefined);
+  const inWave = new Set(members.map((run) => run.n));
+  return [...members, ...agents.filter((run) => run.state === "running" && !inWave.has(run.n))];
 }
 
 /** "claude-opus-5-5" → "Opus 5.5", "claude-haiku-4-5-20251001" → "Haiku 4.5". */
@@ -32,8 +35,8 @@ export function prettyModel(id: string | undefined): string {
   return `${family} ${match[2]}${match[3] && match[3].length < 3 ? `.${match[3]}` : ""}`;
 }
 
-const WORDS = ["zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten"];
-const word = (n: number) => WORDS[n] ?? String(n);
+const WORDS: readonly LocaleKey[] = ["flow.word.zero", "flow.word.one", "flow.word.two", "flow.word.three", "flow.word.four", "flow.word.five", "flow.word.six", "flow.word.seven", "flow.word.eight", "flow.word.nine", "flow.word.ten"];
+const word = (n: number, locale: Locale) => (WORDS[n] ? text(WORDS[n]!, locale) : formatNumber(n, locale));
 
 /** One cell of the drawing: a character and how it is painted. */
 type Style = { color: string; bold?: boolean; bg?: string };
@@ -100,11 +103,6 @@ const fit = (text: string, width: number) => {
   return chars.length > width ? chars.slice(0, Math.max(1, width - 1)).join("") + "…" : chars.join("");
 };
 
-function secs(ms: number): string {
-  const s = Math.max(0, Math.round(ms / 1000));
-  return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m${String(s % 60).padStart(2, "0")}`;
-}
-
 /** One column of the fan: who it is, how it is doing, what it runs on. */
 interface Column {
   label: string;
@@ -115,17 +113,17 @@ interface Column {
   tuneColor: string;
 }
 
-function column(run: AgentRun, now: number): Column {
+function column(run: AgentRun, now: number, locale: Locale): Column {
   const mascot = isMascot(run.mascot) ? AGENT_MASCOTS[run.mascot] : undefined;
-  const took = secs((run.endedAt ?? now) - run.startedAt);
+  const took = formatDuration((run.endedAt ?? now) - run.startedAt, locale);
   const [state, stateColor] =
     run.state === "running"
-      ? [`● ${took}`, C.green]
+      ? [`${Math.floor(now / 1000) % 2 ? "◉" : "●"} ${took}`, C.green]
       : run.state === "done"
-        ? [`✓ ${took}`, C.dim]
+        ? [`${text("flow.status.done", locale)} ${took}`, C.dim]
         : run.state === "error"
-          ? [`× error`, C.fail]
-          : [`⊘ ${took}`, C.pass];
+          ? [text("flow.status.error", locale), C.fail]
+          : [text("flow.status.aborted", locale, { duration: took }), C.pass];
   return {
     label: run.description.trim() || run.type,
     color: mascot ? hex(mascot.color) : C.blue,
@@ -138,20 +136,13 @@ function column(run: AgentRun, now: number): Column {
 }
 
 /** The pre-ship check the tab shows before any subagent has run: what a wave looks like. */
-const SAMPLE: Column[] = [
-  ["design", "5 checks", "medium"],
-  ["mobile", "4 checks", "medium"],
-  ["states", "4 checks", "medium"],
-  ["real user", "3 checks", "high"],
-  ["launch", "4 checks", "medium"],
-].map(([label, state, tune]) => ({
-  label: label!,
-  color: C.blue,
-  state: state!,
-  stateColor: C.ink,
-  tune: tune!,
-  tuneColor: tune === "high" ? C.orange : C.dim,
-}));
+const SAMPLE: readonly (readonly [LocaleKey, LocaleKey, string])[] = [
+  ["flow.sample.design", "flow.sample.checks5", "medium"],
+  ["flow.sample.mobile", "flow.sample.checks4", "medium"],
+  ["flow.sample.states", "flow.sample.checks4", "medium"],
+  ["flow.sample.realUser", "flow.sample.checks3", "high"],
+  ["flow.sample.launch", "flow.sample.checks4", "medium"],
+];
 
 export interface FlowInput {
   flow: FlowState;
@@ -163,19 +154,25 @@ export interface FlowInput {
   cwd?: string;
   now: number;
   width: number;
+  locale?: Locale;
 }
 
 /** The whole diagram, line by line. */
 export function flowLines(input: FlowInput): FlowSegment[][] {
+  const locale = input.locale ?? localeFor();
   const W = Math.max(40, input.width);
   const wave = waveOf(input.flow, input.agents);
   const sample = wave.length === 0;
   const step = flowStep(input.flow, wave);
   const stage = STAGE[step];
-  const cols = sample ? SAMPLE : wave.map((run) => column(run, input.now));
+  const cols = sample
+    ? SAMPLE.map(([label, state, tune]) => ({ label: text(label, locale), color: C.blue, state: text(state, locale), stateColor: C.ink, tune, tuneColor: tune === "high" ? C.orange : C.dim }))
+    : wave.map((run) => column(run, input.now, locale));
   const total = cols.length;
+  const toolCalls = wave.reduce((sum, run) => sum + run.tools, 0);
+  const returned = wave.filter((run) => run.state !== "running").length;
   const model = prettyModel(input.model);
-  const effort = input.effort ?? "default";
+  const effort = input.effort ?? text("flow.effort.default", locale);
 
   // Columns of at least 11 characters; the ones that do not fit are counted under the fan.
   const fits = Math.max(1, Math.floor((W - 2) / 11));
@@ -196,10 +193,10 @@ export function flowLines(input: FlowInput): FlowSegment[][] {
 
   // Title and rule.
   g.center(Math.floor(W / 2), y++, [
-    { text: sample ? "PRE-SHIP CHECK · " : "FLOW · ", color: C.ink, bold: true },
+    { text: text(sample ? "flow.title.sample" : "flow.title.live", locale), color: C.ink, bold: true },
     { text: model.toUpperCase(), color: C.orange, bold: true },
     { text: " + ", color: C.ink, bold: true },
-    { text: `${total} SUBAGENT${total === 1 ? "" : "S"}`, color: C.blue, bold: true },
+    { text: `${formatNumber(total, locale)} ${text(total === 1 ? "flow.subagent" : "flow.subagents", locale)}`, color: C.blue, bold: true },
   ]);
   g.put(0, y++, "=".repeat(W), { color: C.faint });
   y++;
@@ -209,18 +206,18 @@ export function flowLines(input: FlowInput): FlowSegment[][] {
   const types = [...new Set(wave.map((run) => run.type))].join(", ");
   const side = [
     [
-      { text: `${total} subagent${total === 1 ? "" : "s"}`, color: C.blue, bold: true },
+      { text: text(total === 1 ? "flow.count.subagent" : "flow.count.subagents", locale, { count: formatNumber(total, locale) }), color: C.blue, bold: true },
       { text: " · ", color: C.dim },
-      { text: sample ? "read-only" : types || "subagents", color: C.blue, bold: true },
+      { text: sample ? text("flow.sample.readOnly", locale) : types || text("flow.live.subagents", locale), color: C.blue, bold: true },
     ],
-    [{ text: sample ? "one per group" : "one per task", color: C.ink }],
+    [{ text: text(sample ? "flow.sample.groups" : "flow.live.tasks", locale), color: C.ink }],
     [],
-    [{ text: "Each one:", color: C.dim }],
+    [{ text: text("flow.eachOne", locale), color: C.dim }],
     ...(
       [
-        [sample ? "checks its group" : "works its task", 1],
-        [sample ? "edits nothing" : ((n: number) => `${n} tool call${n === 1 ? "" : "s"} so far`)(wave.reduce((s, run) => s + run.tools, 0)), -1],
-        [sample ? "returns a list" : "reports back", 2],
+        [text(sample ? "flow.sample.checksGroup" : "flow.live.worksTask", locale), 1],
+        [sample ? text("flow.sample.noEdits", locale) : text("flow.live.toolCalls", locale, { count: formatNumber(toolCalls, locale), unit: text(toolCalls === 1 ? "unit.toolCall" : "unit.toolCalls", locale) }), -1],
+        [text(sample ? "flow.sample.returnsList" : "flow.live.reportsBack", locale), 2],
       ] as const
     ).map(([text, at]) =>
       (sample ? at === 1 : stage === at)
@@ -259,7 +256,7 @@ export function flowLines(input: FlowInput): FlowSegment[][] {
     g.center(X, y, [{ text: pill, color: C.ink, bold: true, bg: C.pill }]);
   }
   y++;
-  g.center(X, y++, [{ text: " main session ", color: C.ink, bg: C.pill }]);
+  g.center(X, y++, [{ text: text("flow.mainSession", locale), color: C.ink, bg: C.pill }]);
   if (!withSide) g.center(X, y++, side[0]!.map((part) => ({ ...part, text: fit(part.text, W - 4) })));
   g.put(X, y++, "/", { color: C.orange, bold: true });
   while (y < top + (withSide ? side.length : 0)) g.put(X, y++, "|", { color: C.dim });
@@ -267,10 +264,10 @@ export function flowLines(input: FlowInput): FlowSegment[][] {
 
   const turnText = input.flow.text ? `“${fit(input.flow.text, Math.max(10, W - 8))}”` : "";
   g.center(X, y++, [
-    { text: "send them over ", color: C.ink },
-    { text: sample ? "20 checks" : `${total} task${total === 1 ? "" : "s"}`, color: C.blue, bold: true },
+    { text: text("flow.send", locale), color: C.ink },
+    { text: sample ? text("flow.sample.checks", locale) : text("flow.tasks", locale, { count: formatNumber(total, locale), unit: text(total === 1 ? "unit.task" : "unit.tasks", locale) }), color: C.blue, bold: true },
   ]);
-  g.center(X, y++, [{ text: sample ? "before you ship" : turnText || "from one prompt", color: sample ? C.ink : C.dim }]);
+  g.center(X, y++, [{ text: sample ? text("flow.sample.beforeShip", locale) : turnText || text("flow.fromPrompt", locale), color: sample ? C.ink : C.dim }]);
   g.put(X, y++, "|", { color: C.dim });
 
   // The fan: a bar out to every column, three rows each, a bar back in.
@@ -295,33 +292,33 @@ export function flowLines(input: FlowInput): FlowSegment[][] {
   y++;
   pipes(y++);
   bar(y++, line(1));
-  if (hidden > 0) g.center(X, y++, [{ text: `+${hidden} more on the Agents tab`, color: C.dim }]);
+  if (hidden > 0) g.center(X, y++, [{ text: text("flow.moreAgents", locale, { count: formatNumber(hidden, locale) }), color: C.dim }]);
   g.put(X, y++, "|", { color: line(1) });
 
   // Back to the main session, you confirm, one pass of edits.
   const edits = input.flow.edits;
   const files = input.flow.files.length;
-  g.center(X, y++, [{ text: "back to main session", color: lit(2, C.orange), bold: true }]);
+  g.center(X, y++, [{ text: text("flow.back", locale), color: lit(2, C.orange), bold: true }]);
   g.center(X, y++, [
     {
       text: sample
-        ? "one list of issues · no edits yet"
-        : `${wave.filter((run) => run.state !== "running").length}/${total} answers · ${edits ? `${edits} edit${edits === 1 ? "" : "s"}` : "no edits yet"}`,
+        ? text("flow.sample.issues", locale)
+        : `${text("flow.answers", locale, { count: formatNumber(returned, locale), total: formatNumber(total, locale), unit: text(returned === 1 ? "unit.answer" : "unit.answers", locale) })} · ${edits ? text("flow.edits", locale, { count: formatNumber(edits, locale), unit: text(edits === 1 ? "unit.edit" : "unit.edits", locale) }) : text("flow.noEdits", locale)}`,
       color: stage >= 2 || sample ? C.ink : C.faint,
     },
   ]);
   g.put(X, y++, "|", { color: line(2) });
-  g.center(X, y++, [{ text: "you confirm", color: lit(3, C.you), bold: true }]);
+  g.center(X, y++, [{ text: text("flow.confirm", locale), color: lit(3, C.you), bold: true }]);
   g.put(X, y++, "\\", { color: lit(3, C.orange), bold: true });
   g.center(X, y++, [
     { text: " " + model.split(" ")[0], color: lit(3, C.orange), bold: true, bg: C.pill },
-    { text: " fixes it all in one pass ", color: stage >= 3 || sample ? C.ink : C.faint, bg: C.pill },
+    { text: text("flow.fixes", locale), color: stage >= 3 || sample ? C.ink : C.faint, bg: C.pill },
   ]);
-  g.center(X, y++, [{ text: " main session owns the edits ", color: stage >= 3 || sample ? C.ink : C.faint, bg: C.pill }]);
+  g.center(X, y++, [{ text: text("flow.ownsEdits", locale), color: stage >= 3 || sample ? C.ink : C.faint, bg: C.pill }]);
   g.put(X, y++, step === "fix" ? "◉" : "•", { color: step === "fix" ? C.green : line(3) });
   g.center(X, y++, [
     {
-      text: sample || !edits ? " before + after screenshots " : ` ${edits} edit${edits === 1 ? "" : "s"} · ${files} file${files === 1 ? "" : "s"} `,
+      text: sample || !edits ? text("flow.screenshots", locale) : text("flow.files", locale, { edits: formatNumber(edits, locale), editUnit: text(edits === 1 ? "unit.edit" : "unit.edits", locale), files: formatNumber(files, locale), fileUnit: text(files === 1 ? "unit.file" : "unit.files", locale) }),
       color: lit(4, C.green),
       bold: true,
       bg: C.pill,
@@ -331,18 +328,17 @@ export function flowLines(input: FlowInput): FlowSegment[][] {
 
   // The motto and the prompt line.
   g.center(Math.floor(W / 2), y++, [
-    { text: `Check with ${word(total)}.`, color: C.blue, bold: true },
-    { text: "  Confirm.", color: C.you, bold: true },
-    { text: "  Fix with one.", color: C.green, bold: true },
+    { text: text("flow.checkWith", locale, { count: word(total, locale) }), color: C.blue, bold: true },
+    { text: text("flow.confirmMotto", locale), color: C.you, bold: true },
+    { text: text("flow.fixWithOne", locale), color: C.green, bold: true },
   ]);
   y++;
-  const done = wave.filter((run) => run.state !== "running").length;
   const status: FlowSegment[] = [
-    { text: "step ", color: C.dim },
-    { text: `[${step}]`, color: C.ink, bold: true },
-    { text: "  agents ", color: C.dim },
-    { text: `[${sample ? 0 : done}/${total}]`, color: C.blue, bold: true },
-    { text: "  edits ", color: C.dim },
+    { text: text("flow.step", locale), color: C.dim },
+    { text: `[${text(("flow.step." + step) as LocaleKey, locale)}]`, color: C.ink, bold: true },
+    { text: text("flow.agents", locale), color: C.dim },
+    { text: `[${sample ? 0 : returned}/${total}]`, color: C.blue, bold: true },
+    { text: text("flow.editsLabel", locale), color: C.dim },
     { text: `[${edits}]`, color: edits ? C.green : C.dim, bold: edits > 0 },
   ];
   const statusLength = status.reduce((s, part) => s + part.text.length, 0);

@@ -26,8 +26,6 @@ export interface AgentMascot {
   /** Five characters, the width of a face in the live log's gutter. */
   face: string;
   color: number;
-  /** What it is, for the cast and the desktop's alt text. */
-  shape: string;
   /** Where its face sits, in model radii, and how big it is. */
   faceY: number;
   faceScale: number;
@@ -135,7 +133,6 @@ export const AGENT_MASCOTS: Record<MascotId, AgentMascot> = {
     name: "Tetra",
     face: "/•ᴗ•\\",
     color: 0x67d4e6,
-    shape: "a tetrahedron of dots that turns slowly",
     faceY: -0.12,
     faceScale: 0.5,
     motion: (t) => ({ yaw: t * 0.6, tilt: 0.28, roll: 0, hop: Math.abs(Math.sin(t * 1.4)) * 0.05 }),
@@ -146,7 +143,6 @@ export const AGENT_MASCOTS: Record<MascotId, AgentMascot> = {
     name: "Gem",
     face: "<•ᴗ•>",
     color: 0xf78fc6,
-    shape: "an octahedron, a gem of dots that spins and floats",
     faceY: 0.02,
     faceScale: 0.55,
     motion: (t) => ({ yaw: t * 0.9, tilt: 0.22 + Math.sin(t * 0.8) * 0.06, roll: 0, hop: Math.sin(t * 2) * 0.05 }),
@@ -157,7 +153,6 @@ export const AGENT_MASCOTS: Record<MascotId, AgentMascot> = {
     name: "Can",
     face: "|•ᴗ•|",
     color: 0xc3e88d,
-    shape: "a cylinder of dots, a can that sways and hops",
     faceY: 0,
     faceScale: 0.6,
     motion: (t) => ({ yaw: Math.sin(t * 0.7) * 0.45, tilt: 0.42, roll: Math.sin(t * 1.1) * 0.08, hop: Math.abs(Math.sin(t * 1.8)) * 0.07 }),
@@ -168,7 +163,6 @@ export const AGENT_MASCOTS: Record<MascotId, AgentMascot> = {
     name: "Coil",
     face: "(◦ᴗ◦)",
     color: 0xffb38a,
-    shape: "a torus of dots, a ring that rolls with a face in its hole",
     faceY: 0,
     faceScale: 0.42,
     motion: (t) => ({ yaw: Math.sin(t * 0.6) * 0.5, tilt: 0.3, roll: t * 0.5, hop: 0 }),
@@ -179,7 +173,6 @@ export const AGENT_MASCOTS: Record<MascotId, AgentMascot> = {
     name: "Top",
     face: "^•ᴗ•^",
     color: 0xe9e09a,
-    shape: "a cone of dots that spins and wobbles like a top",
     faceY: -0.22,
     faceScale: 0.5,
     motion: (t) => ({ yaw: t * 1.4, tilt: 0.3 + Math.sin(t * 1.3) * 0.12, roll: Math.sin(t * 1.3 + 1) * 0.1, hop: 0 }),

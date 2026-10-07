@@ -1,18 +1,20 @@
 // What Jev reads: the conversation, newest turns first within a character budget.
 import type { Json, RouterInput, Turn } from "./types.ts";
+import { text, type Locale } from "../i18n.ts";
 
 export interface Limits {
   maxStateChars: number;
   maxMessageChars: number;
+  locale?: Locale;
 }
 
 /** Keep the head and tail of long text; the middle is what matters least for routing. */
-export function truncate(text: string, max: number): string {
-  if (text.length <= max) return text;
-  const marker = " …[truncated]… ";
+export function truncate(value: string, max: number, locale?: Locale): string {
+  if (value.length <= max) return value;
+  const marker = text("routing.truncated", locale);
   const keep = Math.max(0, max - marker.length);
   const head = Math.ceil(keep * 0.6);
-  return text.slice(0, head) + marker + text.slice(text.length - (keep - head));
+  return value.slice(0, head) + marker + value.slice(value.length - (keep - head));
 }
 
 /**
@@ -20,7 +22,7 @@ export function truncate(text: string, max: number): string {
  * The newest turns are kept when the conversation exceeds the state budget.
  */
 export function buildState(input: Pick<RouterInput, "system" | "turns">, limits: Limits): { [key: string]: Json } {
-  const systemText = truncate(input.system, limits.maxMessageChars);
+  const systemText = truncate(input.system, limits.maxMessageChars, limits.locale);
   let budget = limits.maxStateChars - systemText.length;
   const conversation: Turn[] = [];
   for (let i = input.turns.length - 1; i >= 0; i--) {

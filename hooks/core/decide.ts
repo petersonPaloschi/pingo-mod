@@ -13,6 +13,7 @@ import {
 } from "./questions.ts";
 import { buildState, type Limits } from "./state.ts";
 import type { Answer, Questions, RouterInput, RouterTool, SystemOneRequest, SystemOneResult } from "./types.ts";
+import { text, type Locale } from "../i18n.ts";
 
 /** The one Jev call the router makes; injectable so tests need no network. */
 export type AskJev = (request: SystemOneRequest) => Promise<SystemOneResult>;
@@ -20,6 +21,7 @@ export type AskJev = (request: SystemOneRequest) => Promise<SystemOneResult>;
 export interface DecideConfig extends Limits {
   jevModel: string;
   minConfidence: number;
+  locale?: Locale;
 }
 
 export interface JevTrace {
@@ -59,7 +61,7 @@ async function shortlist(
   config: DecideConfig,
   askJev: AskJev,
 ): Promise<{ tools: RouterTool[]; inputTokens: number }> {
-  const { questions, shards } = buildShortlistQuestions(tools);
+  const { questions, shards } = buildShortlistQuestions(tools, config.locale);
   const result = await askJev({ state, questions, model: config.jevModel });
   const kept = shards.flatMap((shard, index) => {
     const answer = result.answers[shardKey(index)];
@@ -95,7 +97,7 @@ export async function decide(
       if (tools.length === 0) return { mode: "passthrough", reason: "jev_unexpected_answer" };
     }
     // Other features' questions ride in the same call: one Jev request per routing point.
-    result = await askJev({ state, questions: { ...buildQuestions(tools), ...extra }, model: config.jevModel });
+    result = await askJev({ state, questions: { ...buildQuestions(tools, config.locale), ...extra }, model: config.jevModel });
   } catch (error) {
     // Fail open: a Jev outage must never stop the session.
     return { mode: "passthrough", reason: `jev_error: ${error instanceof Error ? error.message : String(error)}` };
@@ -137,9 +139,6 @@ export async function decide(
 }
 
 /** The hint Claude reads; it leaves Claude free to ignore a pick that does not fit. */
-export function hintText(tool: string): string {
-  return (
-    `A tool-routing model suggests the "${tool}" tool is the most relevant next step. ` +
-    "Ignore this if it does not fit what the user actually asked for."
-  );
+export function hintText(tool: string, locale?: Locale): string {
+  return text("routing.hint", locale, { tool });
 }

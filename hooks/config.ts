@@ -1,6 +1,7 @@
 // Resolve settings without persisting credentials in the plugin's store.
 import type { DecideConfig } from "./core/decide.ts";
 import { isProvider, PROVIDERS, resolveModel, resolveProvider, resolveUrl, type JevSettings, type ProviderId } from "./core/jev.ts";
+import { localeFor, type Locale } from "./i18n.ts";
 
 export interface ModOptions {
   provider?: string;
@@ -8,6 +9,7 @@ export interface ModOptions {
   model?: string;
   min_confidence?: number;
   timeout_ms?: number;
+  locale?: string;
 }
 
 /** Non-sensitive settings retained by the plugin. */
@@ -18,7 +20,8 @@ export interface StoredSettings {
 export interface Settings extends DecideConfig, JevSettings {
   provider: ProviderId;
   /** Where the key came from, for /jev status; never the key itself. */
-  keySource: "plugin settings" | "environment" | "none";
+  keySource: "plugin" | "environment" | "none";
+  locale: Locale;
 }
 
 const num = (value: unknown, fallback: number) =>
@@ -34,7 +37,8 @@ export function resolveSettings(options: ModOptions, env: Record<string, string>
   return {
     provider,
     apiKey: fromOptions || fromEnv || "",
-    keySource: fromOptions ? "plugin settings" : fromEnv ? "environment" : "none",
+    keySource: fromOptions ? "plugin" : fromEnv ? "environment" : "none",
+    locale: localeFor(options.locale === "auto" ? undefined : options.locale),
     url: resolveUrl(provider),
     jevModel: resolveModel(provider, options.model?.trim()),
     timeoutMs: num(options.timeout_ms, 4000),

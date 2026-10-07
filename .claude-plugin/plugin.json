@@ -40,6 +40,14 @@
       "description": "How long to wait for Jev before failing open (JEV_TIMEOUT_MS)",
       "default": 4000,
       "required": false
+    },
+    "locale": {
+      "type": "string",
+      "title": "Language",
+      "description": "Dashboard and prompt language. Auto follows the system locale.",
+      "options": ["auto", "en", "pt"],
+      "default": "auto",
+      "required": false
     }
   }
 }

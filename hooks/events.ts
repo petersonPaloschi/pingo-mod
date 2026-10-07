@@ -1,6 +1,7 @@
 // The request log and the dashboard's arithmetic: one RouteEvent per model request, metadata
 // only (no prompts, arguments or keys).
 import type { RouteEvent } from "../types";
+import { formatAge, formatDecimal, formatNumber, formatPercent, localeFor, reasonTitle, text, type Locale, type LocaleKey } from "./i18n.ts";
 
 export type { RouteEvent };
 
@@ -8,56 +9,58 @@ export const KEPT_EVENTS = 500;
 export const IDLE_MS = 5 * 60 * 1000;
 export const JEV_USD_PER_MILLION_INPUT_TOKENS = 0.042;
 
-export const RANGES: readonly (readonly [string, number])[] = [
-  ["15 min", 15 * 60e3],
-  ["1 h", 60 * 60e3],
-  ["24 h", 24 * 60 * 60e3],
-  ["All", 0],
+export const RANGES: readonly (readonly [LocaleKey, number])[] = [
+  ["range.15m", 15 * 60e3],
+  ["range.1h", 60 * 60e3],
+  ["range.24h", 24 * 60 * 60e3],
+  ["range.all", 0],
 ];
 
-export const CATEGORIES = [
-  ["hint", "hint — Jev's pick suggested to Claude"],
-  ["passthrough", "passthrough — Claude decided"],
-  ["failed", "passthrough — Jev failed"],
-] as const;
-export type Category = (typeof CATEGORIES)[number][0];
+export type Category = "hint" | "passthrough" | "failed";
+const CATEGORY_KEYS: readonly (readonly [Category, LocaleKey])[] = [
+  ["hint", "category.hint"],
+  ["passthrough", "category.passthrough"],
+  ["failed", "category.failed"],
+];
+export const categories = (locale?: Locale) => CATEGORY_KEYS.map(([id, key]) => [id, text(key, locale)] as const);
 
 /** [who made the call, what it means], for each reason a request was not routed. */
-export const REASONS: Record<string, readonly [string, string]> = {
-  no_tools: ["Jev not asked", "The request carried no tools, so there was nothing to select."],
-  no_messages: ["Jev not asked", "The request had no conversation to decide on."],
-  unsafe_tool_name: ["Jev not asked", "A tool's name has spaces, quotes or brackets in it; the router won't repeat it to a model."],
-  too_many_tools: ["Jev not asked", "The tool roster is larger than the router can shortlist."],
-  duplicate_tool_names: ["Jev not asked", "Two tools share a name."],
-  reserved_tool_name: ["Jev not asked", "A tool is named no_tool_needed, which the router reserves."],
-  routing_disabled: ["Jev not asked", "Routing is switched off (baseline mode): tokens are metered, Jev is never asked."],
-  no_api_key: ["Jev not asked", "No Jev key is configured. Run /jev setup."],
-  subagent: ["Jev not asked", "A subagent's request: the mod routes the main conversation only."],
-  not_asked: ["Jev not asked", "No routing point came before this request (a parallel tool still running, or a refused call)."],
-  features_off: ["Jev not asked", "Every routing feature is switched off (/jev features)."],
-  jev_declined: ["Jev asked", "Jev judged the request simple enough to give no hints; its model and effort still apply (Participation feature)."],
-  tools_feature_off: ["Jev asked", "The tool hint is off; Jev decided only model, effort or delegation."],
-  low_confidence: ["Jev asked", "Jev's confidence was below the minimum confidence setting."],
-  jev_answers_disagree: ["Jev asked", "The tool pick and the needs-a-tool check contradicted each other."],
-  no_tool_needed: ["Jev asked", "Jev said no tool is needed; left to Claude (a hint never suggests silence)."],
-  hosted_tool_selected: ["Jev asked", "Jev picked a provider-run tool."],
-  jev_unknown_tool: ["Jev asked", "Jev named a tool that isn't in the roster."],
-  jev_error: ["Jev failed", "The Jev call errored or timed out. Check the key (/jev setup) and the network."],
-  jev_unexpected_answer: ["Jev failed", "Jev's reply didn't contain the expected answers."],
-  router_error: ["Router failed", "The mod hit a bug of its own and left the request alone."],
+const REASON_KEYS: Record<string, readonly [LocaleKey, LocaleKey]> = {
+  no_tools: ["reason.who.notAsked", "reason.no_tools.meaning"],
+  no_messages: ["reason.who.notAsked", "reason.no_messages.meaning"],
+  unsafe_tool_name: ["reason.who.notAsked", "reason.unsafe_tool_name.meaning"],
+  too_many_tools: ["reason.who.notAsked", "reason.too_many_tools.meaning"],
+  duplicate_tool_names: ["reason.who.notAsked", "reason.duplicate_tool_names.meaning"],
+  reserved_tool_name: ["reason.who.notAsked", "reason.reserved_tool_name.meaning"],
+  routing_disabled: ["reason.who.notAsked", "reason.routing_disabled.meaning"],
+  no_api_key: ["reason.who.notAsked", "reason.no_api_key.meaning"],
+  subagent: ["reason.who.notAsked", "reason.subagent.meaning"],
+  not_asked: ["reason.who.notAsked", "reason.not_asked.meaning"],
+  features_off: ["reason.who.notAsked", "reason.features_off.meaning"],
+  jev_declined: ["reason.who.asked", "reason.jev_declined.meaning"],
+  tools_feature_off: ["reason.who.asked", "reason.tools_feature_off.meaning"],
+  low_confidence: ["reason.who.asked", "reason.low_confidence.meaning"],
+  jev_answers_disagree: ["reason.who.asked", "reason.jev_answers_disagree.meaning"],
+  no_tool_needed: ["reason.who.asked", "reason.no_tool_needed.meaning"],
+  hosted_tool_selected: ["reason.who.asked", "reason.hosted_tool_selected.meaning"],
+  jev_unknown_tool: ["reason.who.asked", "reason.jev_unknown_tool.meaning"],
+  jev_error: ["reason.who.failed", "reason.jev_error.meaning"],
+  jev_unexpected_answer: ["reason.who.failed", "reason.jev_unexpected_answer.meaning"],
+  router_error: ["reason.who.routerFailed", "reason.router_error.meaning"],
+  unknown: ["reason.who.notAsked", "reason.unknown.meaning"],
 };
 
 export const reasonKey = (reason: string) =>
   ["jev_error", "router_error"].find((prefix) => reason.startsWith(prefix)) ?? reason;
 export const failed = (event: RouteEvent) =>
-  event.mode === "passthrough" && REASONS[reasonKey(event.reason ?? "")]?.[0] === "Jev failed";
+  event.mode === "passthrough" && ["jev_error", "jev_unexpected_answer"].includes(reasonKey(event.reason ?? ""));
 export const category = (event: RouteEvent): Category => (failed(event) ? "failed" : event.mode);
 export const routed = (event: RouteEvent) => event.mode !== "passthrough";
 export const baseline = (event: RouteEvent) => event.reason === "routing_disabled";
 export const at = (event: RouteEvent) => Date.parse(event.time);
 
-export const int = (n: number) => Math.round(n).toLocaleString("en-US");
-export const pct = (part: number, whole: number) => (whole ? Math.round((100 * part) / whole) + "%" : "–");
+export const int = (n: number, locale?: Locale) => formatNumber(Math.round(n), locale ?? localeFor());
+export const pct = (part: number, whole: number, locale?: Locale) => formatPercent(part, whole, locale ?? localeFor());
 export const sum = (events: readonly RouteEvent[], pick: (event: RouteEvent) => number | undefined) =>
   events.reduce((total, event) => total + (pick(event) ?? 0), 0);
 
@@ -65,15 +68,6 @@ export function tally(keys: readonly string[]): [string, number][] {
   const counts = new Map<string, number>();
   for (const name of keys) counts.set(name, (counts.get(name) ?? 0) + 1);
   return [...counts].sort((a, b) => b[1] - a[1]);
-}
-
-export function ago(ms: number): string {
-  const s = Math.max(0, Math.round(ms / 1000));
-  if (s < 90) return `${s}s`;
-  const m = Math.round(s / 60);
-  if (m < 90) return `${m} min`;
-  const h = Math.round(m / 60);
-  return h < 36 ? `${h} h` : `${Math.round(h / 24)} d`;
 }
 
 export function inRange(events: readonly RouteEvent[], range: number, now: number): RouteEvent[] {
@@ -89,15 +83,18 @@ export interface Status {
 }
 
 /** The status card: what routing is doing right now. */
-export function status(events: readonly RouteEvent[], routing: boolean, now: number): Status {
+export function status(events: readonly RouteEvent[], routing: boolean, now: number, locale?: Locale): Status {
   const recent = events.filter((event) => now - at(event) < IDLE_MS);
   if (!routing) {
     const n = recent.length;
     return {
       kind: "baseline",
       icon: "◌",
-      title: "Baseline — routing off",
-      text: `Jev is switched off: ${n} request${n === 1 ? "" : "s"} in the last 5 minutes went straight to Claude, metered for comparison.`,
+      title: text("status.baseline.title", locale),
+      text: text("status.baseline.text", locale, {
+        count: formatNumber(n, locale ?? "en"),
+        requests: text(n === 1 ? "unit.request" : "unit.requests", locale),
+      }),
     };
   }
   if (recent.length === 0) {
@@ -105,8 +102,10 @@ export function status(events: readonly RouteEvent[], routing: boolean, now: num
     return {
       kind: "idle",
       icon: "–",
-      title: "Idle",
-      text: "No requests in the last 5 minutes" + (last ? `; the last one was ${ago(now - at(last))} ago (${last.mode}).` : "."),
+      title: text("status.idle.title", locale),
+      text: text("status.idle.text", locale, {
+        last: last ? text("status.idle.last", locale, { age: formatAge(now - at(last), locale ?? localeFor()), mode: text(`category.mode.${last.mode}` as LocaleKey, locale) }) : "",
+      }),
     };
   }
   const asked = recent.filter((event) => event.jev || failed(event));
@@ -115,20 +114,33 @@ export function status(events: readonly RouteEvent[], routing: boolean, now: num
     return {
       kind: "failing",
       icon: "!",
-      title: "Jev is failing",
-      text: `The latest Jev call failed (${latest.reason}). Requests fall back to Claude alone.`,
+      title: text("status.failing.title", locale),
+      text: text("status.failing.text", locale, { reason: reasonTitle(latest.reason ?? "unknown", locale) }),
     };
   }
   const decided = recent.filter(routed).length;
   if (decided) {
-    return { kind: "routing", icon: "✓", title: "Routing", text: `Jev decided ${decided} of the last ${recent.length} requests (5 min).` };
+    return {
+      kind: "routing",
+      icon: "✓",
+      title: text("status.routing.title", locale),
+      text: text("status.routing.text", locale, {
+        decided: formatNumber(decided, locale ?? "en"),
+        count: formatNumber(recent.length, locale ?? "en"),
+        requests: text(recent.length === 1 ? "unit.request" : "unit.requests", locale),
+      }),
+    };
   }
   const reasons = tally(recent.map((event) => reasonKey(event.reason ?? "unknown")));
   return {
     kind: "passthrough",
     icon: "→",
-    title: "Passthrough only",
-    text: `None of the last ${recent.length} requests were routed — mostly ${reasons[0]?.[0] ?? "unknown"}.`,
+    title: text("status.passthrough.title", locale),
+    text: text("status.passthrough.text", locale, {
+      count: formatNumber(recent.length, locale ?? "en"),
+      requests: text(recent.length === 1 ? "unit.request" : "unit.requests", locale),
+      reason: reasonTitle(reasons[0]?.[0] ?? "unknown", locale),
+    }),
   };
 }
 
@@ -138,7 +150,7 @@ export interface Tile {
   sub: string;
 }
 
-export function tiles(events: readonly RouteEvent[]): Tile[] {
+export function tiles(events: readonly RouteEvent[], locale: Locale = localeFor()): Tile[] {
   const asked = events.filter((event) => event.jev);
   const failures = events.filter(failed).length;
   const latencies = asked.map((event) => event.jev!.latencyMs).sort((a, b) => a - b);
@@ -149,26 +161,26 @@ export function tiles(events: readonly RouteEvent[]): Tile[] {
   const avgConfidence = mean(asked.map((event) => event.jev!.confidence));
   const p95 = latencies[Math.min(latencies.length - 1, Math.floor(latencies.length * 0.95))];
   return [
-    { label: "Requests", value: int(events.length), sub: "model requests" },
-    { label: "Routed by Jev", value: pct(decided, events.length), sub: `${int(decided)} requests` },
-    { label: "Passed through", value: pct(events.length - decided, events.length), sub: `${int(events.length - decided)} requests` },
-    { label: "Jev calls", value: int(asked.length + failures), sub: failures ? `${int(failures)} failed` : "none failed" },
+    { label: text("tile.requests.label", locale), value: int(events.length, locale), sub: text("tile.requests.sub", locale) },
+    { label: text("tile.routed.label", locale), value: pct(decided, events.length, locale), sub: text("tile.routed.sub", locale, { count: int(decided, locale), requests: text(decided === 1 ? "unit.request" : "unit.requests", locale) }) },
+    { label: text("tile.passed.label", locale), value: pct(events.length - decided, events.length, locale), sub: text("tile.passed.sub", locale, { count: int(events.length - decided, locale), requests: text(events.length - decided === 1 ? "unit.request" : "unit.requests", locale) }) },
+    { label: text("tile.calls.label", locale), value: int(asked.length + failures, locale), sub: failures ? text("tile.calls.failed", locale, { count: int(failures, locale) }) : text("tile.calls.noneFailed", locale) },
     {
-      label: "Jev latency",
-      value: avgLatency === undefined ? "–" : int(avgLatency) + " ms",
-      sub: p95 === undefined ? "no calls yet" : `p95 ${int(p95)} ms`,
+      label: text("tile.latency.label", locale),
+      value: avgLatency === undefined ? "–" : int(avgLatency, locale) + " ms",
+      sub: p95 === undefined ? text("tile.latency.none", locale) : text("tile.latency.p95", locale, { value: int(p95, locale) }),
     },
-    { label: "Jev confidence", value: avgConfidence === undefined ? "–" : avgConfidence.toFixed(2), sub: "average of its picks" },
+    { label: text("tile.confidence.label", locale), value: avgConfidence === undefined ? "–" : formatDecimal(avgConfidence, locale), sub: text("tile.confidence.sub", locale) },
     {
-      label: "LLM input tokens",
-      value: int(sum(events, (event) => event.usage?.input)),
-      sub: `${pct(sum(events, (event) => event.usage?.cached), sum(events, (event) => event.usage?.input))} from cache`,
+      label: text("tile.input.label", locale),
+      value: int(sum(events, (event) => event.usage?.input), locale),
+      sub: text("tile.input.sub", locale, { percent: pct(sum(events, (event) => event.usage?.cached), sum(events, (event) => event.usage?.input), locale) }),
     },
-    { label: "LLM output tokens", value: int(sum(events, (event) => event.usage?.output)), sub: "across requests" },
+    { label: text("tile.output.label", locale), value: int(sum(events, (event) => event.usage?.output), locale), sub: text("tile.output.sub", locale) },
     {
-      label: "Jev input tokens",
-      value: int(tokens),
-      sub: `≈ $${((tokens / 1e6) * JEV_USD_PER_MILLION_INPUT_TOKENS).toFixed(4)}`,
+      label: text("tile.jevInput.label", locale),
+      value: int(tokens, locale),
+      sub: text("tile.jevInput.sub", locale, { value: formatDecimal((tokens / 1e6) * JEV_USD_PER_MILLION_INPUT_TOKENS, locale, 4) }),
     },
   ];
 }
@@ -181,7 +193,7 @@ export interface CompareRow {
 }
 
 /** The "Token use: with Jev routing vs. baseline" table. */
-export function compare(events: readonly RouteEvent[]): { rows: CompareRow[]; hasBaseline: boolean } {
+export function compare(events: readonly RouteEvent[], locale: Locale = localeFor()): { rows: CompareRow[]; hasBaseline: boolean } {
   const metered = events.filter((event) => event.usage);
   const groups = [metered.filter((event) => !baseline(event)), metered.filter(baseline)] as const;
   const per = (group: RouteEvent[], pick: (event: RouteEvent) => number | undefined) =>
@@ -190,14 +202,15 @@ export function compare(events: readonly RouteEvent[]): { rows: CompareRow[]; ha
     const input = sum(group, (event) => event.usage?.input);
     return input ? (100 * sum(group, (event) => event.usage?.cached)) / input : undefined;
   };
-  const measures: [string, (group: RouteEvent[]) => number | undefined, (value: number) => string][] = [
-    ["Requests metered", (group) => group.length, int],
-    ["Input / request", (group) => per(group, (event) => event.usage?.input), int],
-    ["…of which cached", cachedShare, (value) => Math.round(value) + "%"],
-    ["Output / request", (group) => per(group, (event) => event.usage?.output), int],
-    ["Seconds / request", (group) => per(group, (event) => event.durationMs / 1000), (value) => value.toFixed(1)],
-    ["Total input", (group) => sum(group, (event) => event.usage?.input), int],
-    ["Total output", (group) => sum(group, (event) => event.usage?.output), int],
+  const number = (value: number) => int(value, locale);
+  const measures: [LocaleKey, (group: RouteEvent[]) => number | undefined, (value: number) => string][] = [
+    ["compare.metered", (group) => group.length, number],
+    ["compare.input", (group) => per(group, (event) => event.usage?.input), number],
+    ["compare.cached", cachedShare, (value) => formatPercent(value, 100, locale)],
+    ["compare.output", (group) => per(group, (event) => event.usage?.output), number],
+    ["compare.seconds", (group) => per(group, (event) => event.durationMs / 1000), (value) => formatDecimal(value, locale, 1)],
+    ["compare.totalInput", (group) => sum(group, (event) => event.usage?.input), number],
+    ["compare.totalOutput", (group) => sum(group, (event) => event.usage?.output), number],
   ];
   const cell = (value: number | undefined, format: (value: number) => string) =>
     value === undefined || Number.isNaN(value) ? "–" : format(value);
@@ -207,21 +220,21 @@ export function compare(events: readonly RouteEvent[]): { rows: CompareRow[]; ha
     const comparable = index > 0 && index < 5 && withJev !== undefined && without;
     const delta = comparable ? (100 * (withJev - without)) / without : undefined;
     return {
-      label,
+      label: text(label, locale),
       withJev: cell(withJev, format),
       without: cell(without, format),
-      delta: delta === undefined || !Number.isFinite(delta) ? "" : (delta > 0 ? "+" : "") + Math.round(delta) + "%",
+      delta: delta === undefined || !Number.isFinite(delta) ? "" : (delta > 0 ? "+" : "") + formatPercent(delta, 100, locale),
     };
   });
   return { rows, hasBaseline: groups[1].length > 0 };
 }
 
 /** Why requests were not routed, most common first. */
-export function reasons(events: readonly RouteEvent[]): { name: string; count: number; who: string; meaning: string }[] {
+export function reasons(events: readonly RouteEvent[], locale: Locale = localeFor()): { name: string; count: number; who: string; meaning: string }[] {
   const passed = events.filter((event) => !routed(event));
   return tally(passed.map((event) => reasonKey(event.reason ?? "unknown"))).map(([name, count]) => {
-    const [who, meaning] = REASONS[name] ?? ["", ""];
-    return { name, count, who, meaning };
+    const [whoKey, meaningKey] = REASON_KEYS[name] ?? REASON_KEYS.unknown!;
+    return { name, count, who: text(whoKey, locale), meaning: text(meaningKey, locale) };
   });
 }
 

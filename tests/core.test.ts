@@ -210,6 +210,18 @@ describe("Jev transport", () => {
     expect(fixed.answers.tool).toMatchObject({ confidence: 0.8 });
   });
 
+  test("the provider response is narrowed before it becomes a router result", () => {
+    const fixed = normalize({
+      answers: {
+        invalidChoice: { type: "choice", choice: 42, confidence: 0.9 },
+        invalidNoul: { type: "noul", noul: "yes" },
+      },
+      usage: { input_tokens: -1, output_tokens: "many" },
+    });
+    expect(fixed).toEqual({ answers: {}, usage: { input_tokens: 0, output_tokens: 0 } });
+    expect(() => normalize(null, "pt")).toThrow("O provedor retornou uma resposta em formato inválido.");
+  });
+
   test("provider and model resolve per provider", () => {
     expect(resolveProvider({ OPENROUTER_API_KEY: "x" })).toBe("openrouter");
     expect(resolveProvider({ OPENROUTER_API_KEY: "x" }, "vercel")).toBe("vercel");
@@ -231,19 +243,19 @@ describe("Jev transport", () => {
 
   test("credentials come from the sensitive plugin option or the selected provider environment", () => {
     expect(resolveSettings({}, { TYPESAFE_API_KEY: "from-env" })).toMatchObject({ apiKey: "from-env", keySource: "environment" });
-    expect(resolveSettings({ api_key: "mine" }, { TYPESAFE_API_KEY: "from-env" })).toMatchObject({ apiKey: "mine", keySource: "plugin settings" });
+    expect(resolveSettings({ api_key: "mine" }, { TYPESAFE_API_KEY: "from-env" })).toMatchObject({ apiKey: "mine", keySource: "plugin" });
     expect(resolveSettings({ provider: "openrouter" }, { OPENROUTER_API_KEY: "or" })).toMatchObject({ provider: "openrouter", apiKey: "or" });
     expect(resolveSettings({ provider: "opencode", api_key: "secure-key" }, { TYPESAFE_API_KEY: "type-safe-env" })).toMatchObject({
       provider: "opencode",
       apiKey: "secure-key",
-      keySource: "plugin settings",
+      keySource: "plugin",
     });
     expect(resolveSettings({}, {})).toMatchObject({ apiKey: "", keySource: "none", minConfidence: 0.7, timeoutMs: 4000 });
     const storedProvider = { provider: "opencode" };
     expect(resolveSettings({ api_key: "mine", provider: "typesafe" }, { OPENCODE_API_KEY: "env" }, storedProvider)).toMatchObject({
       apiKey: "mine",
       provider: "opencode",
-      keySource: "plugin settings",
+      keySource: "plugin",
     });
   });
 });

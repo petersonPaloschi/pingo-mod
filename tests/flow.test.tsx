@@ -52,6 +52,15 @@ test("a live wave shows each subagent, the step and the counts", () => {
   for (const line of drawn.split("\n")) expect([...line].length).toBeLessThanOrEqual(60);
 });
 
+test("Flow includes a running subagent outside the latest completed wave", () => {
+  const agents = [run(1, "done"), run(2, "running")];
+  const flow = { ...FLOW, wave: [1], waveTurn: 1 };
+  const drawn = text(flowLines({ flow, agents, now: NOW, width: 72 }));
+  expect(drawn).toContain("group 2");
+  expect(drawn).toContain("step [check]");
+  expect(drawn).toContain("agents [1/2]");
+});
+
 test("the step follows the wave: check, review, fix, done", () => {
   const wave = [run(1, "done"), run(2, "done")];
   const flow = { ...FLOW, wave: [1, 2] };

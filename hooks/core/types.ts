@@ -49,3 +49,18 @@ export interface SystemOneResult {
   answers: Record<string, Answer>;
   usage: { input_tokens: number; output_tokens: number };
 }
+
+/** Untrusted provider fields are narrowed before normalize() builds SystemOneResult. */
+export interface SystemOneWireAnswer {
+  type?: unknown;
+  choice?: unknown;
+  confidence?: unknown;
+  probabilities?: unknown;
+  noul?: unknown;
+}
+
+export interface SystemOneWireResult {
+  model?: unknown;
+  answers?: Record<string, SystemOneWireAnswer>;
+  usage?: { input_tokens?: unknown; output_tokens?: unknown };
+}

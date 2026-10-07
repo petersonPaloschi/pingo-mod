@@ -7,13 +7,13 @@ import type { BrailleCell } from "../dots.ts";
 export type Mood = "routing" | "thinking" | "passthrough" | "failing" | "idle" | "baseline";
 type Eyes = "happy" | "spinner" | "pill" | "x" | "line" | "closed";
 
-export const MOODS: Record<Mood, { eyes: Eyes; color: number; face: string; label: string }> = {
-  routing: { eyes: "happy", color: DOT.route, face: "(^‿^)", label: "happy eyes: Jev picked the tool" },
-  thinking: { eyes: "spinner", color: DOT.ink, face: "(◌_◌)", label: "spinning eyes: asking Jev" },
-  passthrough: { eyes: "pill", color: DOT.pass, face: "( •_•)", label: "looking aside: Claude decides" },
-  failing: { eyes: "x", color: DOT.fail, face: "(×_×)", label: "crossed eyes: Jev is failing" },
-  idle: { eyes: "line", color: DOT.idle, face: "(–_–)", label: "flat eyes: nothing to do" },
-  baseline: { eyes: "closed", color: DOT.base, face: "(-_-)ᶻ", label: "asleep: routing is off" },
+export const MOODS: Record<Mood, { eyes: Eyes; color: number; face: string }> = {
+  routing: { eyes: "happy", color: DOT.route, face: "(^‿^)" },
+  thinking: { eyes: "spinner", color: DOT.ink, face: "(◌_◌)" },
+  passthrough: { eyes: "pill", color: DOT.pass, face: "( •_•)" },
+  failing: { eyes: "x", color: DOT.fail, face: "(×_×)" },
+  idle: { eyes: "line", color: DOT.idle, face: "(–_–)" },
+  baseline: { eyes: "closed", color: DOT.base, face: "(-_-)ᶻ" },
 };
 
 type Kind = "body" | "eye" | "ring";
