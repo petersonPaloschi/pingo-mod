@@ -1,0 +1,55 @@
+{
+  "title": "Relevance ranking — 10 \"where is X?\" questions over 187 hono source files",
+  "kind": "rank",
+  "input": "src",
+  "queries": {
+    "q1": "Where are cross-origin resource sharing (CORS) response headers configured?",
+    "q2": "Where is the maximum allowed request body size enforced?",
+    "q3": "Where are responses gzip/deflate compressed?",
+    "q4": "Where is the ETag header computed for responses?",
+    "q5": "Where are requests allowed or denied based on the client IP address?",
+    "q6": "Where is a unique identifier generated for each incoming request?",
+    "q7": "Where are headers such as Content-Security-Policy and X-Frame-Options set?",
+    "q8": "Where is a request aborted when the handler takes too long?",
+    "q9": "Where is the Server-Timing header produced?",
+    "q10": "Where are cookies parsed from and serialized into headers?"
+  },
+  "truth": {
+    "q1": [
+      "src/middleware/cors/index.ts"
+    ],
+    "q2": [
+      "src/middleware/body-limit/index.ts"
+    ],
+    "q3": [
+      "src/middleware/compress/index.ts"
+    ],
+    "q4": [
+      "src/middleware/etag/index.ts",
+      "src/middleware/etag/digest.ts"
+    ],
+    "q5": [
+      "src/middleware/ip-restriction/index.ts"
+    ],
+    "q6": [
+      "src/middleware/request-id/request-id.ts",
+      "src/middleware/request-id/index.ts"
+    ],
+    "q7": [
+      "src/middleware/secure-headers/secure-headers.ts",
+      "src/middleware/secure-headers/index.ts"
+    ],
+    "q8": [
+      "src/middleware/timeout/index.ts"
+    ],
+    "q9": [
+      "src/middleware/timing/timing.ts",
+      "src/middleware/timing/index.ts"
+    ],
+    "q10": [
+      "src/utils/cookie.ts",
+      "src/helper/cookie/index.ts"
+    ]
+  },
+  "source": "https://github.com/honojs/hono"
+}

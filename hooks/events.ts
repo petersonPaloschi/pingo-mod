@@ -2,8 +2,10 @@
 // only (no prompts, arguments or keys).
 import type { RouteEvent } from "../types";
 import { formatAge, formatDecimal, formatNumber, formatPercent, localeFor, reasonTitle, text, type Locale, type LocaleKey } from "./i18n.ts";
+import { isJevFailure, reasonCode } from "./core/reasons.ts";
 
 export type { RouteEvent };
+export const reasonKey = reasonCode;
 
 export const KEPT_EVENTS = 500;
 export const IDLE_MS = 5 * 60 * 1000;
@@ -51,10 +53,7 @@ const REASON_KEYS: Record<string, readonly [LocaleKey, LocaleKey]> = {
   unknown: ["reason.who.notAsked", "reason.unknown.meaning"],
 };
 
-export const reasonKey = (reason: string) =>
-  ["jev_error", "router_error"].find((prefix) => reason.startsWith(prefix)) ?? reason;
-export const failed = (event: RouteEvent) =>
-  event.mode === "passthrough" && ["jev_error", "jev_unexpected_answer"].includes(reasonKey(event.reason ?? ""));
+export const failed = (event: RouteEvent) => event.mode === "passthrough" && isJevFailure(event.reason ?? "");
 export const category = (event: RouteEvent): Category => (failed(event) ? "failed" : event.mode);
 export const routed = (event: RouteEvent) => event.mode !== "passthrough";
 export const baseline = (event: RouteEvent) => event.reason === "routing_disabled";
@@ -132,7 +131,7 @@ export function status(events: readonly RouteEvent[], routing: boolean, now: num
       }),
     };
   }
-  const reasons = tally(recent.map((event) => reasonKey(event.reason ?? "unknown")));
+  const reasons = tally(recent.map((event) => reasonCode(event.reason ?? "unknown")));
   return {
     kind: "passthrough",
     icon: "→",
@@ -234,7 +233,7 @@ export function compare(events: readonly RouteEvent[], locale: Locale = localeFo
 /** Why requests were not routed, most common first. */
 export function reasons(events: readonly RouteEvent[], locale: Locale = localeFor()): { name: string; count: number; who: string; meaning: string }[] {
   const passed = events.filter((event) => !routed(event));
-  return tally(passed.map((event) => reasonKey(event.reason ?? "unknown"))).map(([name, count]) => {
+  return tally(passed.map((event) => reasonCode(event.reason ?? "unknown"))).map(([name, count]) => {
     const [whoKey, meaningKey] = REASON_KEYS[name] ?? REASON_KEYS.unknown!;
     return { name, count, who: text(whoKey, locale), meaning: text(meaningKey, locale) };
   });

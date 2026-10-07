@@ -11,8 +11,8 @@ import path from "node:path";
 import { resolveSettings, storedApplies, type ModOptions, type StoredSettings } from "../hooks/config.ts";
 import { createAskJev, PROVIDERS, resolveModel, validateKey, type Transport } from "../hooks/core/jev.ts";
 import {
-  batches, classifyQuestion, clip, f2, filterQuestion, findHits, findRequest, footer, groupRequest, label, num, parseArgs,
-  parseLabels, rankQuestion, relevance, renderAnswer, renderClassify, renderFilter, estTokens,
+  addRun, batches, classifyQuestion, clip, f2, filterQuestion, findHits, findRequest, footer, groupRequest, label, num, parseArgs,
+  parseLabels, rankQuestion, relevance, renderAnswer, renderClassify, renderFilter, renderTally, estTokens, toTally,
   type Flags, type Item, type Labeled, type MakeQuestion, type RunStats, type Scored,
 } from "../hooks/core/sift.ts";
 import type { Answer, Json, SystemOneRequest, SystemOneResult } from "../hooks/core/types.ts";
@@ -318,9 +318,28 @@ function save(flags: Flags, data: unknown): string {
   return `\n— full results saved to ${flags.save}`;
 }
 
-/** Every request failed: nothing above is a verdict, so the exit code says so. */
-function finish(stats: RunStats) {
-  if (stats.scanned && stats.failed.length >= stats.scanned) process.exitCode = 5;
+/**
+ * Lifetime totals live beside Claude Code's plugin data, in a folder of their own: Claude Code names
+ * the plugin's folder after how it was installed, and sift also runs from plain shells without that path.
+ * SIFT_STATS moves it, so the benchmark measures its own runs without touching the user's totals.
+ */
+const tallyFile = () => process.env.SIFT_STATS || path.join(configDir(), "plugins", "data", "jev-sift", "stats.json");
+
+function readTally(): unknown {
+  try { return JSON.parse(fs.readFileSync(tallyFile(), "utf8")); } catch { return undefined; }
+}
+
+/** Every request failed: nothing above is a verdict, so the exit code says so. Otherwise the run joins the tally. */
+function finish(stats: RunStats, output: string, allFailed = stats.scanned > 0 && stats.failed.length >= stats.scanned) {
+  if (allFailed) {
+    process.exitCode = 5;
+    return;
+  }
+  try {
+    const file = tallyFile();
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, `${JSON.stringify(addRun(readTally(), stats, output, new Date().toISOString()), null, 2)}\n`);
+  } catch {}
 }
 
 // --- Commands ---
@@ -339,7 +358,7 @@ async function cmdFilter(pos: string[], flags: Flags) {
   const foot = footer(stats, [`${matched.length} matched`, `${borderline.length} borderline`], lines.join("\n")) + saved;
   const shown = (rows: Scored[]) => rows.map((row) => ({ id: row.item.id, p: row.score }));
   emit(flags, { matched: shown(matched), borderline: shown(borderline), failed: run.failed }, lines, foot);
-  finish(stats);
+  finish(stats, lines.join("\n"));
 }
 
 function labelsFrom(flags: Flags): Record<string, Json> {
@@ -366,7 +385,7 @@ async function cmdClassify(pos: string[], flags: Flags) {
   const saved = save(flags, labeled.map((row) => ({ id: row.item.id, label: row.answer.choice, confidence: row.answer.confidence })));
   const foot = footer(stats, [`${low.length} low-confidence (?)`], lines.join("\n")) + saved;
   emit(flags, labeled.map((row) => ({ id: row.item.id, label: row.answer.choice, confidence: row.answer.confidence, probabilities: row.answer.probabilities })), lines, foot);
-  finish(stats);
+  finish(stats, lines.join("\n"));
 }
 
 async function cmdRank(pos: string[], flags: Flags) {
@@ -384,7 +403,7 @@ async function cmdRank(pos: string[], flags: Flags) {
   const saved = save(flags, scored.map((row) => ({ id: row.item.id, relevance: row.score, confidence: row.confidence })));
   const foot = footer(stats, [`top ${shown.length}`], lines.join("\n")) + saved;
   emit(flags, shown.map((row) => ({ id: row.item.id, relevance: row.score, confidence: row.confidence })), lines, foot);
-  finish(stats);
+  finish(stats, lines.join("\n"));
 }
 
 async function cmdFind(pos: string[], flags: Flags) {
@@ -421,7 +440,7 @@ async function cmdFind(pos: string[], flags: Flags) {
   const stats = { ...newStats(provider, files, skipped), jevTokens: counter.jevTokens, failed, seconds: (Date.now() - started) / 1000 };
   const foot = footer(stats, [`${chunks.length} chunks`], lines.join("\n")) + save(flags, allHits);
   emit(flags, hits, lines, foot);
-  if (chunks.length && failed.length >= chunks.length) process.exitCode = 5;
+  finish(stats, lines.join("\n"), chunks.length > 0 && failed.length >= chunks.length);
 }
 
 function stateArg(value: string | true | undefined, flags: Flags): string | undefined {
@@ -463,7 +482,7 @@ async function cmdAsk(pos: string[], flags: Flags) {
   const stateText = JSON.stringify(request.state);
   const stats: RunStats = { scanned: 1, contentTokens: estTokens(stateText), jevTokens: counter.jevTokens, seconds: (Date.now() - started) / 1000, provider, failed: [], skipped: [] };
   emit(flags, result, lines, footer(stats, [], lines.join("\n"), false) + save(flags, result));
-  if (!Object.keys(result.answers).length) process.exitCode = 5;
+  finish(stats, lines.join("\n"), !Object.keys(result.answers).length);
 }
 
 async function cmdStatus(flags: Flags) {
@@ -473,11 +492,13 @@ async function cmdStatus(flags: Flags) {
   const check = await validateKey(config.provider, config.apiKey, transport, config.jevModel, config.locale);
   if (!check.ok) fail(`${info.label} · key from ${config.source} · ${check.message}`, check.refused ? 3 : 5);
   console.log(`ready · ${info.label} · key from ${config.source} · model ${config.jevModel} · ${check.ms} ms`);
+  const tally = toTally(readTally());
+  if (tally) console.log(renderTally(tally));
 }
 
 const HELP = `sift — hand bulk judgment calls to Jev, read back a shortlist
 
-  status                               check the provider, key and model
+  status                               check the provider, key and model; show lifetime savings
   filter "<yes/no question>" <inputs>  keep only items where the answer is yes
   classify --labels "a,b,c" <inputs>   put each item in one bucket
   rank "<query>" <inputs> [--top N]    order items by relevance

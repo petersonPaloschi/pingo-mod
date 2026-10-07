@@ -1,0 +1,67 @@
+{
+  "s08": {
+    "tokens": 77587,
+    "toolUses": 2,
+    "seconds": 35.9
+  },
+  "s02": {
+    "tokens": 121944,
+    "toolUses": 8,
+    "seconds": 61.3
+  },
+  "s06": {
+    "tokens": 94912,
+    "toolUses": 13,
+    "seconds": 48.6
+  },
+  "s12": {
+    "tokens": 78656,
+    "toolUses": 2,
+    "seconds": 24.9
+  },
+  "s03": {
+    "tokens": 83451,
+    "toolUses": 2,
+    "seconds": 65.3
+  },
+  "s09": {
+    "tokens": 77495,
+    "toolUses": 17,
+    "seconds": 44.6
+  },
+  "s07": {
+    "tokens": 78023,
+    "toolUses": 40,
+    "seconds": 53.9
+  },
+  "s04": {
+    "tokens": 88833,
+    "toolUses": 2,
+    "seconds": 66.4
+  },
+  "s10": {
+    "tokens": 107913,
+    "toolUses": 32,
+    "seconds": 65.3
+  },
+  "s05": {
+    "tokens": 88023,
+    "toolUses": 2,
+    "seconds": 90.9
+  },
+  "control": {
+    "tokens": 68483,
+    "toolUses": 2,
+    "seconds": 5.6
+  },
+  "s01": {
+    "tokens": 152921,
+    "toolUses": 15,
+    "seconds": 110.2
+  },
+  "s11": {
+    "tokens": 85939,
+    "toolUses": 2,
+    "seconds": 111.7
+  }
+}

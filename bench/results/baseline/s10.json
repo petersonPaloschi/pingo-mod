@@ -1,0 +1,12 @@
+{"top3": {
+  "q1": ["src/middleware/cors/index.ts", "src/context.ts", "src/utils/headers.ts"],
+  "q2": ["src/middleware/body-limit/index.ts", "src/request.ts", "src/utils/headers.ts"],
+  "q3": ["src/middleware/compress/index.ts", "src/utils/compress.ts", "src/middleware/etag/index.ts"],
+  "q4": ["src/middleware/etag/index.ts", "src/middleware/etag/digest.ts", "src/middleware/compress/index.ts"],
+  "q5": ["src/middleware/ip-restriction/index.ts", "src/utils/ipaddr.ts", "src/helper/conninfo/index.ts"],
+  "q6": ["src/middleware/request-id/request-id.ts", "src/middleware/request-id/index.ts", "src/context.ts"],
+  "q7": ["src/middleware/secure-headers/secure-headers.ts", "src/middleware/secure-headers/permissions-policy.ts", "src/utils/encode.ts"],
+  "q8": ["src/middleware/timeout/index.ts", "src/http-exception.ts", "src/compose.ts"],
+  "q9": ["src/middleware/timing/timing.ts", "src/context.ts", "src/utils/headers.ts"],
+  "q10": ["src/utils/cookie.ts", "src/helper/cookie/index.ts", "src/context.ts"]
+}}

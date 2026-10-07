@@ -1,0 +1,26 @@
+{
+  "title": "Codebase discovery — honojs/hono, 187 real source files: which implement request authentication?",
+  "kind": "filter-files",
+  "input": "src",
+  "question": "Is this file a middleware that authenticates incoming requests by verifying credentials or tokens (for example passwords, bearer tokens, or JWTs)?",
+  "truth": [
+    "src/middleware/basic-auth/index.ts",
+    "src/middleware/bearer-auth/index.ts",
+    "src/middleware/jwt/jwt.ts",
+    "src/middleware/jwk/jwk.ts"
+  ],
+  "neutral": [
+    "src/middleware/jwt/index.ts",
+    "src/middleware/jwk/index.ts",
+    "src/utils/basic-auth.ts",
+    "src/middleware/csrf/index.ts",
+    "src/middleware/ip-restriction/index.ts",
+    "src/utils/jwt/index.ts",
+    "src/utils/jwt/jwa.ts",
+    "src/utils/jwt/jws.ts",
+    "src/utils/jwt/jwt.ts",
+    "src/utils/jwt/types.ts",
+    "src/utils/jwt/utf8.ts"
+  ],
+  "source": "https://github.com/honojs/hono"
+}

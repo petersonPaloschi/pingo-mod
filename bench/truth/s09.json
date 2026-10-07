@@ -1,0 +1,60 @@
+{
+  "title": "Semantic search in a huge file — lodash.js (17,209 lines), 10 behaviour-described lookups",
+  "kind": "find",
+  "input": "lodash.js",
+  "queries": {
+    "debounce": "delays calling a function until a wait period has passed since the last time it was called",
+    "throttle": "invokes a function at most once per every wait milliseconds",
+    "cloneDeep": "creates a recursive deep copy of a value",
+    "isEqual": "performs a deep comparison between two values to determine whether they are equivalent",
+    "chunk": "splits an array into groups of a given size",
+    "once": "restricts a function so it can only run one time, returning the first result on repeated calls",
+    "memoize": "caches the results of a function keyed by its arguments",
+    "kebabCase": "converts a string into lowercase words joined by dashes",
+    "get": "reads the value at a property path of an object, returning a default when the result is undefined",
+    "flattenDeep": "recursively flattens a nested array all the way down"
+  },
+  "truth": {
+    "debounce": [
+      10318,
+      10402
+    ],
+    "throttle": [
+      10921,
+      10995
+    ],
+    "cloneDeep": [
+      11137,
+      11185
+    ],
+    "isEqual": [
+      11571,
+      11629
+    ],
+    "chunk": [
+      6882,
+      6933
+    ],
+    "once": [
+      10667,
+      10715
+    ],
+    "memoize": [
+      10564,
+      10638
+    ],
+    "kebabCase": [
+      14348,
+      14399
+    ],
+    "get": [
+      13169,
+      13224
+    ],
+    "flattenDeep": [
+      7394,
+      7438
+    ]
+  },
+  "source": "https://github.com/lodash/lodash/blob/4.17.21/lodash.js"
+}

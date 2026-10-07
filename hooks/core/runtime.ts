@@ -1,4 +1,5 @@
 import { modelTier, supportsEffort, type Effort, type FeatureId, type Features } from "./plan.ts";
+import { gateReason } from "./reasons.ts";
 
 /** The same live gate is used when planning, sending requests and showing results. */
 export interface FeatureContext {
@@ -8,7 +9,7 @@ export interface FeatureContext {
 }
 
 export function featureGate(ctx: FeatureContext, feature?: FeatureId): "routing_disabled" | "no_api_key" | "feature_off" | undefined {
-  return !ctx.routing ? "routing_disabled" : !ctx.hasKey ? "no_api_key" : feature && !ctx.features[feature] ? "feature_off" : undefined;
+  return gateReason(ctx.routing, ctx.hasKey) ?? (feature && !ctx.features[feature] ? "feature_off" : undefined);
 }
 
 export interface RequestPlan {
@@ -77,6 +78,6 @@ export function withHint(context: readonly string[] | undefined, hint: string): 
   return [...(context ?? []), `<system-reminder>${hint}</system-reminder>`];
 }
 
-export function totalInput(usage: { input_tokens: number; cache_read_input_tokens?: number; cache_creation_input_tokens?: number } | null | undefined): number {
+export function totalInput(usage: { input_tokens: number; cache_read_input_tokens?: number | null; cache_creation_input_tokens?: number | null } | null | undefined): number {
   return usage ? usage.input_tokens + (usage.cache_read_input_tokens ?? 0) + (usage.cache_creation_input_tokens ?? 0) : 0;
 }

@@ -1,5 +1,6 @@
 import { en } from "./strings/en.ts";
 import { pt } from "./strings/pt.ts";
+import { reasonCode } from "./core/reasons.ts";
 
 export type Locale = "en" | "pt";
 export type LocaleOption = "auto" | Locale;
@@ -23,8 +24,7 @@ export function text<K extends LocaleKey>(key: K, locale: Locale = localeFor(), 
 }
 
 export function reasonTitle(reason: string, locale: Locale = localeFor()): string {
-  const code = reason.startsWith("jev_error") ? "jev_error" : reason.startsWith("router_error") ? "router_error" : reason;
-  const key = ("reason." + code + ".title") as LocaleKey;
+  const key = ("reason." + reasonCode(reason) + ".title") as LocaleKey;
   return key in en ? text(key, locale) : text("reason.unknown.title", locale);
 }
 

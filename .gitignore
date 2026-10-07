@@ -3,6 +3,9 @@ tsconfig.json
 node_modules/
 dist/
 coverage/
+# Sift benchmark inputs (rebuilt by bench/build.mjs) and its scratch file.
+bench/data/
+bench/results/.last-save.json
 .env
 .env.*
 .envrc

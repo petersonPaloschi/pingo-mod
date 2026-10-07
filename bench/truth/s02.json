@@ -1,0 +1,15 @@
+{
+  "title": "Needles in a noisy service log — 3,000 lines, 6 real incidents, decoys mentioning memory/disk/TLS/retries",
+  "kind": "filter-lines",
+  "input": "service.log",
+  "question": "Does this log line report an actual failure or crash (not a routine status, metric, warning, or successful retry)?",
+  "truth": [
+    413,
+    977,
+    1520,
+    2011,
+    2604,
+    2890
+  ],
+  "source": "synthetic"
+}

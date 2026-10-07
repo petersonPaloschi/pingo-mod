@@ -266,10 +266,15 @@ export interface RunStats {
   skipped: string[];
 }
 
+/** Roughly the tokens Claude would have read without sift: the content judged minus the shortlist printed. */
+export const savedTokens = (stats: RunStats, output: string) => Math.max(0, stats.contentTokens - estTokens(output));
+
+const price = (tokens: number) => `$${(tokens * TYPESAFE_PRICE_PER_TOKEN).toFixed(4)}`;
+
 /** The summary line: what was judged, what it cost, and roughly what Claude did not have to read. */
 export function footer(stats: RunStats, extra: string[], output: string, scanned = true): string {
-  const saved = Math.max(0, stats.contentTokens - estTokens(output));
-  const cost = stats.provider === "typesafe" ? ` ($${(stats.jevTokens * TYPESAFE_PRICE_PER_TOKEN).toFixed(4)})` : "";
+  const saved = savedTokens(stats, output);
+  const cost = stats.provider === "typesafe" ? ` (${price(stats.jevTokens)})` : "";
   const parts = [
     ...(scanned ? [`${stats.scanned} scanned`] : []),
     ...extra,
@@ -284,4 +289,54 @@ export function footer(stats: RunStats, extra: string[], output: string, scanned
   }
   if (stats.skipped.length) text += `\n— skipped ${stats.skipped.length}: ${clip(stats.skipped.join(", "), 400)}`;
   return text;
+}
+
+// --- Lifetime tally ---
+
+/** Totals across every run that judged something, kept on disk by the script and shown by `sift status`. */
+export interface Tally {
+  since: string;
+  runs: number;
+  items: number;
+  jevTokens: number;
+  /** The share of jevTokens billed by TypeSafe, the only provider with a known price. */
+  typesafeTokens: number;
+  saved: number;
+}
+
+const count = (value: unknown) => (typeof value === "number" && Number.isFinite(value) && value > 0 ? value : 0);
+
+/** A tally read from disk, or undefined when it is missing or not one. */
+export function toTally(raw: unknown): Tally | undefined {
+  if (!raw || typeof raw !== "object") return undefined;
+  const old = raw as Partial<Record<keyof Tally, unknown>>;
+  if (typeof old.since !== "string" || !old.since) return undefined;
+  return {
+    since: old.since,
+    runs: count(old.runs),
+    items: count(old.items),
+    jevTokens: count(old.jevTokens),
+    typesafeTokens: count(old.typesafeTokens),
+    saved: count(old.saved),
+  };
+}
+
+/** The tally with one more run; a missing or damaged tally starts over at `now`. */
+export function addRun(previous: unknown, stats: RunStats, output: string, now: string): Tally {
+  const old = toTally(previous) ?? { since: now, runs: 0, items: 0, jevTokens: 0, typesafeTokens: 0, saved: 0 };
+  return {
+    since: old.since,
+    runs: old.runs + 1,
+    items: old.items + Math.max(0, stats.scanned - stats.failed.length),
+    jevTokens: old.jevTokens + stats.jevTokens,
+    typesafeTokens: old.typesafeTokens + (stats.provider === "typesafe" ? stats.jevTokens : 0),
+    saved: old.saved + savedTokens(stats, output),
+  };
+}
+
+/** One line of lifetime savings; the cost names TypeSafe when other providers ran too. */
+export function renderTally(tally: Tally): string {
+  const cost = !tally.typesafeTokens ? "" : tally.typesafeTokens === tally.jevTokens ? ` (${price(tally.typesafeTokens)})` : ` (${price(tally.typesafeTokens)} on TypeSafe)`;
+  const runs = `${tally.runs} ${tally.runs === 1 ? "run" : "runs"}`;
+  return `since ${tally.since.slice(0, 10)}: ${runs} · ${fmtK(tally.items)} items judged · jev ${fmtK(tally.jevTokens)} tok${cost} · ~${fmtK(tally.saved)} Claude tokens not read`;
 }

@@ -1,4 +1,5 @@
 import type { SystemOneRequest, SystemOneResult } from "./types.ts";
+import { jevErrorReason } from "./reasons.ts";
 
 export type AskJev = (request: SystemOneRequest) => Promise<SystemOneResult>;
 
@@ -17,7 +18,7 @@ export async function askTimed(
   try {
     result = await askJev(request);
   } catch (error) {
-    return { failure: `jev_error: ${error instanceof Error ? error.message : String(error)}` };
+    return { failure: jevErrorReason(error) };
   }
   return { result, latencyMs: Math.round(now() - startedAt) };
 }

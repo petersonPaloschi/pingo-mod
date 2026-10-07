@@ -115,6 +115,7 @@ The implementation shares its policies across these features:
 
 - `types/index.d.ts` defines the canonical feature schema in the self-contained public contract required by Claude Code. `hooks/core/contracts.ts` reuses it and defines the accepted, held and unavailable decision DTOs used by planning and the dashboard.
 - `hooks/core/request.ts` provides the timed, fail-open Jev call used by tool routing, shortlisting, turn planning and subagent planning. Provider retries and the timeout budget remain in the shared provider transport.
+- `hooks/core/reasons.ts` provides reason codes, failure classification and the routing/key gate used by every layer.
 - `hooks/core/selection.ts` validates offered choices and confidence once. A shared model parser in `hooks/core/plan.ts` determines family and effort support.
 - `hooks/core/runtime.ts` gates features and resolves the model and effort from the actual request. It also provides the shared hint wrapper and input-token calculation.
 - `hooks/watch.ts` presents normalized decisions and settles them against the request sent; it does not reinterpret raw Jev answers.
@@ -134,7 +135,7 @@ Sift requires **Node 22.18 or newer** and no additional dependencies. In the tab
 | `sift rank "<query>" <inputs>` | Order items by relevance to a query. |
 | `sift find "<what>" <files>` | Locate the matching lines inside large files. |
 | `sift ask "<question>" --state @file` | One yes/no or `--choice` answer over a document, or a raw `{state, questions}` spec. |
-| `sift status` | Check the provider, key source, and model with one real call. |
+| `sift status` | Check the provider, key source, and model with one real call, and show lifetime totals for runs, judged items, Jev tokens and estimated Claude tokens not read. |
 
 For example:
 
