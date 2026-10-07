@@ -1,0 +1,17 @@
+{
+  "title": "Security review shortlist — 40 files, 8 planted vulnerabilities next to safe look-alikes",
+  "kind": "filter-files",
+  "input": "app",
+  "question": "Does this code contain an exploitable security vulnerability (such as injection, path traversal, XSS, SSRF, unsafe deserialization, hardcoded secrets, or weak password hashing)?",
+  "truth": [
+    "app/api/users.ts",
+    "app/api/convert.ts",
+    "app/api/download.ts",
+    "app/web/comments.ts",
+    "app/config/aws.ts",
+    "app/jobs/import.py",
+    "app/api/preview.ts",
+    "app/auth/password.ts"
+  ],
+  "source": "synthetic"
+}

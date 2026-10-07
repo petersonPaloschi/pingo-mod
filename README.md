@@ -124,7 +124,7 @@ The plugin also ships the **`sift`** skill. When Claude is about to read many fi
 | `sift ask "<question>" --state @file` | One yes/no or `--choice` answer over a document, or a raw `{state, questions}` spec. |
 | `sift status` | Check the provider, key source, and model with one real call, and show the lifetime totals: runs, items judged, Jev tokens, and Claude tokens not read. |
 
-Sift uses the same provider, key, and model as routing: the key saved by `/jev setup`, the plugin options, then the provider environment variables. It runs outside the mod with Node 22.18 or newer, does not depend on the routing switch or features, and does not appear in the dashboard beyond its Bash call. Results are a shortlist, not proof: Claude is told to open the survivors and read the `?` items itself. Sift adapts [Quicksilver](https://github.com/UditAkhourii/quicksilver)'s approach to Pingo's providers and credentials.
+Sift uses the same provider, key, and model as routing: the key saved by `/jev setup`, the plugin options, then the provider environment variables. It runs outside the mod with Node 22.18 or newer, does not depend on the routing switch or features, and does not appear in the dashboard beyond its Bash call. Results are a shortlist, not proof: Claude is told to open the survivors and read the `?` items itself. Sift adapts [Quicksilver](https://github.com/UditAkhourii/quicksilver)'s approach to Pingo's providers and credentials. Its twelve-situation benchmark, which scores sift against a recorded Claude-alone baseline, lives in [`bench/`](bench/README.md).
 
 ## Dashboard and visual language
 

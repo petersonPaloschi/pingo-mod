@@ -306,8 +306,9 @@ function save(flags: Flags, data: unknown): string {
 /**
  * Lifetime totals live beside Claude Code's plugin data, in a folder of their own: Claude Code names
  * the plugin's folder after how it was installed, and sift also runs from plain shells without that path.
+ * SIFT_STATS moves it, so the benchmark measures its own runs without touching the user's totals.
  */
-const tallyFile = () => path.join(configDir(), "plugins", "data", "jev-sift", "stats.json");
+const tallyFile = () => process.env.SIFT_STATS || path.join(configDir(), "plugins", "data", "jev-sift", "stats.json");
 
 function readTally(): unknown {
   try { return JSON.parse(fs.readFileSync(tallyFile(), "utf8")); } catch { return undefined; }
