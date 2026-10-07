@@ -1,0 +1,38 @@
+name: Bug report
+description: Report a reproducible problem
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: "Do not include API keys, private keys, conversation data, or other sensitive information."
+  - type: input
+    id: version
+    attributes:
+      label: Claude Code and plugin version
+      description: Include the Claude Code version and the plugin version or commit.
+      placeholder: Claude Code 2.1.292
+    validations:
+      required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: What happened?
+      description: Describe the behavior and what you expected instead.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      description: Use a minimal example with test data.
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs
+      description: Remove credentials, private data, and conversation content before sharing.
+      render: text
+    validations:
+      required: false

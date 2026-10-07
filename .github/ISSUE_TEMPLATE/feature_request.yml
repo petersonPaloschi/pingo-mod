@@ -1,0 +1,22 @@
+name: Feature request
+description: Suggest an improvement
+title: "[Feature]: "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: "Do not include API keys, private keys, conversation data, or other sensitive information."
+  - type: textarea
+    id: need
+    attributes:
+      label: What problem would this solve?
+      description: Describe the use case and who benefits.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What would you like to happen?
+      description: Suggest a behavior or workflow.
+    validations:
+      required: true
