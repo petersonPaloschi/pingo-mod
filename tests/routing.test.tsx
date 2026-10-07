@@ -212,7 +212,7 @@ describe("routing in a session", () => {
     expect(await ui.find({ type: "Text", text: /“Done\.”/ })).toBeDefined();
     // Each speaker is named in the gutter: Jev and Claude.
     expect(await ui.find({ type: "Text", text: /^\(\^‿\^\)\s+Jev\s*$/ })).toBeDefined();
-    expect(await ui.find({ type: "Text", text: /^✻\s+Claude\s*$/ })).toBeDefined();
+    expect(await ui.find({ type: "Text", text: /^\s*Claude\s*$/ })).toBeDefined();
     await ui.unmount();
   });
 

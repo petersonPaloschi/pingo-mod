@@ -18,9 +18,53 @@ export type RouteEvent = {
   effort?: string;
   /** What Jev changed for it, in a few words ("model sonnet · effort low"). */
   plan?: string;
+  /** The observed cause when Jev failed or its answer was unusable: a message, never a key or a prompt. */
+  error?: string;
 };
 
-export type JevTab = "overview" | "live" | "agents" | "flow" | "reasons" | "baseline" | "log" | "features" | "setup";
+export type JevTab = "overview" | "live" | "models" | "agents" | "flow" | "reasons" | "baseline" | "log" | "features" | "setup";
+
+/** The functions Jev can decide a turn's plan with, in the order the Models tab lists them. */
+export type FnId = "participation" | "tools" | "model" | "effort" | "delegation";
+
+/**
+ * What one function did for one turn. `why` is a code the pane words in the person's language
+ * (a ModelReason, "user_model", "model_id", "blocked", "same_model", "feature_off", "routing_disabled",
+ * "no_api_key", "jev_error", "low_confidence", "haiku_no_effort", "no_delegation", ...).
+ */
+export type FnResult = {
+  id: FnId;
+  /** applied: changed something; kept: Jev wanted a change that was held back; none: Jev had nothing to change; off: not asked; failed: Jev could not answer. */
+  result: "applied" | "kept" | "none" | "off" | "failed";
+  why?: string;
+  /** What Jev chose: a tool, a model id, an effort, a subagent type, or the participation share. */
+  value?: string;
+  /** What was in place before: the model or effort the turn would have run on. */
+  from?: string;
+  /** Jev's confidence in `value`, and the confidence it needed to count. */
+  confidence?: number;
+  needed?: number;
+};
+
+/** One routing point: what Jev was asked at a prompt and what each function came to. */
+export type TurnDecision = {
+  seq: number;
+  time: number;
+  /** Main-loop turns seen this session, as FlowState.turn counts them. */
+  turn: number;
+  consulted: boolean;
+  latencyMs?: number;
+  fns: FnResult[];
+  /** The turn's first model request has been sent, so the model result is final. */
+  settled: boolean;
+};
+
+/** The Models tab: the latest routing points, newest last. */
+export type WatchState = {
+  turns: TurnDecision[];
+  /** The highest TurnDecision.seq handed out. */
+  count: number;
+};
 
 /** The Flow tab: the latest batch of subagents, from the prompt that sent them to the edits after. */
 export type FlowState = {
@@ -155,6 +199,7 @@ declare module "claude-code" {
       /** The highest AgentRun.n handed out this session: numbers are never reused. */
       agentCount: number;
       flow: FlowState;
+      watch: WatchState;
       scroll: PaneScroll;
     };
   }

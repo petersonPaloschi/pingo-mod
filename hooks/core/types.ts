@@ -57,6 +57,8 @@ export interface SystemOneResult {
   model?: string;
   answers: Record<string, Answer>;
   usage: { input_tokens: number; output_tokens: number };
+  /** Answers the reply carried that could not be used, and why: for the failure the router reports. */
+  dropped?: { name: string; why: string }[];
 }
 
 /** Untrusted provider fields are narrowed before normalize() builds SystemOneResult. */

@@ -218,7 +218,11 @@ describe("Jev transport", () => {
       },
       usage: { input_tokens: -1, output_tokens: "many" },
     });
-    expect(fixed).toEqual({ answers: {}, usage: { input_tokens: 0, output_tokens: 0 } });
+    expect(fixed).toEqual({
+      answers: {},
+      usage: { input_tokens: 0, output_tokens: 0 },
+      dropped: [{ name: "invalidChoice", why: "malformed" }, { name: "invalidNoul", why: "malformed" }],
+    });
     expect(() => normalize(null, "pt")).toThrow("O provedor retornou uma resposta em formato inválido.");
   });
 

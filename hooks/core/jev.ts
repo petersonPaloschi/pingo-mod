@@ -123,22 +123,26 @@ export function normalize(value: unknown, locale?: Locale): SystemOneResult {
   const result = record(value) as SystemOneWireResult | undefined;
   if (!result) throw new Error(text("provider.invalidResponse", locale));
   const answers: Record<string, Answer> = Object.create(null);
+  const dropped: { name: string; why: string }[] = [];
   for (const [name, raw] of Object.entries(record(result.answers) ?? {})) {
     const answer = record(raw);
+    const malformed = () => void dropped.push({ name, why: "malformed" });
     if (answer?.type === "choice" && typeof answer.choice === "string") {
       // Confidence measures the distribution's concentration; a winning probability cannot replace it.
       const confidence = answer.confidence;
       const rawProbabilities = record(answer.probabilities);
-      if (!share(confidence) || !rawProbabilities) continue;
+      if (!share(confidence) || !rawProbabilities) { malformed(); continue; }
       const values = Object.values(rawProbabilities);
-      if (!values.length || !values.every(share)) continue;
+      if (!values.length || !values.every(share)) { malformed(); continue; }
       const probabilities = rawProbabilities as Record<string, number>;
       // Allow small rounding errors without rewriting the provider's probabilities.
-      if (Math.abs(values.reduce((sum, probability) => sum + probability, 0) - 1) > 0.01) continue;
-      if (!Object.hasOwn(probabilities, answer.choice) || probabilities[answer.choice]! < Math.max(...values)) continue;
+      if (Math.abs(values.reduce((sum, probability) => sum + probability, 0) - 1) > 0.01) { malformed(); continue; }
+      if (!Object.hasOwn(probabilities, answer.choice) || probabilities[answer.choice]! < Math.max(...values)) { malformed(); continue; }
       answers[name] = { type: "choice", choice: answer.choice, confidence, probabilities };
     } else if (answer?.type === "noul" && share(answer.noul)) {
       answers[name] = { type: "noul", noul: answer.noul };
+    } else {
+      malformed();
     }
   }
   const usage = record(result.usage);
@@ -147,6 +151,7 @@ export function normalize(value: unknown, locale?: Locale): SystemOneResult {
     ...(typeof result.model === "string" ? { model: result.model } : {}),
     answers,
     usage: { input_tokens: tokens("input_tokens"), output_tokens: tokens("output_tokens") },
+    ...(dropped.length ? { dropped } : {}),
   };
 }
 
@@ -203,13 +208,16 @@ export function createAskJev(settings: JevSettings, transport: Transport): AskJe
     }
     try {
       const result = normalize(parsed, settings.locale);
+      const unusable: { name: string; why: string }[] = [];
       for (const [name, answer] of Object.entries(result.answers)) {
         const question = Object.hasOwn(request.questions, name) ? request.questions[name] : undefined;
         if (!question || question.type !== answer.type || (answer.type === "choice" && question.type === "choice" &&
           (!Object.hasOwn(question.criteria, answer.choice) || Object.keys(answer.probabilities).some((option) => !Object.hasOwn(question.criteria, option))))) {
+          unusable.push({ name, why: !question ? "not asked" : question.type !== answer.type ? "wrong type" : answer.type === "choice" ? `unoffered choice "${printable(answer.choice).slice(0, 40)}"` : "unusable" });
           delete result.answers[name];
         }
       }
+      if (unusable.length) result.dropped = [...(result.dropped ?? []), ...unusable];
       return result;
     } catch (error) {
       throw new JevReplyError(error instanceof Error ? error.message : String(error));

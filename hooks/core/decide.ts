@@ -12,6 +12,7 @@ import {
   TOOL_KEY,
 } from "./questions.ts";
 import { buildState, type Limits } from "./state.ts";
+import { unusableAnswer } from "../errors.ts";
 import type { Answer, Questions, RouterInput, RouterTool, SystemOneRequest, SystemOneResult } from "./types.ts";
 import { text, type Locale } from "../i18n.ts";
 
@@ -37,7 +38,7 @@ export interface JevTrace {
 
 /** `answers`: every answer of the Jev call, for the questions other features added to it. */
 export type Decision = { jev?: JevTrace; answers?: Record<string, Answer> } & (
-  | { mode: "passthrough"; reason: string }
+  | { mode: "passthrough"; reason: string; /** What was observed behind a failure: shown in the log. */ detail?: string }
   /** Jev picked the tool; the LLM is told, not forced. */
   | { mode: "hint"; tool: string; confidence: number }
 );
@@ -111,7 +112,7 @@ export async function decide(
   try {
     if (tools.length > MAX_TOOLS) {
       ({ tools, inputTokens: shortlistTokens } = await shortlist(tools, state, config, askJev));
-      if (tools.length === 0) return { mode: "passthrough", reason: "jev_unexpected_answer" };
+      if (tools.length === 0) return { mode: "passthrough", reason: "jev_unexpected_answer", detail: "the tool shortlist came back empty" };
     }
     // Other features' questions ride in the same call: one Jev request per routing point.
     result = await askJev({ state, questions: { ...buildQuestions(tools, config.promptLocale ?? config.locale), ...extra }, model: config.jevModel });
@@ -124,7 +125,12 @@ export async function decide(
   const picked = answers[TOOL_KEY];
   const needs = answers[NEEDS_TOOL_KEY];
   if (picked?.type !== "choice" || needs?.type !== "noul") {
-    return { mode: "passthrough", reason: "jev_unexpected_answer", answers };
+    return {
+      mode: "passthrough",
+      reason: "jev_unexpected_answer",
+      detail: unusableAnswer([TOOL_KEY, NEEDS_TOOL_KEY], Object.keys(answers), result.dropped),
+      answers,
+    };
   }
   const jev: JevTrace = {
     choice: inert(picked.choice),

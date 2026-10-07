@@ -99,7 +99,7 @@ for (const [locale, skipped] of [
     await $.turn.complete({ turnId: "t1", answer: "Done.", durationMs: 4000, isAborted: false, reason: "answer", usage: { input_tokens: 1000, output_tokens: 300, cache_read_input_tokens: 200, cache_creation_input_tokens: 0 } } as never);
     const ui = await $.ui.mount({ plugin: "jev", surface: "terminal", component: "Pane", requestId: "jev", props: PANE_PROPS });
     await ui.press({ key: "tab-live" });
-    const detail = locale === "en" ? / · in 1\.2K · out 300$/ : / · entrada 1,2\smil · saída 300$/;
+    const detail = locale === "en" ? / · in 1\.2K · out 300 · [\d:]+/ : / · entrada 1,2\smil · saída 300 · [\d:]+/;
     expect(await ui.find({ type: "Text", text: detail })).toBeDefined();
     await ui.unmount();
   });
@@ -159,14 +159,15 @@ function elements(node: unknown): { type?: unknown; props?: Record<string, unkno
   return [el, ...elements(el.children ?? [])];
 }
 
-test("the time gutter fits the English time, so the speaker's name is not cut", () => {
+test("the live log has no time column: the time sits faint under the text and the speaker's name is not cut", () => {
   const { els, act, feedLine, view } = harness();
   const feed = [feedLine(1), feedLine(2)];
   const tree = renderPane(els, view({ feed, locale: "en" }), act);
-  const time = `${formatClock(feed[0]!.time, "en")} `;
-  const gutter = elements(tree).find((el) => typeof el.props?.width === "number" && texts(el).join("").startsWith(time));
-  expect(gutter).toBeDefined();
-  expect(gutter!.props!.width).toBeGreaterThanOrEqual(displayWidth(time) + 6 + 7);
+  const time = formatClock(feed[0]!.time, "en");
+  expect(elements(tree).find((el) => typeof el.props?.width === "number" && texts(el).join("").startsWith(time))).toBeUndefined();
+  expect(texts(tree).some((one) => one.startsWith(time))).toBe(true);
+  const gutter = elements(tree).find((el) => typeof el.props?.width === "number" && texts(el).join("").includes("You"));
+  expect(gutter!.props!.width).toBeGreaterThanOrEqual(6 + 7);
 });
 
 test("a scrolled-back live log stays on the lines it showed as new ones arrive", () => {

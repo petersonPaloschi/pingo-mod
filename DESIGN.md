@@ -39,13 +39,28 @@ The renderers live in `hooks/mascots/pingo.ts`, `hooks/mascots/dice.ts`, and `ho
 
 ## Dashboard
 
-- **Header:** Pingo, Jev's text status, confidence meter, routed-request rail, routing toggle, and tabs.
+- **Header:** Pingo, Jev's text status, confidence meter, routed-request rail, routing toggle, and the tab bar.
 - **Overview:** request totals, token usage, routing results, and a request timeline.
-- **Live:** visible events grouped by speaker. The feed does not display internal model reasoning.
+- **Live:** visible events, one row per event, each with its speaker. The feed does not display internal model reasoning. See Tab bar and Live log below.
+- **Models:** the model and effort running now, what blocks or allows a model change at the next prompt and the confidence each model needs, what each function (participation, tool hint, model, effort, delegation) decided at each prompt and why, and the latest subagents.
 - **Agents:** subagent state, model, effort, tool and request counts, and recent activity.
 - **Flow:** a live diagram of the latest subagent wave, any other running subagents, its review stage, and the resulting edits.
 - **Features:** independent switches with a short description of each feature.
 - **Reasons, baseline, and log:** routing explanations, comparison metrics, and persisted request metadata.
+
+## Tab bar
+
+- One row of labels, in the order Overview, Live, Models, Agents, Flow, Features, Reasons, Baseline, Log, Setup: what is happening first, controls and records after.
+- No numbers or hotkey prefixes. The terminal's plain Button draws `N: label` for any hotkey, so tabs carry none; a tab changes by click.
+- The open tab is bracketed and bright (`❮ Models ❯`); the others are dim labels. The open tab stays a Button, so pressing it is harmless and tests can address every tab by key (`tab-<id>`).
+- A thin rule closes the header. The row wraps on a narrow pane instead of clipping.
+
+## Live log
+
+- Every row shows its speaker in two fixed-width boxes: face (6 columns) and name (7). Fixed boxes keep names in one column; padding spaces inside one Text is trimmed and breaks the alignment.
+- Claude has no icon. Its name sits in the icon column, at the left edge, aligned with the faces of Jev and You. Glyphs that fonts draw wider than a cell (`✻`) are not used.
+- No time column. The time is faint, on the line under the text, joined with the detail (`╰ 01:21:01 PM · detail`); a one-row bookkeeping event ends with it.
+- Dense by default: Jev's and Claude's own words take at most two rows, details at most three, and no blank rows separate speakers.
 
 ## Terminal and desktop
 

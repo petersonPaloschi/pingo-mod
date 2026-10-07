@@ -12,7 +12,7 @@
 import { atom, read, update } from "claude-code";
 import type { EngineInterface, Register, UiBlitArgs } from "claude-code";
 
-import type { AgentRun, FeatureFlags, FeedEntry, FlowState, PaneScroll, FeedKind, FeedSpeaker, FeedTone, JevTab, LiveNow, RouteEvent, SetupDraft } from "../types";
+import type { AgentRun, FeatureFlags, FeedEntry, FlowState, PaneScroll, FeedKind, FeedSpeaker, FeedTone, JevTab, LiveNow, RouteEvent, SetupDraft, WatchState } from "../types";
 import { keyFor, keyOwner, providerBasis, resolveSettings, storedApplies, type ModOptions, type Settings, type StoredSettings } from "./config.ts";
 import { decide, hintText, type AskJev, type Decision } from "./core/decide.ts";
 import { createAskJev, isProvider, PROVIDERS, redact, resolveModel, validateKey, type ProviderId, type Transport } from "./core/jev.ts";
@@ -34,9 +34,11 @@ import { KEPT_EVENTS, RANGES, reasonKey } from "./events.ts";
 import { featureFlagsText, features as featureList, jevInput, jevOutput, modelName, outputSize, short, toolDetails, toolSummary } from "./feed.ts";
 import { resultText, toInput, type PendingResult } from "./input.ts";
 import { cellsOf } from "./dots.ts";
+import { failureCause, failureHint, failureKind, failureNote } from "./errors.ts";
 import { diceFrame, diceSize } from "./mascots/dice.ts";
 import { brailleFrame, type Mood } from "./mascots/pingo.ts";
 import { AGENT_MASCOTS, isMascot, mascotFrame, pickMascot, type MascotId } from "./mascots/agents.ts";
+import { forecast, keepTurns, settleModel, turnFunctions, type ModelOutcome } from "./watch.ts";
 import { moodOf, pingoSize, renderAgentPane, renderBand, renderPane, type Actions, type View } from "./ui.tsx";
 import { formatCompact, formatDecimal, formatDuration, formatNumber, formatPercent, reasonTitle, text, type Locale, type LocaleKey, type LocaleOption } from "./i18n.ts";
 
@@ -56,6 +58,8 @@ const scroll = atom({ plugin: "jev", key: "scroll" } as const, {} as PaneScroll)
 /** How far each pane body can scroll as last drawn, and whether it counts up from the newest line. */
 const scrollRoom = new Map<string, { max: number; fromEnd: boolean }>();
 const flow = atom({ plugin: "jev", key: "flow" } as const, { turn: 0, wave: [], waveTurn: 0, confirmed: false, edits: 0, files: [], working: false } as FlowState);
+/** What Jev decided at each prompt and why, for the Models tab. */
+const watch = atom({ plugin: "jev", key: "watch" } as const, { turns: [], count: 0 } as WatchState);
 /** Tools whose call is an edit, for the Flow tab's count. */
 const EDIT_TOOLS = new Set(["Edit", "Write", "MultiEdit", "NotebookEdit"]);
 
@@ -79,6 +83,8 @@ let system: string | undefined;
 let pending: Decision | undefined;
 /** What Jev decided for the running turn: model and effort for its main-loop requests. */
 let turnPlan: { model?: string; effort?: Effort; effortIgnored?: Effort; declined?: boolean; summary?: string; modelKept?: boolean } | undefined;
+/** The routing point whose model result waits for the turn's first request. */
+let unsettled: number | undefined;
 let lastToolCount = 0;
 let sessionId = "";
 let feedSeq = 0;
@@ -429,7 +435,17 @@ function tracedAskJev($: EngineInterface, config: Settings): AskJev {
     const sent = jevInput(request, config.locale);
     await log($, "jev", "jev", "info", sent.text, undefined, { detail: sent.detail });
     const startedAt = Date.now();
-    const result = await ask(request);
+    let result;
+    try {
+      result = await ask(request);
+    } catch (error) {
+      const cause = error instanceof Error ? error.message : String(error);
+      await log($, "jev", "error", "bad", text("feed.request.failed", config.locale, { message: short(cause, 160) }), undefined, {
+        meta: `${formatNumber(Date.now() - startedAt, config.locale)} ms`,
+        detail: `${cause.slice(0, 240)}\n${failureHint(failureKind(cause), config.locale)}`,
+      });
+      throw error;
+    }
     const got = jevOutput(result, config.locale);
     await log($, "jev", "jev", "good", got.text, undefined, { meta: `${formatNumber(Date.now() - startedAt, config.locale)} ms`, detail: got.detail });
     return result;
@@ -536,6 +552,7 @@ async function clearHistory($: EngineInterface): Promise<void> {
   });
   await update($, feed, () => []);
   await update($, agents, (list) => list.filter((run) => run.state === "running"));
+  await update($, watch, (w) => ({ ...w, turns: [] }));
 }
 
 async function openPane($: EngineInterface, which: JevTab): Promise<void> {
@@ -829,6 +846,7 @@ async function scrollKeyOf($: EngineInterface, requestId: string): Promise<strin
 
 async function view($: EngineInterface, width: number, rows: number, surface: string, scrollKey = ""): Promise<View> {
   const config = await getSettings($);
+  const current = mainModel ?? (await read($, live)).model;
   return {
     locale: config.locale,
     localeOption: config.localeOption,
@@ -845,6 +863,19 @@ async function view($: EngineInterface, width: number, rows: number, surface: st
     live: await read($, live),
     agents: await read($, agents),
     flow: await read($, flow),
+    watch: await read($, watch),
+    forecast: forecast({
+      routing: await read($, routing),
+      hasKey: Boolean(config.apiKey),
+      features: await read($, features),
+      userModel,
+      ...(current ? { current } : {}),
+      switchable: !current || switchableModel(current),
+      cacheReadTokens,
+      minConfidence: config.minConfidence,
+      available: config.claudeModels,
+      blocked: [...blockedModels],
+    }),
     cwd: await $.session.cwd().catch(() => ""),
     now: await $.clock.now(),
     width,
@@ -866,6 +897,7 @@ export const register: Register = (on, given) => {
   options = given as ModOptions;
   blockedModels.clear();
   switchedEmpty.clear();
+  unsettled = undefined;
   mainModel = undefined;
   contextTokens = 0;
   cacheReadTokens = 0;
@@ -940,9 +972,26 @@ export const register: Register = (on, given) => {
     const asked = plan.jev !== undefined || failed;
     const summary = asked ? planSummary(plan, config.locale) : reasonTitle(reason, config.locale);
     if (turnPlan) turnPlan.summary = summary;
+    const fns = turnFunctions(plan, {
+      features: await read($, features),
+      routing: await read($, routing),
+      hasKey: Boolean(config.apiKey),
+      userModel,
+      minConfidence: config.minConfidence,
+      session: modelContext(config),
+    });
+    const turn = (await read($, flow)).turn + 1;
+    const at = await $.clock.now();
+    await update($, watch, (w) => {
+      const seq = w.count + 1;
+      unsettled = seq;
+      return { turns: keepTurns(w.turns, { seq, time: at, turn, consulted: asked, ...(plan.jev ? { latencyMs: plan.jev.latencyMs } : {}), fns, settled: false }), count: seq };
+    });
     await setLive($, { decision: summary, jevUsed: asked });
     if (asked) {
+      const note = plan.decision.mode === "passthrough" && plan.decision.reason === "jev_unexpected_answer" ? failureNote(plan.decision.reason, plan.decision.detail, config.locale) : undefined;
       await log($, "jev", "jev", failed ? "bad" : "good", text("feed.request.consulted", config.locale, { summary }), undefined, {
+        ...(note ? { detail: note } : {}),
         ...(plan.jev ? { meta: `${formatNumber(plan.jev.latencyMs, config.locale)} ms`, detail: text("feed.request.confidence", config.locale, { value: formatDecimal(plan.jev.confidence, config.locale), tokens: formatCompact(plan.jev.inputTokens, config.locale), choice: plan.jev.choice }) } : {}),
       });
     } else {
@@ -1066,9 +1115,11 @@ export const register: Register = (on, given) => {
         }),
       });
       await setLive($, { decision: what, jevUsed: true });
-    } else if (decision.mode === "passthrough" && decision.reason.startsWith("jev_error")) {
-      const message = short(decision.reason.slice("jev_error: ".length), 80);
-      await log($, "jev", "jev", "bad", text("feed.request.failed", locale, { message }));
+    } else if (decision.mode === "passthrough" && (decision.reason.startsWith("jev_error") || decision.reason === "jev_unexpected_answer")) {
+      // A thrown call was already printed with its cause by the traced call; an unusable answer was not.
+      if (decision.reason === "jev_unexpected_answer") {
+        await log($, "jev", "jev", "bad", text("feed.request.failed", locale, { message: reasonTitle(decision.reason, locale) }), undefined, { detail: failureNote(decision.reason, decision.detail, locale) ?? "" });
+      }
       await setLive($, { decision: text("ui.band.jevFailed", locale), jevUsed: true });
     }
     if (decision.mode !== "hint") return result;
@@ -1145,6 +1196,7 @@ export const register: Register = (on, given) => {
     let model = e.model;
     let effort = e.effort;
     const changes: string[] = [];
+    let outcome: ModelOutcome | undefined;
     if (e.agentId) {
       decision = { mode: "passthrough", reason: "subagent" };
       const run = agentRuns.get(e.agentId);
@@ -1171,10 +1223,21 @@ export const register: Register = (on, given) => {
         if (!kept) {
           model = turnPlan.model;
           changes.push(text("feed.change.modelSwitched", locale, { from: modelName(e.model), to: modelName(model) }));
-        } else if (!turnPlan.modelKept) {
-          turnPlan.modelKept = true;
-          await log($, "mod", "feature", "muted", text(kept, locale, { model: modelName(e.model), target: modelName(turnPlan.model) }), undefined, { minor: true });
+          outcome = { kind: "switched", from: e.model, to: model };
+        } else {
+          outcome = { kind: "held", why: userModel ? "user_model" : "model_id", from: e.model, to: turnPlan.model };
+          if (!turnPlan.modelKept) {
+            turnPlan.modelKept = true;
+            await log($, "mod", "feature", "muted", text(kept, locale, { model: modelName(e.model), target: modelName(turnPlan.model) }), undefined, { minor: true });
+          }
         }
+      } else if (turnPlan?.model) {
+        outcome = turnPlan.model === e.model ? { kind: "same", model: e.model } : { kind: "held", why: "blocked", from: e.model, to: turnPlan.model };
+      }
+      if (unsettled !== undefined) {
+        const seq = unsettled;
+        unsettled = undefined;
+        await update($, watch, (w) => ({ ...w, turns: w.turns.map((turn) => (turn.seq === seq ? settleModel(turn, outcome) : turn)) }));
       }
       const haikuTarget = model.toLowerCase().includes("haiku");
       if (haikuTarget) {
@@ -1270,6 +1333,7 @@ export const register: Register = (on, given) => {
       ...(e.agentId ? { agent: agentRuns.get(e.agentId)?.type ?? "agent" } : {}),
       ...(effort === undefined ? {} : { effort: String(effort) }),
       ...(changes.length ? { plan: changes.join(", ") } : {}),
+      ...(decision.mode === "passthrough" && failureCause(decision.reason, decision.detail) ? { error: failureCause(decision.reason, decision.detail)! } : {}),
       ...(usage
         ? {
             usage: {
@@ -1304,6 +1368,9 @@ export const register: Register = (on, given) => {
       dashboard: "overview",
       overview: "overview",
       live: "live",
+      models: "models",
+      model: "models",
+      modelos: "models",
       agents: "agents",
       flow: "flow",
       features: "features",

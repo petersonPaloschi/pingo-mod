@@ -111,7 +111,7 @@ Pingo is a dotted sphere with six expressions. The same projected geometry is re
 | Idle | No recent routing activity. |
 | Baseline | Routing is switched off. |
 
-**Overview** shows usage and routing totals. **Live** shows visible session events. **Agents** lists subagent state, model, effort, and activity; each agent has a numbered live pane and a distinct dotted mascot. **Flow** visualizes the main session and subagent work. **Features**, **Reasons**, **Baseline**, **Logs**, and **Setup** expose the controls and recorded metadata.
+**Overview** shows usage and routing totals. **Live** shows visible session events. **Models** shows every model switch Jev made or held back and why, what each function (participation, tool hint, model, effort, delegation) decided at each prompt, and the confidence a model change needs next. **Agents** lists subagent state, model, effort, and activity; each agent has a numbered live pane and a distinct dotted mascot. **Flow** visualizes the main session and subagent work. **Features**, **Reasons**, **Baseline**, **Logs**, and **Setup** expose the controls and recorded metadata.
 
 The dashboard, commands, activity feed, and hints support English and Brazilian Portuguese. Set **Language** to `en`, `pt`, or `auto` in `/jev setup`. `auto` follows the system locale. Jev's decision questions and criteria default to English independently; set the `routing_locale` plugin option to `pt` for Portuguese. Conversation content is never translated.
 
@@ -172,6 +172,7 @@ Do not put keys in slash-command arguments, repository files, screenshots, or is
 | --- | --- |
 | `/jev`, `/jev dashboard`, `/jev overview` | Open Overview. |
 | `/jev live` | Open the live activity feed. |
+| `/jev models` | Open the Models tab: model switches, why they did or did not happen, and what the next one needs. |
 | `/jev agents` | List subagents and their activity. |
 | `/jev agent` | Open the newest running subagent, or the latest retained run. |
 | `/jev agent <number, type, or mascot>` | Open a particular subagent's live pane, e.g. `/jev agent 3`. |
@@ -204,7 +205,7 @@ Truncation limits request size; it **does not redact secrets** from conversation
 
 Pingo's views show observable activity and visible response text. They do not expose the models' private internal reasoning. The live feed stays in session memory; it may contain shortened prompts, tool details, response text, and provider errors.
 
-The latest **500 request records** are persisted in the plugin store under the Claude Code configuration directory. Records contain timestamps, a short session ID, model names, routing reason codes, tool counts, Jev choices and confidence, applied changes, latency, and token usage. They do not contain conversation prompts, tool arguments or results, provider response bodies, or API keys. Provider failures are stored as `jev_error`, without the error body.
+The latest **500 request records** are persisted in the plugin store under the Claude Code configuration directory. Records contain timestamps, a short session ID, model names, routing reason codes, tool counts, Jev choices and confidence, applied changes, latency, and token usage. Conversation prompts and tool arguments/results are not stored as record fields. Failed or unusable Jev replies also retain an observed cause capped at 240 characters; this can include a provider-error excerpt or discarded-answer details. The provider layer redacts the configured API key from error messages. The Models tab keeps up to 40 routing points in session memory, including failed consultation attempts and the accepted results of independent questions.
 
 The store also retains the routing and feature switches, a fallback provider selection when needed, and the validated key/provider pair saved in Setup. The credential entry is separate from request records. `/jev clear` empties the request history and session feed; use Setup's **Remove key** action to remove the credential copy.
 

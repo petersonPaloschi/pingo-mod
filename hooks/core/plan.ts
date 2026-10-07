@@ -148,6 +148,26 @@ export interface Chosen<T> {
 export type ModelReason = "keep_current" | "low_confidence" | "downgrade_confidence" | "cache_confidence" | "unavailable";
 export type ModelPick = Chosen<Tier> & { id?: string };
 
+/**
+ * The confidence Jev needs to move the model to `tier`: the minimum, raised for a downgrade, and
+ * again when it would disturb a warm cache. `reason` is what holds the switch back below it.
+ */
+export function modelThreshold(tier: Tier, minConfidence: number, session: ModelContext = {}): { needed: number; reason: ModelReason } {
+  let needed = minConfidence;
+  let reason: ModelReason = "low_confidence";
+  const currentTier = modelTier(session.currentModel);
+  if (currentTier && TIERS.indexOf(tier) < TIERS.indexOf(currentTier)) {
+    // Halve the tolerated uncertainty for a downgrade, then again when it would disturb warm cache.
+    needed += (1 - needed) / 2;
+    reason = "downgrade_confidence";
+    if ((session.cacheReadTokens ?? 0) > 0) {
+      needed += (1 - needed) / 2;
+      reason = "cache_confidence";
+    }
+  }
+  return { needed, reason };
+}
+
 /** Keep Jev's answer intact; policy decides whether its model change is worth accepting. */
 export function selectModel(answer: Answer | undefined, minConfidence: number, session: ModelContext = {}): {
   model?: ModelPick; retainedModel?: string; modelReason?: ModelReason;
@@ -157,19 +177,8 @@ export function selectModel(answer: Answer | undefined, minConfidence: number, s
   if (answer.choice === KEEP_MODEL && session.currentModel) return keep("keep_current");
   const tier = modelTier(answer.choice);
   if (!tier || !(session.availableModels ?? TIERS).includes(answer.choice)) return keep("unavailable");
-  let threshold = minConfidence;
-  let reason: ModelReason = "low_confidence";
-  const currentTier = modelTier(session.currentModel);
-  if (currentTier && TIERS.indexOf(tier) < TIERS.indexOf(currentTier)) {
-    // Halve the tolerated uncertainty for a downgrade, then again when it would disturb warm cache.
-    threshold += (1 - threshold) / 2;
-    reason = "downgrade_confidence";
-    if ((session.cacheReadTokens ?? 0) > 0) {
-      threshold += (1 - threshold) / 2;
-      reason = "cache_confidence";
-    }
-  }
-  if (!Number.isFinite(answer.confidence) || answer.confidence < threshold || answer.confidence > 1) return keep(reason);
+  const { needed, reason } = modelThreshold(tier, minConfidence, session);
+  if (!Number.isFinite(answer.confidence) || answer.confidence < needed || answer.confidence > 1) return keep(reason);
   return { model: { value: tier, confidence: answer.confidence, ...(answer.choice !== tier ? { id: answer.choice } : {}) } };
 }
 
