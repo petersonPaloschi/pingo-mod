@@ -300,17 +300,18 @@ function header(els: Els, view: View, act: Actions) {
           onPress={() => act.routing(!view.routing)}
         />
       </Box>
-      <Box flexDirection="row" flexWrap="wrap" columnGap={2} marginTop={1}>
-        {TABS.map(([id, label, hotkey]) => (
+      <Box flexDirection="row" flexWrap="wrap" marginTop={1}>
+        {TABS.flatMap(([id, label, hotkey], i) => [
+          i === 0 ? null : <Text key={"sep-" + id} color={INK.faint}>│</Text>,
           <Button
             key={"tab-" + id}
-            label={view.tab === id ? `● ${text(label as LocaleKey, view.locale)}` : text(label as LocaleKey, view.locale)}
+            label={view.tab === id ? `▸ ${text(label as LocaleKey, view.locale)}` : text(label as LocaleKey, view.locale)}
             hotkey={hotkey}
             plain
             dimColor={view.tab !== id}
             onPress={() => act.tab(id)}
-          />
-        ))}
+          />,
+        ])}
       </Box>
       <Text color={INK.faint} wrap="truncate">{"─".repeat(Math.max(1, view.width))}</Text>
     </Box>
@@ -721,7 +722,7 @@ const DETAIL_ROWS = 6;
  * a short figure at the end. The finer points go on a faint line under it; bookkeeping (a request
  * sent, a turn's end) is one faint line with its figures folded in.
  */
-function feedLine(els: Els, view: View, entry: FeedEntry, first: boolean) {
+function feedLine(els: Els, view: View, entry: FeedEntry, first: boolean, top: boolean) {
   const { Box, Text } = els;
   const who = speaker(entry, view.locale);
   // The time is as wide as the locale writes it, and shown where 55 columns are left beside it.
@@ -731,7 +732,7 @@ function feedLine(els: Els, view: View, entry: FeedEntry, first: boolean) {
   const minor = entry.minor === true;
   const metaWidth = entry.meta ? Math.min(14, [...entry.meta].length) : 0;
   return (
-    <Box flexDirection="column" flexShrink={0}>
+    <Box flexDirection="column" flexShrink={0} marginTop={first && !top ? 1 : 0}>
       <Box flexDirection="row">
         <Box width={gutter} flexShrink={0}>
           <Text wrap="truncate">
@@ -739,7 +740,7 @@ function feedLine(els: Els, view: View, entry: FeedEntry, first: boolean) {
             {first ? (
               <Text bold={!minor} color={minor ? INK.faint : who.color}>{fit(who.face, FACE_WIDTH) + fit(who.name, NAME_WIDTH)}</Text>
             ) : (
-              <Text color={INK.faint}>{" ".repeat(FACE_WIDTH + NAME_WIDTH)}</Text>
+              <Text color={INK.faint}>{fit("  │", FACE_WIDTH + NAME_WIDTH)}</Text>
             )}
           </Text>
         </Box>
@@ -763,7 +764,7 @@ function feedLine(els: Els, view: View, entry: FeedEntry, first: boolean) {
             <Box flexDirection="row">
               <Box width={gutter} flexShrink={0} />
               <Box width={2} flexShrink={0}>
-                <Text color={INK.faint}>{index === 0 ? "└ " : "  "}</Text>
+                <Text color={INK.faint}>{index === 0 ? "╰ " : "  "}</Text>
               </Box>
               <Box flexShrink={1} flexGrow={1}>
                 <Text color={INK.faint} wrap="truncate-end">{row}</Text>
@@ -787,7 +788,7 @@ function conversation(els: Els, view: View, lines: readonly FeedEntry[], empty: 
       {lines.map((entry, i) => {
         const before = lines[i - 1];
         const first = !before || before.who !== entry.who || before.name !== entry.name || before.agent !== entry.agent;
-        return feedLine(els, view, entry, first);
+        return feedLine(els, view, entry, first, i === 0);
       })}
     </Box>
   );
