@@ -7,6 +7,8 @@ coverage/
 .env.*
 .envrc
 .secrets/
+.credentials
+.credentials.*
 *.pem
 *.key
 *.crt
@@ -14,5 +16,34 @@ coverage/
 *.asc
 *.p12
 *.pfx
+*.p8
+*.jks
+*.keystore
 credentials*.json
 service-account*.json
+.npmrc
+.netrc
+.aws/credentials
+**/.npmrc
+**/.netrc
+**/.aws/credentials
+id_rsa
+id_dsa
+id_ecdsa
+id_ed25519
+
+# graft's local graph cache — regenerable, not committed (run `graft build`).
+/graft/
+
+# Local agent/editor configuration and external Graft integration.
+# AGENTS.md currently contains only Graft-specific instructions; keep it local
+# until it contains project-wide guidance that works without that tool.
+/.claude/settings.json
+/.claude/settings.local.json
+/.claude/helpers/
+/.claude/skills/graft/
+/.mcp.json
+/opencode.json
+/.ignore
+/AGENTS.md
+/.github/copilot-instructions.md
