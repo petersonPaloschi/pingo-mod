@@ -5,6 +5,7 @@ import { describe, expect, mock, test } from "claude-code/testing";
 
 import { DEFAULT_FEATURES, type Features } from "../hooks/core/plan.ts";
 import type { Answer, SystemOneRequest } from "../hooks/core/types.ts";
+import { answerJev, noul, pick, step } from "./helpers.ts";
 
 const ORIGIN = { kind: "composer" } as const;
 const PANE_PROPS = {
@@ -14,8 +15,6 @@ const PANE_PROPS = {
   placement: "dock",
   scroll: { offset: 0, bodyRows: 60, contentRows: 60 },
 } as unknown as RenderPropsOf["Pane"];
-const pick = (choice: string, confidence: number): Answer => ({ type: "choice", choice, confidence, probabilities: { [choice]: 1 } });
-const noul = (value: number): Answer => ({ type: "noul", noul: value });
 const ANSWERS = { tool: pick("Read", 0.9), needs_tool: noul(0.9), model: pick("sonnet", 0.9) };
 const DONE = { input_tokens: 10, output_tokens: 5, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 };
 
@@ -24,7 +23,7 @@ function world(on: On, features: Partial<Features>, empty: (index: number) => bo
   mock.clock(on, { now: Date.parse("2026-10-07T12:00:00Z") });
   mock.store(on, { provider: "typesafe", features: { ...DEFAULT_FEATURES, ...features } });
   mock.env(on, { TYPESAFE_API_KEY: "test-key" });
-  on("command.register", async () => ({ value: {} }));
+  on("command.register", async () => ({ value: { command: "jev" } }));
   on("tool.list", async () => ({ value: [{ name: "Read", description: "Read a file", mcp: false }] }));
   on("session.messages", async () => ({ value: [] }));
   on("session.model", async () => ({ value: "claude-opus-5-5" }));
@@ -35,14 +34,7 @@ function world(on: On, features: Partial<Features>, empty: (index: number) => bo
     jev.calls++;
     const request = JSON.parse(e.init?.body ?? "{}") as SystemOneRequest;
     jev.asked.push(request);
-    const answers: Record<string, Answer> = {};
-    for (const [key, question] of Object.entries(request.questions ?? {})) {
-      const answer = table[key];
-      if (!answer) continue;
-      const offered = answer.type === "choice" && question.type === "choice"
-        ? Object.keys(question.criteria).find((id) => id === answer.choice || id.startsWith(`claude-${answer.choice}-`)) : undefined;
-      answers[key] = offered ? { ...answer, choice: offered, probabilities: { [offered]: 1 } } : answer;
-    }
+    const answers = answerJev(request, table);
     return { value: { status: 200, ok: true, headers: {}, text: JSON.stringify({ answers, usage: { input_tokens: 200, output_tokens: 0 } }) } };
   });
   on("prompt.submit", async (_$, e) => ({ text: e.text, ...(e.context ? { context: e.context } : {}) }));
@@ -64,12 +56,6 @@ function world(on: On, features: Partial<Features>, empty: (index: number) => bo
       : { turnId: e.turnId, index: e.index, answer: "Done.", toolUses: [], stopReason: "end_turn" as const, usage: { ...DONE, model: e.model } };
   });
   return { sent, sentEfforts, jev, toasts };
-}
-
-async function step($: { turn: { step: (e: never) => AsyncGenerator<unknown, unknown> & { result: Promise<unknown> } } }, e: object) {
-  const stream = $.turn.step(e as never);
-  for await (const _ of stream) void _;
-  return stream.result;
 }
 
 describe("the main loop's model switch", () => {
@@ -147,7 +133,7 @@ describe("a switched model that comes back empty", () => {
     table.model = pick("haiku", 0.8);
     await $.prompt.submit({ text: "fix the next issue", wait: false, origin: ORIGIN });
     await step($ as never, { turnId: "t2", index: 1, model: "claude-opus-5-5", messageCount: 2 });
-    expect(sent).toEqual(["claude-sonnet-5-5", "claude-sonnet-5-5"]);
+    expect(sent).toEqual(["claude-sonnet-5-5", "claude-opus-5-5"]);
   });
 
   test("a configured exact model version reaches the native request", { options: { claude_models: "claude-sonnet-4-6,claude-opus-5-5", locale: "pt" } }, async ($, on) => {

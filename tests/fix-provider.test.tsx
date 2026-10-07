@@ -1,6 +1,6 @@
 // How long one Jev call may take, which key goes to which provider, where Setup's provider is
 // saved, the environment fallbacks and ranges of the numeric options, and provider error bodies.
-import type { RenderPropsOf } from "claude-code";
+import type { On, RenderPropsOf } from "claude-code";
 import { describe, expect, mock, test } from "claude-code/testing";
 
 import { resolveSettings } from "../hooks/config.ts";
@@ -190,7 +190,7 @@ test("the session reads JEV_MIN_CONFIDENCE and JEV_TIMEOUT_MS", async ($, on) =>
 });
 
 /** A /config with this plugin's rows (and any others given); what is written there is recorded. */
-function configRows(on: Parameters<Parameters<typeof test>[1]>[1], written: [string, unknown][], keys = ["jev@inline.provider"]) {
+function configRows(on: On, written: [string, unknown][], keys = ["jev@inline.provider"]) {
   on("config.list", async () => ({ value: keys.map((key) => ({ key, label: key })) }) as never);
   on("config.set", async (_$, e) => {
     written.push([e.key, e.value]);
@@ -199,7 +199,7 @@ function configRows(on: Parameters<Parameters<typeof test>[1]>[1], written: [str
   on("process.run", async (_$, e) => {
     const { api_key } = JSON.parse(e.init?.stdin ?? "{}");
     written.push([`${e.argv[5]}.api_key`, api_key]);
-    return { value: { exitCode: 0, stdout: JSON.stringify({ saved: ["api_key"] }), stderr: "" } };
+    return { value: { exitCode: 0, stdout: JSON.stringify({ saved: ["api_key"] }), stderr: "", isStdoutTruncated: false, isStderrTruncated: false } };
   });
 }
 
@@ -286,7 +286,7 @@ describe("Setup", () => {
     on("process.run", async (_$, e) => {
       const { api_key } = JSON.parse(e.init?.stdin ?? "{}");
       written.push([`${e.argv[5]}.api_key`, api_key]);
-      return { value: { exitCode: 1, stdout: "", stderr: "keychain locked" } };
+      return { value: { exitCode: 1, stdout: "", stderr: "keychain locked", isStdoutTruncated: false, isStderrTruncated: false } };
     });
     const auth: (string | undefined)[] = [];
     on("http.fetch", async (_$, e) => {
@@ -325,7 +325,7 @@ describe("Setup", () => {
       written.push([e.key, e.value]);
       return { value: e.value };
     });
-    on("process.run", async () => ({ value: { exitCode: 0, stdout: JSON.stringify({ saved: ["api_key"], unconfigured: ["api_key"] }), stderr: "" } }));
+    on("process.run", async () => ({ value: { exitCode: 0, stdout: JSON.stringify({ saved: ["api_key"], unconfigured: ["api_key"] }), stderr: "", isStdoutTruncated: false, isStderrTruncated: false } }));
     on("http.fetch", async () => ({ value: { status: 200, ok: true, headers: {}, text: "{}" } }));
     const ui = await $.ui.mount({ plugin: "jev", surface: "terminal", component: "Pane", requestId: "jev", props: PANE_PROPS });
     await ui.press({ key: "tab-setup" });

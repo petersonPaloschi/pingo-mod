@@ -71,7 +71,7 @@ On Windows, use a path such as `C:/Projects/pingo`; separate multiple plugin dir
 
 Low confidence, disagreement, an unavailable provider, a timeout, or an unreadable reply leaves Claude to continue without a tool hint. This is the mod's **fail-open** behavior.
 
-`/jev routing off` disables every Jev consultation and switches to baseline mode. The dashboard remains available. With every feature disabled, Jev is also not called.
+`/jev routing off` disables every Jev consultation and switches to baseline mode. It also stops applying an existing plan to subsequent requests, including subagent effort. The dashboard remains available. With every feature disabled, Jev is not called and model requests retain Claude Code's original model and effort.
 
 ## Features
 
@@ -80,9 +80,9 @@ Change features in `/jev features` or with `/jev feature <id> on|off`.
 | ID | Default | Behavior |
 | --- | --- | --- |
 | `tools` | On | Suggest the next tool when routing checks pass. |
-| `participation` | Off | Let Jev decline tool, delegation, and advisor hints for a turn. Model and effort planning can still apply. |
+| `participation` | Off | Let Jev decline tool, delegation, and advisor hints for a turn. A missing participation answer also withholds hints. Model and effort planning can still apply. |
 | `model` | Off | Select Haiku, Sonnet, or Opus for the main turn, subject to the model safeguards below. |
-| `effort` | Off | Select an effort level where the target model and request support it. |
+| `effort` | Off | Select an effort level for the model actually sent, even when the request did not already specify effort. |
 | `delegation` | Off | Suggest an offered subagent type. Claude decides whether to start it. |
 | `agents` | Off | Plan model and effort for eligible subagents when Claude starts them. |
 | `advisor` | Off | Ask Jev whether planning, ambiguity, a recurring failure, or an independent check warrants consulting the advisor. A confident recommendation adds a hint; Claude decides whether to call it. |
@@ -103,13 +103,23 @@ To request advisor recommendations and inspect their observed results:
 
 The advisor question joins the prompt's existing Jev routing request. If every other feature is off, enabling it adds one Jev request per new prompt. A `consult` recommendation must meet the configured minimum confidence; a missing answer, low confidence, or a failed Jev call adds no advisor hint. When participation is enabled, Jev must also answer that question and choose to take part. Messages submitted during a running turn keep that turn's plan.
 
-This feature asks Claude to use its available advisor tool. It does not configure, enable, or change the advisor model. In Models, **applied** means the suggestion was attached to the prompt; an actual advisor call is recorded separately from the model response.
+This feature asks Claude to use its available advisor tool. Known environment blockers, such as a provider or telemetry setting that disables the advisor, suppress the hint. It does not configure, enable, or change the advisor model. In Models, **applied** means the suggestion was attached to the prompt; an actual advisor call is recorded separately from the model response.
 
-A model explicitly selected by the user is preserved until they return to the default. Provider-specific model IDs and extended-context models are also preserved. Subagent planning skips workflow-managed agents, forks, and agents with an explicitly requested model. Haiku does not receive an effort setting.
+A model explicitly selected by the user is preserved until they return to the default. Provider-specific model IDs and extended-context models are also preserved. Subagent planning skips workflow-managed agents, forks, and agents with an explicitly requested model. Effort is checked against the model actually sent, so a rejected Haiku switch cannot discard effort intended for an eligible Opus or Sonnet request. Requests Jev is sizing for Haiku omit inherited effort; requests outside that feature retain their original settings.
 
-Model criteria describe both appropriate work and tasks to avoid. The main-turn question offers exact configured model IDs plus a choice to keep the current model. A rejected or missing recommendation retains the last successful model. With minimum confidence `c`, upgrades require `c`, downgrades require `c + (1-c)/2`, and downgrades with observed warm cache halve the remaining tolerated uncertainty again. At the default `0.7`, those thresholds are `0.7`, `0.85`, and `0.925`. This is a conservative policy, not a measured estimate of cache savings or task accuracy.
+Model criteria describe both appropriate work and tasks to avoid. The main-turn question offers exact configured model IDs plus a choice to keep the current model. A rejected, missing or failed recommendation leaves Claude Code's original request model in place, instead of reapplying a selection from a previous turn. With minimum confidence `c`, upgrades require `c`, downgrades require `c + (1-c)/2`, and downgrades with observed warm cache halve the remaining tolerated uncertainty again. At the default `0.7`, those thresholds are `0.7`, `0.85`, and `0.925`. This is a conservative policy, not a measured estimate of cache savings or task accuracy.
 
 Two consecutive empty responses from a switched model exclude that candidate for the session; other candidates remain eligible. Interrupts do not count. The live feed records why a recommendation was retained or rejected. Subagents continue to use the native tier aliases and omit tiers with no remaining configured candidates.
+
+The implementation shares its policies across these features:
+
+- `types/index.d.ts` defines the canonical feature schema in the self-contained public contract required by Claude Code. `hooks/core/contracts.ts` reuses it and defines the accepted, held and unavailable decision DTOs used by planning and the dashboard.
+- `hooks/core/request.ts` provides the timed, fail-open Jev call used by tool routing, shortlisting, turn planning and subagent planning. Provider retries and the timeout budget remain in the shared provider transport.
+- `hooks/core/selection.ts` validates offered choices and confidence once. A shared model parser in `hooks/core/plan.ts` determines family and effort support.
+- `hooks/core/runtime.ts` gates features and resolves the model and effort from the actual request. It also provides the shared hint wrapper and input-token calculation.
+- `hooks/watch.ts` presents normalized decisions and settles them against the request sent; it does not reinterpret raw Jev answers.
+
+Only choice answers use `min_confidence`. Participation is a separate numerical score with a fixed `0.5` cutoff. Delegation requires an eligible type announced by Claude Code; an empty roster is recorded explicitly. Test fixtures in `tests/helpers.ts` share answer mapping and request execution across integration tests.
 
 ### Sift: bulk judgments
 

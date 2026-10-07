@@ -27,7 +27,7 @@ function noKey(on: On) {
   mock.clock(on, { now: NOW });
   mock.store(on);
   mock.env(on, {});
-  on("command.register", async () => ({ value: {} }));
+  on("command.register", async () => ({ value: { command: "jev" } }));
   on("tool.list", async () => ({ value: [{ name: "Read", description: "Read a file", mcp: false }] }));
   on("session.messages", async () => ({ value: [] }));
   on("session.model", async () => ({ value: "claude-opus-5-5" }));
@@ -134,6 +134,8 @@ function harness() {
     setup: { provider: "typesafe", message: "", isOk: true },
     features: { tools: true, participation: true, model: true, effort: true, delegation: true, agents: true, advisor: true },
     feed: [],
+    watch: { turns: [], count: 0 },
+    forecast: { blockers: [], targets: [], cacheWarm: false },
     live: {},
     now: NOW,
     width: 80,

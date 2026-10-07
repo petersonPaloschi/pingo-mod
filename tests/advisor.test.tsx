@@ -7,6 +7,7 @@ import { describe, expect, mock, test, type Engine } from "claude-code/testing";
 import { ADVISOR_KEY, DEFAULT_FEATURES, turnQuestions, type Features } from "../hooks/core/plan.ts";
 import type { Answer, SystemOneRequest } from "../hooks/core/types.ts";
 import { text } from "../hooks/i18n.ts";
+import { noul, pick, step } from "./helpers.ts";
 
 const ORIGIN = { kind: "composer" } as const;
 const ASK = { origin: ORIGIN, presentation: { isFullscreen: true, columns: 160 } } as const;
@@ -17,8 +18,6 @@ const PANE_PROPS = {
   placement: "dock",
   scroll: { offset: 0, bodyRows: 120, contentRows: 120 },
 } as unknown as RenderPropsOf["Pane"];
-const pick = (choice: string, confidence: number): Answer => ({ type: "choice", choice, confidence, probabilities: { [choice]: 1 } });
-const noul = (value: number): Answer => ({ type: "noul", noul: value });
 const HINT = text("planning.hint.advisor", "en");
 const TOOL = { tool: pick("Read", 0.9), needs_tool: noul(0.9) };
 const DONE = { input_tokens: 10, output_tokens: 5, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 };
@@ -78,12 +77,6 @@ function world(on: On, features: Partial<Features>, table: Record<string, Answer
     return submitted;
   }
   return { jev, sent, enter };
-}
-
-async function step($: { turn: { step: (e: never) => AsyncGenerator<unknown, unknown> & { result: Promise<unknown> } } }, e: object) {
-  const stream = $.turn.step(e as never);
-  for await (const _ of stream) void _;
-  return stream.result;
 }
 
 type Submitted = { context?: readonly string[] };

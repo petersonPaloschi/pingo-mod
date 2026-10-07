@@ -38,6 +38,7 @@ const REASON_KEYS: Record<string, readonly [LocaleKey, LocaleKey]> = {
   not_asked: ["reason.who.notAsked", "reason.not_asked.meaning"],
   features_off: ["reason.who.notAsked", "reason.features_off.meaning"],
   jev_declined: ["reason.who.asked", "reason.jev_declined.meaning"],
+  participation_unavailable: ["reason.who.asked", "reason.participation_unavailable.meaning"],
   tools_feature_off: ["reason.who.asked", "reason.tools_feature_off.meaning"],
   low_confidence: ["reason.who.asked", "reason.low_confidence.meaning"],
   jev_answers_disagree: ["reason.who.asked", "reason.jev_answers_disagree.meaning"],
@@ -158,7 +159,8 @@ export function tiles(events: readonly RouteEvent[], locale: Locale = localeFor(
   const tokens = sum(asked, (event) => event.jev?.inputTokens);
   const decided = events.filter(routed).length;
   const avgLatency = mean(latencies);
-  const avgConfidence = mean(asked.map((event) => event.jev!.confidence));
+  const confidences = asked.flatMap(({ jev }) => jev?.confidence === undefined ? [] : [jev.confidence]);
+  const avgConfidence = mean(confidences);
   const p95 = latencies[Math.min(latencies.length - 1, Math.floor(latencies.length * 0.95))];
   return [
     { label: text("tile.requests.label", locale), value: int(events.length, locale), sub: text("tile.requests.sub", locale) },

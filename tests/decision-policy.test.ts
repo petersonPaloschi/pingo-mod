@@ -3,9 +3,7 @@ import { resolveSettings } from "../hooks/config.ts";
 import { createAskJev, normalize, type Transport } from "../hooks/core/jev.ts";
 import { DEFAULT_FEATURES, KEEP_MODEL, selectModel, turnQuestions } from "../hooks/core/plan.ts";
 import { buildState } from "../hooks/core/state.ts";
-import type { ChoiceAnswer } from "../hooks/core/types.ts";
-
-const pick = (choice: string, confidence: number): ChoiceAnswer => ({ type: "choice", choice, confidence, probabilities: { [choice]: 1 } });
+import { pick } from "./helpers.ts";
 
 test("provider confidence and probabilities stay separate, and malformed distributions are discarded", () => {
   const valid = { type: "choice", choice: "Read", confidence: 0.42, probabilities: { Read: 0.61, Bash: 0.39 } };
@@ -54,7 +52,7 @@ test("exact configured model versions are offered, preserved, and checked before
   expect(Object.keys(question.criteria)).toEqual([...session.availableModels, KEEP_MODEL]);
   expect(question.criteria["claude-sonnet-4-6"]).toMatchObject({ model: "claude-sonnet-4-6" });
   expect(selectModel(pick("claude-sonnet-4-6", 0.99), 0.7, session).model)
-    .toEqual({ value: "sonnet", confidence: 0.99, id: "claude-sonnet-4-6" });
+    .toEqual({ value: "sonnet", confidence: 0.99, needed: 0.85, id: "claude-sonnet-4-6" });
   expect(selectModel(pick("claude-haiku-4-5-20251001", 0.99), 0.7, session).model).toBeUndefined();
   expect(selectModel(pick(KEEP_MODEL, 1), 0.7, session).retainedModel).toBe(session.currentModel);
   expect(selectModel(undefined, 0.7, session).retainedModel).toBe(session.currentModel);

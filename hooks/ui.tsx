@@ -225,7 +225,8 @@ export { cellsOf };
 function recentStats(view: View) {
   const recent = view.events.filter((event) => view.now - at(event) < 5 * 60e3);
   const asked = recent.filter((event) => event.jev);
-  const confidence = asked.length ? asked.reduce((s, event) => s + event.jev!.confidence, 0) / asked.length : undefined;
+  const confidences = asked.flatMap(({ jev }) => jev?.confidence === undefined ? [] : [jev.confidence]);
+  const confidence = confidences.length ? confidences.reduce((s, value) => s + value, 0) / confidences.length : undefined;
   const latency = asked.length ? Math.round(asked.reduce((s, event) => s + event.jev!.latencyMs, 0) / asked.length) : undefined;
   return { recent, confidence, latency, routedCount: recent.filter(routed).length };
 }
@@ -535,7 +536,7 @@ function logEntry(els: Els, view: View, event: RouteEvent) {
   const what =
     event.mode === "hint"
       ? text("ui.log.suggested", view.locale, { tool: event.tool ?? "" })
-      : event.jev
+      : event.jev?.choice
         ? text("ui.log.picked", view.locale, { choice: event.jev.choice })
         : text("ui.log.stayedOut", view.locale);
   const confidence = event.confidence ?? event.jev?.confidence;

@@ -155,7 +155,7 @@ describe("routing", () => {
       surface: "terminal",
       component: "Pane",
       requestId: "jev",
-      props: { title: "Jev", isFocused: true, bodyColumns: 80, placement: "dock", scroll: { offset: 0, bodyRows: 40, contentRows: 40 } },
+      props: { title: "Jev", isFocused: true, bodyColumns: 80, placement: "dock", scroll: { offset: 0, bodyRows: 40 }, view: {} },
     });
     await ui.press({ key: "routing" });
     await $.prompt.submit({ text: "show me package.json", wait: false, origin: COMPOSER });

@@ -6,6 +6,7 @@ import { describe, expect, mock, test, type Engine } from "claude-code/testing";
 import type { TraceState } from "../types";
 import { FLOW_FPS, flowLines, flowScene, flowSummary, prettyModel } from "../hooks/flow.ts";
 import { displayWidth } from "../hooks/layout.ts";
+import { step } from "./helpers.ts";
 import {
   advisorBlocker,
   advisorStats,
@@ -373,12 +374,6 @@ function world(on: On, opts: { advisorModel?: string; serverToolUses?: { id: str
     return submitted;
   }
   return Object.assign(enter, { clock });
-}
-
-async function step($: { turn: { step: (e: never) => AsyncGenerator<unknown, unknown> & { result: Promise<unknown> } } }, e: object) {
-  const stream = $.turn.step(e as never);
-  for await (const _ of stream) void _;
-  return stream.result;
 }
 
 const SPAWN = { prompt: "Look around.", description: "look around", subagentType: "Explore", provider: { plugin: "engine", tier: "core" }, parentModel: "claude-opus-5-5", background: false, fork: false };

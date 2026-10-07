@@ -6,6 +6,7 @@ import { describe, expect, mock, test } from "claude-code/testing";
 import { DEFAULT_FEATURES, type Features } from "../hooks/core/plan.ts";
 import type { Answer, SystemOneRequest } from "../hooks/core/types.ts";
 import type { RouteEvent } from "../types";
+import { pick, step } from "./helpers.ts";
 
 const ASK = { origin: { kind: "composer" }, presentation: { isFullscreen: true, columns: 160 } } as const;
 const PANE_PROPS = {
@@ -25,8 +26,6 @@ const SPAWN = {
   background: false,
   fork: false,
 };
-const pick = (choice: string, confidence: number): Answer => ({ type: "choice", choice, confidence, probabilities: { [choice]: 1 } });
-
 /**
  * A session with Jev answering from `table`. The store is the test's own, so it can be read back,
  * and each store call waits a tick, as a file write does, so concurrent writers interleave.
@@ -53,7 +52,7 @@ function world(on: On, features: Partial<Features> = {}, table: Record<string, A
   });
   on("store.keys", async () => ({ value: Object.keys(store) }));
   mock.env(on, { TYPESAFE_API_KEY: "test-key" });
-  on("command.register", async () => ({ value: {} }));
+  on("command.register", async () => ({ value: { command: "jev" } }));
   on("tool.list", async () => ({ value: [{ name: "Read", description: "Read a file", mcp: false }] }));
   on("session.messages", async () => ({ value: [] }));
   on("session.model", async () => ({ value: "claude-opus-5-5" }));
@@ -78,12 +77,6 @@ function world(on: On, features: Partial<Features> = {}, table: Record<string, A
   });
   on("ui.close", async () => ({ value: undefined }) as never);
   return { clock, store, sent, opened };
-}
-
-async function step($: { turn: { step: (e: never) => AsyncGenerator<unknown, unknown> & { result: Promise<unknown> } } }, e: object) {
-  const stream = $.turn.step(e as never);
-  for await (const _ of stream) void _;
-  return stream.result;
 }
 
 describe("the request log", () => {

@@ -11,7 +11,7 @@ export type RouteEvent = {
   confidence?: number;
   durationMs: number;
   usage?: { input: number; output: number; cached: number; cacheWrite: number };
-  jev?: { choice: string; confidence: number; latencyMs: number; inputTokens: number; shortlist?: number };
+  jev?: { choice?: string; confidence?: number; latencyMs: number; inputTokens: number; shortlist?: number };
   /** Main loop or a subagent's request. */
   agent?: string;
   /** Effort the request was sent with. */
@@ -25,7 +25,7 @@ export type RouteEvent = {
 export type JevTab = "overview" | "live" | "models" | "agents" | "flow" | "reasons" | "baseline" | "log" | "features" | "setup";
 
 /** The functions Jev can decide a turn's plan with, in the order the Models tab lists them. */
-export type FnId = "participation" | "tools" | "model" | "effort" | "delegation" | "advisor";
+export type FnId = Exclude<FeatureId, "agents">;
 
 /**
  * What one function did for one turn. `why` is a code the pane words in the person's language
@@ -247,6 +247,7 @@ export type SetupDraft = {
 };
 
 /** The features the person switches on and off, by id (see hooks/core/plan.ts). */
+/** Canonical feature schema; the public plugin contract must be self-contained. */
 export type FeatureFlags = {
   tools: boolean;
   participation: boolean;
@@ -256,6 +257,7 @@ export type FeatureFlags = {
   agents: boolean;
   advisor: boolean;
 };
+export type FeatureId = keyof FeatureFlags;
 
 export type FeedKind = "turn" | "step" | "jev" | "tool" | "agent" | "message" | "feature" | "error";
 export type FeedTone = "info" | "good" | "warn" | "bad" | "muted";

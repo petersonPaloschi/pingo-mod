@@ -1,5 +1,5 @@
 // The pane and the band draw valid trees on both surfaces, and their controls act.
-import type { RenderPropsOf } from "claude-code";
+import type { On, RenderPropsOf } from "claude-code";
 import { expect, mock, test } from "claude-code/testing";
 
 const PANE_PROPS = {
@@ -74,7 +74,7 @@ test("the language can be changed from Jev Setup", async ($, on) => {
     saved.push(e.value);
     return { value: e.value };
   });
-  on("command.register", async () => ({ value: {} }));
+  on("command.register", async () => ({ value: { command: "jev" } }));
   on("session.id", async () => ({ value: "session-language" }));
   on("session.model", async () => ({ value: "claude-opus-5-5" }));
   await $.session.start({ cwd: "/workspace" } as never).catch(() => undefined);
@@ -95,7 +95,7 @@ test("reason titles render in the Reasons tab and the request log", async ($, on
   mock.clock(on, { now: Date.parse("2026-10-06T12:00:00Z") });
   mock.store(on, { events: [{ ...EVENT, seq: 2, mode: "passthrough", reason: "low_confidence", tool: undefined }] });
   mock.env(on, {});
-  on("command.register", async () => ({ value: {} }));
+  on("command.register", async () => ({ value: { command: "jev" } }));
   on("session.id", async () => ({ value: "session-reasons" }));
   on("session.model", async () => ({ value: "claude-opus-5-5" }));
   await $.session.start({ cwd: "/workspace" } as never).catch(() => undefined);
@@ -111,7 +111,7 @@ test("the Dice mascot is drawn and blitted only while the live tab shows", async
   const clock = mock.clock(on, { now: Date.parse("2026-10-06T12:00:00Z") });
   mock.store(on);
   mock.env(on, {});
-  on("command.register", async () => ({ value: {} }));
+  on("command.register", async () => ({ value: { command: "jev" } }));
   on("session.id", async () => ({ value: "session-live" }));
   on("session.model", async () => ({ value: "claude-opus-5-5" }));
   const blits: { key: string; columns: number; rows: number }[] = [];
@@ -135,7 +135,7 @@ test("Pingo stays in the dashboard header and animates in the terminal", async (
   const clock = mock.clock(on, { now: Date.parse("2026-10-06T12:00:00Z") });
   mock.store(on);
   mock.env(on, {});
-  on("command.register", async () => ({ value: {} }));
+  on("command.register", async () => ({ value: { command: "jev" } }));
   on("session.id", async () => ({ value: "session-mascot" }));
   on("session.model", async () => ({ value: "claude-opus-5-5" }));
   const blits: string[] = [];
@@ -209,7 +209,7 @@ test("setup does not call a provider without a key", async ($, on) => {
 });
 
 /** /config excludes sensitive options; the CLI's secure writes are recorded instead. */
-function configRows(on: Parameters<Parameters<typeof test>[1]>[1], written: unknown[]) {
+function configRows(on: On, written: unknown[]) {
   on("config.list", async () => ({ value: [{ key: "jev@inline.provider", label: "Jev provider" }] }) as never);
   on("config.set", async (_$, e) => ({ value: e.value }));
   on("process.run", async (_$, e) => {
@@ -219,7 +219,7 @@ function configRows(on: Parameters<Parameters<typeof test>[1]>[1], written: unkn
     expect(e.argv.join(" ")).not.toContain(api_key || "dummy-test");
     written.push(api_key);
     // The CLI ignores empty inputs; it does not delete an existing sensitive option.
-    return { value: { exitCode: 0, stdout: JSON.stringify({ saved: api_key ? ["api_key"] : [], unconfigured: [] }), stderr: "" } };
+    return { value: { exitCode: 0, stdout: JSON.stringify({ saved: api_key ? ["api_key"] : [], unconfigured: [] }), stderr: "", isStdoutTruncated: false, isStderrTruncated: false } };
   });
 }
 

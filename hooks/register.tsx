@@ -18,6 +18,7 @@ import { keyFor, keyOwner, providerBasis, resolveSettings, storedApplies, type M
 import { decide, hintText, type AskJev, type Decision } from "./core/decide.ts";
 import { createAskJev, isProvider, PROVIDERS, redact, resolveModel, validateKey, type ProviderId, type Transport } from "./core/jev.ts";
 import type { ModelContext } from "./core/types.ts";
+import { featureGate, sizeRequest, switchableModel, totalInput, withHint, type FeatureContext, type RequestPlan } from "./core/runtime.ts";
 import {
   DEFAULT_FEATURES,
   isSafeAgentName,
@@ -36,11 +37,11 @@ import { KEPT_EVENTS, RANGES, reasonKey } from "./events.ts";
 import { featureFlagsText, features as featureList, jevInput, jevOutput, modelName, outputSize, short, toolDetails, toolSummary } from "./feed.ts";
 import { resultText, toInput, type PendingResult } from "./input.ts";
 import { cellsOf } from "./dots.ts";
-import { failureCause, failureHint, failureKind, failureNote } from "./errors.ts";
+import { failureCause, failureHint, failureKind, failureNote, isJevFailure, reasonCode } from "./errors.ts";
 import { diceFrame, diceSize } from "./mascots/dice.ts";
 import { brailleFrame, type Mood } from "./mascots/pingo.ts";
 import { AGENT_MASCOTS, isMascot, mascotFrame, pickMascot, type MascotId } from "./mascots/agents.ts";
-import { forecast, keepTurns, settleModel, turnFunctions, type ModelOutcome } from "./watch.ts";
+import { forecast, keepTurns, settleEffort, settleModel, turnFunctions } from "./watch.ts";
 import { FLOW_FPS, flowScene, flowSummary } from "./flow.ts";
 import {
   advisorBlocker,
@@ -106,7 +107,7 @@ let system: string | undefined;
 /** The tool decision for the main loop's next model request. */
 let pending: Decision | undefined;
 /** What Jev decided for the running turn: model and effort for its main-loop requests. */
-let turnPlan: { model?: string; effort?: Effort; effortIgnored?: Effort; declined?: boolean; summary?: string; modelKept?: boolean } | undefined;
+let turnPlan: RequestPlan & { declined?: boolean; summary?: string; modelKept?: boolean } | undefined;
 /** The routing point whose model result waits for the turn's first request. */
 let unsettled: number | undefined;
 let lastToolCount = 0;
@@ -148,7 +149,6 @@ let userModel = false;
  * A main-loop model Jev may replace: a plain first-party id. One with a suffix (`[1m]`) or a
  * provider's id (Bedrock, Vertex, a gateway) would lose its context window or fail the request.
  */
-const switchableModel = (id: string) => /^claude-[a-z0-9.-]+$/i.test(id);
 /** Dice at the top of the live tab: drawn while that tab shows. */
 let dice: { columns: number; rows: number } | undefined;
 /** Pingo in the dashboard header: its terminal frame follows the latest Jev status. */
@@ -345,7 +345,7 @@ function tracePlan(plan: TurnPlan, summary: string, asked: boolean, failed: bool
   const reason = plan.decision.mode === "passthrough" ? plan.decision.reason : "hint";
   return {
     outcome: failed ? "failed" : reason === "jev_declined" ? "declined" : asked ? "consulted" : "skipped",
-    reason: reason.startsWith("jev_error") ? "jev_error" : reason,
+    reason: reasonCode(reason),
     summary,
     ...(plan.jev ? { latencyMs: plan.jev.latencyMs } : {}),
     ...(plan.decision.mode === "hint" ? { tool: plan.decision.tool } : {}),
@@ -585,12 +585,17 @@ function modelContext(config: Settings): ModelContext {
   };
 }
 
+async function activeFeatures($: EngineInterface, config: Settings): Promise<FeatureContext> {
+  return { routing: await read($, routing), hasKey: Boolean(config.apiKey), features: await read($, features) };
+}
+
 /** The turn's routing point: every feature that is on, in one Jev call. */
 async function planFor($: EngineInterface, userText: string, messageId: string): Promise<TurnPlan> {
-  if (!(await read($, routing))) return { decision: { mode: "passthrough", reason: "routing_disabled" } };
   const config = await getSettings($);
-  if (!config.apiKey) return { decision: { mode: "passthrough", reason: "no_api_key" } };
-  const flags = { ...(await read($, features)) };
+  const ctx = await activeFeatures($, config);
+  const gate = featureGate(ctx);
+  if (gate) return { decision: { mode: "passthrough", reason: gate } };
+  const flags = { ...ctx.features };
   // A manual model must not indirectly suppress effort through an ignored Jev model choice.
   if (userModel) flags.model = false;
   if (flags.model && !mainModel) mainModel = await $.session.model();
@@ -598,16 +603,16 @@ async function planFor($: EngineInterface, userText: string, messageId: string):
   lastToolCount = roster.length;
   const input = toInput(await systemText($), messages, roster, config.maxMessageChars, { userText }, config.locale);
   input.session = modelContext(config);
+  if (flags.advisor) input.session.advisorAvailable = !(await advisorInfo($)).blocked;
   return asking($, () => planTurn(input, config, tracedAskJev($, config, { origin: "prompt", messageId }), flags, [...agentTypes.values()]));
 }
 
 /** After a tool batch: only the next tool, when that feature is on and Jev did not stay out. */
 async function routeTool($: EngineInterface, extra: { pending?: PendingResult }): Promise<Decision | undefined> {
-  if (!(await read($, routing))) return { mode: "passthrough", reason: "routing_disabled" };
-  if (turnPlan?.declined) return { mode: "passthrough", reason: "jev_declined" };
-  if (!(await read($, features)).tools) return undefined;
   const config = await getSettings($);
-  if (!config.apiKey) return { mode: "passthrough", reason: "no_api_key" };
+  const gate = featureGate(await activeFeatures($, config), "tools");
+  if (gate) return gate === "feature_off" ? undefined : { mode: "passthrough", reason: gate };
+  if (turnPlan?.declined) return { mode: "passthrough", reason: "jev_declined" };
   const [messages, roster] = await Promise.all([$.session.messages(), $.tool.list()]);
   lastToolCount = roster.length;
   const input = toInput(await systemText($), messages, roster, config.maxMessageChars, extra, config.locale);
@@ -1111,12 +1116,11 @@ export const register: Register = (on, given) => {
     pending = plan.decision;
     const reason = plan.decision.mode === "passthrough" ? plan.decision.reason : "";
     turnPlan = {
-      ...(plan.model ? { model: plan.model.id ?? TIER_MODEL[plan.model.value] } : plan.retainedModel ? { model: plan.retainedModel } : {}),
+      ...(plan.model ? { model: plan.model.id ?? TIER_MODEL[plan.model.value] } : {}),
       ...(plan.effort ? { effort: plan.effort.value } : {}),
-      ...(plan.effortIgnored ? { effortIgnored: plan.effortIgnored.value } : {}),
-      ...(reason === "jev_declined" ? { declined: true } : {}),
+      ...(["jev_declined", "participation_unavailable"].includes(reason) ? { declined: true } : {}),
     };
-    const failed = reason.startsWith("jev_error") || reason === "jev_unexpected_answer";
+    const failed = isJevFailure(reason);
     const asked = plan.jev !== undefined || failed;
     const summary = asked ? planSummary(plan, config.locale) : reasonTitle(reason, config.locale);
     if (turnPlan) turnPlan.summary = summary;
@@ -1140,7 +1144,8 @@ export const register: Register = (on, given) => {
       const note = plan.decision.mode === "passthrough" && plan.decision.reason === "jev_unexpected_answer" ? failureNote(plan.decision.reason, plan.decision.detail, config.locale) : undefined;
       await log($, "jev", "jev", failed ? "bad" : "good", text("feed.request.consulted", config.locale, { summary }), undefined, {
         ...(note ? { detail: note } : {}),
-        ...(plan.jev ? { meta: `${formatNumber(plan.jev.latencyMs, config.locale)} ms`, detail: text("feed.request.confidence", config.locale, { value: formatDecimal(plan.jev.confidence, config.locale), tokens: formatCompact(plan.jev.inputTokens, config.locale), choice: plan.jev.choice }) } : {}),
+        ...(plan.jev ? { meta: `${formatNumber(plan.jev.latencyMs, config.locale)} ms`,
+          ...(plan.jev.confidence !== undefined && plan.jev.choice !== undefined ? { detail: text("feed.request.confidence", config.locale, { value: formatDecimal(plan.jev.confidence, config.locale), tokens: formatCompact(plan.jev.inputTokens, config.locale), choice: plan.jev.choice }) } : {}) } : {}),
       });
     } else {
       await log($, "jev", "jev", "muted", text("feed.request.notConsulted", config.locale, { summary }), undefined, { minor: true });
@@ -1148,7 +1153,7 @@ export const register: Register = (on, given) => {
     await updateTrace($, (s) => planMessage(s, messageId, tracePlan(plan, summary, asked, failed)));
     const hint = planHint(plan, hintText, config.locale);
     if (!hint) return entered(await next(e));
-    return entered(await next({ ...e, context: [...(e.context ?? []), `<system-reminder>${hint}</system-reminder>`] }));
+    return entered(await next({ ...e, context: withHint(e.context, hint) }));
   }).catch((_$, e, next) => next(e));
 
   on("turn.start", async ($, e, next) => {
@@ -1165,7 +1170,7 @@ export const register: Register = (on, given) => {
   on("turn.complete", async ($, e, next) => {
     const locale = (await getSettings($)).locale;
     const seconds = formatDuration(e.durationMs, locale);
-    const tokens = e.usage ? text("feed.usage.tokens", locale, { input: formatCompact(e.usage.input_tokens + (e.usage.cache_read_input_tokens ?? 0) + (e.usage.cache_creation_input_tokens ?? 0), locale), output: formatCompact(e.usage.output_tokens, locale), cache: "" }) : "";
+    const tokens = e.usage ? text("feed.usage.tokens", locale, { input: formatCompact(totalInput(e.usage), locale), output: formatCompact(e.usage.output_tokens, locale), cache: "" }) : "";
     if (e.agentId) {
       const id = e.agentId;
       const state = e.isAborted ? "aborted" : e.reason === "error" ? "error" : "done";
@@ -1262,20 +1267,22 @@ export const register: Register = (on, given) => {
     if (!decision) return result;
     pending = decision;
     if (decision.jev) {
+      const failed = decision.mode === "passthrough" && isJevFailure(decision.reason);
       const what = decision.mode === "hint"
         ? text("feed.tool.next", locale, { tool: decision.tool, confidence: formatDecimal(decision.confidence, locale) })
         : text("feed.tool.noHint", locale, { reason: reasonTitle(decision.reason, locale) });
-      await log($, "jev", "jev", "good", text("feed.request.consulted", locale, { summary: what }), undefined, {
+      await log($, "jev", "jev", failed ? "bad" : "good", text("feed.request.consulted", locale, { summary: what }), undefined, {
         meta: `${formatNumber(decision.jev.latencyMs, locale)} ms`,
-        detail: text("feed.tool.after", locale, {
+        ...(failed && decision.mode === "passthrough" ? { detail: failureNote(decision.reason, decision.detail, locale) ?? "" } : {}),
+        ...(decision.jev.confidence !== undefined && decision.jev.choice !== undefined ? { detail: text("feed.tool.after", locale, {
           tool: e.tool,
           confidence: formatDecimal(decision.jev.confidence, locale),
           choice: decision.jev.choice,
           shortlist: decision.jev.shortlist ? text("feed.tool.shortlist", locale, { count: formatNumber(decision.jev.shortlist.length, locale) }) : "",
-        }),
+        }) } : {}),
       });
-      await setLive($, { decision: what, jevUsed: true });
-    } else if (decision.mode === "passthrough" && (decision.reason.startsWith("jev_error") || decision.reason === "jev_unexpected_answer")) {
+      await setLive($, { decision: failed ? text("ui.band.jevFailed", locale) : what, jevUsed: true });
+    } else if (decision.mode === "passthrough" && isJevFailure(decision.reason)) {
       // A thrown call was already printed with its cause by the traced call; an unusable answer was not.
       if (decision.reason === "jev_unexpected_answer") {
         await log($, "jev", "jev", "bad", text("feed.request.failed", locale, { message: reasonTitle(decision.reason, locale) }), undefined, { detail: failureNote(decision.reason, decision.detail, locale) ?? "" });
@@ -1283,7 +1290,7 @@ export const register: Register = (on, given) => {
       await setLive($, { decision: text("ui.band.jevFailed", locale), jevUsed: true });
     }
     if (decision.mode !== "hint") return result;
-    return { ...result, context: [...(result.context ?? []), hintText(decision.tool, locale)] };
+    return { ...result, context: withHint(result.context, hintText(decision.tool, locale)) };
   }).catch((_$, e, next) => next(e));
 
   // Subagents: Jev picks the model and effort, unless Claude asked for a model itself.
@@ -1294,23 +1301,24 @@ export const register: Register = (on, given) => {
       if (result.deny === undefined) await traceSpawn($, e, result.agentId ?? e.tool_use_id, result.model).catch(() => undefined);
       return result;
     }
-    const flags = await read($, features);
     const config = await getSettings($);
-    const routingOn = await read($, routing);
-    const plan =
-      flags.agents && routingOn && config.apiKey && !e.fork && !e.model
-        ? await asking($, () => planAgent(e, config, tracedAskJev($, config, { origin: "agent", ...(e.parentAgentId ? { agentId: e.parentAgentId } : {}) }), flags, undefined, modelContext(config)))
+    const ctx = await activeFeatures($, config);
+    const proposed =
+      !featureGate(ctx, "agents") && !e.fork && !e.model
+        ? await asking($, () => planAgent(e, config, tracedAskJev($, config, { origin: "agent", ...(e.parentAgentId ? { agentId: e.parentAgentId } : {}) }), ctx.features, undefined, modelContext(config)))
         : {};
+    const current = await activeFeatures($, config);
+    const plan = featureGate(current, "agents") ? {} : proposed;
     const result = await next(plan.model ? { ...e, model: plan.model.value } : e);
     if (result.deny !== undefined) {
       await log($, "claude", "agent", "warn", text("feed.subagent.denied", config.locale, { type: e.subagentType, message: short(result.deny, 80) }));
       return result;
     }
     const id = result.agentId ?? e.tool_use_id;
-    const haikuTarget = result.model.toLowerCase().includes("haiku");
-    const appliedEffort = haikuTarget ? undefined : plan.effort;
-    const ignoredEffort = plan.effortIgnored ?? (haikuTarget ? plan.effort : undefined);
-    agentRuns.set(id, { type: e.subagentType, model: result.model, ...(appliedEffort ? { effort: appliedEffort.value } : {}), description: e.description, ...(e.isTeammate ? { teammate: true as const, awake: true } : {}) });
+    const sized = sizeRequest({ model: result.model }, { effort: plan.effort?.value }, { model: false, effort: !featureGate(current, "agents") });
+    const appliedEffort = sized.effortOutcome?.kind === "applied" ? plan.effort : undefined;
+    const ignoredEffort = sized.effortOutcome?.kind === "ignored" ? plan.effort : undefined;
+    agentRuns.set(id, { type: e.subagentType, model: result.model, ...(plan.effort ? { effort: plan.effort.value } : {}), description: e.description, ...(e.isTeammate ? { teammate: true as const, awake: true } : {}) });
     const chosen = [
       plan.model
         ? text("feed.subagent.jevModel", config.locale, { model: plan.model.value, confidence: formatDecimal(plan.model.confidence, config.locale) })
@@ -1352,69 +1360,41 @@ export const register: Register = (on, given) => {
     const config = await getSettings($);
     const locale = config.locale;
     const startedAt = await $.clock.now();
-    let decision: Decision;
-    let model = e.model;
-    let effort = e.effort;
+    const ctx = await activeFeatures($, config);
+    const run = e.agentId ? agentRuns.get(e.agentId) : undefined;
+    const planned = e.agentId ? { effort: run?.effort } : turnPlan ?? {};
+    const sized = sizeRequest(e, planned, {
+      model: !e.agentId && !featureGate(ctx, "model"),
+      effort: !featureGate(ctx, e.agentId ? "agents" : "effort"),
+      userModel,
+      blockedModels,
+    });
+    const sent = sized.request;
+    const model = sent.model;
+    const effort = sent.effort;
     const changes: string[] = [];
-    let outcome: ModelOutcome | undefined;
-    if (e.agentId) {
-      decision = { mode: "passthrough", reason: "subagent" };
-      const run = agentRuns.get(e.agentId);
-      const haikuTarget = model.toLowerCase().includes("haiku");
-      if (haikuTarget) {
-        const ignoredEffort = run?.effort ?? (typeof e.effort === "string" ? e.effort : undefined);
-        if (ignoredEffort) changes.push(text("feed.change.ignoredEffort", locale, { effort: ignoredEffort, model: modelName(model) }));
-        effort = undefined;
-      } else if (run?.effort) {
-        if (typeof e.effort === "string") {
-          if (e.effort !== run.effort) {
-            effort = run.effort;
-            changes.push(text("feed.change.effortSwitched", locale, { from: e.effort, to: run.effort }));
-          }
-        } else {
-          changes.push(text("feed.change.effortNotApplied", locale, { effort: run.effort }));
-        }
-      }
-    } else {
-      decision = pending ?? { mode: "passthrough", reason: (await read($, routing)) ? "not_asked" : "routing_disabled" };
+    let decision: Decision;
+    if (e.agentId) decision = { mode: "passthrough", reason: "subagent" };
+    else {
+      const gate = featureGate(ctx);
+      decision = gate ? { mode: "passthrough", reason: gate } : pending ?? { mode: "passthrough", reason: "not_asked" };
       pending = undefined;
-      if (turnPlan?.model && !blockedModels.has(turnPlan.model) && turnPlan.model !== e.model) {
-        const kept: LocaleKey | undefined = userModel ? "feed.change.modelKeptChosen" : !switchableModel(e.model) ? "feed.change.modelKeptId" : undefined;
-        if (!kept) {
-          model = turnPlan.model;
-          changes.push(text("feed.change.modelSwitched", locale, { from: modelName(e.model), to: modelName(model) }));
-          outcome = { kind: "switched", from: e.model, to: model };
-        } else {
-          outcome = { kind: "held", why: userModel ? "user_model" : "model_id", from: e.model, to: turnPlan.model };
-          if (!turnPlan.modelKept) {
-            turnPlan.modelKept = true;
-            await log($, "mod", "feature", "muted", text(kept, locale, { model: modelName(e.model), target: modelName(turnPlan.model) }), undefined, { minor: true });
-          }
-        }
-      } else if (turnPlan?.model) {
-        outcome = turnPlan.model === e.model ? { kind: "same", model: e.model } : { kind: "held", why: "blocked", from: e.model, to: turnPlan.model };
+      if (decision.mode === "hint" && featureGate(ctx, "tools")) decision = { mode: "passthrough", reason: "tools_feature_off" };
+      if (sized.modelOutcome?.kind === "held" && sized.modelOutcome.why !== "blocked" && turnPlan && !turnPlan.modelKept) {
+        turnPlan.modelKept = true;
+        await log($, "mod", "feature", "muted", text(sized.modelOutcome.why === "user_model" ? "feed.change.modelKeptChosen" : "feed.change.modelKeptId", locale, { model: modelName(e.model), target: modelName(sized.modelOutcome.to) }), undefined, { minor: true });
       }
       if (unsettled !== undefined) {
         const seq = unsettled;
         unsettled = undefined;
-        await update($, watch, (w) => ({ ...w, turns: w.turns.map((turn) => (turn.seq === seq ? settleModel(turn, outcome) : turn)) }));
-      }
-      const haikuTarget = model.toLowerCase().includes("haiku");
-      if (haikuTarget) {
-        const ignoredEffort = turnPlan?.effortIgnored ?? turnPlan?.effort ?? (typeof e.effort === "string" ? e.effort : undefined);
-        if (ignoredEffort) changes.push(text("feed.change.ignoredEffort", locale, { effort: ignoredEffort, model: modelName(model) }));
-        effort = undefined;
-      } else if (turnPlan?.effort) {
-        if (typeof e.effort === "string" || model !== e.model) {
-          if (e.effort !== turnPlan.effort) {
-            effort = turnPlan.effort;
-            changes.push(text("feed.change.effortSwitched", locale, { from: e.effort ?? text("feed.change.effortDefault", locale), to: turnPlan.effort }));
-          }
-        } else {
-          changes.push(text("feed.change.effortNotApplied", locale, { effort: turnPlan.effort }));
-        }
+        const effortOutcome = sized.effortOutcome ?? (planned.effort ? { kind: "held" as const, value: planned.effort, why: featureGate(ctx, "effort") } : undefined);
+        await update($, watch, (w) => ({ ...w, turns: w.turns.map((turn) => turn.seq === seq
+          ? settleEffort(settleModel(turn, sized.modelOutcome, ctx), effortOutcome, ctx) : turn) }));
       }
     }
+    if (model !== e.model) changes.push(text("feed.change.modelSwitched", locale, { from: modelName(e.model), to: modelName(model) }));
+    if (sized.ignoredEffort !== undefined) changes.push(text("feed.change.ignoredEffort", locale, { effort: String(sized.ignoredEffort), model: modelName(model) }));
+    else if (effort !== e.effort && effort !== undefined) changes.push(text("feed.change.effortSwitched", locale, { from: e.effort ?? text("feed.change.effortDefault", locale), to: effort }));
     const who = actor(e.agentId);
     const effortText = effort === undefined ? "" : text("feed.request.effort", locale, { effort });
     const loop = typeof who === "string" ? "" : text("feed.request.loop", locale, { agent: who.agent });
@@ -1434,11 +1414,6 @@ export const register: Register = (on, given) => {
         changed: changes.length ? changes.join(", ") : undefined,
         activity: text("feed.activity.responding", locale),
       });
-    }
-    let sent = e;
-    if (changes.length) {
-      const { effort: _originalEffort, ...withoutEffort } = e;
-      sent = { ...withoutEffort, model, ...(effort === undefined ? {} : { effort }) };
     }
     await updateTrace($, (s) =>
       stepStart(s, {
@@ -1463,7 +1438,7 @@ export const register: Register = (on, given) => {
         ...(result.usage?.model ? { observed: result.usage.model } : {}),
         stop: result.stopReason,
         ...(result.usage
-          ? { tokens: { input: result.usage.input_tokens + (result.usage.cache_read_input_tokens ?? 0) + (result.usage.cache_creation_input_tokens ?? 0), output: result.usage.output_tokens } }
+          ? { tokens: { input: totalInput(result.usage), output: result.usage.output_tokens } }
           : {}),
         ...(result.serverToolUses ? { serverToolUses: result.serverToolUses.map(({ id, name, startedAt: from, endedAt: to }) => ({ id, name, startedAt: from, ...(to === undefined ? {} : { endedAt: to }) })) } : {}),
       }),
@@ -1486,10 +1461,10 @@ export const register: Register = (on, given) => {
     const cacheRead = usage?.cache_read_input_tokens ?? 0;
     if (!e.agentId && usage) {
       mainModel = model;
-      contextTokens = usage.input_tokens + cacheRead + (usage.cache_creation_input_tokens ?? 0);
+      contextTokens = totalInput(usage);
       cacheReadTokens = cacheRead;
     }
-    const inTokens = usage ? usage.input_tokens + cacheRead + (usage.cache_creation_input_tokens ?? 0) : 0;
+    const inTokens = totalInput(usage);
     const asked = [...new Set(result.toolUses.map((use) => use.name))];
     await patch($, requestLine, {
       meta: formatDuration((await $.clock.now()) - startedAt, locale),
@@ -1503,7 +1478,7 @@ export const register: Register = (on, given) => {
     if (e.agentId) {
       await updateRun($, e.agentId, (run) => ({
         ...run,
-        tokensIn: run.tokensIn + (usage ? usage.input_tokens + (usage.cache_read_input_tokens ?? 0) + (usage.cache_creation_input_tokens ?? 0) : 0),
+        tokensIn: run.tokensIn + totalInput(usage),
         tokensOut: run.tokensOut + (usage?.output_tokens ?? 0),
         ...(result.answer.trim() ? { text: short(result.answer, 2000) } : {}),
         ...(run.state === "running" && result.toolUses.length === 0 ? { activity: text("feed.activity.writing", locale) } : {}),
@@ -1524,7 +1499,7 @@ export const register: Register = (on, given) => {
       ...(usage
         ? {
             usage: {
-              input: usage.input_tokens + (usage.cache_read_input_tokens ?? 0) + (usage.cache_creation_input_tokens ?? 0),
+              input: totalInput(usage),
               output: usage.output_tokens,
               cached: usage.cache_read_input_tokens ?? 0,
               cacheWrite: usage.cache_creation_input_tokens ?? 0,

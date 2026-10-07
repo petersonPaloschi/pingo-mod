@@ -35,6 +35,8 @@ export interface ModelContext {
   contextTokens?: number;
   cacheReadTokens?: number;
   availableModels?: readonly string[];
+  /** Known environment blockers prevent hints for an unavailable advisor. */
+  advisorAvailable?: boolean;
 }
 
 // --- Jev wire format (SystemOne) ---

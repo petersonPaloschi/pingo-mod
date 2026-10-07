@@ -13,11 +13,13 @@ import {
 } from "./questions.ts";
 import { buildState, type Limits } from "./state.ts";
 import { unusableAnswer } from "../errors.ts";
-import type { Answer, Questions, RouterInput, RouterTool, SystemOneRequest, SystemOneResult } from "./types.ts";
+import type { Answer, Questions, RouterInput, RouterTool, SystemOneRequest } from "./types.ts";
 import { text, type Locale } from "../i18n.ts";
+import { askTimed, type AskJev } from "./request.ts";
+import { readChoice } from "./selection.ts";
 
 /** The one Jev call the router makes; injectable so tests need no network. */
-export type AskJev = (request: SystemOneRequest) => Promise<SystemOneResult>;
+export type { AskJev } from "./request.ts";
 
 export interface DecideConfig extends Limits {
   jevModel: string;
@@ -27,10 +29,10 @@ export interface DecideConfig extends Limits {
 }
 
 export interface JevTrace {
-  choice: string;
-  confidence: number;
-  needsTool: number;
-  topProbabilities: Record<string, number>;
+  choice?: string;
+  confidence?: number;
+  needsTool?: number;
+  topProbabilities?: Record<string, number>;
   inputTokens: number;
   latencyMs: number;
   shortlist?: string[];
@@ -67,9 +69,12 @@ async function shortlist(
   state: SystemOneRequest["state"],
   config: DecideConfig,
   askJev: AskJev,
-): Promise<{ tools: RouterTool[]; inputTokens: number }> {
+  now: () => number,
+): Promise<{ tools: RouterTool[]; inputTokens: number; latencyMs: number } | { failure: string }> {
   const { questions, shards } = buildShortlistQuestions(tools, config.promptLocale ?? config.locale);
-  const result = await askJev({ state, questions, model: config.jevModel });
+  const asked = await askTimed({ state, questions, model: config.jevModel }, askJev, now);
+  if ("failure" in asked) return asked;
+  const { result } = asked;
   const ranked = shards.map((shard, index) => {
     const answer = result.answers[shardKey(index)];
     if (answer?.type !== "choice") return [];
@@ -91,7 +96,7 @@ async function shortlist(
       if (best.size === MAX_TOOLS) break;
     }
   }
-  return { tools: tools.filter((tool) => best.has(tool.name)), inputTokens: result.usage.input_tokens };
+  return { tools: tools.filter((tool) => best.has(tool.name)), inputTokens: result.usage.input_tokens, latencyMs: asked.latencyMs };
 }
 
 export async function decide(
@@ -104,37 +109,43 @@ export async function decide(
   const skip = skipReason(input);
   if (skip) return { mode: "passthrough", reason: skip };
 
-  const startedAt = now();
   const state = buildState(input, config);
   let tools = input.tools;
   let shortlistTokens = 0;
-  let result: SystemOneResult;
-  try {
-    if (tools.length > MAX_TOOLS) {
-      ({ tools, inputTokens: shortlistTokens } = await shortlist(tools, state, config, askJev));
-      if (tools.length === 0) return { mode: "passthrough", reason: "jev_unexpected_answer", detail: "the tool shortlist came back empty" };
-    }
-    // Other features' questions ride in the same call: one Jev request per routing point.
-    result = await askJev({ state, questions: { ...buildQuestions(tools, config.promptLocale ?? config.locale), ...extra }, model: config.jevModel });
-  } catch (error) {
-    // Fail open: a Jev outage must never stop the session.
-    return { mode: "passthrough", reason: `jev_error: ${error instanceof Error ? error.message : String(error)}` };
+  let latencyMs = 0;
+  const jevMetrics = (inputTokens: number): JevTrace => ({ inputTokens, latencyMs });
+  if (tools.length > MAX_TOOLS) {
+    const result = await shortlist(tools, state, config, askJev, now);
+    if ("failure" in result) return { mode: "passthrough", reason: result.failure };
+    ({ tools, inputTokens: shortlistTokens } = result);
+    latencyMs += result.latencyMs;
+    if (tools.length === 0) return { mode: "passthrough", reason: "jev_unexpected_answer", detail: "the tool shortlist came back empty", jev: jevMetrics(shortlistTokens) };
   }
+  // Other features' questions ride in the same call: one Jev request per routing point.
+  const asked = await askTimed({ state, questions: { ...buildQuestions(tools, config.promptLocale ?? config.locale), ...extra }, model: config.jevModel }, askJev, now);
+  if ("failure" in asked) return { mode: "passthrough", reason: asked.failure };
+  const { result } = asked;
+  latencyMs += asked.latencyMs;
 
   const answers = result.answers;
   const picked = answers[TOOL_KEY];
   const needs = answers[NEEDS_TOOL_KEY];
+  const metrics = jevMetrics(result.usage.input_tokens + shortlistTokens);
   if (picked?.type !== "choice" || needs?.type !== "noul") {
     return {
       mode: "passthrough",
       reason: "jev_unexpected_answer",
       detail: unusableAnswer([TOOL_KEY, NEEDS_TOOL_KEY], Object.keys(answers), result.dropped),
       answers,
+      jev: metrics,
     };
   }
+  const pick = readChoice(picked, [picked.choice], config.minConfidence);
+  const selected = pick.chosen ?? pick.held;
+  if (!selected) return { mode: "passthrough", reason: "jev_unexpected_answer", detail: "the tool choice confidence was invalid", answers, jev: metrics };
   const jev: JevTrace = {
-    choice: inert(picked.choice),
-    confidence: picked.confidence,
+    choice: inert(selected.value),
+    confidence: selected.confidence,
     needsTool: needs.noul,
     topProbabilities: Object.fromEntries(
       Object.entries(picked.probabilities ?? {})
@@ -142,24 +153,23 @@ export async function decide(
         .slice(0, 3)
         .map(([name, probability]) => [inert(name), probability]),
     ),
-    inputTokens: result.usage.input_tokens + shortlistTokens,
-    latencyMs: Math.round(now() - startedAt),
+    ...metrics,
     ...(tools === input.tools ? {} : { shortlist: tools.map((tool) => tool.name) }),
   };
 
-  if (picked.confidence < config.minConfidence) return { mode: "passthrough", reason: "low_confidence", jev, answers };
+  if (pick.reason === "low_confidence") return { mode: "passthrough", reason: "low_confidence", jev, answers };
   // Two independent questions must agree before the router says anything.
-  const wantsTool = picked.choice !== NO_TOOL;
+  const wantsTool = selected.value !== NO_TOOL;
   if (wantsTool ? needs.noul < 0.3 : needs.noul > 0.7) {
     return { mode: "passthrough", reason: "jev_answers_disagree", jev, answers };
   }
   // A hint can suggest a tool; suggesting silence would only risk ending the turn early.
   if (!wantsTool) return { mode: "passthrough", reason: "no_tool_needed", jev, answers };
 
-  const tool = tools.find((candidate) => candidate.name === picked.choice);
+  const tool = tools.find((candidate) => candidate.name === selected.value);
   if (!tool) return { mode: "passthrough", reason: "jev_unknown_tool", jev, answers };
   if (tool.kind === "hosted") return { mode: "passthrough", reason: "hosted_tool_selected", jev, answers };
-  return { mode: "hint", tool: tool.name, confidence: picked.confidence, jev, answers };
+  return { mode: "hint", tool: tool.name, confidence: selected.confidence, jev, answers };
 }
 
 /** The hint Claude reads; it leaves Claude free to ignore a pick that does not fit. */

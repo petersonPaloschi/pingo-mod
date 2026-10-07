@@ -39,7 +39,9 @@ export function failureNote(reason: string, detail: string | undefined, locale: 
   return `${cause}\n${failureHint(failureKind(cause, reasonCode(reason)), locale)}`;
 }
 
-const reasonCode = (reason: string) => (reason.startsWith("jev_error") ? "jev_error" : reason);
+export const reasonCode = (reason: string) => (reason.startsWith("jev_error") ? "jev_error" : reason);
+
+export const isJevFailure = (reason: string) => ["jev_error", "jev_unexpected_answer"].includes(reasonCode(reason));
 
 /** What a Jev answer lacked, for the cases the reply parsed but the router could not use. */
 export function unusableAnswer(

@@ -3,31 +3,89 @@
 // the model and effort of each subagent.
 // Every question rides in the routing point's one Jev call; each answer counts only above the
 // minimum confidence, otherwise Claude Code's own choice stands.
-import { decide, SAFE_TOOL_NAME, skipReason, type AskJev, type DecideConfig, type Decision, type JevTrace } from "./decide.ts";
+import { decide, SAFE_TOOL_NAME, skipReason, type AskJev, type DecideConfig, type Decision } from "./decide.ts";
+import { reasonCode } from "../errors.ts";
 import { buildState, truncate } from "./state.ts";
+import { askTimed } from "./request.ts";
+import { readChoice } from "./selection.ts";
 import type { Answer, Json, ModelContext, Questions, RouterInput } from "./types.ts";
 import { formatDecimal, localeFor, reasonTitle, text, type Locale, type LocaleKey } from "../i18n.ts";
+import { DEFAULT_FEATURES } from "./contracts.ts";
+import type {
+  AdvisorChoice,
+  AgentPlan,
+  Chosen,
+  Effort,
+  Features,
+  HeldChoice,
+  HeldModelPick,
+  ModelPick,
+  ModelReason,
+  Tier,
+  TurnPlan,
+} from "./contracts.ts";
 
-export type FeatureId = "tools" | "participation" | "model" | "effort" | "delegation" | "agents" | "advisor";
-export type Features = Record<FeatureId, boolean>;
+export { DEFAULT_FEATURES, FEATURE_IDS } from "./contracts.ts";
+export { readChoice } from "./selection.ts";
+export type {
+  AdvisorChoice,
+  AdvisorWhy,
+  AgentPlan,
+  ChoiceRead,
+  ChoiceReason,
+  Chosen,
+  DelegateWhy,
+  Effort,
+  FeatureId,
+  Features,
+  HeldChoice,
+  HeldModelPick,
+  ModelPick,
+  ModelReason,
+  Tier,
+  TurnPlan,
+} from "./contracts.ts";
 
-/** Only the tool hint is on by default: the rest change how Claude Code runs. */
-export const DEFAULT_FEATURES: Features = {
-  tools: true,
-  participation: false,
-  model: false,
-  effort: false,
-  delegation: false,
-  agents: false,
-  advisor: false,
-};
-
-export type Tier = "haiku" | "sonnet" | "opus";
 export const TIERS: readonly Tier[] = ["haiku", "sonnet", "opus"];
 export const KEEP_MODEL = "keep_current_model";
 
+function modelIdTail(id: string): string {
+  return id.toLowerCase().slice(id.lastIndexOf("/") + 1);
+}
+
+interface ParsedModelId {
+  tier: Tier;
+  major?: number;
+  minor?: number;
+  alias?: boolean;
+}
+
+function parseModelId(id: string | undefined): ParsedModelId | undefined {
+  if (!id) return undefined;
+  const fullId = id.toLowerCase();
+  if (fullId === "haiku" || fullId === "sonnet" || fullId === "opus") return { tier: fullId as Tier, alias: true };
+  const model = modelIdTail(fullId).replace(/^(?:[a-z0-9-]+\.)?anthropic\./, "");
+  const match = model.match(/^claude-(?:(\d+)(?:-(\d+))?-(haiku|sonnet|opus)|(haiku|sonnet|opus)-(\d+)(?:-(\d+))?)(.*)$/);
+  if (!match || !/^(?:-\d{8})?(?:-v\d+(?::\d+|@\d{8}))?(?:@\d{8})?(?:\[1m\])?$/.test(match[7] ?? "")) return undefined;
+  return {
+    tier: (match[3] ?? match[4]) as Tier,
+    major: Number(match[1] ?? match[5]),
+    minor: Number(match[2] ?? match[6] ?? 0),
+  };
+}
+
 export function modelTier(id: string | undefined): Tier | undefined {
-  return id?.toLowerCase().match(/^(?:claude-)?(haiku|sonnet|opus)(?:-|$)/)?.[1] as Tier | undefined;
+  return parseModelId(id)?.tier;
+}
+
+/** Whether this model generation accepts an effort setting. Unknown models fail closed. */
+export function supportsEffort(modelId: string | undefined): boolean {
+  const model = parseModelId(modelId);
+  if (!model || model.tier === "haiku") return false;
+  if (model.alias) return true;
+  const major = model.major ?? 0;
+  const minor = model.minor ?? 0;
+  return model.tier === "opus" ? major > 4 || (major === 4 && minor >= 5) : major > 4 || (major === 4 && minor >= 6);
 }
 /** The ids a main-loop request is sent with; agents take the alias itself. */
 export const TIER_MODEL: Record<Tier, string> = {
@@ -36,7 +94,6 @@ export const TIER_MODEL: Record<Tier, string> = {
   opus: "claude-opus-5-5",
 };
 
-export type Effort = "low" | "medium" | "high" | "xhigh" | "max";
 export const EFFORTS: readonly Effort[] = ["low", "medium", "high", "xhigh", "max"];
 
 export const PARTICIPATE_KEY = "participate";
@@ -47,7 +104,10 @@ export const NO_DELEGATION = "no_delegation";
 export const ADVISOR_KEY = "advisor";
 /** "consult" asks Claude to consult the advisor tool; Claude still decides whether it calls it. */
 export const ADVISOR_CHOICES = ["none", "consult"] as const;
-export type AdvisorChoice = (typeof ADVISOR_CHOICES)[number];
+
+export function participationState(score: number): "in" | "out" {
+  return score < 0.5 ? "out" : "in";
+}
 
 const MODEL_CRITERIA: Record<Tier, LocaleKey> = {
   haiku: "planning.model.haiku",
@@ -131,7 +191,7 @@ export function turnQuestions(features: Features, agents: readonly AgentType[], 
       criteria,
     };
   }
-  if (features.advisor) {
+  if (features.advisor && session.advisorAvailable !== false) {
     questions[ADVISOR_KEY] = {
       type: "choice",
       instructions: text("planning.advisor.question", locale),
@@ -152,14 +212,6 @@ export function agentQuestions(features: Features, locale?: Locale, session: Mod
     [EFFORT_KEY]: { type: "choice", instructions: text("planning.agent.effort.question", locale), criteria: criteria(EFFORT_CRITERIA, locale) },
   };
 }
-
-export interface Chosen<T> {
-  value: T;
-  confidence: number;
-}
-
-export type ModelReason = "keep_current" | "low_confidence" | "downgrade_confidence" | "cache_confidence" | "unavailable";
-export type ModelPick = Chosen<Tier> & { id?: string };
 
 /**
  * The confidence Jev needs to move the model to `tier`: the minimum, raised for a downgrade, and
@@ -183,54 +235,31 @@ export function modelThreshold(tier: Tier, minConfidence: number, session: Model
 
 /** Keep Jev's answer intact; policy decides whether its model change is worth accepting. */
 export function selectModel(answer: Answer | undefined, minConfidence: number, session: ModelContext = {}): {
-  model?: ModelPick; retainedModel?: string; modelReason?: ModelReason;
+  model?: ModelPick; modelHeld?: HeldModelPick; retainedModel?: string; modelReason?: ModelReason;
 } {
   const keep = (modelReason: ModelReason) => ({ modelReason, ...(session.currentModel ? { retainedModel: session.currentModel } : {}) });
-  if (answer?.type !== "choice") return keep("unavailable");
-  if (answer.choice === KEEP_MODEL && session.currentModel) return keep("keep_current");
-  const tier = modelTier(answer.choice);
-  if (!tier || !(session.availableModels ?? TIERS).includes(answer.choice)) return keep("unavailable");
+  if (answer?.type === "choice" && answer.choice === KEEP_MODEL && session.currentModel) return keep("keep_current");
+  const offered = (session.availableModels ?? TIERS).filter((id) => modelTier(id) && SAFE_TOOL_NAME.test(id));
+  const read = readChoice(answer, offered, minConfidence);
+  const candidate = read.chosen ?? read.held;
+  if (!candidate) return keep("unavailable");
+  const id = candidate.value;
+  const tier = modelTier(id);
+  if (!tier) return keep("unavailable");
   const { needed, reason } = modelThreshold(tier, minConfidence, session);
-  if (!Number.isFinite(answer.confidence) || answer.confidence < needed || answer.confidence > 1) return keep(reason);
-  return { model: { value: tier, confidence: answer.confidence, ...(answer.choice !== tier ? { id: answer.choice } : {}) } };
+  const pick: HeldModelPick = { value: tier, confidence: candidate.confidence, needed, ...(id !== tier ? { id } : {}) };
+  if (candidate.confidence < needed) return { ...keep(reason), modelHeld: pick };
+  return { model: pick };
 }
-
-function choice<T extends string>(answers: Record<string, Answer> | undefined, key: string, allowed: readonly T[], min: number): Chosen<T> | undefined {
-  const answer = answers?.[key];
-  if (answer?.type !== "choice" || !allowed.includes(answer.choice as T) || answer.confidence < min) return undefined;
-  return { value: answer.choice as T, confidence: answer.confidence };
-}
-
-/** Everything one routing point decided. */
-export interface TurnPlan {
-  decision: Decision;
-  /** Jev's yes/no on taking part; absent when that feature is off. */
-  participate?: number;
-  model?: ModelPick;
-  retainedModel?: string;
-  modelReason?: ModelReason;
-  effort?: Chosen<Effort>;
-  /** Jev answered, but the selected tier does not accept effort. */
-  effortIgnored?: Chosen<Effort>;
-  delegate?: Chosen<string>;
-  /** Jev's usable answer on the advisor: "consult" attaches the hint, "none" does not. */
-  advisor?: Chosen<AdvisorChoice>;
-  /** A "consult" below the minimum confidence: no hint. */
-  advisorHeld?: Chosen<AdvisorChoice>;
-  /** Why the advisor answer was not used, when it was not. */
-  advisorWhy?: AdvisorWhy;
-  jev?: JevTrace;
-}
-
-/** Why no advisor answer counts: Jev stayed out, the participation answer is missing, no usable answer, or too unsure. */
-export type AdvisorWhy = "jev_declined" | "participation_unavailable" | "unavailable" | "low_confidence";
 
 /** The advisor answer on its own: a malformed answer to another question does not void it. */
 function readAdvisor(answer: Answer | undefined, min: number): Pick<TurnPlan, "advisor" | "advisorHeld" | "advisorWhy"> {
-  if (answer?.type !== "choice" || !ADVISOR_CHOICES.includes(answer.choice as AdvisorChoice)) return { advisorWhy: "unavailable" };
-  const chosen = { value: answer.choice as AdvisorChoice, confidence: answer.confidence };
-  if (chosen.value === "consult" && chosen.confidence < min) return { advisorHeld: chosen, advisorWhy: "low_confidence" };
-  return { advisor: chosen };
+  const read = readChoice(answer, ADVISOR_CHOICES, min);
+  return read.chosen
+    ? { advisor: read.chosen }
+    : read.held
+      ? { advisorHeld: read.held, advisorWhy: "low_confidence" }
+      : { advisorWhy: "unavailable" };
 }
 
 /** One routing point: the tool decision plus the extra questions, in one Jev call. */
@@ -268,15 +297,14 @@ async function askOnly(
   reason = "tools_feature_off",
 ): Promise<Decision> {
   if (input.turns.length === 0) return { mode: "passthrough", reason: "no_messages" };
-  const startedAt = now();
   try {
-    const result = await askJev({ state: buildState(input, config), questions, model: config.jevModel });
-    const latencyMs = Math.round(now() - startedAt);
+    const asked = await askTimed({ state: buildState(input, config), questions, model: config.jevModel }, askJev, now);
+    if ("failure" in asked) return { mode: "passthrough", reason: asked.failure };
     return {
       mode: "passthrough",
       reason,
-      answers: result.answers,
-      jev: { choice: "–", confidence: 0, needsTool: 0, topProbabilities: {}, inputTokens: result.usage.input_tokens, latencyMs },
+      answers: asked.result.answers,
+      jev: { inputTokens: asked.result.usage.input_tokens, latencyMs: asked.latencyMs },
     };
   } catch (error) {
     return { mode: "passthrough", reason: `jev_error: ${error instanceof Error ? error.message : String(error)}` };
@@ -286,53 +314,75 @@ async function askOnly(
 export function readTurnPlan(decision: Decision, features: Features, agents: readonly AgentType[], minConfidence: number, session: ModelContext = {}): TurnPlan {
   const answers = decision.answers;
   const participateAnswer = answers?.[PARTICIPATE_KEY];
-  const participate = features.participation && participateAnswer?.type === "noul" ? participateAnswer.noul : undefined;
-  const selection = features.model ? selectModel(answers?.[MODEL_KEY], minConfidence, session) : {};
-  const model = selection.model;
-  const requestedEffort = features.effort ? choice(answers, EFFORT_KEY, EFFORTS, minConfidence) : undefined;
-  const effortIgnored = (model?.value ?? modelTier(selection.retainedModel ?? session.currentModel)) === "haiku" ? requestedEffort : undefined;
-  const effort = effortIgnored ? undefined : requestedEffort;
+  const participate = features.participation && participateAnswer?.type === "noul"
+    && Number.isFinite(participateAnswer.noul) && participateAnswer.noul >= 0 && participateAnswer.noul <= 1
+    ? participateAnswer.noul
+    : undefined;
+  const jevFailed = decision.mode === "passthrough" && reasonCode(decision.reason) === "jev_error";
+  const selection = features.model && !jevFailed ? selectModel(answers?.[MODEL_KEY], minConfidence, session) : {};
+  const effortRead = features.effort && !jevFailed ? readChoice(answers?.[EFFORT_KEY], EFFORTS, minConfidence) : undefined;
   const sizing = {
     ...selection,
-    ...(effort ? { effort } : {}),
-    ...(effortIgnored ? { effortIgnored } : {}),
+    ...(effortRead?.chosen ? { effort: effortRead.chosen } : {}),
+    ...(effortRead?.held ? { effortHeld: effortRead.held } : {}),
+    ...(effortRead?.reason ? { effortWhy: effortRead.reason } : {}),
     ...(decision.jev ? { jev: decision.jev } : {}),
   };
+  if (jevFailed) {
+    return {
+      decision,
+      ...(participate !== undefined ? { participate } : {}),
+      ...sizing,
+      ...(features.delegation ? { delegateWhy: "unavailable" as const } : {}),
+      ...(features.advisor ? { advisorWhy: session.advisorAvailable === false ? "advisor_unavailable" as const : "unavailable" as const } : {}),
+    };
+  }
+  const passthrough = (reason: string): Decision => ({
+    mode: "passthrough",
+    reason,
+    ...(answers ? { answers } : {}),
+    ...(decision.jev ? { jev: decision.jev } : {}),
+  });
   // Jev chose to stay out: no hint and no delegation. The model and effort still apply, since a
   // trivial request is exactly the one a smaller model and less effort fit.
-  if (participate !== undefined && participate < 0.5) {
+  if (participate !== undefined && participationState(participate) === "out") {
     return {
-      decision: { mode: "passthrough", reason: "jev_declined", ...(decision.jev ? { jev: decision.jev } : {}) },
+      decision: passthrough("jev_declined"),
       participate,
       ...sizing,
+      ...(features.delegation ? { delegateWhy: "jev_declined" as const } : {}),
       ...(features.advisor ? { advisorWhy: "jev_declined" as const } : {}),
     };
   }
-  // With participation on, its answer gates the advisor hint: no answer, no hint.
+  const participationUnavailable = features.participation && participate === undefined;
+  if (participationUnavailable) {
+    return {
+      decision: decision.mode === "passthrough" ? decision : passthrough("participation_unavailable"),
+      ...sizing,
+      ...(features.delegation ? { delegateWhy: "participation_unavailable" as const } : {}),
+      ...(features.advisor ? { advisorWhy: "participation_unavailable" as const } : {}),
+    };
+  }
+  // Availability and participation gate the advisor before its answer is considered.
   const advisor = !features.advisor
     ? {}
-    : features.participation && participate === undefined
-      ? { advisorWhy: "participation_unavailable" as const }
+    : session.advisorAvailable === false
+      ? { advisorWhy: "advisor_unavailable" as const }
       : readAdvisor(answers?.[ADVISOR_KEY], minConfidence);
-  // Only a name the question offered is taken; "no_delegation" is a confident no.
-  const offered = [...offeredAgents(agents).map((agent) => agent.name), NO_DELEGATION];
-  const delegated = features.delegation ? choice(answers, DELEGATE_KEY, offered, minConfidence) : undefined;
+  const offeredAgentsForTurn = offeredAgents(agents);
+  const delegateRead = features.delegation && offeredAgentsForTurn.length > 0
+    ? readChoice(answers?.[DELEGATE_KEY], [...offeredAgentsForTurn.map((agent) => agent.name), NO_DELEGATION], minConfidence)
+    : undefined;
   return {
     decision,
     ...(participate !== undefined ? { participate } : {}),
     ...sizing,
-    ...(delegated ? { delegate: delegated } : {}),
+    ...(delegateRead?.chosen ? { delegate: delegateRead.chosen } : {}),
+    ...(delegateRead?.held ? { delegateHeld: delegateRead.held } : {}),
+    ...(features.delegation && offeredAgentsForTurn.length === 0 ? { delegateWhy: "no_agents" as const }
+      : delegateRead?.reason ? { delegateWhy: delegateRead.reason } : {}),
     ...advisor,
   };
-}
-
-/** What one subagent runs with. */
-export interface AgentPlan {
-  model?: Chosen<Tier>;
-  effort?: Chosen<Effort>;
-  effortIgnored?: Chosen<Effort>;
-  latencyMs?: number;
-  error?: string;
 }
 
 export async function planAgent(
@@ -349,9 +399,8 @@ export async function planAgent(
   } : {};
   const questions = agentQuestions(features, config.promptLocale ?? config.locale, agentSession);
   if (Object.keys(questions).length === 0) return {};
-  const startedAt = now();
   try {
-    const result = await askJev({
+    const asked = await askTimed({
       state: {
         agent_type: task.subagentType,
         task_description: truncate(task.description, 400, config.locale),
@@ -360,16 +409,16 @@ export async function planAgent(
       },
       questions,
       model: config.jevModel,
-    });
-    const model = selectModel(result.answers[MODEL_KEY], config.minConfidence, agentSession).model;
-    const requestedEffort = choice(result.answers, EFFORT_KEY, EFFORTS, config.minConfidence);
-    const effortIgnored = model?.value === "haiku" ? requestedEffort : undefined;
-    const effort = effortIgnored ? undefined : requestedEffort;
+    }, askJev, now);
+    if ("failure" in asked) return { error: asked.failure.replace(/^jev_error:\s*/, "") };
+    const selection = selectModel(asked.result.answers[MODEL_KEY], config.minConfidence, agentSession);
+    const effortRead = readChoice(asked.result.answers[EFFORT_KEY], EFFORTS, config.minConfidence);
     return {
-      ...(model ? { model } : {}),
-      ...(effort ? { effort } : {}),
-      ...(effortIgnored ? { effortIgnored } : {}),
-      latencyMs: Math.round(now() - startedAt),
+      ...selection,
+      ...(effortRead.chosen ? { effort: effortRead.chosen } : {}),
+      ...(effortRead.held ? { effortHeld: effortRead.held } : {}),
+      ...(effortRead.reason ? { effortWhy: effortRead.reason } : {}),
+      latencyMs: asked.latencyMs,
     };
   } catch (error) {
     return { error: error instanceof Error ? error.message : String(error) };
@@ -402,7 +451,6 @@ export function planSummary(plan: TurnPlan, locale?: Locale): string {
     plan.model ? text("planning.summary.model", locale, { model: plan.model.value }) : undefined,
     plan.modelReason ? text("planning.summary.modelKept", locale, { reason: text(`planning.modelReason.${plan.modelReason}` as LocaleKey, locale) }) : undefined,
     plan.effort ? text("planning.summary.effort", locale, { effort: plan.effort.value }) : undefined,
-    plan.effortIgnored ? text("planning.summary.effortIgnored", locale, { effort: plan.effortIgnored.value }) : undefined,
     plan.delegate && plan.delegate.value !== NO_DELEGATION ? text("planning.summary.delegate", locale, { agent: plan.delegate.value }) : undefined,
     plan.advisor?.value === "consult" ? text("planning.summary.advisor", locale) : undefined,
   ].filter(Boolean);
