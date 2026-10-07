@@ -1,0 +1,31 @@
+#!/bin/sh
+set -eu
+
+added_lines=$(git diff --cached --no-ext-diff --no-renames --unified=0 --no-color -- | sed -n '/^+++/d; /^+/p')
+staged_paths=$(git diff --cached --name-only --diff-filter=ACMR)
+
+# Keep the markers split so the check does not match its own source line.
+pem_start='-----BEGIN'
+private_key_end='PRIVATE KEY-----'
+aws_prefix='AKIA'
+github_prefix='github_pat'
+gh_prefix='gh'
+slack_prefix='xox'
+model_key_prefix='sk'
+google_prefix='AIza'
+credential_pattern="${pem_start} .*${private_key_end}|${aws_prefix}[0-9A-Z]{16}|${gh_prefix}[pousr]_[A-Za-z0-9_]{20,}|${github_prefix}_[A-Za-z0-9_]{20,}|${slack_prefix}[baprs]-[A-Za-z0-9-]{20,}|${model_key_prefix}-(live|proj|ant)-[A-Za-z0-9_-]{16,}|${model_key_prefix}-[A-Za-z0-9_-]{32,}|${google_prefix}[0-9A-Za-z_-]{35}"
+assignment_pattern="(api[_-]?key|secret|password|token).{0,8}[:=].{0,4}[\"'][[:alnum:]_+/=-]{20,}"
+assignment_unquoted="(api[_-]?key|secret|password|token).{0,8}[:=][[:space:]]*[[:alnum:]_+/=-]{24,}"
+forbidden_paths='(^|/)\.env($|\.)|(^|/)(\.envrc|\.secrets)(/|$)|\.(pem|key|crt|der|asc|p12|pfx)$|(^|/)credentials[^/]*\.json$|(^|/)service-account[^/]*\.json$'
+
+if printf '%s\n' "$staged_paths" | grep -Eiq -- "$forbidden_paths"; then
+  printf '%s\n' "Commit blocked: staged paths include a credential or environment file." >&2
+  printf '%s\n' "No path or file content was printed." >&2
+  exit 1
+fi
+
+if printf '%s\n' "$added_lines" | grep -Eiq -- "${credential_pattern}|${assignment_pattern}|${assignment_unquoted}"; then
+  printf '%s\n' "Commit blocked: staged additions match a credential pattern." >&2
+  printf '%s\n' "Remove the credential and rotate it if it was real. No matching text was printed." >&2
+  exit 1
+fi
