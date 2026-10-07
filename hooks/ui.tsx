@@ -24,7 +24,7 @@ import {
 } from "./events.ts";
 import { cellsOf, constellation, DOT, hex, meter, rail } from "./dots.ts";
 import { flowLines } from "./flow.ts";
-import { formatAge, formatClock, formatCompact, formatDecimal, formatDuration, formatNumber, localeFor, text, type Locale, type LocaleKey } from "./i18n.ts";
+import { formatAge, formatClock, formatCompact, formatDecimal, formatDuration, formatNumber, localeFor, reasonTitle, text, type Locale, type LocaleKey } from "./i18n.ts";
 import { rowsOf } from "./layout.ts";
 import { DICE, diceFrame, diceSize, diceSvg } from "./mascots/dice.ts";
 import { brailleFrame, MOODS, pingoSvg, type Mood } from "./mascots/pingo.ts";
