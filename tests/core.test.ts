@@ -251,10 +251,16 @@ describe("Jev transport", () => {
       keySource: "plugin",
     });
     expect(resolveSettings({}, {})).toMatchObject({ apiKey: "", keySource: "none", minConfidence: 0.7, timeoutMs: 4000 });
-    const storedProvider = { provider: "opencode" };
-    expect(resolveSettings({ api_key: "mine", provider: "typesafe" }, { OPENCODE_API_KEY: "env" }, storedProvider)).toMatchObject({
+    // Setup's stored provider stands only while the option it was saved against does.
+    const storedProvider = { provider: "opencode", basis: "auto|" };
+    expect(resolveSettings({ api_key: "mine" }, { OPENCODE_API_KEY: "env" }, storedProvider)).toMatchObject({
       apiKey: "mine",
       provider: "opencode",
+      keySource: "plugin",
+    });
+    expect(resolveSettings({ api_key: "mine", provider: "typesafe" }, { OPENCODE_API_KEY: "env" }, storedProvider)).toMatchObject({
+      apiKey: "mine",
+      provider: "typesafe",
       keySource: "plugin",
     });
   });

@@ -152,6 +152,8 @@ declare module "claude-code" {
       feed: FeedEntry[];
       now: LiveNow;
       agents: AgentRun[];
+      /** The highest AgentRun.n handed out this session: numbers are never reused. */
+      agentCount: number;
       flow: FlowState;
       scroll: PaneScroll;
     };

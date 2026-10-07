@@ -2,7 +2,7 @@
 // turn runs on, whether to hand work to a subagent, and the model and effort of each subagent.
 // Every question rides in the routing point's one Jev call; each answer counts only above the
 // minimum confidence, otherwise Claude Code's own choice stands.
-import { decide, type AskJev, type DecideConfig, type Decision, type JevTrace } from "./decide.ts";
+import { decide, SAFE_TOOL_NAME, skipReason, type AskJev, type DecideConfig, type Decision, type JevTrace } from "./decide.ts";
 import { buildState, truncate } from "./state.ts";
 import type { Answer, Questions, RouterInput } from "./types.ts";
 import { formatDecimal, localeFor, reasonTitle, text, type Locale, type LocaleKey } from "../i18n.ts";
@@ -60,6 +60,16 @@ export interface AgentType {
   description: string;
 }
 
+/** An agent name is written into the hint Claude reads: like a tool name, it must stay one inert token. */
+export function isSafeAgentName(name: unknown): name is string {
+  return typeof name === "string" && SAFE_TOOL_NAME.test(name);
+}
+
+/** The agents the delegation question offers: safe names only, never the "no delegation" label itself. */
+function offeredAgents(agents: readonly AgentType[]): AgentType[] {
+  return agents.filter((agent) => isSafeAgentName(agent.name) && agent.name !== NO_DELEGATION).slice(0, 40);
+}
+
 /** The extra questions a turn's routing point asks, for the features that are on. */
 export function turnQuestions(features: Features, agents: readonly AgentType[], locale?: Locale): Questions {
   const questions: Questions = {};
@@ -83,9 +93,10 @@ export function turnQuestions(features: Features, agents: readonly AgentType[], 
       criteria: criteria(EFFORT_CRITERIA, locale),
     };
   }
-  if (features.delegation && agents.length > 0) {
+  const offered = offeredAgents(agents);
+  if (features.delegation && offered.length > 0) {
     const criteria: Record<string, string | null> = {};
-    for (const agent of agents.slice(0, 40)) criteria[agent.name] = truncate(agent.description, 400, locale) || null;
+    for (const agent of offered) criteria[agent.name] = truncate(agent.description, 400, locale) || null;
     criteria[NO_DELEGATION] = text("planning.delegation.none", locale);
     questions[DELEGATE_KEY] = {
       type: "choice",
@@ -140,7 +151,11 @@ export async function planTurn(
 ): Promise<TurnPlan> {
   const extra = turnQuestions(features, agents, config.locale);
   let decision: Decision;
-  if (features.tools) {
+  const skip = features.tools ? skipReason(input) : undefined;
+  if (skip && Object.keys(extra).length > 0) {
+    // Jev is not asked about the tool, but the other questions still are.
+    decision = await askOnly(input, config, askJev, extra, now, skip);
+  } else if (features.tools) {
     decision = await decide(input, config, askJev, now, extra);
   } else if (Object.keys(extra).length === 0) {
     return { decision: { mode: "passthrough", reason: "features_off" } };
@@ -150,8 +165,15 @@ export async function planTurn(
   return readTurnPlan(decision, features, agents, config.minConfidence);
 }
 
-/** The extra questions alone, when the tool hint is off. */
-async function askOnly(input: RouterInput, config: DecideConfig, askJev: AskJev, questions: Questions, now: () => number): Promise<Decision> {
+/** The extra questions alone, when the tool hint is off or the tool decision was skipped. */
+async function askOnly(
+  input: RouterInput,
+  config: DecideConfig,
+  askJev: AskJev,
+  questions: Questions,
+  now: () => number,
+  reason = "tools_feature_off",
+): Promise<Decision> {
   if (input.turns.length === 0) return { mode: "passthrough", reason: "no_messages" };
   const startedAt = now();
   try {
@@ -159,7 +181,7 @@ async function askOnly(input: RouterInput, config: DecideConfig, askJev: AskJev,
     const latencyMs = Math.round(now() - startedAt);
     return {
       mode: "passthrough",
-      reason: "tools_feature_off",
+      reason,
       answers: result.answers,
       jev: { choice: "–", confidence: 0, needsTool: 0, topProbabilities: {}, inputTokens: result.usage.input_tokens, latencyMs },
     };
@@ -187,7 +209,9 @@ export function readTurnPlan(decision: Decision, features: Features, agents: rea
   if (participate !== undefined && participate < 0.5) {
     return { decision: { mode: "passthrough", reason: "jev_declined", ...(decision.jev ? { jev: decision.jev } : {}) }, participate, ...sizing };
   }
-  const delegated = features.delegation ? choice(answers, DELEGATE_KEY, agents.map((agent) => agent.name), minConfidence) : undefined;
+  // Only a name the question offered is taken; "no_delegation" is a confident no.
+  const offered = [...offeredAgents(agents).map((agent) => agent.name), NO_DELEGATION];
+  const delegated = features.delegation ? choice(answers, DELEGATE_KEY, offered, minConfidence) : undefined;
   return {
     decision,
     ...(participate !== undefined ? { participate } : {}),

@@ -42,7 +42,12 @@ export type Decision = { jev?: JevTrace; answers?: Record<string, Answer> } & (
 );
 
 /** A tool name must stay one inert token: it is written into text the model reads as the host's. */
-const SAFE_TOOL_NAME = /^[\p{L}\p{N}_.:/-]{1,128}$/u;
+export const SAFE_TOOL_NAME = /^[\p{L}\p{N}_.:/-]{1,128}$/u;
+
+/** A provider string stored in the event log and drawn in the terminal: no control sequences, capped. */
+function inert(value: string): string {
+  return String(value).replace(/[\p{Cc}\p{Cf}]/gu, "").slice(0, 128);
+}
 
 /** Why a request is not Jev's to decide, or undefined when it is. */
 export function skipReason(input: RouterInput): string | undefined {
@@ -51,7 +56,7 @@ export function skipReason(input: RouterInput): string | undefined {
   if (input.tools.length > MAX_TOOLS * 255) return "too_many_tools";
   if (input.tools.some((tool) => typeof tool.name !== "string" || !SAFE_TOOL_NAME.test(tool.name))) return "unsafe_tool_name";
   if (new Set(input.tools.map((tool) => tool.name)).size !== input.tools.length) return "duplicate_tool_names";
-  if (input.tools.some((tool) => tool.name === NO_TOOL)) return "reserved_tool_name";
+  if (input.tools.some((tool) => tool.name === NO_TOOL || tool.name === NONE_OF_THESE)) return "reserved_tool_name";
   return undefined;
 }
 
@@ -63,17 +68,21 @@ async function shortlist(
 ): Promise<{ tools: RouterTool[]; inputTokens: number }> {
   const { questions, shards } = buildShortlistQuestions(tools, config.locale);
   const result = await askJev({ state, questions, model: config.jevModel });
-  const kept = shards.flatMap((shard, index) => {
+  const scored = shards.flatMap((shard, index) => {
     const answer = result.answers[shardKey(index)];
     if (answer?.type !== "choice") return [];
-    const ranked = Object.entries(answer.probabilities)
-      .filter(([name]) => name !== NONE_OF_THESE)
+    const names = new Set(shard.map((tool) => tool.name));
+    const scores = new Map(Object.entries(answer.probabilities ?? {}).filter(([name]) => names.has(name)));
+    // A confident choice counts even when the provider sent no probabilities.
+    if (names.has(answer.choice) && !scores.has(answer.choice)) scores.set(answer.choice, answer.confidence);
+    return [...scores]
       .sort(([, a], [, b]) => b - a)
       .slice(0, SHORTLIST_PER_SHARD)
-      .map(([name]) => name);
-    return shard.filter((tool) => ranked.includes(tool.name));
+      .map(([name, score]) => ({ name, score }));
   });
-  return { tools: kept, inputTokens: result.usage.input_tokens };
+  // The final question offers at most MAX_TOOLS: the likeliest across every shard, in roster order.
+  const best = new Set(scored.sort((a, b) => b.score - a.score).slice(0, MAX_TOOLS).map(({ name }) => name));
+  return { tools: tools.filter((tool) => best.has(tool.name)), inputTokens: result.usage.input_tokens };
 }
 
 export async function decide(
@@ -110,13 +119,14 @@ export async function decide(
     return { mode: "passthrough", reason: "jev_unexpected_answer", answers };
   }
   const jev: JevTrace = {
-    choice: picked.choice,
+    choice: inert(picked.choice),
     confidence: picked.confidence,
     needsTool: needs.noul,
     topProbabilities: Object.fromEntries(
       Object.entries(picked.probabilities ?? {})
         .sort(([, a], [, b]) => b - a)
-        .slice(0, 3),
+        .slice(0, 3)
+        .map(([name, probability]) => [inert(name), probability]),
     ),
     inputTokens: result.usage.input_tokens + shortlistTokens,
     latencyMs: Math.round(now() - startedAt),

@@ -9,7 +9,7 @@
     "provider": {
       "type": "string",
       "title": "Jev provider",
-      "description": "Where to reach Jev: auto (first key found), typesafe, openrouter, vercel or opencode",
+      "description": "Where to reach Jev: auto (JEV_PROVIDER, else the first provider key in the environment, else typesafe), typesafe, openrouter, vercel or opencode. Setup saves its choice here",
       "options": ["auto", "typesafe", "openrouter", "vercel", "opencode"],
       "default": "auto",
       "required": false
@@ -17,7 +17,7 @@
     "api_key": {
       "type": "string",
       "title": "Jev API key",
-      "description": "Optional sensitive credential. The masked Setup field can save it through Claude Code's sensitive plugin configuration; the plugin never writes it to its own state. Set provider to match the key's issuer; auto cannot infer the provider from api_key. Jev sends recent conversation/tool data and composed Claude instructions to the selected provider. If empty, the plugin reads the selected provider's environment variable.",
+      "description": "Optional sensitive credential. The masked Setup field can save it through Claude Code's sensitive plugin configuration; the plugin never writes it to its own state. Set provider to match the key's issuer; auto cannot infer the provider from api_key, so under auto it is sent only to TypeSafe, and a provider auto-detected from its environment variable gets that variable's key instead. Jev sends recent conversation/tool data and composed Claude instructions to the selected provider. If empty, the plugin reads the selected provider's environment variable.",
       "sensitive": true,
       "required": false
     },
@@ -30,15 +30,13 @@
     "min_confidence": {
       "type": "number",
       "title": "Minimum confidence",
-      "description": "Below this, Jev's pick is ignored and Claude decides alone (JEV_MIN_CONFIDENCE)",
-      "default": 0.7,
+      "description": "Below this share (0 to 1), Jev's pick is ignored and Claude decides alone. Empty uses JEV_MIN_CONFIDENCE, else 0.7; a value outside 0 to 1 is ignored",
       "required": false
     },
     "timeout_ms": {
       "type": "number",
       "title": "Jev timeout (ms)",
-      "description": "How long to wait for Jev before failing open (JEV_TIMEOUT_MS)",
-      "default": 4000,
+      "description": "How long one Jev call may take, retry included, before failing open. Empty uses JEV_TIMEOUT_MS, else 4000; held between 500 and 30000",
       "required": false
     },
     "locale": {

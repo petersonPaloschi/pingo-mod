@@ -25,7 +25,7 @@ import {
 import { cellsOf, constellation, DOT, hex, meter, rail } from "./dots.ts";
 import { flowLines } from "./flow.ts";
 import { formatAge, formatClock, formatCompact, formatDecimal, formatDuration, formatNumber, localeFor, reasonTitle, text, type Locale, type LocaleKey, type LocaleOption } from "./i18n.ts";
-import { rowsOf } from "./layout.ts";
+import { displayWidth, rowsOf } from "./layout.ts";
 import { DICE, diceFrame, diceSize, diceSvg } from "./mascots/dice.ts";
 import { brailleFrame, MOODS, pingoSvg, type Mood } from "./mascots/pingo.ts";
 import { AGENT_MASCOTS, isMascot, MASCOT_ORDER, mascotFrame, mascotSvg, type AgentMascot } from "./mascots/agents.ts";
@@ -128,6 +128,84 @@ export interface Actions {
 
 const fit = (text: string, width: number) => (text.length > width ? text.slice(0, Math.max(0, width - 1)) + "…" : text.padEnd(width));
 const clock = (time: number, locale: Locale) => formatClock(time, locale);
+
+/** At most `max` characters, cut between code points so an emoji is never split in half. */
+export function clip(text: string, max: number): string {
+  const chars = [...text];
+  return chars.length > max ? chars.slice(0, max - 1).join("") + "…" : text;
+}
+
+/** A text on one line: its whitespace collapsed first, then clipped, so only a long one gets "…". */
+export const oneLine = (text: string, max: number) => clip(text.replace(/\s+/g, " "), max);
+
+const clockWidths = new Map<Locale, number>();
+/** The columns the live log's time takes, a space after it: "12:04:05 PM " in English, "12:04:05 " in Portuguese. */
+export function clockWidth(locale: Locale): number {
+  let width = clockWidths.get(locale);
+  if (width === undefined) {
+    // Twelve hours apart, so a morning and an afternoon time are both measured.
+    width = Math.max(...[0, 12].map((hour) => displayWidth(clock(Date.UTC(2026, 0, 1, hour, 4, 5), locale)))) + 1;
+    clockWidths.set(locale, width);
+  }
+  return width;
+}
+
+/**
+ * Where a scrolled-back body stays. The stored offset counts from the live edge (the newest line),
+ * so whatever arrives there would push what is being read out of view: while the person is away
+ * from the edge, the position grows by what arrived since. Scrolling back toward the edge closes
+ * that gap in step with the scroll left, so offset 0 is the live edge again, and follows it.
+ */
+const anchors = new Map<string, { scroll: number; at: number; mark: number }>();
+function anchored(key: string, scroll: number, mark: number, addedSince: (mark: number) => number, limit: number): number {
+  const was = anchors.get(key);
+  if (scroll <= 0) {
+    anchors.delete(key);
+    return 0;
+  }
+  let at = scroll;
+  if (was) {
+    const kept = was.at + addedSince(was.mark);
+    at = scroll >= was.scroll ? kept + scroll - was.scroll : Math.round((kept * scroll) / was.scroll);
+  }
+  at = Math.max(0, Math.min(limit, at));
+  anchors.set(key, { scroll, at, mark });
+  return at;
+}
+
+/** How far back a live log shows, anchored on its lines, and how far its stored offset may go. */
+function feedBack(key: string, view: View, lines: readonly FeedEntry[]): { back: number; max: number } {
+  const limit = Math.max(0, lines.length - 1);
+  const back = anchored(key, view.scroll, lines.at(-1)?.seq ?? 0, (since) => {
+    const i = lines.findIndex((entry) => entry.seq === since);
+    return i < 0 ? 0 : lines.length - 1 - i;
+  }, limit);
+  return { back, max: view.scroll + limit - back };
+}
+
+/** Dots per category for a strip of `room`: largest remainders, at least one for each present, never more than the room. */
+export function shares(counts: readonly number[], room: number): number[] {
+  const total = counts.reduce((s, n) => s + n, 0);
+  if (!total || room <= 0) return counts.map(() => 0);
+  const exact = counts.map((n) => (room * n) / total);
+  const out = exact.map(Math.floor);
+  let left = room - out.reduce((s, n) => s + n, 0);
+  for (const i of exact.map((_, i) => i).sort((a, b) => exact[b]! - out[b]! - (exact[a]! - out[a]!))) {
+    if (left-- <= 0) break;
+    out[i] = out[i]! + 1;
+  }
+  // A category that rounded to nothing takes one dot from the widest.
+  counts.forEach((n, i) => {
+    if (n <= 0 || out[i]) return;
+    const widest = out.indexOf(Math.max(...out));
+    if (out[widest]! > 1) {
+      out[widest] = out[widest]! - 1;
+      out[i] = 1;
+    }
+  });
+  return out;
+}
+
 const inRange = (view: View) => view.events.filter((event) => view.range <= 0 || view.now - at(event) < view.range);
 
 export { cellsOf };
@@ -293,12 +371,13 @@ function dotsBar(els: Els, events: readonly RouteEvent[], width: number, locale:
   const allCategories = categories(locale);
   const present = allCategories.filter(([name]) => counts.get(name));
   const room = Math.max(10, width);
+  const dots = shares(present.map(([name]) => counts.get(name) ?? 0), room);
   return (
     <Box flexDirection="column">
       <Text>
         {present.length === 0 ? <Text color={INK.faint}>{"⣀".repeat(room)}</Text> : null}
-        {present.map(([name]) => (
-          <Text color={hex(CATEGORY_DOT[name][1])}>{"⣿".repeat(Math.max(1, Math.round((room * (counts.get(name) ?? 0)) / events.length)))}</Text>
+        {present.map(([name], i) => (
+          <Text color={hex(CATEGORY_DOT[name][1])}>{"⣿".repeat(dots[i]!)}</Text>
         ))}
       </Text>
       {(present.length ? present : allCategories).map(([name, label]) => (
@@ -434,37 +513,41 @@ function logView(els: Els, view: View) {
       {section(els, text("ui.log.title", view.locale))}
       <Box flexDirection="column">
         {rows.length === 0 ? <Text color={INK.dim}>{text("ui.log.empty", view.locale)}</Text> : null}
-        {rows.map((event) => {
-          const kind = category(event);
-          const [glyph, color] = CATEGORY_DOT[kind];
-          const what =
-            event.mode === "hint"
-              ? text("ui.log.suggested", view.locale, { tool: event.tool ?? "" })
-              : event.jev
-                ? text("ui.log.picked", view.locale, { choice: event.jev.choice })
-                : text("ui.log.stayedOut", view.locale);
-          const confidence = event.confidence ?? event.jev?.confidence;
-          return (
-            <Box flexDirection="column">
-              <Text wrap="wrap">
-                <Text color={INK.faint}>{`${clock(at(event), view.locale)} `}</Text>
-                <Text bold color={hex(color)}>{`${glyph} `}</Text>
-                <Text color={INK.ink}>{what}</Text>
-                <Text color={INK.dim}>
-                  {[
-                    confidence === undefined ? "" : ` · ${formatDecimal(confidence, view.locale)}`,
-                    event.jev ? ` · ${int(event.jev.latencyMs, view.locale)} ms` : "",
-                    event.usage ? text("ui.log.inputOutput", view.locale, { input: int(event.usage.input, view.locale), output: int(event.usage.output, view.locale) }) : "",
-                    text("ui.log.duration", view.locale, { value: formatDecimal(event.durationMs / 1000, view.locale, 1) + text("format.seconds", view.locale, { value: "" }) }),
-                  ].join("")}
-                </Text>
-              </Text>
-              {event.reason ? <Text color={kind === "failed" ? INK.fail : INK.faint}>{fit(text("ui.log.reason", view.locale, { reason: reasonTitle(event.reason, view.locale) }), view.width - 2)}</Text> : null}
-            </Box>
-          );
-        })}
+        {rows.map((event) => logEntry(els, view, event))}
       </Box>
       <Text color={INK.faint} wrap="wrap">{text("ui.log.footer", view.locale)}</Text>
+    </Box>
+  );
+}
+
+/** One request of the log: time, outcome and figures, and why on a line under it. */
+function logEntry(els: Els, view: View, event: RouteEvent) {
+  const { Box, Text } = els;
+  const kind = category(event);
+  const [glyph, color] = CATEGORY_DOT[kind];
+  const what =
+    event.mode === "hint"
+      ? text("ui.log.suggested", view.locale, { tool: event.tool ?? "" })
+      : event.jev
+        ? text("ui.log.picked", view.locale, { choice: event.jev.choice })
+        : text("ui.log.stayedOut", view.locale);
+  const confidence = event.confidence ?? event.jev?.confidence;
+  return (
+    <Box flexDirection="column">
+      <Text wrap="wrap">
+        <Text color={INK.faint}>{`${clock(at(event), view.locale)} `}</Text>
+        <Text bold color={hex(color)}>{`${glyph} `}</Text>
+        <Text color={INK.ink}>{what}</Text>
+        <Text color={INK.dim}>
+          {[
+            confidence === undefined ? "" : ` · ${formatDecimal(confidence, view.locale)}`,
+            event.jev ? ` · ${int(event.jev.latencyMs, view.locale)} ms` : "",
+            event.usage ? text("ui.log.inputOutput", view.locale, { input: int(event.usage.input, view.locale), output: int(event.usage.output, view.locale) }) : "",
+            text("ui.log.duration", view.locale, { value: formatDecimal(event.durationMs / 1000, view.locale, 1) + text("format.seconds", view.locale, { value: "" }) }),
+          ].join("")}
+        </Text>
+      </Text>
+      {event.reason ? <Text color={kind === "failed" ? INK.fail : INK.faint}>{fit(text("ui.log.reason", view.locale, { reason: reasonTitle(event.reason, view.locale) }), view.width - 2)}</Text> : null}
     </Box>
   );
 }
@@ -639,8 +722,10 @@ const NAME_WIDTH = 7;
 function feedLine(els: Els, view: View, entry: FeedEntry, first: boolean) {
   const { Box, Text } = els;
   const who = speaker(entry, view.locale);
-  const withTime = view.width >= 64;
-  const gutter = (withTime ? 9 : 0) + FACE_WIDTH + NAME_WIDTH;
+  // The time is as wide as the locale writes it, and shown where 55 columns are left beside it.
+  const time = clockWidth(view.locale);
+  const withTime = view.width >= 55 + time;
+  const gutter = (withTime ? time : 0) + FACE_WIDTH + NAME_WIDTH;
   const minor = entry.minor === true;
   const metaWidth = entry.meta ? Math.min(14, [...entry.meta].length) : 0;
   return (
@@ -706,9 +791,8 @@ function conversation(els: Els, view: View, lines: readonly FeedEntry[], empty: 
  * bottom, older ones are cut off at the top, and `back` lines are skipped from the end while the
  * person scrolls up. The line under it says how many newer ones are hidden.
  */
-function stuckLog(els: Els, view: View, lines: readonly FeedEntry[], rows: number, empty: string, before?: RenderChildren) {
+function stuckLog(els: Els, view: View, lines: readonly FeedEntry[], rows: number, empty: string, back: number, before?: RenderChildren) {
   const { Box, Text } = els;
-  const back = view.fixed ? Math.min(view.scroll, Math.max(0, lines.length - 1)) : 0;
   const end = lines.length - back;
   // Every line takes at least one row, so `rows` lines always fill the box.
   const shown = lines.slice(Math.max(0, end - rows), end);
@@ -744,12 +828,13 @@ function liveView(els: Els, view: View, act: Actions, rows: number) {
   }
   // The top (Dice and who is who) stays; the log under it scrolls by lines, newest at the bottom.
   const logRows = Math.max(3, rows - rowsOf(top, view.width) - 1);
-  act.layout(Math.max(0, view.feed.length - 1), true);
+  const { back, max } = feedBack("live", view, view.feed);
+  act.layout(max, true);
   return (
     <Box flexDirection="column" height={rows} overflow="hidden">
       {top}
       <Text color={INK.faint} wrap="truncate">{"┄".repeat(Math.max(1, view.width))}</Text>
-      {stuckLog(els, view, view.feed, logRows, empty)}
+      {stuckLog(els, view, view.feed, logRows, empty, back)}
     </Box>
   );
 }
@@ -873,7 +958,7 @@ function agentsView(els: Els, view: View, act: Actions) {
             </Text>
             <Text color={INK.ink} wrap="wrap">{`   ${run.description}`}</Text>
             <Text color={INK.dim} wrap="wrap">
-              {`   ${run.state === "running" ? (run.activity ?? text("ui.agent.running", view.locale)) : run.text ? `“${run.text.replace(/\s+/g, " ").slice(0, 120)}${run.text.length > 120 ? "…" : ""}”` : text("ui.agent.noResponse", view.locale)} · ${agentNumbers(run, view.locale)}`}
+              {`   ${run.state === "running" ? (run.activity ?? text("ui.agent.running", view.locale)) : run.text ? `“${oneLine(run.text, 121)}”` : text("ui.agent.noResponse", view.locale)} · ${agentNumbers(run, view.locale)}`}
             </Text>
             <Box flexDirection="row" marginLeft={3} columnGap={2}>
               <Button key={`agent-open-${run.n}`} label={text("ui.agent.liveOpen", view.locale, { number: formatNumber(run.n, view.locale) })} onPress={() => act.openAgent(run.n)} />
@@ -938,7 +1023,7 @@ export function renderAgentPane(els: Els, view: View, run: AgentRun | undefined,
   const task = (
     <Box flexDirection="column" flexShrink={0} marginBottom={1}>
       <Text color={INK.faint} wrap="truncate">{text("ui.agent.task", view.locale)}</Text>
-      <Text color={INK.dim} wrap="wrap">{run.prompt.length > 480 ? run.prompt.slice(0, 479) + "…" : run.prompt}</Text>
+      <Text color={INK.dim} wrap="wrap">{clip(run.prompt, 480)}</Text>
     </Box>
   );
   const empty = text("ui.agent.emptyPane", view.locale);
@@ -952,12 +1037,13 @@ export function renderAgentPane(els: Els, view: View, run: AgentRun | undefined,
     );
   }
   const logRows = Math.max(3, view.rows - rowsOf(top, view.width) - 1);
-  act.layout(Math.max(0, lines.length - 1), true);
+  const { back, max } = feedBack(`agent-${n}`, view, lines);
+  act.layout(max, true);
   return (
     <Box flexDirection="column" height={view.rows} overflow="hidden">
       {top}
       <Text color={INK.faint} wrap="truncate">{"┄".repeat(Math.max(1, view.width))}</Text>
-      {stuckLog(els, view, lines, logRows, empty, task)}
+      {stuckLog(els, view, lines, logRows, empty, back, task)}
     </Box>
   );
 }
@@ -1063,8 +1149,13 @@ export function renderPane(els: Els, view: View, act: Actions) {
   const body = <Box flexDirection="column" flexShrink={0}>{tabBody(els, view, act, rows)}</Box>;
   const total = rowsOf(body, view.width);
   const max = Math.max(0, total - rows + 1);
-  act.layout(max, false);
-  const offset = Math.min(view.scroll, max);
+  // The request log has its newest on top: scrolled down, it keeps to the requests it showed.
+  const newest = view.events.at(-1)?.seq ?? 0;
+  const offset =
+    view.tab === "log"
+      ? anchored("log", view.scroll, newest, (since) => view.events.filter((event) => event.seq > since).reduce((s, event) => s + rowsOf(logEntry(els, view, event), view.width), 0), max)
+      : Math.min(view.scroll, max);
+  act.layout(view.tab === "log" ? view.scroll + max - offset : max, false);
   const more = total - offset > rows - 1;
   return (
     <Box flexDirection="column" height={view.rows} overflow="hidden">

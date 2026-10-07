@@ -14,4 +14,4 @@ If a credential may have been exposed, revoke or rotate it with its provider imm
 
 ## Repository protections
 
-The repository includes a local pre-commit check and ignores common credential files. Maintainers should also enable GitHub secret scanning and push protection in repository settings to block supported credentials on the server.
+The repository includes a local pre-commit check (enable it with `git config core.hooksPath .githooks`) and ignores common credential files. The check blocks staged credential files (`.env`, `.npmrc`, `.netrc`, `.aws/credentials`, private SSH keys, key and certificate files) and added lines that look like provider API keys, AWS secret keys, bearer tokens, or secrets assigned in quotes or backticks. It is a safety net, not a scanner: maintainers should also enable GitHub secret scanning and push protection in repository settings to block supported credentials on the server.

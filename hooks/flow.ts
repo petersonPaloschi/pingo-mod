@@ -6,6 +6,7 @@ import type { AgentRun, FlowState } from "../types";
 import { AGENT_MASCOTS, isMascot } from "./mascots/agents.ts";
 import { DOT, hex } from "./dots.ts";
 import { formatDuration, formatNumber, localeFor, text, type Locale, type LocaleKey } from "./i18n.ts";
+import { displayWidth } from "./layout.ts";
 
 export type FlowStep = "plan" | "check" | "review" | "fix" | "done";
 
@@ -21,18 +22,23 @@ const STAGE: Record<FlowStep, number> = { plan: 0, check: 1, review: 2, fix: 3, 
 
 /** The wave's subagents still kept on the Agents tab, in the order they started. */
 export function waveOf(flow: FlowState, agents: readonly AgentRun[]): AgentRun[] {
-  const members = flow.wave.map((n) => agents.find((run) => run.n === n)).filter((run): run is AgentRun => run !== undefined);
+  // A number listed twice is one subagent, drawn once.
+  const members = [...new Set(flow.wave)].map((n) => agents.find((run) => run.n === n)).filter((run): run is AgentRun => run !== undefined);
   const inWave = new Set(members.map((run) => run.n));
   return [...members, ...agents.filter((run) => run.state === "running" && !inWave.has(run.n))];
 }
 
-/** "claude-opus-5-5" → "Opus 5.5", "claude-haiku-4-5-20251001" → "Haiku 4.5". */
+/** "claude-opus-5-5" → "Opus 5.5", "claude-haiku-4-5-20251001" → "Haiku 4.5", "claude-3-5-sonnet-20241022" → "Sonnet 3.5". */
 export function prettyModel(id: string | undefined): string {
   if (!id) return "Claude";
-  const match = /(opus|sonnet|haiku|fable)-(\d+)(?:-(\d+))?/i.exec(id);
-  if (!match) return id.replace(/^claude-/, "");
-  const family = match[1]!.charAt(0).toUpperCase() + match[1]!.slice(1).toLowerCase();
-  return `${family} ${match[2]}${match[3] && match[3].length < 3 ? `.${match[3]}` : ""}`;
+  const capital = (family: string) => family.charAt(0).toUpperCase() + family.slice(1).toLowerCase();
+  // Version numbers are one or two digits; a date suffix is never taken for one.
+  const match = /(opus|sonnet|haiku|fable)-(\d{1,2})(?:-(\d{1,2}))?(?!\d)/i.exec(id);
+  if (match) return `${capital(match[1]!)} ${match[2]}${match[3] ? `.${match[3]}` : ""}`;
+  // The older ids put the version first: claude-3-5-sonnet, claude-3-opus.
+  const old = /claude-(\d{1,2})(?:-(\d{1,2}))?-(opus|sonnet|haiku)/i.exec(id);
+  if (old) return `${capital(old[3]!)} ${old[1]}${old[2] ? `.${old[2]}` : ""}`;
+  return id.replace(/^claude-/, "").replace(/-\d{8}$/, "");
 }
 
 const WORDS: readonly LocaleKey[] = ["flow.word.zero", "flow.word.one", "flow.word.two", "flow.word.three", "flow.word.four", "flow.word.five", "flow.word.six", "flow.word.seven", "flow.word.eight", "flow.word.nine", "flow.word.ten"];
@@ -65,21 +71,47 @@ class Canvas {
   }
   put(x: number, y: number, text: string, style: Style) {
     const row = this.row(y);
-    [...text].forEach((ch, i) => {
-      if (x + i >= 0 && x + i < this.width) row[x + i] = { ch, style };
-    });
+    // A wide character takes two cells, the second left empty; a combining mark joins the one before.
+    const blank = (at: number) => {
+      if (at >= 0 && at < this.width) row[at] = { ch: " ", style: row[at]!.style };
+    };
+    let at = x;
+    for (const ch of text) {
+      const w = displayWidth(ch);
+      if (w === 0) {
+        if (at > 0 && at - 1 < this.width && at - 1 >= x) row[at - 1]!.ch += ch;
+        continue;
+      }
+      if (at >= 0 && at + w <= this.width) {
+        // Half of a wide character left behind would shift the rest of the line.
+        if (row[at]!.ch === "") blank(at - 1);
+        if (row[at + w]?.ch === "") blank(at + w);
+        row[at] = { ch, style };
+        if (w === 2) row[at + 1] = { ch: "", style };
+      }
+      at += w;
+    }
   }
   /** Several runs in a row, starting at x; returns where they end. */
   write(x: number, y: number, parts: readonly FlowSegment[]): number {
     for (const { text, ...style } of parts) {
       this.put(x, y, text, style);
-      x += [...text].length;
+      x += displayWidth(text);
     }
     return x;
   }
-  /** Runs centered on column cx. */
+  /** Runs centered on column cx; cut to the width when they do not fit in it. */
   center(cx: number, y: number, parts: readonly FlowSegment[]) {
-    const length = parts.reduce((sum, part) => sum + [...part.text].length, 0);
+    let length = parts.reduce((sum, part) => sum + displayWidth(part.text), 0);
+    if (length > this.width) {
+      let room = this.width;
+      parts = parts.map((part) => {
+        const text = room > 0 ? fit(part.text, room) : "";
+        room -= displayWidth(text);
+        return { ...part, text };
+      });
+      length = this.width - room;
+    }
     return this.write(Math.max(0, cx - Math.floor(length / 2)), y, parts);
   }
   lines(): FlowSegment[][] {
@@ -98,9 +130,19 @@ class Canvas {
   }
 }
 
+/** The text on one line of at most `width` columns, wide characters counted twice. */
 const fit = (text: string, width: number) => {
-  const chars = [...text.replace(/\s+/g, " ")];
-  return chars.length > width ? chars.slice(0, Math.max(1, width - 1)).join("") + "…" : chars.join("");
+  const line = text.replace(/\s+/g, " ");
+  if (displayWidth(line) <= width) return line;
+  let out = "";
+  let used = 0;
+  for (const ch of line) {
+    const w = displayWidth(ch);
+    if (out && used + w > width - 1) break;
+    out += ch;
+    used += w;
+  }
+  return out + "…";
 };
 
 /** One column of the fan: who it is, how it is doing, what it runs on. */
@@ -160,7 +202,8 @@ export interface FlowInput {
 /** The whole diagram, line by line. */
 export function flowLines(input: FlowInput): FlowSegment[][] {
   const locale = input.locale ?? localeFor();
-  const W = Math.max(40, input.width);
+  // As wide as the pane: a narrow one drops the side panel and shortens lines rather than clip them.
+  const W = Math.max(20, input.width);
   const wave = waveOf(input.flow, input.agents);
   const sample = wave.length === 0;
   const step = flowStep(input.flow, wave);
@@ -191,13 +234,14 @@ export function flowLines(input: FlowInput): FlowSegment[][] {
   const g = new Canvas(W);
   let y = 0;
 
-  // Title and rule.
-  g.center(Math.floor(W / 2), y++, [
+  // Title and rule; a title too long for the pane drops its first words.
+  const title: FlowSegment[] = [
     { text: text(sample ? "flow.title.sample" : "flow.title.live", locale), color: C.ink, bold: true },
     { text: model.toUpperCase(), color: C.orange, bold: true },
     { text: " + ", color: C.ink, bold: true },
     { text: `${formatNumber(total, locale)} ${text(total === 1 ? "flow.subagent" : "flow.subagents", locale)}`, color: C.blue, bold: true },
-  ]);
+  ];
+  g.center(Math.floor(W / 2), y++, title.reduce((s, part) => s + displayWidth(part.text), 0) > W ? title.slice(1) : title);
   g.put(0, y++, "=".repeat(W), { color: C.faint });
   y++;
 
@@ -233,8 +277,8 @@ export function flowLines(input: FlowInput): FlowSegment[][] {
   ] as FlowSegment[][];
   // The panel sits at the right edge; the pill moves left of the trunk when it needs the room,
   // and a dashed line joins the two, as in the pre-ship check.
-  const pillLength = [...pill].length;
-  const sideWidth = Math.min(28, Math.max(...side.map((parts) => parts.reduce((s, part) => s + [...part.text].length, 0))));
+  const pillLength = displayWidth(pill);
+  const sideWidth = Math.min(28, Math.max(...side.map((parts) => parts.reduce((s, part) => s + displayWidth(part.text), 0))));
   const sideX = W - sideWidth - 1;
   const pillX = Math.min(X - Math.floor(pillLength / 2), sideX - 4 - pillLength);
   const withSide = sideX >= X + 3 && pillX >= 1;
@@ -246,8 +290,8 @@ export function flowLines(input: FlowInput): FlowSegment[][] {
     side.forEach((parts, i) => {
       let room = sideRoom;
       const clipped = parts.map((part) => {
-        const text = fit(part.text, room);
-        room -= [...text].length;
+        const text = room > 0 ? fit(part.text, room) : "";
+        room -= displayWidth(text);
         return { ...part, text };
       });
       g.write(sideX, top + i, clipped.filter((part) => part.text));
@@ -326,14 +370,16 @@ export function flowLines(input: FlowInput): FlowSegment[][] {
   ]);
   y++;
 
-  // The motto and the prompt line.
-  g.center(Math.floor(W / 2), y++, [
+  // The motto and the prompt line; on a narrow pane the motto takes a line per sentence.
+  const motto: FlowSegment[] = [
     { text: text("flow.checkWith", locale, { count: word(total, locale) }), color: C.blue, bold: true },
     { text: text("flow.confirmMotto", locale), color: C.you, bold: true },
     { text: text("flow.fixWithOne", locale), color: C.green, bold: true },
-  ]);
+  ];
+  if (motto.reduce((s, part) => s + displayWidth(part.text), 0) <= W) g.center(Math.floor(W / 2), y++, motto);
+  else for (const part of motto) g.center(Math.floor(W / 2), y++, [{ ...part, text: part.text.trim() }]);
   y++;
-  const status: FlowSegment[] = [
+  const labelled: FlowSegment[] = [
     { text: text("flow.step", locale), color: C.dim },
     { text: `[${text(("flow.step." + step) as LocaleKey, locale)}]`, color: C.ink, bold: true },
     { text: text("flow.agents", locale), color: C.dim },
@@ -341,7 +387,9 @@ export function flowLines(input: FlowInput): FlowSegment[][] {
     { text: text("flow.editsLabel", locale), color: C.dim },
     { text: `[${edits}]`, color: edits ? C.green : C.dim, bold: edits > 0 },
   ];
-  const statusLength = status.reduce((s, part) => s + part.text.length, 0);
+  // Too long for the pane, the status keeps its figures and drops their labels.
+  const status = displayWidth(labelled.map((part) => part.text).join("")) <= W ? labelled : labelled.filter((_, i) => i % 2).flatMap((part, i) => (i ? [{ text: " ", color: C.dim }, part] : [part]));
+  const statusLength = status.reduce((s, part) => s + displayWidth(part.text), 0);
   const dir = input.cwd ? "~/" + (input.cwd.replace(/[\\/]+$/, "").split(/[\\/]/).at(-1) ?? "") : "~";
   const promptRoom = W - statusLength - 2;
   if (promptRoom >= 6) {

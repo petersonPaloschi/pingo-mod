@@ -116,6 +116,9 @@ const MODEL_GONE = new Set([404, 410]);
 const record = (value: unknown): Record<string, unknown> | undefined =>
   value !== null && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : undefined;
 
+/** A share in [0, 1]; a provider answering in percentages fails it, and the answer is dropped. */
+const share = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 1;
+
 export function normalize(value: unknown, locale?: Locale): SystemOneResult {
   const result = record(value) as SystemOneWireResult | undefined;
   if (!result) throw new Error(text("provider.invalidResponse", locale));
@@ -126,11 +129,13 @@ export function normalize(value: unknown, locale?: Locale): SystemOneResult {
       const probabilities = Object.fromEntries(
         Object.entries(record(answer.probabilities) ?? {}).filter((entry): entry is [string, number] => typeof entry[1] === "number" && Number.isFinite(entry[1])),
       );
+      if (!Object.values(probabilities).every(share)) continue;
       const confidence = typeof answer.confidence === "number" && Number.isFinite(answer.confidence)
         ? answer.confidence
         : Math.max(0, ...Object.values(probabilities));
+      if (!share(confidence)) continue;
       answers[name] = { type: "choice", choice: answer.choice, confidence, probabilities };
-    } else if (answer?.type === "noul" && typeof answer.noul === "number" && Number.isFinite(answer.noul)) {
+    } else if (answer?.type === "noul" && share(answer.noul)) {
       answers[name] = { type: "noul", noul: answer.noul };
     }
   }
@@ -155,20 +160,27 @@ export function redact(message: string, apiKey: string): string {
   return apiKey ? message.replaceAll(apiKey, "[redacted]") : message;
 }
 
+/** A provider's error body made safe to show: escape sequences and other control characters become spaces. */
+const printable = (body: string) =>
+  body.replace(/\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)?|[\x00-\x1f\x7f-\x9f]/g, " ");
+
 class JevHttpError extends Error {
   constructor(message: string, readonly status: number) {
     super(message);
   }
 }
 
-/** The one call the mod makes to Jev: a timeout and one fast retry; past that, Claude decides alone. */
+/** A reply that arrived but cannot be used: asking again would get the same, so it is never retried. */
+class JevReplyError extends Error {}
+
+/**
+ * The one call the mod makes to Jev, bounded by one timeout for the whole call: a fast failure
+ * (a retryable status or a network error) is retried once inside it, a timeout never is.
+ */
 export function createAskJev(settings: JevSettings, transport: Transport): AskJev {
   const info = provider(settings.provider);
   const once = async (request: SystemOneRequest): Promise<SystemOneResult> => {
-    const reply = await transport.within(
-      settings.timeoutMs,
-      transport.post(settings.url, headersFor(settings.apiKey), JSON.stringify(request)),
-    );
+    const reply = await transport.post(settings.url, headersFor(settings.apiKey), JSON.stringify(request));
     if (!reply.ok) {
       const paidHint = paidModelHint(settings.provider, request.model, reply.status, settings.locale, false);
       throw new JevHttpError(
@@ -176,7 +188,7 @@ export function createAskJev(settings: JevSettings, transport: Transport): AskJe
           status: reply.status,
           provider: info.label,
           hint: paidHint,
-          message: redact(reply.text, settings.apiKey).slice(0, 200),
+          message: printable(redact(reply.text, settings.apiKey).slice(0, 200)),
         }),
         reply.status,
       );
@@ -185,27 +197,36 @@ export function createAskJev(settings: JevSettings, transport: Transport): AskJe
     try {
       parsed = JSON.parse(reply.text);
     } catch {
-      throw new Error(text("provider.invalidJson", settings.locale));
+      throw new JevReplyError(text("provider.invalidJson", settings.locale));
     }
-    return normalize(parsed, settings.locale);
+    try {
+      return normalize(parsed, settings.locale);
+    } catch (error) {
+      throw new JevReplyError(error instanceof Error ? error.message : String(error));
+    }
   };
   return async (request) => {
-    try {
-      return await once(request);
-    } catch (error) {
-      const status = error instanceof JevHttpError ? error.status : undefined;
-      const message = error instanceof Error ? error.message : String(error);
-      if (status !== undefined && !RETRYABLE.has(status)) {
-        throw new JevHttpError(redact(message, settings.apiKey), status);
-      }
-      await transport.sleep(100);
+    let over = false;
+    const attempt = async () => {
       try {
         return await once(request);
-      } catch (retryError) {
-        const retryMessage = retryError instanceof Error ? retryError.message : String(retryError);
-        if (retryError instanceof JevHttpError) throw retryError;
-        throw new Error(text("provider.networkError", settings.locale, { message: redact(retryMessage, settings.apiKey) }));
+      } catch (error) {
+        if (error instanceof JevReplyError) throw error;
+        if (error instanceof JevHttpError && !RETRYABLE.has(error.status)) throw error;
+        await transport.sleep(100);
+        // The budget ran out during the pause: no second request after the timeout.
+        if (over) throw error;
+        return await once(request);
       }
+    };
+    try {
+      return await transport.within(settings.timeoutMs, attempt());
+    } catch (error) {
+      if (error instanceof JevHttpError || error instanceof JevReplyError) throw error;
+      const message = error instanceof Error ? error.message : String(error);
+      throw new Error(text("provider.networkError", settings.locale, { message: redact(message, settings.apiKey) }));
+    } finally {
+      over = true;
     }
   };
 }
@@ -243,7 +264,7 @@ export async function validateKey(
         status: reply.status,
         provider: info.label,
         hint: paidHint,
-        message: redact(reply.text, apiKey).slice(0, 160),
+        message: printable(redact(reply.text, apiKey).slice(0, 160)),
       }),
     };
   } catch (error) {

@@ -299,13 +299,15 @@ test("a configured key is never written to plugin state", { options: { api_key: 
   await ui.unmount();
 });
 
-test("the selected provider is used to validate a configured key", { options: { api_key: "provider-test-key" } }, async ($, on) => {
+test("the selected provider is validated with its own key", { options: { api_key: "provider-test-key" } }, async ($, on) => {
   mock.clock(on, { now: Date.parse("2026-10-06T12:00:00Z") });
   mock.store(on);
-  mock.env(on, {});
+  mock.env(on, { OPENCODE_API_KEY: "opencode-env-key" });
   const urls: string[] = [];
+  const auth: (string | undefined)[] = [];
   on("http.fetch", async (_$, e) => {
     urls.push(e.url);
+    auth.push(e.init?.headers?.authorization);
     return { value: { status: 200, ok: true, headers: {}, text: "{}" } };
   });
   const ui = await $.ui.mount({ plugin: "jev", surface: "terminal", component: "Pane", requestId: "jev", props: PANE_PROPS });
@@ -313,13 +315,15 @@ test("the selected provider is used to validate a configured key", { options: { 
   await ui.select({ key: "provider", value: "opencode" });
   await ui.press({ key: "validate" });
 
+  // The plugin key is TypeSafe's under auto: OpenCode gets the key from its own variable.
   expect(urls).toEqual(["https://opencode.ai/zen/v1/systemone"]);
+  expect(auth).toEqual(["Bearer opencode-env-key"]);
   expect(await status($)).toContain("Provider: OpenCode");
   expect(await status($)).not.toContain("provider-test-key");
   await ui.unmount();
 });
 
-test("connection checks use the configured paid OpenCode model", { options: { model: "jev-1.13", api_key: "model-test-key" } }, async ($, on) => {
+test("connection checks use the configured paid OpenCode model", { options: { provider: "opencode", model: "jev-1.13", api_key: "model-test-key" } }, async ($, on) => {
   mock.clock(on, { now: Date.parse("2026-10-06T12:00:00Z") });
   mock.store(on);
   mock.env(on, {});

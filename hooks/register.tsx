@@ -10,14 +10,15 @@
 // Every function that reaches `$` is declared here at the top level, so `claude plugin validate`
 // can follow each call; the other files are pure.
 import { atom, read, update } from "claude-code";
-import type { EngineInterface, Register } from "claude-code";
+import type { EngineInterface, Register, UiBlitArgs } from "claude-code";
 
 import type { AgentRun, FeatureFlags, FeedEntry, FlowState, PaneScroll, FeedKind, FeedSpeaker, FeedTone, JevTab, LiveNow, RouteEvent, SetupDraft } from "../types";
-import { resolveSettings, type ModOptions, type Settings, type StoredSettings } from "./config.ts";
+import { keyFor, keyOwner, providerBasis, resolveSettings, storedApplies, type ModOptions, type Settings, type StoredSettings } from "./config.ts";
 import { decide, hintText, type Decision } from "./core/decide.ts";
-import { createAskJev, isProvider, PROVIDERS, redact, resolveModel, validateKey, type Transport } from "./core/jev.ts";
+import { createAskJev, isProvider, PROVIDERS, redact, resolveModel, validateKey, type ProviderId, type Transport } from "./core/jev.ts";
 import {
   DEFAULT_FEATURES,
+  isSafeAgentName,
   planAgent,
   planHint,
   planSummary,
@@ -48,6 +49,8 @@ const features = atom({ plugin: "jev", key: "features" } as const, { ...DEFAULT_
 const feed = atom({ plugin: "jev", key: "feed" } as const, [] as FeedEntry[]);
 const live = atom({ plugin: "jev", key: "now" } as const, {} as LiveNow);
 const agents = atom({ plugin: "jev", key: "agents" } as const, [] as AgentRun[]);
+/** The highest subagent number handed out: kept beside the runs, so it lives exactly as long as they do. */
+const agentCount = atom({ plugin: "jev", key: "agentCount" } as const, 0);
 const scroll = atom({ plugin: "jev", key: "scroll" } as const, {} as PaneScroll);
 /** How far each pane body can scroll as last drawn, and whether it counts up from the newest line. */
 const scrollRoom = new Map<string, { max: number; fromEnd: boolean }>();
@@ -72,14 +75,21 @@ let system: string | undefined;
 /** The tool decision for the main loop's next model request. */
 let pending: Decision | undefined;
 /** What Jev decided for the running turn: model and effort for its main-loop requests. */
-let turnPlan: { model?: string; effort?: Effort; effortIgnored?: Effort; declined?: boolean; summary?: string } | undefined;
+let turnPlan: { model?: string; effort?: Effort; effortIgnored?: Effort; declined?: boolean; summary?: string; modelKept?: boolean } | undefined;
 let lastToolCount = 0;
 let sessionId = "";
 let feedSeq = 0;
+/** The highest request-log number this module wrote, and the tail of its queue of writes. */
+let eventSeq = 0;
+let eventWrites: Promise<unknown> = Promise.resolve();
 /** Subagent types Claude Code offers, as agent.offer reports them. */
 const agentTypes = new Map<string, AgentType>();
-/** Running subagents by id: their type, model and the effort Jev chose. */
-const agentRuns = new Map<string, { type: string; model: string; effort?: Effort; description: string; mascot?: MascotId }>();
+/**
+ * Running subagents by id: their type, model and the effort Jev chose. A teammate stays after its
+ * turn ends, since it goes idle and wakes on a message under the same id.
+ */
+type AgentInfo = { type: string; model: string; effort?: Effort; description: string; mascot?: MascotId; teammate?: true; awake?: boolean };
+const agentRuns = new Map<string, AgentInfo>();
 const toolStarts = new Map<string, number>();
 /**
  * The key being typed in Setup, and the key accepted this session. Only here, in the module: the
@@ -87,8 +97,23 @@ const toolStarts = new Map<string, number>();
  */
 let draftKey = "";
 let sessionKey = "";
+/** The provider the Setup key was tested against: the two go together for the session. */
+let sessionProvider: ProviderId | undefined;
 /** Set when a model Jev chose was refused: model changes stop for the session. */
 let modelBroken = false;
+/** Empty answers in a row from a model Jev switched to; two in a row count as a refusal. */
+let switchedEmpty = 0;
+/**
+ * Set when the person picked the main loop's model this session (/model, the picker, the SDK):
+ * Jev's model then stays out, as it does for a subagent Claude named a model for. turn.step
+ * carries no such signal, and a model chosen before the session (--model, settings) is not seen.
+ */
+let userModel = false;
+/**
+ * A main-loop model Jev may replace: a plain first-party id. One with a suffix (`[1m]`) or a
+ * provider's id (Bedrock, Vertex, a gateway) would lose its context window or fail the request.
+ */
+const switchableModel = (id: string) => /^claude-[a-z0-9.-]+$/i.test(id);
 /** Dice at the top of the live tab: drawn while that tab shows. */
 let dice: { columns: number; rows: number } | undefined;
 /** Pingo in the dashboard header: its terminal frame follows the latest Jev status. */
@@ -96,6 +121,8 @@ let pingo: { mood: Mood; columns: number; rows: number } | undefined;
 /** Each open subagent pane's mascot, by pane id. */
 const agentArt = new Map<string, { mascot: MascotId; columns: number; rows: number }>();
 const MASCOT_FPS = 10;
+/** A mascot frame is being sent. */
+let animating = false;
 
 function transport($: EngineInterface, locale?: Locale): Transport {
   return {
@@ -124,6 +151,8 @@ function transport($: EngineInterface, locale?: Locale): Transport {
 async function processEnv($: EngineInterface): Promise<Record<string, string>> {
   const pairs: [string, string | undefined][] = [
     ["JEV_PROVIDER", await $.env.get("JEV_PROVIDER")],
+    ["JEV_MIN_CONFIDENCE", await $.env.get("JEV_MIN_CONFIDENCE")],
+    ["JEV_TIMEOUT_MS", await $.env.get("JEV_TIMEOUT_MS")],
     ["TYPESAFE_API_KEY", await $.env.get("TYPESAFE_API_KEY")],
     ["OPENROUTER_API_KEY", await $.env.get("OPENROUTER_API_KEY")],
     ["AI_GATEWAY_API_KEY", await $.env.get("AI_GATEWAY_API_KEY")],
@@ -132,19 +161,29 @@ async function processEnv($: EngineInterface): Promise<Record<string, string>> {
   return Object.fromEntries(pairs.filter((pair): pair is [string, string] => Boolean(pair[1]?.trim())));
 }
 
-async function storedSettings($: EngineInterface): Promise<StoredSettings> {
+async function storedSettings($: EngineInterface, env: Record<string, string>): Promise<StoredSettings> {
   // Older versions saved credentials as plain text in plugin state. Remove that copy and
   // continue using only Claude Code's sensitive option or the provider's environment variable.
   const legacyKey = await $.store.get(LEGACY_STORE_KEY);
   if (typeof legacyKey === "string") await $.store.delete(LEGACY_STORE_KEY);
-  const provider = await $.store.get(STORE_PROVIDER);
-  return {
-    ...(typeof provider === "string" ? { provider } : {}),
-  };
+  // Setup's fallback provider, as `{ provider, basis }` (a bare string from older versions). Once the
+  // provider option or JEV_PROVIDER has changed since it was saved, that change wins and it goes.
+  const saved = await $.store.get(STORE_PROVIDER);
+  if (saved === undefined) return {};
+  const stored = (typeof saved === "string" ? { provider: saved } : typeof saved === "object" && saved ? saved : {}) as StoredSettings;
+  if (storedApplies(options, env, stored)) return stored;
+  await $.store.delete(STORE_PROVIDER).catch(() => undefined);
+  return {};
 }
 
+/** The plugin options with the key accepted in Setup this session, if any. */
+const pluginOptions = (): ModOptions =>
+  sessionKey ? { ...options, api_key: sessionKey, ...(sessionProvider ? { provider: sessionProvider } : {}) } : options;
+
 async function getSettings($: EngineInterface): Promise<Settings> {
-  settings ??= resolveSettings(sessionKey ? { ...options, api_key: sessionKey } : options, await processEnv($), await storedSettings($));
+  if (settings) return settings;
+  const env = await processEnv($);
+  settings = resolveSettings(pluginOptions(), env, await storedSettings($, env));
   return settings;
 }
 
@@ -229,11 +268,15 @@ async function countEdit($: EngineInterface, input: Record<string, unknown>): Pr
   await update($, flow, (f) => ({ ...f, edits: f.edits + 1, files: file && !f.files.includes(file) ? [...f.files, file] : f.files }));
 }
 
-/** Adds a subagent that just started, numbered after the last one; finished ones beyond the cap go. */
+/**
+ * Adds a subagent that just started, numbered after every one this session has seen, removed or
+ * not, so a number never names two runs; finished ones beyond the cap go.
+ */
 async function addRun($: EngineInterface, run: Omit<AgentRun, "n" | "mascot">): Promise<AgentRun> {
   let added: AgentRun | undefined;
+  const reserved = await update($, agentCount, (last) => last + 1);
   await update($, agents, (list) => {
-    const n = Math.max(0, ...list.map((one) => one.n)) + 1;
+    const n = Math.max(reserved, ...list.map((one) => one.n + 1));
     // A mascot no running subagent wears, so two at once never look alike.
     const mascot = pickMascot(list.filter((one) => one.state === "running").map((one) => one.mascot), n);
     added = { ...run, n, mascot };
@@ -242,7 +285,45 @@ async function addRun($: EngineInterface, run: Omit<AgentRun, "n" | "mascot">): 
     const drop = new Set(finished.slice(0, Math.max(0, all.length - KEPT_AGENTS)).map((one) => one.id));
     return all.filter((one) => !drop.has(one.id));
   });
+  // Runs kept from before the count existed may number past it: catch it up.
+  if (added!.n > reserved) await update($, agentCount, (last) => Math.max(last, added!.n));
   return added!;
+}
+
+/** A teammate's next turn: its run shows as running again, added back if a clear dropped it. */
+async function wakeRun($: EngineInterface, id: string, mate: AgentInfo, locale: Locale): Promise<void> {
+  mate.awake = true;
+  let kept = false;
+  await update($, agents, (list) => {
+    const run = list.find((one) => one.id === id);
+    if (!run) return list;
+    kept = true;
+    if (run.state === "running") return list;
+    const { endedAt: _endedAt, ...awake } = run;
+    // Another subagent may have taken its mascot while it was idle.
+    const worn = list.filter((one) => one.state === "running").map((one) => one.mascot);
+    const mascot = worn.includes(run.mascot) ? pickMascot(worn, run.n) : run.mascot;
+    return list.map((one) => (one.id === id ? { ...awake, state: "running" as const, mascot } : one));
+  });
+  if (!kept) {
+    await addRun($, {
+      id,
+      type: mate.type,
+      description: mate.description,
+      prompt: "",
+      model: mate.model,
+      ...(mate.effort ? { effort: mate.effort } : {}),
+      startedAt: await $.clock.now(),
+      state: "running",
+      tools: 0,
+      requests: 0,
+      tokensIn: 0,
+      tokensOut: 0,
+      activity: text("feed.activity.starting", locale),
+    });
+  }
+  const mascot = (await read($, agents)).find((one) => one.id === id)?.mascot;
+  if (isMascot(mascot)) mate.mascot = mascot;
 }
 
 /** Opens one subagent's own live pane, beside the Jev pane. */
@@ -287,22 +368,35 @@ async function setLive($: EngineInterface, change: Partial<LiveNow>): Promise<vo
 
 // --- Animated artwork ---
 
+/** A blit that throws counts as refused: that mascot stops like one whose pane is gone. */
+async function blitted($: EngineInterface, args: UiBlitArgs): Promise<boolean> {
+  try {
+    return (await $.ui.blit(args)).deny === undefined;
+  } catch {
+    return false;
+  }
+}
+
 /** Repaints visible mascots in place; each stops when its pane no longer shows it. */
 async function animateMascots($: EngineInterface): Promise<void> {
-  const t = (await $.clock.now()) / 1000;
-  if (dice) {
-    const { columns, rows } = dice;
-    const result = await $.ui.blit({ requestId: PANE, key: "dice", cells: cellsOf(diceFrame(t, columns, rows)), columns, rows });
-    if (result.deny !== undefined) dice = undefined;
-  }
-  if (pingo) {
-    const { mood, columns, rows } = pingo;
-    const result = await $.ui.blit({ requestId: PANE, key: "pingo", cells: cellsOf(brailleFrame(mood, t, columns, rows)), columns, rows });
-    if (result.deny !== undefined) pingo = undefined;
-  }
-  for (const [requestId, art] of agentArt) {
-    const result = await $.ui.blit({ requestId, key: "mascot", cells: cellsOf(mascotFrame(art.mascot, t, art.columns, art.rows)), columns: art.columns, rows: art.rows });
-    if (result.deny !== undefined) agentArt.delete(requestId);
+  // One frame at a time: a tick that comes while the last frame is still out is skipped.
+  if (animating) return;
+  animating = true;
+  try {
+    const t = (await $.clock.now()) / 1000;
+    if (dice) {
+      const { columns, rows } = dice;
+      if (!(await blitted($, { requestId: PANE, key: "dice", cells: cellsOf(diceFrame(t, columns, rows)), columns, rows }))) dice = undefined;
+    }
+    if (pingo) {
+      const { mood, columns, rows } = pingo;
+      if (!(await blitted($, { requestId: PANE, key: "pingo", cells: cellsOf(brailleFrame(mood, t, columns, rows)), columns, rows }))) pingo = undefined;
+    }
+    for (const [requestId, art] of agentArt) {
+      if (!(await blitted($, { requestId, key: "mascot", cells: cellsOf(mascotFrame(art.mascot, t, art.columns, art.rows)), columns: art.columns, rows: art.rows }))) agentArt.delete(requestId);
+    }
+  } finally {
+    animating = false;
   }
 }
 
@@ -326,7 +420,7 @@ async function planFor($: EngineInterface, userText: string): Promise<TurnPlan> 
   const flags = await read($, features);
   const [messages, roster] = await Promise.all([$.session.messages(), $.tool.list()]);
   lastToolCount = roster.length;
-  const input = toInput(await systemText($), messages, roster, config.maxMessageChars, { userText });
+  const input = toInput(await systemText($), messages, roster, config.maxMessageChars, { userText }, config.locale);
   return asking($, () => planTurn(input, config, createAskJev(config, transport($, config.locale)), flags, [...agentTypes.values()]));
 }
 
@@ -339,22 +433,39 @@ async function routeTool($: EngineInterface, extra: { pending?: PendingResult })
   if (!config.apiKey) return { mode: "passthrough", reason: "no_api_key" };
   const [messages, roster] = await Promise.all([$.session.messages(), $.tool.list()]);
   lastToolCount = roster.length;
-  const input = toInput(await systemText($), messages, roster, config.maxMessageChars, extra);
+  const input = toInput(await systemText($), messages, roster, config.maxMessageChars, extra, config.locale);
   return asking($, () => decide(input, config, createAskJev(config, transport($, config.locale))));
 }
 
+/**
+ * Runs `work` once every event-log write queued before it has finished. `$.store` has no
+ * compare-and-set, so the main loop and subagents finishing requests at once would otherwise
+ * each read the same list and the last write would drop the others' events.
+ */
+function serially<T>(work: () => Promise<T>): Promise<T> {
+  const run = eventWrites.then(work);
+  eventWrites = run.catch(() => undefined);
+  return run;
+}
+
 async function record($: EngineInterface, event: Omit<RouteEvent, "seq">): Promise<void> {
-  const stored = ((await $.store.get(STORE_EVENTS)) as RouteEvent[] | undefined) ?? [];
-  const seq = (stored.at(-1)?.seq ?? 0) + 1;
-  const kept = [...stored, { ...event, seq }].slice(-KEPT_EVENTS);
-  await $.store.set(STORE_EVENTS, kept);
-  await update($, events, () => kept);
+  await serially(async () => {
+    const stored = ((await $.store.get(STORE_EVENTS)) as RouteEvent[] | undefined) ?? [];
+    // Past the highest number handed out, so a cleared log never hands one out again.
+    const seq = Math.max(eventSeq, stored.at(-1)?.seq ?? 0) + 1;
+    eventSeq = seq;
+    const kept = [...stored, { ...event, seq }].slice(-KEPT_EVENTS);
+    await $.store.set(STORE_EVENTS, kept);
+    await update($, events, () => kept);
+  });
 }
 
 /** Restore persisted choices after a session reset such as /clear, /resume, or /branch. */
 async function restoreStoredState($: EngineInterface): Promise<void> {
-  const storedEvents = (await $.store.get(STORE_EVENTS)) as RouteEvent[] | undefined;
-  if (storedEvents) await update($, events, () => storedEvents);
+  await serially(async () => {
+    const storedEvents = (await $.store.get(STORE_EVENTS)) as RouteEvent[] | undefined;
+    if (storedEvents) await update($, events, () => storedEvents);
+  });
   const storedRouting = (await $.store.get(STORE_ROUTING)) as boolean | undefined;
   if (typeof storedRouting === "boolean") await update($, routing, () => storedRouting);
   const storedFeatures = (await $.store.get(STORE_FEATURES)) as Partial<FeatureFlags> | undefined;
@@ -379,8 +490,10 @@ async function setFeature($: EngineInterface, id: FeatureId, enabled: boolean): 
 }
 
 async function clearHistory($: EngineInterface): Promise<void> {
-  await $.store.set(STORE_EVENTS, []);
-  await update($, events, () => []);
+  await serially(async () => {
+    await $.store.set(STORE_EVENTS, []);
+    await update($, events, () => []);
+  });
   await update($, feed, () => []);
   await update($, agents, (list) => list.filter((run) => run.state === "running"));
 }
@@ -425,11 +538,21 @@ async function typeKey($: EngineInterface, value: string): Promise<void> {
   await update($, setup, (d) => ({ ...d, typed: maskKey(draftKey), message: "" }));
 }
 
-/** The `/config` row of this plugin's sensitive api_key option, as `$.config` names it. */
-async function configOptionRow($: EngineInterface, option: string): Promise<string | undefined> {
+/**
+ * The `/config` row of one of this plugin's options, as `$.config` names it: `<plugin>.<field>` or
+ * `<plugin>@<marketplace>.<field>`, owned by this plugin. Rows name a plugin, not its marketplace,
+ * so when two installed plugins share this name the row is ambiguous and nothing is written.
+ */
+async function optionRow($: EngineInterface, field: string): Promise<string | undefined> {
   try {
-    const rows = await $.config.list();
-    return rows.find((row) => /^jev(@[^.]*)?\./.test(row.key) && row.key.endsWith(`.${option}`))?.key;
+    const name = $.plugin.name;
+    const rows = (await $.config.list()).filter((row) => {
+      const prefix = row.key.slice(0, -(field.length + 1));
+      if (row.key !== `${prefix}.${field}` || (prefix !== name && !prefix.startsWith(`${name}@`))) return false;
+      const owner = (row.provider as { plugin?: string } | undefined)?.plugin;
+      return owner === undefined || owner === name || owner === prefix;
+    });
+    return rows.length === 1 ? rows[0]!.key : undefined;
   } catch {
     return undefined;
   }
@@ -438,7 +561,7 @@ async function configOptionRow($: EngineInterface, option: string): Promise<stri
 /** Writes the api_key option (secure storage); `""` removes it. Says why when Claude Code refused. */
 async function saveKey($: EngineInterface, key: string): Promise<string | undefined> {
   const config = await getSettings($);
-  const row = await configOptionRow($, "api_key");
+  const row = await optionRow($, "api_key");
   if (!row) return text("ui.setup.noSecureOption", config.locale, { env: PROVIDERS[config.provider].keyEnv });
   try {
     const result = await $.config.set({ key: row, value: key });
@@ -450,7 +573,7 @@ async function saveKey($: EngineInterface, key: string): Promise<string | undefi
 
 async function setLocale($: EngineInterface, locale: LocaleOption): Promise<void> {
   const current = await getSettings($);
-  const row = await configOptionRow($, "locale");
+  const row = await optionRow($, "locale");
   if (!row) {
     await update($, setup, (draft) => ({ ...draft, message: text("ui.setup.languageOptionUnavailable", current.locale), isOk: false }));
     return;
@@ -473,6 +596,7 @@ async function setLocale($: EngineInterface, locale: LocaleOption): Promise<void
 async function forgetKey($: EngineInterface): Promise<void> {
   draftKey = "";
   sessionKey = "";
+  sessionProvider = undefined;
   const refused = await saveKey($, "");
   settings = undefined;
   const config = await getSettings($);
@@ -488,41 +612,77 @@ async function forgetKey($: EngineInterface): Promise<void> {
   }));
 }
 
+/**
+ * Saves Setup's provider as the plugin's provider option. When Claude Code refuses, a store copy
+ * stands in, tied to the option and JEV_PROVIDER as they are now, so a later change to either wins.
+ */
+async function saveProvider($: EngineInterface, id: ProviderId): Promise<boolean> {
+  const row = await optionRow($, "provider");
+  const result = row ? await $.config.set({ key: row, value: id }).catch(() => undefined) : undefined;
+  if (result && !result.deny) {
+    options = { ...options, provider: id };
+    await $.store.delete(STORE_PROVIDER).catch(() => undefined);
+    return true;
+  }
+  const basis = providerBasis(options, await processEnv($));
+  return $.store.set(STORE_PROVIDER, { provider: id, basis }).then(
+    () => true,
+    () => false,
+  );
+}
+
+/** Puts back the provider choice saveProvider replaced; this session keeps its own pair. */
+async function restoreProvider($: EngineInterface, before: string | undefined, stored: unknown): Promise<void> {
+  const row = await optionRow($, "provider");
+  if (row) await $.config.set({ key: row, value: before ?? "auto" }).catch(() => undefined);
+  options = { ...options, provider: before };
+  if (stored === undefined) await $.store.delete(STORE_PROVIDER).catch(() => undefined);
+  else await $.store.set(STORE_PROVIDER, stored).catch(() => undefined);
+  settings = undefined;
+}
+
 async function checkSetup($: EngineInterface): Promise<void> {
   const draft = await read($, setup);
   if (draftKey) return submitKey($, draft.provider);
   const current = await getSettings($);
+  const locale = current.locale;
   const id = isProvider(draft.provider) ? draft.provider : current.provider;
-  try {
-    await $.store.set(STORE_PROVIDER, id);
-  } catch {
-    await update($, setup, (d) => ({ ...d, message: text("ui.setup.providerSaveFailed", current.locale), isOk: false }));
-    return;
-  }
-  settings = undefined;
-  const config = await getSettings($);
-  if (!config.apiKey) {
+  // The plugin's key goes only to the provider it is configured for; another provider is
+  // tested with its own environment key, and is selected only if that leaves the key paired.
+  const env = await processEnv($);
+  const stored = await storedSettings($, env);
+  const owner = keyOwner(pluginOptions(), env, stored);
+  const { apiKey } = keyFor(id, pluginOptions(), env, stored);
+  const names = { provider: PROVIDERS[id].label, owner: PROVIDERS[owner].label, env: PROVIDERS[id].keyEnv };
+  if (!apiKey) {
     await update($, setup, (d) => ({
       ...d,
       provider: id,
-      message: text("ui.setup.envHelp", config.locale, { env: PROVIDERS[id].keyEnv }),
+      message: pluginOptions().api_key?.trim() ? text("ui.setup.keyForOther", locale, names) : text("ui.setup.envHelp", locale, { env: names.env }),
       isOk: false,
     }));
     return;
   }
-  await update($, setup, (d) => ({ ...d, provider: id, message: text("ui.setup.checking", config.locale, { provider: PROVIDERS[id].label }), isOk: true }));
-  const check = await validateKey(id, config.apiKey, transport($, config.locale), resolveModel(id, options.model?.trim()), config.locale);
+  const selects = id === current.provider || resolveSettings({ ...pluginOptions(), provider: id }, env).apiKey === apiKey;
+  if (id !== current.provider && selects && !(await saveProvider($, id))) {
+    await update($, setup, (d) => ({ ...d, message: text("ui.setup.providerSaveFailed", locale), isOk: false }));
+    return;
+  }
+  settings = undefined;
+  await update($, setup, (d) => ({ ...d, provider: id, message: text("ui.setup.checking", locale, { provider: names.provider }), isOk: true }));
+  const check = await validateKey(id, apiKey, transport($, locale), resolveModel(id, options.model?.trim()), locale);
   if (!check.ok) {
     const message = check.refused
-      ? text("ui.setup.refused", config.locale, { provider: PROVIDERS[id].label, message: check.message })
-      : text("ui.setup.couldNotCheck", config.locale, { message: check.message });
+      ? text("ui.setup.refused", locale, { provider: names.provider, message: check.message })
+      : text("ui.setup.couldNotCheck", locale, { message: check.message });
     await update($, setup, (d) => ({ ...d, message, isOk: false }));
     return;
   }
+  const ms = formatNumber(check.ms, locale);
   await update($, setup, (d) => ({
     ...d,
     isOk: true,
-    message: text("ui.setup.success", config.locale, { provider: PROVIDERS[id].label, ms: formatNumber(check.ms, config.locale) }),
+    message: selects ? text("ui.setup.success", locale, { provider: names.provider, ms }) : text("ui.setup.otherKeyWorks", locale, { ...names, ms }),
   }));
 }
 
@@ -549,11 +709,20 @@ async function submitKey($: EngineInterface, provider: string): Promise<void> {
     }));
     return;
   }
-  await $.store.set(STORE_PROVIDER, id).catch(() => undefined);
+  // The key is the chosen provider's: without that choice saved it would be paired with another.
+  const providerBefore = options.provider;
+  const storedBefore = await $.store.get(STORE_PROVIDER).catch(() => undefined);
+  if (!(await saveProvider($, id))) {
+    await update($, setup, (d) => ({ ...d, busy: false, isOk: false, message: text("ui.setup.providerSaveFailed", locale) }));
+    return;
+  }
   sessionKey = key;
+  sessionProvider = id;
   draftKey = "";
   settings = undefined;
   const refused = await saveKey($, key);
+  // Saved together or not at all: the provider without its key would get the old key next session.
+  if (refused) await restoreProvider($, providerBefore, storedBefore);
   await update($, setup, (d) => ({
     ...d,
     busy: false,
@@ -640,6 +809,7 @@ export const register: Register = (on, given) => {
   settings = undefined;
   draftKey = "";
   sessionKey = "";
+  sessionProvider = undefined;
 
   on("session.start", async ($, e, next) => {
     sessionId = (await $.session.id()).slice(0, 8);
@@ -649,7 +819,7 @@ export const register: Register = (on, given) => {
     // "Idle" and the 5-minute windows move with the clock, not only with events.
     $.clock.every(1000, () => $.ui.invalidate("ui.render"));
     // Visible mascot animations stop when their pane is closed.
-    $.clock.every(1000 / MASCOT_FPS, () => void animateMascots($));
+    $.clock.every(1000 / MASCOT_FPS, () => void animateMascots($).catch(() => undefined));
     await $.command.register({
       name: "jev",
       description: text("ui.command.description", config.locale),
@@ -666,27 +836,36 @@ export const register: Register = (on, given) => {
     return next(e);
   }).catch((_$, e, next) => next(e));
 
+  // A model the person picks is theirs: Jev's model stays out until they go back to the default.
+  on("classic.PostModelSwitch", async (_$, e, next) => {
+    if (e.source === "command" || e.source === "picker" || e.source === "sdk") userModel = e.requested_model !== null;
+    return next(e);
+  }).catch((_$, e, next) => next(e));
+
   // Subagent types, for the delegation question. Observed only: every type stays offered.
+  // A name is written into the hint Claude reads, so only one inert token is kept.
   on("agent.offer", async ($, e, next) => {
-    agentTypes.set(e.agent, { name: e.agent, description: e.description });
+    if (isSafeAgentName(e.agent)) agentTypes.set(e.agent, { name: e.agent, description: e.description });
     return next(e);
   }).catch((_$, e, next) => next(e));
 
   // The turn's routing point: decide on the conversation plus the prompt being submitted.
   on("prompt.submit", async ($, e, next) => {
     const config = await getSettings($);
+    // A prompt typed into a running turn keeps that turn's plan: its tool hint, model and effort.
+    if (e.turnId) {
+      await log($, "jev", "jev", "muted", text("feed.request.midTurn", config.locale), undefined, { minor: true });
+      return next(e);
+    }
     const plan = await planFor($, e.text);
     pending = plan.decision;
     const reason = plan.decision.mode === "passthrough" ? plan.decision.reason : "";
-    // A prompt typed into a running turn keeps that turn's model and effort.
-    if (!e.turnId) {
-      turnPlan = {
-        ...(plan.model ? { model: TIER_MODEL[plan.model.value] } : {}),
-        ...(plan.effort ? { effort: plan.effort.value } : {}),
-        ...(plan.effortIgnored ? { effortIgnored: plan.effortIgnored.value } : {}),
-        ...(reason === "jev_declined" ? { declined: true } : {}),
-      };
-    }
+    turnPlan = {
+      ...(plan.model ? { model: TIER_MODEL[plan.model.value] } : {}),
+      ...(plan.effort ? { effort: plan.effort.value } : {}),
+      ...(plan.effortIgnored ? { effortIgnored: plan.effortIgnored.value } : {}),
+      ...(reason === "jev_declined" ? { declined: true } : {}),
+    };
     const failed = reason.startsWith("jev_error") || reason === "jev_unexpected_answer";
     const asked = plan.jev !== undefined || failed;
     const summary = asked ? planSummary(plan, config.locale) : reasonTitle(reason, config.locale);
@@ -736,15 +915,20 @@ export const register: Register = (on, given) => {
           ...(e.answer?.trim() ? { text: short(e.answer, 2000) } : {}),
         };
       });
-      agentRuns.delete(id);
-      await setLive($, { activity: agentRuns.size ? text("feed.activity.agentCount", locale, { count: formatNumber(agentRuns.size, locale), unit: text(agentRuns.size === 1 ? "unit.agent" : "unit.agents", locale) }) : text("feed.activity.waiting", locale) });
+      // A teammate's turn ending is not its end: keep its type, mascot and Jev's effort for its
+      // next wake-up. Idle teammates are not counted as running.
+      const mate = agentRuns.get(id);
+      if (mate?.teammate) mate.awake = false;
+      else agentRuns.delete(id);
+      const running = [...agentRuns.values()].filter((run) => !run.teammate || run.awake).length;
+      await setLive($, { activity: running ? text("feed.activity.agentCount", locale, { count: formatNumber(running, locale), unit: text(running === 1 ? "unit.agent" : "unit.agents", locale) }) : text("feed.activity.waiting", locale) });
       return next(e);
     }
     const state = e.isAborted ? "aborted" : e.reason === "error" ? "failed" : e.reason === "refusal" ? "refused" : "completed";
     const troubled = e.isAborted || e.reason !== "answer";
     await log($, "mod", "turn", troubled ? "warn" : "muted", text("feed.turn.ended", locale, { state: text(`feed.turn.state.${state}`, locale) }), undefined, {
       meta: seconds,
-      ...(tokens ? { detail: tokens.slice(3) } : {}),
+      ...(tokens ? { detail: tokens } : {}),
       minor: !troubled,
     });
     turnPlan = undefined;
@@ -755,6 +939,8 @@ export const register: Register = (on, given) => {
 
   // Tools: log each call; after the batch's last result, route the next tool.
   on("tool.call", async ($, e, next) => {
+    // Another plugin's own call ($.tool.call) is no step of Claude's: no routing, hint or count.
+    if (!e.tool_use_id || next.origin.plugin !== "engine") return next(e);
     const locale = (await getSettings($)).locale;
     const who = actor(e.agentId);
     const summary = toolSummary(e.tool, e as unknown as Record<string, unknown>);
@@ -838,7 +1024,7 @@ export const register: Register = (on, given) => {
     const haikuTarget = result.model.toLowerCase().includes("haiku");
     const appliedEffort = haikuTarget ? undefined : plan.effort;
     const ignoredEffort = plan.effortIgnored ?? (haikuTarget ? plan.effort : undefined);
-    agentRuns.set(id, { type: e.subagentType, model: result.model, ...(appliedEffort ? { effort: appliedEffort.value } : {}), description: e.description });
+    agentRuns.set(id, { type: e.subagentType, model: result.model, ...(appliedEffort ? { effort: appliedEffort.value } : {}), description: e.description, ...(e.isTeammate ? { teammate: true as const, awake: true } : {}) });
     const chosen = [
       plan.model
         ? text("feed.subagent.jevModel", config.locale, { model: plan.model.value, confidence: formatDecimal(plan.model.confidence, config.locale) })
@@ -911,8 +1097,14 @@ export const register: Register = (on, given) => {
       decision = pending ?? { mode: "passthrough", reason: (await read($, routing)) ? "not_asked" : "routing_disabled" };
       pending = undefined;
       if (turnPlan?.model && !modelBroken && turnPlan.model !== e.model) {
-        model = turnPlan.model;
-        changes.push(text("feed.change.modelSwitched", locale, { from: modelName(e.model), to: modelName(model) }));
+        const kept: LocaleKey | undefined = userModel ? "feed.change.modelKeptChosen" : !switchableModel(e.model) ? "feed.change.modelKeptId" : undefined;
+        if (!kept) {
+          model = turnPlan.model;
+          changes.push(text("feed.change.modelSwitched", locale, { from: modelName(e.model), to: modelName(model) }));
+        } else if (!turnPlan.modelKept) {
+          turnPlan.modelKept = true;
+          await log($, "mod", "feature", "muted", text(kept, locale, { model: modelName(e.model), target: modelName(turnPlan.model) }), undefined, { minor: true });
+        }
       }
       const haikuTarget = model.toLowerCase().includes("haiku");
       if (haikuTarget) {
@@ -936,7 +1128,12 @@ export const register: Register = (on, given) => {
     if (changes.length) await log($, "jev", "step", "warn", text("feed.change.request", locale, { number: formatNumber(e.index + 1, locale), loop, changes: changes.join(text("feed.change.separator", locale)) }), e.agentId);
     // Bookkeeping: drawn faint, filled in with its tokens and time once the model answers.
     const requestLine = await log($, "mod", "step", "muted", text("feed.request.line", locale, { number: formatNumber(e.index + 1, locale), loop, model: modelName(model), effort: effortText }), e.agentId, { minor: true, meta: "…" });
-    if (e.agentId) await updateRun($, e.agentId, (run) => ({ ...run, model, requests: run.requests + 1, activity: text("feed.activity.responding", locale) }));
+    if (e.agentId) {
+      // A teammate waking up runs again: its earlier turn marked it done.
+      const mate = agentRuns.get(e.agentId);
+      if (mate?.teammate && !mate.awake) await wakeRun($, e.agentId, mate, locale);
+      await updateRun($, e.agentId, (run) => ({ ...run, model, requests: run.requests + 1, activity: text("feed.activity.responding", locale) }));
+    }
     if (!e.agentId) {
       await setLive($, {
         model,
@@ -952,9 +1149,14 @@ export const register: Register = (on, given) => {
     }
     const result = yield* next(sent);
     // A model Jev picked that this account cannot use comes back empty: stop changing models.
-    if (model !== e.model && result.stopReason === null && !result.usage) {
-      modelBroken = true;
-      await log($, "mod", "error", "bad", text("feed.model.failed", locale, { model: modelName(model) }));
+    // An interrupted step (Esc) comes back empty too and is not counted; a dropped connection
+    // looks the same as a refusal, so it takes two empty answers in a row.
+    if (model !== e.model && !next.signal.aborted) {
+      switchedEmpty = result.stopReason === null && !result.usage ? switchedEmpty + 1 : 0;
+      if (switchedEmpty >= 2) {
+        modelBroken = true;
+        await log($, "mod", "error", "bad", text("feed.model.failed", locale, { model: modelName(model) }));
+      }
     }
     if (result.answer.trim()) {
       await log($, who, "message", "info", `“${short(result.answer, 600)}”`, e.agentId);
@@ -1131,7 +1333,7 @@ export const register: Register = (on, given) => {
       return moved === now ? all : { ...all, [key]: moved };
     });
     return {};
-  });
+  }).catch((_$, e, next) => next(e));
 
   on("ui.render", { component: "AbovePrompt" }, async ($, e, next) => {
     if (e.props.hasSurvey) return next(e);
