@@ -66,7 +66,7 @@ test("the dashboard follows the configured Portuguese locale", { options: { loca
 
 test("the language can be changed from Jev Setup", async ($, on) => {
   mock.clock(on, { now: Date.parse("2026-10-06T12:00:00Z") });
-  mock.store(on);
+  mock.store(on, { events: [EVENT, { ...EVENT, seq: 2, mode: "passthrough", reason: "low_confidence", tool: undefined }] });
   mock.env(on, {});
   const saved: unknown[] = [];
   on("config.list", async () => ({ value: [{ key: "jev@inline.locale", label: "Language" }] }) as never);
@@ -74,11 +74,20 @@ test("the language can be changed from Jev Setup", async ($, on) => {
     saved.push(e.value);
     return { value: e.value };
   });
+  on("command.register", async () => ({ value: {} }));
+  on("session.id", async () => ({ value: "session-language" }));
+  on("session.model", async () => ({ value: "claude-opus-5-5" }));
+  await $.session.start({ cwd: "/workspace" } as never).catch(() => undefined);
   const ui = await $.ui.mount({ plugin: "jev", surface: "terminal", component: "Pane", requestId: "jev", props: PANE_PROPS });
   await ui.press({ key: "tab-setup" });
   await ui.select({ key: "language", value: "pt" });
   expect(saved).toEqual(["pt"]);
   expect(await ui.find({ type: "Text", text: "Configuração do provedor" })).toBeDefined();
+  await ui.press({ key: "tab-reasons" });
+  expect(await ui.find({ type: "Text", text: "Confiança baixa" })).toBeDefined();
+  for (const tab of ["tab-overview", "tab-live", "tab-agents", "tab-baseline", "tab-log", "tab-features", "tab-flow"]) {
+    await ui.press({ key: tab });
+  }
   await ui.unmount();
 });
 

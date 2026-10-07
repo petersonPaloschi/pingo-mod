@@ -18,7 +18,8 @@ export function localeOption(value?: string): LocaleOption {
 
 export function text<K extends LocaleKey>(key: K, locale: Locale = localeFor(), values: Record<string, string | number> = {}): string {
   const source = locale === "pt" ? pt : en;
-  return source[key].replace(/\{(\w+)\}/g, (match, name: string) => (name in values ? String(values[name]) : match));
+  const message = (source as Partial<Record<LocaleKey, string>>)[key] ?? (en as Partial<Record<LocaleKey, string>>)[key] ?? String(key);
+  return message.replace(/\{(\w+)\}/g, (match, name: string) => (name in values ? String(values[name]) : match));
 }
 
 export function reasonTitle(reason: string, locale: Locale = localeFor()): string {

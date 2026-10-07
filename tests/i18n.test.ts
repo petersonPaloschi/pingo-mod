@@ -1,6 +1,6 @@
 import { expect, test } from "claude-code/testing";
 
-import { formatDecimal, formatNumber, formatPercent, localeFor, text } from "../hooks/i18n.ts";
+import { formatDecimal, formatNumber, formatPercent, localeFor, text, type LocaleKey } from "../hooks/i18n.ts";
 import { resolveSettings } from "../hooks/config.ts";
 import { buildQuestions } from "../hooks/core/questions.ts";
 import { status, tiles } from "../hooks/events.ts";
@@ -25,6 +25,7 @@ test("messages and formatters use the selected locale", () => {
   expect(formatNumber(1234.5, "pt", 1)).toBe("1.234,5");
   expect(formatDecimal(0.75, "pt")).toBe("0,75");
   expect(formatPercent(1, 4, "pt")).toBe("25%");
+  expect(text("missing.runtime.key" as LocaleKey, "pt")).toBe("missing.runtime.key");
 });
 
 test("routing prompts and dashboard summaries are Portuguese", () => {
