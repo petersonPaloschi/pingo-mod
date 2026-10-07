@@ -64,6 +64,24 @@ test("the dashboard follows the configured Portuguese locale", { options: { loca
   await ui.unmount();
 });
 
+test("the language can be changed from Jev Setup", async ($, on) => {
+  mock.clock(on, { now: Date.parse("2026-10-06T12:00:00Z") });
+  mock.store(on);
+  mock.env(on, {});
+  const saved: unknown[] = [];
+  on("config.list", async () => ({ value: [{ key: "jev@inline.locale", label: "Language" }] }) as never);
+  on("config.set", async (_$, e) => {
+    saved.push(e.value);
+    return { value: e.value };
+  });
+  const ui = await $.ui.mount({ plugin: "jev", surface: "terminal", component: "Pane", requestId: "jev", props: PANE_PROPS });
+  await ui.press({ key: "tab-setup" });
+  await ui.select({ key: "language", value: "pt" });
+  expect(saved).toEqual(["pt"]);
+  expect(await ui.find({ type: "Text", text: "Configuração do provedor" })).toBeDefined();
+  await ui.unmount();
+});
+
 test("reason titles render in the Reasons tab and the request log", async ($, on) => {
   mock.clock(on, { now: Date.parse("2026-10-06T12:00:00Z") });
   mock.store(on, { events: [{ ...EVENT, seq: 2, mode: "passthrough", reason: "low_confidence", tool: undefined }] });

@@ -24,7 +24,7 @@ import {
 } from "./events.ts";
 import { cellsOf, constellation, DOT, hex, meter, rail } from "./dots.ts";
 import { flowLines } from "./flow.ts";
-import { formatAge, formatClock, formatCompact, formatDecimal, formatDuration, formatNumber, localeFor, reasonTitle, text, type Locale, type LocaleKey } from "./i18n.ts";
+import { formatAge, formatClock, formatCompact, formatDecimal, formatDuration, formatNumber, localeFor, reasonTitle, text, type Locale, type LocaleKey, type LocaleOption } from "./i18n.ts";
 import { rowsOf } from "./layout.ts";
 import { DICE, diceFrame, diceSize, diceSvg } from "./mascots/dice.ts";
 import { brailleFrame, MOODS, pingoSvg, type Mood } from "./mascots/pingo.ts";
@@ -72,6 +72,7 @@ const CATEGORY_DOT: Record<Category, [glyph: string, color: number]> = {
 
 export interface View {
   locale: Locale;
+  localeOption: LocaleOption;
   events: readonly RouteEvent[];
   routing: boolean;
   tab: JevTab;
@@ -106,6 +107,7 @@ export interface Actions {
   routing: (on: boolean) => void;
   feature: (id: FeatureId, on: boolean) => void;
   provider: (id: string) => void;
+  locale: (value: LocaleOption) => void;
   validate: () => void;
   clear: () => void;
   /** Opens subagent #n's own live pane. */
@@ -497,6 +499,18 @@ function setupView(els: Els, view: View, act: Actions) {
       <Box flexDirection="column">
         {section(els, text("ui.setup.title", view.locale))}
         <Text color={INK.dim} wrap="wrap">{text("ui.setup.intro", view.locale)}</Text>
+        <Select
+          key="language"
+          label={text("ui.setup.language", view.locale)}
+          value={view.localeOption}
+          options={[
+            { value: "auto", label: text("ui.setup.languageAuto", view.locale) },
+            { value: "en", label: text("ui.setup.languageEnglish", view.locale) },
+            { value: "pt", label: text("ui.setup.languagePortuguese", view.locale) },
+          ]}
+          onSelect={(value) => act.locale(value as LocaleOption)}
+        />
+        <Text color={INK.faint} wrap="wrap">{text("ui.setup.languageHelp", view.locale)}</Text>
       </Box>
       {step(
         els,

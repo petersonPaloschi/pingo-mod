@@ -2,6 +2,7 @@ import { en } from "./strings/en.ts";
 import { pt } from "./strings/pt.ts";
 
 export type Locale = "en" | "pt";
+export type LocaleOption = "auto" | Locale;
 export type LocaleKey = keyof typeof en;
 
 const TAG: Record<Locale, string> = { en: "en-US", pt: "pt-BR" };
@@ -9,6 +10,10 @@ const TAG: Record<Locale, string> = { en: "en-US", pt: "pt-BR" };
 export function localeFor(value?: string): Locale {
   const locale = value?.trim() || Intl.DateTimeFormat().resolvedOptions().locale;
   return /^(?:pt(?:[-_]|$)|portugu)/i.test(locale) ? "pt" : "en";
+}
+
+export function localeOption(value?: string): LocaleOption {
+  return value === "en" || value === "pt" ? value : "auto";
 }
 
 export function text<K extends LocaleKey>(key: K, locale: Locale = localeFor(), values: Record<string, string | number> = {}): string {

@@ -61,7 +61,7 @@ Use `/jev status` to see the selected provider and key source. It never displays
 
 ## Language
 
-The dashboard, setup messages, command output, activity feed, Flow view, and prompts sent to Jev support English and Brazilian Portuguese. The **Language** option defaults to **auto**, which follows the system locale; set it to `en` or `pt` to choose a language explicitly.
+The dashboard, setup messages, command output, activity feed, Flow view, and prompts sent to Jev support English and Brazilian Portuguese. Change **Language** in `/jev setup` (or `/plugin configure jev@inline`). It defaults to **auto**, which follows the system locale; choose `en` or `pt` to override it.
 
 ## Commands
 

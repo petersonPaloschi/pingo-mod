@@ -36,7 +36,7 @@ import { diceFrame, diceSize } from "./mascots/dice.ts";
 import { brailleFrame, type Mood } from "./mascots/pingo.ts";
 import { AGENT_MASCOTS, isMascot, mascotFrame, pickMascot, type MascotId } from "./mascots/agents.ts";
 import { moodOf, pingoSize, renderAgentPane, renderBand, renderPane, type Actions, type View } from "./ui.tsx";
-import { formatCompact, formatDecimal, formatDuration, formatNumber, formatPercent, reasonTitle, text, type Locale, type LocaleKey } from "./i18n.ts";
+import { formatCompact, formatDecimal, formatDuration, formatNumber, formatPercent, reasonTitle, text, type Locale, type LocaleKey, type LocaleOption } from "./i18n.ts";
 
 const PANE = "jev";
 const events = atom({ plugin: "jev", key: "events" } as const, [] as RouteEvent[]);
@@ -426,10 +426,10 @@ async function typeKey($: EngineInterface, value: string): Promise<void> {
 }
 
 /** The `/config` row of this plugin's sensitive api_key option, as `$.config` names it. */
-async function keyRow($: EngineInterface): Promise<string | undefined> {
+async function configOptionRow($: EngineInterface, option: string): Promise<string | undefined> {
   try {
     const rows = await $.config.list();
-    return rows.find((row) => /^jev(@[^.]*)?\.api_key$/.test(row.key))?.key;
+    return rows.find((row) => /^jev(@[^.]*)?\./.test(row.key) && row.key.endsWith(`.${option}`))?.key;
   } catch {
     return undefined;
   }
@@ -438,13 +438,34 @@ async function keyRow($: EngineInterface): Promise<string | undefined> {
 /** Writes the api_key option (secure storage); `""` removes it. Says why when Claude Code refused. */
 async function saveKey($: EngineInterface, key: string): Promise<string | undefined> {
   const config = await getSettings($);
-  const row = await keyRow($);
+  const row = await configOptionRow($, "api_key");
   if (!row) return text("ui.setup.noSecureOption", config.locale, { env: PROVIDERS[config.provider].keyEnv });
   try {
     const result = await $.config.set({ key: row, value: key });
     return result.deny ? redact(result.deny, key) : undefined;
   } catch (error) {
     return redact(error instanceof Error ? error.message : String(error), key);
+  }
+}
+
+async function setLocale($: EngineInterface, locale: LocaleOption): Promise<void> {
+  const current = await getSettings($);
+  const row = await configOptionRow($, "locale");
+  if (!row) {
+    await update($, setup, (draft) => ({ ...draft, message: text("ui.setup.languageOptionUnavailable", current.locale), isOk: false }));
+    return;
+  }
+  try {
+    const result = await $.config.set({ key: row, value: locale });
+    if (result.deny) throw new Error(result.deny);
+    options = { ...options, locale };
+    settings = undefined;
+    const updated = await getSettings($);
+    await update($, setup, (draft) => ({ ...draft, message: text("ui.setup.languageSaved", updated.locale), isOk: true }));
+    $.ui.invalidate("ui.render");
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    await update($, setup, (draft) => ({ ...draft, message: text("ui.setup.languageSaveFailed", current.locale, { message }), isOk: false }));
   }
 }
 
@@ -552,6 +573,7 @@ function actions($: EngineInterface, scrollKey = ""): Actions {
     routing: (enabled) => void setRouting($, enabled),
     feature: (id, enabled) => void setFeature($, id, enabled),
     provider: (id) => void update($, setup, (draft) => ({ ...draft, provider: id, message: "" })),
+    locale: (value) => void setLocale($, value),
     clear: () => void clearHistory($),
     validate: () => void checkSetup($),
     typeKey: (value) => void typeKey($, value),
@@ -582,6 +604,7 @@ async function view($: EngineInterface, width: number, rows: number, surface: st
   const config = await getSettings($);
   return {
     locale: config.locale,
+    localeOption: config.localeOption,
     scroll: scrollKey ? ((await read($, scroll))[scrollKey] ?? 0) : 0,
     // The terminal draws the header fixed and the body scrolled by the mod; other surfaces flow.
     fixed: Boolean(scrollKey) && surface === "terminal",
