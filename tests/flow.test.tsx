@@ -1,7 +1,7 @@
 // The Flow tab: the run record (trace.ts) built from the SDK's events in the orders they come, and
 // the drawing of it (flow.ts), pure and in the pane.
-import type { On, RenderPropsOf } from "claude-code";
-import { describe, expect, mock, test, type Engine } from "claude-code/testing";
+import type { On } from "claude-code";
+import { describe, expect, test, type Engine } from "claude-code/testing";
 
 import type { TraceState } from "../types";
 import { FLOW_FPS, flowLines, flowScene, flowSummary, prettyModel } from "../hooks/flow.ts";
@@ -29,6 +29,7 @@ import {
   toolStart,
   traceOf,
 } from "../hooks/trace.ts";
+import { ASK, DONE, engine, ORIGIN, paneProps, step } from "./helpers.ts";
 
 const NOW = Date.parse("2026-10-07T12:00:00Z");
 const drawn = (lines: ReturnType<typeof flowLines>) => lines.map((parts) => parts.map((part) => part.text).join("")).join("\n");
@@ -324,24 +325,11 @@ describe("the drawing", () => {
 
 // --- In the pane ---
 
-const PANE_PROPS = {
-  title: "Jev",
-  isFocused: true,
-  bodyColumns: 100,
-  placement: "dock",
-  scroll: { offset: 0, bodyRows: 120, contentRows: 120 },
-} as unknown as RenderPropsOf["Pane"];
-const ORIGIN = { kind: "composer" } as const;
-const DONE = { input_tokens: 10, output_tokens: 5, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 };
+const PANE_PROPS = paneProps(100, 120);
 
 /** The engine beneath the mod, with no Jev key: what is recorded does not depend on Jev. */
 function world(on: On, opts: { advisorModel?: string; serverToolUses?: { id: string; name: string; input: unknown; startedAt: number; endedAt?: number }[] } = {}) {
-  const clock = mock.clock(on, { now: NOW });
-  mock.store(on);
-  mock.env(on, {});
-  on("command.register", async () => ({ value: { command: "jev" } }));
-  on("session.model", async () => ({ value: "claude-opus-5-5" }));
-  on("session.id", async () => ({ value: "session-flow" }));
+  const { clock } = engine(on, { now: new Date(NOW).toISOString(), key: false, sessionId: "session-flow" });
   on("settings.read", async () => ({ value: opts.advisorModel ? { advisorModel: opts.advisorModel } : {} }) as never);
   on("ui.close", async () => ({ value: undefined }) as never);
   // The engine starts the turn while the prompt enters: an idle prompt's `next` is held at the
@@ -373,12 +361,6 @@ function world(on: On, opts: { advisorModel?: string; serverToolUses?: { id: str
     return submitted;
   }
   return Object.assign(enter, { clock });
-}
-
-async function step($: { turn: { step: (e: never) => AsyncGenerator<unknown, unknown> & { result: Promise<unknown> } } }, e: object) {
-  const stream = $.turn.step(e as never);
-  for await (const _ of stream) void _;
-  return stream.result;
 }
 
 const SPAWN = { prompt: "Look around.", description: "look around", subagentType: "Explore", provider: { plugin: "engine", tier: "core" }, parentModel: "claude-opus-5-5", background: false, fork: false };
@@ -433,7 +415,7 @@ describe("the Flow tab in the pane", () => {
     await enter($, "look around", "t1");
     await $.agent.spawn({ ...SPAWN, tool_use_id: "toolu-a1" } as never);
     await $.turn.complete({ turnId: "sub", agentId: "agent-a1", answer: "ok", durationMs: 10, isAborted: false, reason: "answer" });
-    await $.command.run({ command: "jev", args: "agents clear", origin: ORIGIN, presentation: { isFullscreen: true, columns: 160 } } as never);
+    await $.command.run({ command: "jev", args: "agents clear", ...ASK } as never);
     // A reload runs register and session.start again; the state the host keeps stays.
     await $.session.start({ cwd: "/workspace" } as never).catch(() => undefined);
     const ui = await $.ui.mount({ plugin: "jev", surface: "terminal", component: "Pane", requestId: "jev", props: PANE_PROPS });
@@ -463,7 +445,7 @@ describe("the Flow tab in the pane", () => {
       opened.push(e.id);
       return { value: {} } as never;
     });
-    await $.command.run({ command: "jev", args: "flow", origin: ORIGIN, presentation: { isFullscreen: true, columns: 160 } } as never);
+    await $.command.run({ command: "jev", args: "flow", ...ASK } as never);
     expect(opened).toContain("jev");
     const ui = await $.ui.mount({ plugin: "jev", surface: "terminal", component: "Pane", requestId: "jev", props: PANE_PROPS });
     expect(await ui.find({ type: "Text", text: /No runs recorded yet/ })).toBeDefined();
@@ -553,7 +535,7 @@ describe("the motion in the pane", () => {
     await enter.clock.advance(100);
     expect(frames).toBe(2);
     await ui.unmount();
-    const status = await $.command.run({ command: "jev", args: "status", origin: ORIGIN, presentation: { isFullscreen: true, columns: 160 } } as never);
+    const status = await $.command.run({ command: "jev", args: "status", ...ASK } as never);
     expect(status.text).toMatch(/Flow redraws: \d+ · [\d.]+ ms on average · slowest \d+ ms/);
   });
 });

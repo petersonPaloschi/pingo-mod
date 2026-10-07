@@ -616,6 +616,7 @@ export const en = {
   "ui.models.delegation.no_delegation": "no delegation needed",
   "ui.models.delegation.low_confidence": "wanted {agent} at {confidence}, needs ≥ {needed}",
   "ui.models.delegation.none": "no delegation",
+  "ui.models.delegation.jev_declined": "Jev stayed out: no delegation",
   "ui.models.participation.in": "Jev takes part ({confidence})",
   "ui.models.participation.out": "Jev stays out ({confidence})",
   "ui.models.participation.none": "no answer",

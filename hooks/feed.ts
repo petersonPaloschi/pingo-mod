@@ -149,6 +149,18 @@ export function outputSize(value: string, locale: Locale = localeFor()): string 
 /** "claude-opus-5-5" → "opus-5-5": the part of an id that tells models apart. */
 export const modelName = (id: string | undefined) => (id ? id.replace(/^claude-/, "").replace(/-\d{8}$/, "") : "?");
 
+/** A response's usage as Claude Code reports it. */
+export interface Usage {
+  input_tokens: number;
+  output_tokens: number;
+  cache_read_input_tokens?: number | null;
+  cache_creation_input_tokens?: number | null;
+}
+
+/** Every input token a request read: fresh, from the cache and written to it. */
+export const inputTokens = (usage: Usage) =>
+  usage.input_tokens + (usage.cache_read_input_tokens ?? 0) + (usage.cache_creation_input_tokens ?? 0);
+
 export const featureFlagsText = (flags: FeatureFlags, locale: Locale = localeFor()) => {
   const names = features(locale).filter((feature) => flags[feature.id]).map((feature) => feature.name);
   return names.length ? new Intl.ListFormat(locale === "pt" ? "pt-BR" : "en-US", { style: "short", type: "conjunction" }).format(names) : text("feed.none", locale);

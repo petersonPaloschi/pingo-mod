@@ -1,6 +1,7 @@
 // Why a Jev call failed, in words: the cause that was observed, and what to do about it.
 // Pure: the messages come from the provider layer and carry no key (jev.ts redacts them).
 import { text, type Locale, type LocaleKey } from "./i18n.ts";
+import { isJevError, reasonCause, reasonCode } from "./core/reasons.ts";
 
 export type FailureKind = "auth" | "paid" | "model" | "rate" | "server" | "timeout" | "network" | "reply" | "answer" | "unknown";
 
@@ -9,7 +10,7 @@ export const ERROR_CHARS = 240;
 
 /** The observed cause of a failed or unusable Jev call: an error's message, or what the answer lacked. */
 export function failureCause(reason: string, detail?: string): string | undefined {
-  if (reason.startsWith("jev_error")) return reason.slice("jev_error".length).replace(/^:\s*/, "").trim().slice(0, ERROR_CHARS) || undefined;
+  if (isJevError(reason)) return reasonCause(reason)?.slice(0, ERROR_CHARS);
   if (reason === "jev_unexpected_answer") return detail?.slice(0, ERROR_CHARS);
   return undefined;
 }
@@ -38,8 +39,6 @@ export function failureNote(reason: string, detail: string | undefined, locale: 
   if (!cause) return undefined;
   return `${cause}\n${failureHint(failureKind(cause, reasonCode(reason)), locale)}`;
 }
-
-const reasonCode = (reason: string) => (reason.startsWith("jev_error") ? "jev_error" : reason);
 
 /** What a Jev answer lacked, for the cases the reply parsed but the router could not use. */
 export function unusableAnswer(

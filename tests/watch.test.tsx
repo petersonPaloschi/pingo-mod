@@ -1,30 +1,22 @@
 // The Models tab: what each function decided at a prompt and why, and what it takes for the model
 // to change next.
-import type { On, RenderPropsOf } from "claude-code";
-import { describe, expect, mock, test } from "claude-code/testing";
+import type { On } from "claude-code";
+import { describe, expect, test } from "claude-code/testing";
 
-import { DEFAULT_FEATURES, type Features, type TurnPlan } from "../hooks/core/plan.ts";
-import type { Answer, SystemOneRequest } from "../hooks/core/types.ts";
+import { readTurnPlan, type Features, type TurnPlan } from "../hooks/core/plan.ts";
+import type { Answer } from "../hooks/core/types.ts";
 import { forecast, settleModel, turnFunctions, type TurnContext } from "../hooks/watch.ts";
 import type { TurnDecision } from "../types";
 import { text } from "../hooks/i18n.ts";
+import { ASK, engine, fakeJev, noul, ORIGIN, paneProps, pick, requests, step } from "./helpers.ts";
 
-const ORIGIN = { kind: "composer" } as const;
-const PANE_PROPS = {
-  title: "Jev",
-  isFocused: true,
-  bodyColumns: 100,
-  placement: "dock",
-  scroll: { offset: 0, bodyRows: 80, contentRows: 80 },
-} as unknown as RenderPropsOf["Pane"];
-const pick = (choice: string, confidence: number): Answer => ({ type: "choice", choice, confidence, probabilities: { [choice]: 1 } });
-const noul = (value: number): Answer => ({ type: "noul", noul: value });
-const DONE = { input_tokens: 10, output_tokens: 5, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 };
+const PANE_PROPS = paneProps(100, 80);
 
 const ON: Features = { tools: true, participation: true, model: true, effort: true, delegation: true, agents: false, advisor: true };
 const CTX: TurnContext = { features: ON, routing: true, hasKey: true, userModel: false, minConfidence: 0.7, session: { currentModel: "claude-opus-5-5" } };
+/** The plan Jev's answers make, read the one way the router reads them; `extra` overrides parts of it. */
 const planOf = (answers: Record<string, Answer>, extra: Partial<TurnPlan> = {}): TurnPlan => ({
-  decision: { mode: "hint", tool: "Read", confidence: 0.9, answers },
+  ...readTurnPlan({ mode: "hint", tool: "Read", confidence: 0.9, answers }, ON, [], CTX.minConfidence, CTX.session),
   ...extra,
 });
 const fn = (fns: ReturnType<typeof turnFunctions>, id: string) => fns.find((one) => one.id === id)!;
@@ -145,41 +137,13 @@ describe("forecast", () => {
 
 /** The engine beneath the mod: Jev answers from `table`, and a request reports the model it was sent on. */
 function world(on: On, features: Partial<Features>, table: Record<string, Answer>, failStatus?: number) {
-  mock.clock(on, { now: Date.parse("2026-10-07T12:00:00Z") });
-  mock.store(on, { provider: "typesafe", features: { ...DEFAULT_FEATURES, ...features } });
-  mock.env(on, { TYPESAFE_API_KEY: "test-key" });
-  on("command.register", async () => ({ value: { command: "jev" } }));
-  on("tool.list", async () => ({ value: [{ name: "Read", description: "Read a file", mcp: false }] }));
-  on("session.messages", async () => ({ value: [] }));
-  on("session.model", async () => ({ value: "claude-opus-5-5" }));
-  on("session.id", async () => ({ value: "session-watch" }));
-  on("prompt.compose", async () => ({ sections: [] }));
-  on("http.fetch", async (_$, e) => {
-    if (failStatus) return { value: { status: failStatus, ok: false, headers: {}, text: "provider refused the test credential" } };
-    const request = JSON.parse(e.init?.body ?? "{}") as SystemOneRequest;
-    const answers: Record<string, Answer> = {};
-    for (const [key, question] of Object.entries(request.questions ?? {})) {
-      const answer = table[key];
-      if (!answer) continue;
-      const offered = answer.type === "choice" && question.type === "choice"
-        ? Object.keys(question.criteria).find((id) => id === answer.choice || id.startsWith(`claude-${answer.choice}-`)) : undefined;
-      answers[key] = offered && answer.type === "choice" ? { ...answer, choice: offered, probabilities: { [offered]: 1 } } : answer;
-    }
-    return { value: { status: 200, ok: true, headers: {}, text: JSON.stringify({ answers, usage: { input_tokens: 200, output_tokens: 0 } }) } };
-  });
+  engine(on, { features, sessionId: "session-watch" });
+  fakeJev(on, table, { status: failStatus });
   on("prompt.submit", async (_$, e) => ({ text: e.text, ...(e.context ? { context: e.context } : {}) }));
   on("classic.PostModelSwitch", () => ({}));
   on("tool.call", async () => ({ result: "ok" }) as never);
   on("turn.complete", async (_$, e) => ({ text: e.answer }));
-  on("turn.step", async function* (_$, e) {
-    return { turnId: e.turnId, index: e.index, answer: "Done.", toolUses: [], stopReason: "end_turn" as const, usage: { ...DONE, model: e.model } };
-  });
-}
-
-async function step($: { turn: { step: (e: never) => AsyncGenerator<unknown, unknown> & { result: Promise<unknown> } } }, e: object) {
-  const stream = $.turn.step(e as never);
-  for await (const _ of stream) void _;
-  return stream.result;
+  requests(on);
 }
 
 describe("the Models tab", () => {
@@ -243,7 +207,7 @@ describe("the Models tab", () => {
       return { value: {} } as never;
     });
     await $.session.start({ cwd: "/workspace" } as never).catch(() => undefined);
-    await $.command.run({ command: "jev", args: "models", origin: ORIGIN, presentation: { isFullscreen: true, columns: 160 } } as never);
+    await $.command.run({ command: "jev", args: "models", ...ASK } as never);
     expect(opened).toContain("jev");
     const ui = await $.ui.mount({ plugin: "jev", surface: "terminal", component: "Pane", requestId: "jev", props: PANE_PROPS });
     expect(await ui.find({ type: "Text", text: "Running now" })).toBeDefined();

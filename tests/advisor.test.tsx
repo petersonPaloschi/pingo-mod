@@ -1,55 +1,23 @@
 // The "Request advisor consultation" feature: Jev's advisor question rides in the prompt's one
 // routing call, and a confident "consult" attaches a hint. Claude still decides whether it calls the
 // advisor; the plugin never changes the advisor the person configured.
-import type { On, RenderPropsOf } from "claude-code";
-import { describe, expect, mock, test, type Engine } from "claude-code/testing";
+import type { On } from "claude-code";
+import { describe, expect, test, type Engine } from "claude-code/testing";
 
 import { ADVISOR_KEY, DEFAULT_FEATURES, turnQuestions, type Features } from "../hooks/core/plan.ts";
-import type { Answer, SystemOneRequest } from "../hooks/core/types.ts";
+import type { Answer } from "../hooks/core/types.ts";
 import { text } from "../hooks/i18n.ts";
+import { ASK, engine, fakeJev, features as withFeatures, noul, ORIGIN, paneProps, pick, requests, step } from "./helpers.ts";
 
-const ORIGIN = { kind: "composer" } as const;
-const ASK = { origin: ORIGIN, presentation: { isFullscreen: true, columns: 160 } } as const;
-const PANE_PROPS = {
-  title: "Jev",
-  isFocused: true,
-  bodyColumns: 120,
-  placement: "dock",
-  scroll: { offset: 0, bodyRows: 120, contentRows: 120 },
-} as unknown as RenderPropsOf["Pane"];
-const pick = (choice: string, confidence: number): Answer => ({ type: "choice", choice, confidence, probabilities: { [choice]: 1 } });
-const noul = (value: number): Answer => ({ type: "noul", noul: value });
+const PANE_PROPS = paneProps(120, 120);
 const HINT = text("planning.hint.advisor", "en");
 const TOOL = { tool: pick("Read", 0.9), needs_tool: noul(0.9) };
-const DONE = { input_tokens: 10, output_tokens: 5, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 };
 
 /** The engine beneath the mod, with a Jev key; `table` answers each question Jev is asked. */
 function world(on: On, features: Partial<Features>, table: Record<string, Answer>, opts: { status?: number; routing?: boolean; key?: boolean } = {}) {
-  mock.clock(on, { now: Date.parse("2026-10-07T12:00:00Z") });
-  mock.store(on, { provider: "typesafe", features: { ...DEFAULT_FEATURES, ...features }, ...(opts.routing === false ? { routing: false } : {}) });
-  mock.env(on, opts.key === false ? {} : { TYPESAFE_API_KEY: "test-key" });
-  on("command.register", async () => ({ value: { command: "jev" } }));
-  on("tool.list", async () => ({ value: [{ name: "Read", description: "Read a file", mcp: false }] }));
-  on("session.messages", async () => ({ value: [] }));
-  on("session.model", async () => ({ value: "claude-opus-5-5" }));
-  on("session.id", async () => ({ value: "session-advisor" }));
+  engine(on, { features, sessionId: "session-advisor", routing: opts.routing, key: opts.key });
   on("settings.read", async () => ({ value: { advisorModel: "claude-opus-5-5" } }) as never);
-  on("prompt.compose", async () => ({ sections: [] }));
-  const jev = { asked: [] as SystemOneRequest[] };
-  on("http.fetch", async (_$, e) => {
-    const request = JSON.parse(e.init?.body ?? "{}") as SystemOneRequest;
-    jev.asked.push(request);
-    if (opts.status) return { value: { status: opts.status, ok: false, headers: {}, text: "provider failed" } };
-    const answers: Record<string, Answer> = {};
-    for (const [key, question] of Object.entries(request.questions ?? {})) {
-      const answer = table[key];
-      if (!answer) continue;
-      const offered = answer.type === "choice" && question.type === "choice" && key === "model"
-        ? Object.keys(question.criteria).find((id) => id.startsWith(`claude-${answer.choice}-`)) : undefined;
-      answers[key] = offered && answer.type === "choice" ? { ...answer, choice: offered, probabilities: { [offered]: 1 } } : answer;
-    }
-    return { value: { status: 200, ok: true, headers: {}, text: JSON.stringify({ answers, usage: { input_tokens: 200, output_tokens: 0 } }) } };
-  });
+  const jev = fakeJev(on, table, { status: opts.status });
   // An idle prompt held at the bottom lets the test fire turn.start before it resolves, as the engine does.
   const hold = { on: false, reached: () => {}, release: () => {} };
   on("prompt.submit", async (_$, e) => {
@@ -62,11 +30,7 @@ function world(on: On, features: Partial<Features>, table: Record<string, Answer
   });
   on("turn.start", async (_$, e) => ({ turnId: e.turnId }));
   on("turn.complete", async (_$, e) => ({ text: e.answer }));
-  const sent: string[] = [];
-  on("turn.step", async function* (_$, e) {
-    sent.push(e.model);
-    return { turnId: e.turnId, index: e.index, answer: "Done.", toolUses: [], stopReason: "end_turn" as const, usage: { ...DONE, model: e.model } };
-  });
+  const sent = requests(on);
   /** An idle prompt the engine runs as turn `turnId`. */
   async function enter($: Engine, words: string, turnId: string) {
     hold.on = true;
@@ -78,12 +42,6 @@ function world(on: On, features: Partial<Features>, table: Record<string, Answer
     return submitted;
   }
   return { jev, sent, enter };
-}
-
-async function step($: { turn: { step: (e: never) => AsyncGenerator<unknown, unknown> & { result: Promise<unknown> } } }, e: object) {
-  const stream = $.turn.step(e as never);
-  for await (const _ of stream) void _;
-  return stream.result;
 }
 
 type Submitted = { context?: readonly string[] };
@@ -102,7 +60,7 @@ describe("the advisor question", () => {
   test("is off by default, and only asked when the feature is on", () => {
     expect(DEFAULT_FEATURES.advisor).toBe(false);
     expect(turnQuestions(DEFAULT_FEATURES, [])[ADVISOR_KEY]).toBeUndefined();
-    const question = turnQuestions({ ...DEFAULT_FEATURES, advisor: true }, [])[ADVISOR_KEY];
+    const question = turnQuestions(withFeatures({ advisor: true }), [])[ADVISOR_KEY];
     if (question?.type !== "choice") throw new Error("expected a choice question");
     expect(Object.keys(question.criteria)).toEqual(["none", "consult"]);
   });
@@ -135,7 +93,7 @@ describe("the advisor question", () => {
     expect(hinted(result)).toBe(true);
     // The model switch goes on as before; the advisor setting is never touched.
     await step($ as never, { turnId: "t1", index: 0, model: "claude-opus-5-5", messageCount: 1 });
-    expect(sent).toEqual(["claude-sonnet-5-5"]);
+    expect(sent.map((one) => one.model)).toEqual(["claude-sonnet-5-5"]);
     const ui = await $.ui.mount({ plugin: "jev", surface: "terminal", component: "Pane", requestId: "jev", props: PANE_PROPS });
     await ui.press({ key: "tab-flow" });
     expect(await ui.find({ type: "Text", text: /hint attached: tool Read · advisor/ })).toBeDefined();

@@ -13,6 +13,7 @@ import {
 } from "./questions.ts";
 import { buildState, type Limits } from "./state.ts";
 import { unusableAnswer } from "../errors.ts";
+import { jevErrorReason } from "./reasons.ts";
 import type { Answer, Questions, RouterInput, RouterTool, SystemOneRequest, SystemOneResult } from "./types.ts";
 import { text, type Locale } from "../i18n.ts";
 
@@ -42,6 +43,26 @@ export type Decision = { jev?: JevTrace; answers?: Record<string, Answer> } & (
   /** Jev picked the tool; the LLM is told, not forced. */
   | { mode: "hint"; tool: string; confidence: number }
 );
+
+/**
+ * Runs Jev's part of a routing point and times it. A throw is returned, never raised: a Jev outage
+ * must never stop the session, so every caller fails open from the same place.
+ */
+export async function timed<T>(work: () => Promise<T>, now: () => number): Promise<{ value: T; latencyMs: number } | { error: unknown }> {
+  const startedAt = now();
+  try {
+    const value = await work();
+    return { value, latencyMs: Math.round(now() - startedAt) };
+  } catch (error) {
+    return { error };
+  }
+}
+
+/** The decision a thrown Jev call ends in. */
+export const failedDecision = (error: unknown): Decision => ({ mode: "passthrough", reason: jevErrorReason(error) });
+
+/** Why a decision gave no hint; empty for a hint. */
+export const passReason = (decision: Decision): string => (decision.mode === "passthrough" ? decision.reason : "");
 
 /** A tool name must stay one inert token: it is written into text the model reads as the host's. */
 export const SAFE_TOOL_NAME = /^[\p{L}\p{N}_.:/-]{1,128}$/u;
@@ -104,22 +125,20 @@ export async function decide(
   const skip = skipReason(input);
   if (skip) return { mode: "passthrough", reason: skip };
 
-  const startedAt = now();
   const state = buildState(input, config);
   let tools = input.tools;
   let shortlistTokens = 0;
-  let result: SystemOneResult;
-  try {
+  const call = await timed(async () => {
     if (tools.length > MAX_TOOLS) {
       ({ tools, inputTokens: shortlistTokens } = await shortlist(tools, state, config, askJev));
-      if (tools.length === 0) return { mode: "passthrough", reason: "jev_unexpected_answer", detail: "the tool shortlist came back empty" };
+      if (tools.length === 0) return undefined;
     }
     // Other features' questions ride in the same call: one Jev request per routing point.
-    result = await askJev({ state, questions: { ...buildQuestions(tools, config.promptLocale ?? config.locale), ...extra }, model: config.jevModel });
-  } catch (error) {
-    // Fail open: a Jev outage must never stop the session.
-    return { mode: "passthrough", reason: `jev_error: ${error instanceof Error ? error.message : String(error)}` };
-  }
+    return askJev({ state, questions: { ...buildQuestions(tools, config.promptLocale ?? config.locale), ...extra }, model: config.jevModel });
+  }, now);
+  if ("error" in call) return failedDecision(call.error);
+  const result: SystemOneResult | undefined = call.value;
+  if (!result) return { mode: "passthrough", reason: "jev_unexpected_answer", detail: "the tool shortlist came back empty" };
 
   const answers = result.answers;
   const picked = answers[TOOL_KEY];
@@ -143,7 +162,7 @@ export async function decide(
         .map(([name, probability]) => [inert(name), probability]),
     ),
     inputTokens: result.usage.input_tokens + shortlistTokens,
-    latencyMs: Math.round(now() - startedAt),
+    latencyMs: call.latencyMs,
     ...(tools === input.tools ? {} : { shortlist: tools.map((tool) => tool.name) }),
   };
 
@@ -165,4 +184,9 @@ export async function decide(
 /** The hint Claude reads; it leaves Claude free to ignore a pick that does not fit. */
 export function hintText(tool: string, locale?: Locale): string {
   return text("routing.hint", locale, { tool });
+}
+
+/** A request's context with a hint added, framed as the host's note wherever it is attached. */
+export function withHint<T extends { context?: readonly string[] }>(request: T, hint: string | undefined): T {
+  return hint ? { ...request, context: [...(request.context ?? []), `<system-reminder>${hint}</system-reminder>`] } : request;
 }

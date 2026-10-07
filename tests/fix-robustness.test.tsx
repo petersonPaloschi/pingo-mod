@@ -1,20 +1,14 @@
 // Robustness: the request log under concurrent writes, subagent numbers that are never reused,
 // a mascot timer that survives a failing blit, teammates across turns, a failing scroll hook.
-import type { On, RenderPropsOf } from "claude-code";
-import { describe, expect, mock, test } from "claude-code/testing";
+import type { On } from "claude-code";
+import { describe, expect, test } from "claude-code/testing";
 
-import { DEFAULT_FEATURES, type Features } from "../hooks/core/plan.ts";
-import type { Answer, SystemOneRequest } from "../hooks/core/types.ts";
+import type { Features } from "../hooks/core/plan.ts";
+import type { Answer } from "../hooks/core/types.ts";
 import type { RouteEvent } from "../types";
+import { ASK, engine, fakeJev, features as withFeatures, paneProps, pick, requests, step } from "./helpers.ts";
 
-const ASK = { origin: { kind: "composer" }, presentation: { isFullscreen: true, columns: 160 } } as const;
-const PANE_PROPS = {
-  title: "Jev",
-  isFocused: true,
-  bodyColumns: 100,
-  placement: "dock",
-  scroll: { offset: 0, bodyRows: 20, contentRows: 20 },
-} as unknown as RenderPropsOf["Pane"];
+const PANE_PROPS = paneProps(100, 20);
 const SPAWN = {
   tool_use_id: "toolu-agent",
   prompt: "Find every caller of decide().",
@@ -25,15 +19,14 @@ const SPAWN = {
   background: false,
   fork: false,
 };
-const pick = (choice: string, confidence: number): Answer => ({ type: "choice", choice, confidence, probabilities: { [choice]: 1 } });
 
 /**
  * A session with Jev answering from `table`. The store is the test's own, so it can be read back,
  * and each store call waits a tick, as a file write does, so concurrent writers interleave.
  */
 function world(on: On, features: Partial<Features> = {}, table: Record<string, Answer> = {}) {
-  const clock = mock.clock(on, { now: Date.parse("2026-10-07T12:00:00Z") });
-  const store: Record<string, unknown> = { provider: "typesafe", features: { ...DEFAULT_FEATURES, ...features } };
+  const { clock } = engine(on, { sessionId: "session-robust", ownStore: true });
+  const store: Record<string, unknown> = { provider: "typesafe", features: withFeatures(features) };
   const tick = async () => {
     await Promise.resolve();
   };
@@ -52,24 +45,8 @@ function world(on: On, features: Partial<Features> = {}, table: Record<string, A
     return { value: undefined };
   });
   on("store.keys", async () => ({ value: Object.keys(store) }));
-  mock.env(on, { TYPESAFE_API_KEY: "test-key" });
-  on("command.register", async () => ({ value: {} }));
-  on("tool.list", async () => ({ value: [{ name: "Read", description: "Read a file", mcp: false }] }));
-  on("session.messages", async () => ({ value: [] }));
-  on("session.model", async () => ({ value: "claude-opus-5-5" }));
-  on("session.id", async () => ({ value: "session-robust" }));
-  on("prompt.compose", async () => ({ sections: [] }));
-  on("http.fetch", async (_$, e) => {
-    const request = JSON.parse(e.init?.body ?? "{}") as SystemOneRequest;
-    const answers: Record<string, Answer> = {};
-    for (const key of Object.keys(request.questions ?? {})) if (table[key]) answers[key] = table[key]!;
-    return { value: { status: 200, ok: true, headers: {}, text: JSON.stringify({ answers, usage: { input_tokens: 200, output_tokens: 0 } }) } };
-  });
-  const sent: { model: string; effort?: unknown; agentId?: string }[] = [];
-  on("turn.step", async function* (_$, e) {
-    sent.push({ model: e.model, effort: e.effort, ...(e.agentId ? { agentId: e.agentId } : {}) });
-    return { turnId: e.turnId, index: e.index, answer: "", toolUses: [], stopReason: "end_turn" as const, usage: { input_tokens: 10, output_tokens: 5, cache_read_input_tokens: 0, cache_creation_input_tokens: 0, model: e.model } };
-  });
+  fakeJev(on, table);
+  const sent = requests(on, "");
   on("turn.complete", async (_$, e) => ({ text: e.answer }));
   const opened: string[] = [];
   on("ui.open", async (_$, e) => {
@@ -78,12 +55,6 @@ function world(on: On, features: Partial<Features> = {}, table: Record<string, A
   });
   on("ui.close", async () => ({ value: undefined }) as never);
   return { clock, store, sent, opened };
-}
-
-async function step($: { turn: { step: (e: never) => AsyncGenerator<unknown, unknown> & { result: Promise<unknown> } } }, e: object) {
-  const stream = $.turn.step(e as never);
-  for await (const _ of stream) void _;
-  return stream.result;
 }
 
 describe("the request log", () => {

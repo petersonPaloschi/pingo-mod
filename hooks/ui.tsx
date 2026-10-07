@@ -1132,7 +1132,7 @@ export function describeFn(fn: FnResult, settled: boolean, locale: Locale): stri
   if (fn.id === "delegation") {
     if (fn.result === "applied") return text("ui.models.delegation.applied", locale, { agent: fn.value ?? "", confidence: conf });
     if (fn.result === "kept") return text("ui.models.delegation.low_confidence", locale, { agent: fn.value ?? "", confidence: conf, needed });
-    return text(why === "no_delegation" ? "ui.models.delegation.no_delegation" : "ui.models.delegation.none", locale);
+    return text(why === "no_delegation" || why === "jev_declined" ? key(`ui.models.delegation.${why}`) : "ui.models.delegation.none", locale);
   }
   if (fn.id === "advisor") {
     // Applied means the hint was attached, never that the advisor ran.

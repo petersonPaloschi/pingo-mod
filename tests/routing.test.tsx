@@ -1,12 +1,13 @@
 // Jev's routing beyond the tool hint: participation, model and effort per turn, delegation,
 // subagents' model and effort, the feature switches and the live log.
-import type { On, RenderPropsOf } from "claude-code";
-import { describe, expect, mock, test } from "claude-code/testing";
+import type { On } from "claude-code";
+import { describe, expect, test } from "claude-code/testing";
 
-import { DEFAULT_FEATURES, planAgent, planHint, planSummary, planTurn, type Features } from "../hooks/core/plan.ts";
+import { planAgent, planHint, planSummary, planTurn, type Features } from "../hooks/core/plan.ts";
 import { hintText } from "../hooks/core/decide.ts";
 import { AGENT_MASCOTS } from "../hooks/mascots/agents.ts";
-import type { Answer, RouterInput, SystemOneRequest, SystemOneResult } from "../hooks/core/types.ts";
+import type { Answer, RouterInput } from "../hooks/core/types.ts";
+import { ASK, engine, fakeJev, features, jevAsk, noul, paneProps, pick, requests, step } from "./helpers.ts";
 
 const CONFIG = { jevModel: "jev-latest", minConfidence: 0.7, maxStateChars: 60_000, maxMessageChars: 4_000 };
 const INPUT: RouterInput = {
@@ -18,25 +19,10 @@ const INPUT: RouterInput = {
   ],
 };
 const AGENTS = [{ name: "Explore", description: "Searches the codebase" }];
-const all = (over: Partial<Features>): Features => ({ ...DEFAULT_FEATURES, ...over });
-
-/** Jev answering every question it is asked from a table of answers by key. */
-function jev(table: Record<string, Answer>) {
-  const asked: SystemOneRequest[] = [];
-  const ask = async (request: SystemOneRequest): Promise<SystemOneResult> => {
-    asked.push(request);
-    const answers: Record<string, Answer> = {};
-    for (const key of Object.keys(request.questions)) if (table[key]) answers[key] = table[key]!;
-    return { answers, usage: { input_tokens: 300, output_tokens: 0 } };
-  };
-  return { asked, ask };
-}
-const pick = (choice: string, confidence: number): Answer => ({ type: "choice", choice, confidence, probabilities: { [choice]: 1 } });
-const noul = (value: number): Answer => ({ type: "noul", noul: value });
 
 describe("planTurn", () => {
   test("every question rides in one Jev call, and confident answers are taken", async () => {
-    const j = jev({
+    const j = jevAsk({
       tool: pick("Read", 0.9),
       needs_tool: noul(0.9),
       participate: noul(0.8),
@@ -44,7 +30,7 @@ describe("planTurn", () => {
       effort: pick("high", 0.8),
       delegate: pick("Explore", 0.75),
     });
-    const plan = await planTurn(INPUT, CONFIG, j.ask, all({ participation: true, model: true, effort: true, delegation: true }), AGENTS);
+    const plan = await planTurn(INPUT, CONFIG, j.ask, features({ participation: true, model: true, effort: true, delegation: true }), AGENTS);
     expect(j.asked).toHaveLength(1);
     expect(Object.keys(j.asked[0]!.questions).sort()).toEqual(["delegate", "effort", "model", "needs_tool", "participate", "tool"]);
     expect(plan.decision).toMatchObject({ mode: "hint", tool: "Read" });
@@ -57,7 +43,7 @@ describe("planTurn", () => {
   });
 
   test("Jev staying out cancels the hint and the delegation, but keeps the model and effort", async () => {
-    const j = jev({
+    const j = jevAsk({
       tool: pick("Read", 0.95),
       needs_tool: noul(0.9),
       participate: noul(0.2),
@@ -65,7 +51,7 @@ describe("planTurn", () => {
       effort: pick("low", 0.85),
       delegate: pick("Explore", 0.9),
     });
-    const plan = await planTurn(INPUT, CONFIG, j.ask, all({ participation: true, model: true, effort: true, delegation: true }), AGENTS);
+    const plan = await planTurn(INPUT, CONFIG, j.ask, features({ participation: true, model: true, effort: true, delegation: true }), AGENTS);
     expect(plan.decision).toMatchObject({ mode: "passthrough", reason: "jev_declined" });
     expect(plan.model).toEqual({ value: "sonnet", confidence: 0.9 });
     expect(plan.effort).toEqual({ value: "low", confidence: 0.85 });
@@ -75,8 +61,8 @@ describe("planTurn", () => {
   });
 
   test("a trivial request Jev stays out of still goes to Haiku, without effort", async () => {
-    const j = jev({ needs_tool: noul(0.1), participate: noul(0.1), model: pick("haiku", 0.92), effort: pick("low", 0.9) });
-    const plan = await planTurn(INPUT, CONFIG, j.ask, all({ participation: true, model: true, effort: true }), AGENTS);
+    const j = jevAsk({ needs_tool: noul(0.1), participate: noul(0.1), model: pick("haiku", 0.92), effort: pick("low", 0.9) });
+    const plan = await planTurn(INPUT, CONFIG, j.ask, features({ participation: true, model: true, effort: true }), AGENTS);
     expect(plan.decision).toMatchObject({ mode: "passthrough", reason: "jev_declined" });
     expect(plan.model?.value).toBe("haiku");
     expect(plan.effort).toBeUndefined();
@@ -84,55 +70,55 @@ describe("planTurn", () => {
   });
 
   test("an unsure answer leaves Claude Code's own choice", async () => {
-    const j = jev({ tool: pick("Read", 0.9), needs_tool: noul(0.9), model: pick("haiku", 0.5), effort: pick("low", 0.6) });
-    const plan = await planTurn(INPUT, CONFIG, j.ask, all({ model: true, effort: true }), AGENTS);
+    const j = jevAsk({ tool: pick("Read", 0.9), needs_tool: noul(0.9), model: pick("haiku", 0.5), effort: pick("low", 0.6) });
+    const plan = await planTurn(INPUT, CONFIG, j.ask, features({ model: true, effort: true }), AGENTS);
     expect(plan.model).toBeUndefined();
     expect(plan.effort).toBeUndefined();
   });
 
   test("a Haiku choice omits effort and records why", async () => {
-    const j = jev({
+    const j = jevAsk({
       tool: pick("Read", 0.9),
       needs_tool: noul(0.9),
       model: pick("haiku", 0.9),
       effort: pick("max", 0.9),
     });
-    const plan = await planTurn(INPUT, CONFIG, j.ask, all({ model: true, effort: true }), AGENTS);
+    const plan = await planTurn(INPUT, CONFIG, j.ask, features({ model: true, effort: true }), AGENTS);
     expect(plan.model?.value).toBe("haiku");
     expect(plan.effort).toBeUndefined();
     expect(plan.effortIgnored?.value).toBe("max");
   });
 
   test("with the tool hint off, only the other questions are asked", async () => {
-    const j = jev({ model: pick("sonnet", 0.9) });
-    const plan = await planTurn(INPUT, CONFIG, j.ask, all({ tools: false, model: true }), AGENTS);
+    const j = jevAsk({ model: pick("sonnet", 0.9) });
+    const plan = await planTurn(INPUT, CONFIG, j.ask, features({ tools: false, model: true }), AGENTS);
     expect(Object.keys(j.asked[0]!.questions)).toEqual(["model"]);
     expect(plan.decision).toMatchObject({ mode: "passthrough", reason: "tools_feature_off" });
     expect(plan.model?.value).toBe("sonnet");
   });
 
   test("with every feature off, Jev is not called", async () => {
-    const j = jev({});
-    const plan = await planTurn(INPUT, CONFIG, j.ask, all({ tools: false }), AGENTS);
+    const j = jevAsk({});
+    const plan = await planTurn(INPUT, CONFIG, j.ask, features({ tools: false }), AGENTS);
     expect(j.asked).toHaveLength(0);
     expect(plan.decision).toMatchObject({ reason: "features_off" });
   });
 
   test("a subagent's model and effort come from its task", async () => {
-    const j = jev({ model: pick("opus", 0.9), effort: pick("max", 0.9) });
-    const plan = await planAgent({ description: "find usages", prompt: "Find every caller of decide()", subagentType: "Explore" }, CONFIG, j.ask, all({ agents: true }));
+    const j = jevAsk({ model: pick("opus", 0.9), effort: pick("max", 0.9) });
+    const plan = await planAgent({ description: "find usages", prompt: "Find every caller of decide()", subagentType: "Explore" }, CONFIG, j.ask, features({ agents: true }));
     expect(plan.model?.value).toBe("opus");
     expect(plan.effort?.value).toBe("max");
     expect(j.asked[0]!.state).toMatchObject({ agent_type: "Explore", task_description: "find usages" });
   });
 
   test("the subagent task sent to Jev is clipped to the documented limits", async () => {
-    const j = jev({ model: pick("opus", 0.9), effort: pick("high", 0.8) });
+    const j = jevAsk({ model: pick("opus", 0.9), effort: pick("high", 0.8) });
     await planAgent(
       { description: "d".repeat(500), prompt: "p".repeat(5_000), subagentType: "Explore" },
       CONFIG,
       j.ask,
-      all({ agents: true }),
+      features({ agents: true }),
     );
     const state = j.asked[0]!.state;
     expect(state.agent_type).toBe("Explore");
@@ -141,8 +127,8 @@ describe("planTurn", () => {
   });
 
   test("a Haiku subagent plan ignores effort", async () => {
-    const j = jev({ model: pick("haiku", 0.9), effort: pick("max", 0.9) });
-    const plan = await planAgent({ description: "find usages", prompt: "Find every caller of decide()", subagentType: "Explore" }, CONFIG, j.ask, all({ agents: true }));
+    const j = jevAsk({ model: pick("haiku", 0.9), effort: pick("max", 0.9) });
+    const plan = await planAgent({ description: "find usages", prompt: "Find every caller of decide()", subagentType: "Explore" }, CONFIG, j.ask, features({ agents: true }));
     expect(plan.model?.value).toBe("haiku");
     expect(plan.effort).toBeUndefined();
     expect(plan.effortIgnored?.value).toBe("max");
@@ -151,50 +137,13 @@ describe("planTurn", () => {
 
 // --- The mod in the engine ---
 
-const ASK = { origin: { kind: "composer" }, presentation: { isFullscreen: true, columns: 160 } } as const;
-const PANE_PROPS = {
-  title: "Jev",
-  isFocused: true,
-  bodyColumns: 100,
-  placement: "dock",
-  scroll: { offset: 0, bodyRows: 60, contentRows: 60 },
-} as unknown as RenderPropsOf["Pane"];
+const PANE_PROPS = paneProps(100, 60);
 
 function world(on: On, features: Partial<Features>, table: Record<string, Answer>) {
-  mock.clock(on, { now: Date.parse("2026-10-06T12:00:00Z") });
-  mock.store(on, { provider: "typesafe", features: { ...DEFAULT_FEATURES, ...features } });
-  mock.env(on, { TYPESAFE_API_KEY: "test-key" });
-  on("command.register", async () => ({ value: {} }));
-  on("tool.list", async () => ({ value: [{ name: "Read", description: "Read a file", mcp: false }] }));
-  on("session.messages", async () => ({ value: [] }));
-  on("session.model", async () => ({ value: "claude-opus-5-5" }));
-  on("session.id", async () => ({ value: "session-1234" }));
-  on("prompt.compose", async () => ({ sections: [] }));
-  on("http.fetch", async (_$, e) => {
-    const request = JSON.parse(e.init?.body ?? "{}") as SystemOneRequest;
-    const answers: Record<string, Answer> = {};
-    for (const [key, question] of Object.entries(request.questions ?? {})) {
-      const answer = table[key];
-      if (!answer) continue;
-      const offered = answer.type === "choice" && question.type === "choice"
-        ? Object.keys(question.criteria).find((id) => id === answer.choice || id.startsWith(`claude-${answer.choice}-`)) : undefined;
-      answers[key] = offered ? { ...answer, choice: offered, probabilities: { [offered]: 1 } } : answer;
-    }
-    return { value: { status: 200, ok: true, headers: {}, text: JSON.stringify({ answers, usage: { input_tokens: 200, output_tokens: 0 } }) } };
-  });
+  engine(on, { features, now: "2026-10-06T12:00:00Z" });
+  fakeJev(on, table);
   on("prompt.submit", async (_$, e) => ({ text: e.text }));
-  const sent: { model: string; effort?: unknown; agentId?: string }[] = [];
-  on("turn.step", async function* (_$, e) {
-    sent.push({ model: e.model, effort: e.effort, ...(e.agentId ? { agentId: e.agentId } : {}) });
-    return { turnId: e.turnId, index: e.index, answer: "Done.", toolUses: [], stopReason: "end_turn" as const, usage: { input_tokens: 10, output_tokens: 5, cache_read_input_tokens: 0, cache_creation_input_tokens: 0, model: e.model } };
-  });
-  return sent;
-}
-
-async function step($: { turn: { step: (e: never) => AsyncGenerator<unknown, unknown> & { result: Promise<unknown> } } }, e: object) {
-  const stream = $.turn.step(e as never);
-  for await (const _ of stream) void _;
-  return stream.result;
+  return requests(on);
 }
 
 describe("routing in a session", () => {
@@ -251,15 +200,7 @@ describe("routing in a session", () => {
   });
 
   test("Pingo shows the asking mood while Jev chooses a subagent model", async ($, on) => {
-    mock.clock(on, { now: Date.parse("2026-10-06T12:00:00Z") });
-    mock.store(on, { provider: "typesafe", features: all({ agents: true }) });
-    mock.env(on, { TYPESAFE_API_KEY: "test-key" });
-    on("command.register", async () => ({ value: {} }));
-    on("tool.list", async () => ({ value: [{ name: "Read", description: "Read a file", mcp: false }] }));
-    on("session.messages", async () => ({ value: [] }));
-    on("session.model", async () => ({ value: "claude-opus-5-5" }));
-    on("session.id", async () => ({ value: "session-asking" }));
-    on("prompt.compose", async () => ({ sections: [] }));
+    engine(on, { features: { agents: true }, now: "2026-10-06T12:00:00Z", sessionId: "session-asking" });
     let startFetch!: () => void;
     const fetchStarted = new Promise<void>((resolve) => { startFetch = resolve; });
     let finishFetch!: (response: { value: { status: number; ok: boolean; headers: Record<string, string>; text: string } }) => void;

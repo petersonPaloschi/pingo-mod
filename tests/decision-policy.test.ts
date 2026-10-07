@@ -1,11 +1,9 @@
 import { expect, test } from "claude-code/testing";
 import { resolveSettings } from "../hooks/config.ts";
 import { createAskJev, normalize, type Transport } from "../hooks/core/jev.ts";
-import { DEFAULT_FEATURES, KEEP_MODEL, selectModel, turnQuestions } from "../hooks/core/plan.ts";
+import { KEEP_MODEL, selectModel, turnQuestions } from "../hooks/core/plan.ts";
 import { buildState } from "../hooks/core/state.ts";
-import type { ChoiceAnswer } from "../hooks/core/types.ts";
-
-const pick = (choice: string, confidence: number): ChoiceAnswer => ({ type: "choice", choice, confidence, probabilities: { [choice]: 1 } });
+import { features, pick } from "./helpers.ts";
 
 test("provider confidence and probabilities stay separate, and malformed distributions are discarded", () => {
   const valid = { type: "choice", choice: "Read", confidence: 0.42, probabilities: { Read: 0.61, Bash: 0.39 } };
@@ -49,7 +47,7 @@ test("downgrades require stronger evidence than upgrades and warm cache raises t
 
 test("exact configured model versions are offered, preserved, and checked before applying", () => {
   const session = { currentModel: "claude-opus-5-5", availableModels: ["claude-sonnet-4-6", "claude-sonnet-5-5"] };
-  const question = turnQuestions({ ...DEFAULT_FEATURES, model: true }, [], "en", session).model;
+  const question = turnQuestions(features({ model: true }), [], "en", session).model;
   if (question?.type !== "choice") throw new Error("expected a model choice");
   expect(Object.keys(question.criteria)).toEqual([...session.availableModels, KEEP_MODEL]);
   expect(question.criteria["claude-sonnet-4-6"]).toMatchObject({ model: "claude-sonnet-4-6" });

@@ -1,7 +1,7 @@
 // Fixes in the pane and the band: locale keys that reach the screen, widths in
 // terminal columns, a scrolled-back log that stays put, the turn's token detail, and the model names.
 import type { On, RenderPropsOf } from "claude-code";
-import { expect, mock, test } from "claude-code/testing";
+import { expect, test } from "claude-code/testing";
 
 import type { FeedEntry, RouteEvent } from "../types";
 import { prettyModel } from "../hooks/flow.ts";
@@ -10,29 +10,15 @@ import { formatClock, type Locale } from "../hooks/i18n.ts";
 import { displayWidth, rowsOf } from "../hooks/layout.ts";
 import { clip, clockWidth, oneLine, renderPane, shares, type Actions, type Els, type View } from "../hooks/ui.tsx";
 import { en } from "../hooks/strings/en.ts";
+import { ASK, engine, paneProps } from "./helpers.ts";
 
 const NOW = Date.parse("2026-10-07T12:00:00Z");
-const ASK = { origin: { kind: "composer" }, presentation: { isFullscreen: true, columns: 160 } } as const;
-const PANE_PROPS = {
-  title: "Jev",
-  isFocused: true,
-  bodyColumns: 80,
-  placement: "dock",
-  scroll: { offset: 0, bodyRows: 40, contentRows: 40 },
-} as unknown as RenderPropsOf["Pane"];
+const PANE_PROPS = paneProps(80, 40);
 const BAND_PROPS = { hasSurvey: false, isWorking: false, maxRows: 3, bodyColumns: 120 } as unknown as RenderPropsOf["AbovePrompt"];
 
 /** A session with no key: Jev is never asked, so every prompt passes it by. */
 function noKey(on: On) {
-  mock.clock(on, { now: NOW });
-  mock.store(on);
-  mock.env(on, {});
-  on("command.register", async () => ({ value: {} }));
-  on("tool.list", async () => ({ value: [{ name: "Read", description: "Read a file", mcp: false }] }));
-  on("session.messages", async () => ({ value: [] }));
-  on("session.model", async () => ({ value: "claude-opus-5-5" }));
-  on("session.id", async () => ({ value: "session-fix-ui" }));
-  on("prompt.compose", async () => ({ sections: [] }));
+  engine(on, { now: new Date(NOW).toISOString(), key: false, sessionId: "session-fix-ui" });
   on("prompt.submit", async (_$, e) => ({ text: e.text }));
   on("turn.complete", async (_$, e) => ({ text: e.answer }));
 }

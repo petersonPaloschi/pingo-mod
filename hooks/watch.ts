@@ -1,9 +1,10 @@
 // What the Models tab shows: per prompt, what each Jev function came to and why, and a forecast of
 // what it takes for the model to change next. Pure: register.tsx feeds it and keeps the state.
 import type { FnResult, TurnDecision } from "../types";
-import { EFFORT_KEY, EFFORTS, DELEGATE_KEY, MODEL_KEY, modelThreshold, modelTier, NO_DELEGATION, TIER_MODEL, TIERS, type Features, type Tier, type TurnPlan } from "./core/plan.ts";
-import type { Answer, ModelContext } from "./core/types.ts";
-import { reasonKey } from "./events.ts";
+import { consultsAdvisor, modelThreshold, modelTier, NO_DELEGATION, pickedModelId, TIER_MODEL, TIERS, type Features, type Tier, type TurnPlan } from "./core/plan.ts";
+import { gateReason, isJevError, reasonCode } from "./core/reasons.ts";
+import { passReason } from "./core/decide.ts";
+import type { ModelContext } from "./core/types.ts";
 
 /** Routing points kept for the tab: the newest, as many as fit a long session's attention. */
 export const KEPT_TURNS = 40;
@@ -18,20 +19,21 @@ export interface TurnContext {
   session: ModelContext;
 }
 
-const choiceOf = (answer: Answer | undefined) => (answer?.type === "choice" ? answer : undefined);
-
-/** What each function did for the turn, from the plan Jev's answers made. The model is settled later. */
+/**
+ * What each function did for the turn, read off the plan alone: every confidence check was made
+ * once, when the plan was read. The model is settled later, by the first request.
+ */
 export function turnFunctions(plan: TurnPlan, ctx: TurnContext): FnResult[] {
   const ids = ["participation", "tools", "model", "effort", "delegation", "advisor"] as const;
-  const gate = !ctx.routing ? "routing_disabled" : !ctx.hasKey ? "no_api_key" : undefined;
+  const gate = gateReason(ctx.routing, ctx.hasKey);
   if (gate) return ids.map((id) => ({ id, result: "off", why: gate }));
-  const reason = plan.decision.mode === "passthrough" ? plan.decision.reason : "";
-  if (reason.startsWith("jev_error")) {
+  const reason = passReason(plan.decision);
+  if (isJevError(reason)) {
     return ids.map((id) => id === "model" && ctx.userModel
       ? { id, result: "off", why: "user_model" }
       : ctx.features[id] ? { id, result: "failed", why: "jev_error" } : { id, result: "off", why: "feature_off" });
   }
-  const answers = plan.decision.answers;
+  const declined = reason === "jev_declined";
   const min = ctx.minConfidence;
   const off = (id: (typeof ids)[number], why = "feature_off"): FnResult => ({ id, result: "off", why });
   const fns: FnResult[] = [];
@@ -49,12 +51,11 @@ export function turnFunctions(plan: TurnPlan, ctx: TurnContext): FnResult[] {
       ? off("tools")
       : plan.decision.mode === "hint"
         ? { id: "tools", result: "applied", value: plan.decision.tool, confidence: plan.decision.confidence }
-        : { id: "tools", result: "none", why: reasonKey(reason || "unknown") },
+        : { id: "tools", result: "none", why: reasonCode(reason || "unknown") },
   );
 
-  fns.push(modelFunction(plan, ctx, answers));
+  fns.push(modelFunction(plan, ctx));
 
-  const wantedEffort = choiceOf(answers?.[EFFORT_KEY]);
   fns.push(
     !ctx.features.effort
       ? off("effort")
@@ -62,29 +63,30 @@ export function turnFunctions(plan: TurnPlan, ctx: TurnContext): FnResult[] {
         ? { id: "effort", result: "applied", value: plan.effort.value, confidence: plan.effort.confidence }
         : plan.effortIgnored
           ? { id: "effort", result: "kept", why: "haiku_no_effort", value: plan.effortIgnored.value, confidence: plan.effortIgnored.confidence }
-          : wantedEffort && EFFORTS.includes(wantedEffort.choice as (typeof EFFORTS)[number])
-            ? { id: "effort", result: "kept", why: "low_confidence", value: wantedEffort.choice, confidence: wantedEffort.confidence, needed: min }
+          : plan.effortHeld
+            ? { id: "effort", result: "kept", why: "low_confidence", value: plan.effortHeld.value, confidence: plan.effortHeld.confidence, needed: min }
             : { id: "effort", result: "none", why: "unavailable" },
   );
 
-  const wantedDelegate = choiceOf(answers?.[DELEGATE_KEY]);
   fns.push(
     !ctx.features.delegation
       ? off("delegation")
-      : plan.delegate
-        ? plan.delegate.value === NO_DELEGATION
-          ? { id: "delegation", result: "none", why: "no_delegation", confidence: plan.delegate.confidence }
-          : { id: "delegation", result: "applied", value: plan.delegate.value, confidence: plan.delegate.confidence }
-        : wantedDelegate && wantedDelegate.confidence < min
-          ? { id: "delegation", result: "kept", why: "low_confidence", value: wantedDelegate.choice, confidence: wantedDelegate.confidence, needed: min }
-          : { id: "delegation", result: "none", why: "unavailable" },
+      : declined
+        ? { id: "delegation", result: "none", why: "jev_declined" }
+        : plan.delegate
+          ? plan.delegate.value === NO_DELEGATION
+            ? { id: "delegation", result: "none", why: "no_delegation", confidence: plan.delegate.confidence }
+            : { id: "delegation", result: "applied", value: plan.delegate.value, confidence: plan.delegate.confidence }
+          : plan.delegateHeld
+            ? { id: "delegation", result: "kept", why: "low_confidence", value: plan.delegateHeld.value, confidence: plan.delegateHeld.confidence, needed: min }
+            : { id: "delegation", result: "none", why: "unavailable" },
   );
 
   // "applied" means the hint was attached: whether Claude calls the advisor is Claude's decision.
   fns.push(
     !ctx.features.advisor
       ? off("advisor")
-      : plan.advisor?.value === "consult"
+      : consultsAdvisor(plan) && plan.advisor
         ? { id: "advisor", result: "applied", value: "consult", confidence: plan.advisor.confidence }
         : plan.advisor
           ? { id: "advisor", result: "none", why: "advisor_none", confidence: plan.advisor.confidence }
@@ -99,27 +101,26 @@ export function turnFunctions(plan: TurnPlan, ctx: TurnContext): FnResult[] {
     : fns;
 }
 
-function modelFunction(plan: TurnPlan, ctx: TurnContext, answers: Record<string, Answer> | undefined): FnResult {
+function modelFunction(plan: TurnPlan, ctx: TurnContext): FnResult {
   const current = ctx.session.currentModel;
   if (ctx.features.model && ctx.userModel) return { id: "model", result: "off", why: "user_model" };
   if (!ctx.features.model) return { id: "model", result: "off", why: "feature_off" };
-  const wanted = choiceOf(answers?.[MODEL_KEY]);
+  const wanted = plan.modelAsked;
   const from = current ? { from: current } : {};
   if (plan.model) {
-    const value = plan.model.id ?? TIER_MODEL[plan.model.value];
     const needed = modelThreshold(plan.model.value, ctx.minConfidence, ctx.session).needed;
-    return { id: "model", result: "applied", value, confidence: plan.model.confidence, needed, ...from };
+    return { id: "model", result: "applied", value: pickedModelId(plan.model), confidence: plan.model.confidence, needed, ...from };
   }
   const why = plan.modelReason ?? "unavailable";
   if (why === "keep_current" || why === "unavailable") {
     return { id: "model", result: "none", why, ...(current ? { value: current } : {}), ...(wanted ? { confidence: wanted.confidence } : {}), ...from };
   }
-  const tier = modelTier(wanted?.choice);
+  const tier = modelTier(wanted?.value);
   return {
     id: "model",
     result: "kept",
     why,
-    ...(wanted ? { value: wanted.choice, confidence: wanted.confidence } : {}),
+    ...(wanted ? { value: wanted.value, confidence: wanted.confidence } : {}),
     ...(tier ? { needed: modelThreshold(tier, ctx.minConfidence, ctx.session).needed } : {}),
     ...from,
   };
@@ -187,9 +188,8 @@ export interface ForecastInput {
 
 /** What it takes for the model to change at the next prompt. Jev decides once per prompt, never mid-turn. */
 export function forecast(input: ForecastInput): Forecast {
-  const blockers: Blocker[] = [];
-  if (!input.routing) blockers.push("routing_disabled");
-  else if (!input.hasKey) blockers.push("no_api_key");
+  const gate = gateReason(input.routing, input.hasKey);
+  const blockers: Blocker[] = gate ? [gate] : [];
   if (!input.features.model) blockers.push("feature_off");
   if (input.userModel) blockers.push("user_model");
   if (input.current && !input.switchable) blockers.push("model_id");

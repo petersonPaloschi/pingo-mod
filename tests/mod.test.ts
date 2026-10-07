@@ -2,12 +2,12 @@
 import type { On } from "claude-code";
 import { describe, expect, mock, test } from "claude-code/testing";
 
+import { ASK, ORIGIN, paneProps } from "./helpers.ts";
+
 const ROSTER = [
   { name: "Read", description: "Read a file", mcp: false },
   { name: "Bash", description: "Run a command", mcp: false },
 ];
-const COMPOSER = { kind: "composer" } as const;
-const PRESENTATION = { isFullscreen: true, columns: 160 };
 
 const jevReply = (choice: string, confidence: number, needs: number) =>
   JSON.stringify({
@@ -49,7 +49,7 @@ describe("routing", () => {
     });
     const seen = promptSink(on);
 
-    await $.prompt.submit({ text: "show me package.json", wait: false, origin: COMPOSER });
+    await $.prompt.submit({ text: "show me package.json", wait: false, origin: ORIGIN });
 
     expect(posted).toHaveLength(1);
     expect(posted[0]).toMatchObject({ url: "https://api.typesafe.ai/v1/systemone", auth: "Bearer test-key" });
@@ -72,7 +72,7 @@ describe("routing", () => {
     });
     const seen = promptSink(on);
 
-    await $.prompt.submit({ text: "hello", wait: false, origin: COMPOSER });
+    await $.prompt.submit({ text: "hello", wait: false, origin: ORIGIN });
 
     expect(fetched).toBe(1);
     expect(seen[0]?.context).toBeUndefined();
@@ -87,7 +87,7 @@ describe("routing", () => {
     });
     const seen = promptSink(on);
 
-    const done = $.prompt.submit({ text: "hello", wait: false, origin: COMPOSER });
+    const done = $.prompt.submit({ text: "hello", wait: false, origin: ORIGIN });
     // One retry after a 100 ms pause, on the mocked clock.
     for (let i = 0; i < 5 && fetched < 2; i++) await clock.advance(100);
     await done;
@@ -106,7 +106,7 @@ describe("routing", () => {
     });
     promptSink(on);
 
-    await $.prompt.submit({ text: "run the tests", wait: false, origin: COMPOSER });
+    await $.prompt.submit({ text: "run the tests", wait: false, origin: ORIGIN });
 
     expect(posted).toEqual([{ url: "https://openrouter.ai/api/alpha/decisions", auth: "Bearer or-key" }]);
   });
@@ -120,7 +120,7 @@ describe("routing", () => {
     });
     const seen = promptSink(on);
 
-    await $.prompt.submit({ text: "hello", wait: false, origin: COMPOSER });
+    await $.prompt.submit({ text: "hello", wait: false, origin: ORIGIN });
 
     expect(fetched).toBe(0);
     expect(seen).toHaveLength(1);
@@ -135,8 +135,8 @@ describe("routing", () => {
     });
     promptSink(on);
 
-    await $.command.run({ command: "jev", args: "routing off", origin: COMPOSER, presentation: PRESENTATION });
-    await $.prompt.submit({ text: "show me package.json", wait: false, origin: COMPOSER });
+    await $.command.run({ command: "jev", args: "routing off", ...ASK });
+    await $.prompt.submit({ text: "show me package.json", wait: false, origin: ORIGIN });
 
     expect(fetched).toBe(0);
   });
@@ -155,10 +155,10 @@ describe("routing", () => {
       surface: "terminal",
       component: "Pane",
       requestId: "jev",
-      props: { title: "Jev", isFocused: true, bodyColumns: 80, placement: "dock", scroll: { offset: 0, bodyRows: 40, contentRows: 40 } },
+      props: paneProps(80, 40),
     });
     await ui.press({ key: "routing" });
-    await $.prompt.submit({ text: "show me package.json", wait: false, origin: COMPOSER });
+    await $.prompt.submit({ text: "show me package.json", wait: false, origin: ORIGIN });
 
     expect(fetched).toBe(0);
     await ui.unmount();
@@ -180,7 +180,7 @@ describe("routing", () => {
     promptSink(on);
 
     await $.classic.SessionStart({ source: "clear" });
-    await $.prompt.submit({ text: "show me package.json", wait: false, origin: COMPOSER });
+    await $.prompt.submit({ text: "show me package.json", wait: false, origin: ORIGIN });
 
     expect(fetched).toBe(0);
   });
@@ -189,9 +189,9 @@ describe("routing", () => {
 describe("commands", () => {
   test("/jev status reports routing and the credential source without showing the key", { options: { api_key: "test-key" } }, async ($, on) => {
     world(on);
-    const off = await $.command.run({ command: "jev", args: "routing off", origin: COMPOSER, presentation: PRESENTATION });
+    const off = await $.command.run({ command: "jev", args: "routing off", ...ASK });
     expect(off.text).toBe("Jev routing turned off; running in baseline mode.");
-    const status = await $.command.run({ command: "jev", args: "status", origin: COMPOSER, presentation: PRESENTATION });
+    const status = await $.command.run({ command: "jev", args: "status", ...ASK });
     expect(status.text).toContain("Routing: off (baseline)");
     expect(status.text).toContain("Key source: plugin settings");
     expect(status.text).not.toContain("test-key");
@@ -199,7 +199,7 @@ describe("commands", () => {
 
   test("an unknown verb prints the usage", async ($, on) => {
     world(on);
-    const reply = await $.command.run({ command: "jev", args: "fly", origin: COMPOSER, presentation: PRESENTATION });
+    const reply = await $.command.run({ command: "jev", args: "fly", ...ASK });
     expect(reply.text).toStartWith("Usage: /jev");
   });
 });

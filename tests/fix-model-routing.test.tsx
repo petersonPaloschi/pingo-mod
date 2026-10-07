@@ -1,50 +1,20 @@
 // The main loop's model switch stays safe, a refusal needs more than one empty answer, a prompt
 // typed mid-turn keeps the running turn's plan, and another plugin's tool call is left alone.
-import type { On, RenderPropsOf } from "claude-code";
-import { describe, expect, mock, test } from "claude-code/testing";
+import type { On } from "claude-code";
+import { describe, expect, test } from "claude-code/testing";
 
-import { DEFAULT_FEATURES, type Features } from "../hooks/core/plan.ts";
-import type { Answer, SystemOneRequest } from "../hooks/core/types.ts";
+import type { Features } from "../hooks/core/plan.ts";
+import type { Answer } from "../hooks/core/types.ts";
+import { DONE, engine, fakeJev, noul, ORIGIN, paneProps, pick, step } from "./helpers.ts";
 
-const ORIGIN = { kind: "composer" } as const;
-const PANE_PROPS = {
-  title: "Jev",
-  isFocused: true,
-  bodyColumns: 100,
-  placement: "dock",
-  scroll: { offset: 0, bodyRows: 60, contentRows: 60 },
-} as unknown as RenderPropsOf["Pane"];
-const pick = (choice: string, confidence: number): Answer => ({ type: "choice", choice, confidence, probabilities: { [choice]: 1 } });
-const noul = (value: number): Answer => ({ type: "noul", noul: value });
+const PANE_PROPS = paneProps(100, 60);
 const ANSWERS = { tool: pick("Read", 0.9), needs_tool: noul(0.9), model: pick("sonnet", 0.9) };
-const DONE = { input_tokens: 10, output_tokens: 5, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 };
 
 /** The engine beneath the mod; `empty` says which requests come back with no response. */
 function world(on: On, features: Partial<Features>, empty: (index: number) => boolean = () => false, table: Record<string, Answer> = ANSWERS) {
-  mock.clock(on, { now: Date.parse("2026-10-07T12:00:00Z") });
-  mock.store(on, { provider: "typesafe", features: { ...DEFAULT_FEATURES, ...features } });
-  mock.env(on, { TYPESAFE_API_KEY: "test-key" });
-  on("command.register", async () => ({ value: {} }));
-  on("tool.list", async () => ({ value: [{ name: "Read", description: "Read a file", mcp: false }] }));
-  on("session.messages", async () => ({ value: [] }));
-  on("session.model", async () => ({ value: "claude-opus-5-5" }));
-  on("session.id", async () => ({ value: "session-fix" }));
-  on("prompt.compose", async () => ({ sections: [] }));
-  const jev = { calls: 0, asked: [] as SystemOneRequest[] };
-  on("http.fetch", async (_$, e) => {
-    jev.calls++;
-    const request = JSON.parse(e.init?.body ?? "{}") as SystemOneRequest;
-    jev.asked.push(request);
-    const answers: Record<string, Answer> = {};
-    for (const [key, question] of Object.entries(request.questions ?? {})) {
-      const answer = table[key];
-      if (!answer) continue;
-      const offered = answer.type === "choice" && question.type === "choice"
-        ? Object.keys(question.criteria).find((id) => id === answer.choice || id.startsWith(`claude-${answer.choice}-`)) : undefined;
-      answers[key] = offered ? { ...answer, choice: offered, probabilities: { [offered]: 1 } } : answer;
-    }
-    return { value: { status: 200, ok: true, headers: {}, text: JSON.stringify({ answers, usage: { input_tokens: 200, output_tokens: 0 } }) } };
-  });
+  engine(on, { features, sessionId: "session-fix" });
+  const { asked } = fakeJev(on, table);
+  const jev = { asked, get calls() { return asked.length; } };
   on("prompt.submit", async (_$, e) => ({ text: e.text, ...(e.context ? { context: e.context } : {}) }));
   on("classic.PostModelSwitch", () => ({}));
   on("tool.call", async () => ({ result: "ok" }) as never);
@@ -64,12 +34,6 @@ function world(on: On, features: Partial<Features>, empty: (index: number) => bo
       : { turnId: e.turnId, index: e.index, answer: "Done.", toolUses: [], stopReason: "end_turn" as const, usage: { ...DONE, model: e.model } };
   });
   return { sent, sentEfforts, jev, toasts };
-}
-
-async function step($: { turn: { step: (e: never) => AsyncGenerator<unknown, unknown> & { result: Promise<unknown> } } }, e: object) {
-  const stream = $.turn.step(e as never);
-  for await (const _ of stream) void _;
-  return stream.result;
 }
 
 describe("the main loop's model switch", () => {

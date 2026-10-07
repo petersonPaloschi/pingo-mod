@@ -1,19 +1,12 @@
 // How long one Jev call may take, which key goes to which provider, where Setup's provider is
 // saved, the environment fallbacks and ranges of the numeric options, and provider error bodies.
-import type { RenderPropsOf } from "claude-code";
 import { describe, expect, mock, test } from "claude-code/testing";
 
 import { resolveSettings } from "../hooks/config.ts";
 import { createAskJev, normalize, validateKey, type HttpReply, type Transport } from "../hooks/core/jev.ts";
+import { ASK, paneProps } from "./helpers.ts";
 
-const PANE_PROPS = {
-  title: "Jev",
-  isFocused: true,
-  bodyColumns: 80,
-  placement: "dock",
-  scroll: { offset: 0, bodyRows: 40, contentRows: 40 },
-} as unknown as RenderPropsOf["Pane"];
-const ASK = { origin: { kind: "composer" }, presentation: { isFullscreen: true, columns: 160 } } as const;
+const PANE_PROPS = paneProps(80, 40);
 async function status($: { command: { run: (input: never) => Promise<{ text?: string }> } }) {
   return (await $.command.run({ command: "jev", args: "status", ...ASK } as never)).text ?? "";
 }

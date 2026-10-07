@@ -2,16 +2,11 @@
 import type { RenderPropsOf } from "claude-code";
 import { expect, mock, test } from "claude-code/testing";
 
-const PANE_PROPS = {
-  title: "Jev",
-  isFocused: true,
-  bodyColumns: 80,
-  placement: "dock",
-  scroll: { offset: 0, bodyRows: 40, contentRows: 40 },
-} as unknown as RenderPropsOf["Pane"];
+import { ASK, engine, paneProps } from "./helpers.ts";
+
+const PANE_PROPS = paneProps(80, 40);
 const BAND_PROPS = { hasSurvey: false, isWorking: false, maxRows: 3, bodyColumns: 100 } as unknown as RenderPropsOf["AbovePrompt"];
 
-const ASK = { origin: { kind: "composer" }, presentation: { isFullscreen: true, columns: 160 } } as const;
 async function status($: { command: { run: (input: never) => Promise<{ text?: string }> } }) {
   return (await $.command.run({ command: "jev", args: "status", ...ASK } as never)).text ?? "";
 }
@@ -65,18 +60,14 @@ test("the dashboard follows the configured Portuguese locale", { options: { loca
 });
 
 test("the language can be changed from Jev Setup", async ($, on) => {
-  mock.clock(on, { now: Date.parse("2026-10-06T12:00:00Z") });
+  engine(on, { now: "2026-10-06T12:00:00Z", key: false, sessionId: "session-language", ownStore: true });
   mock.store(on, { events: [EVENT, { ...EVENT, seq: 2, mode: "passthrough", reason: "low_confidence", tool: undefined }] });
-  mock.env(on, {});
   const saved: unknown[] = [];
   on("config.list", async () => ({ value: [{ key: "jev@inline.locale", label: "Language" }] }) as never);
   on("config.set", async (_$, e) => {
     saved.push(e.value);
     return { value: e.value };
   });
-  on("command.register", async () => ({ value: {} }));
-  on("session.id", async () => ({ value: "session-language" }));
-  on("session.model", async () => ({ value: "claude-opus-5-5" }));
   await $.session.start({ cwd: "/workspace" } as never).catch(() => undefined);
   const ui = await $.ui.mount({ plugin: "jev", surface: "terminal", component: "Pane", requestId: "jev", props: PANE_PROPS });
   await ui.press({ key: "tab-setup" });
@@ -92,12 +83,8 @@ test("the language can be changed from Jev Setup", async ($, on) => {
 });
 
 test("reason titles render in the Reasons tab and the request log", async ($, on) => {
-  mock.clock(on, { now: Date.parse("2026-10-06T12:00:00Z") });
+  engine(on, { now: "2026-10-06T12:00:00Z", key: false, sessionId: "session-reasons", ownStore: true });
   mock.store(on, { events: [{ ...EVENT, seq: 2, mode: "passthrough", reason: "low_confidence", tool: undefined }] });
-  mock.env(on, {});
-  on("command.register", async () => ({ value: {} }));
-  on("session.id", async () => ({ value: "session-reasons" }));
-  on("session.model", async () => ({ value: "claude-opus-5-5" }));
   await $.session.start({ cwd: "/workspace" } as never).catch(() => undefined);
   const ui = await $.ui.mount({ plugin: "jev", surface: "terminal", component: "Pane", requestId: "jev", props: PANE_PROPS });
   await ui.press({ key: "tab-reasons" });
@@ -108,12 +95,7 @@ test("reason titles render in the Reasons tab and the request log", async ($, on
 });
 
 test("the Dice mascot is drawn and blitted only while the live tab shows", async ($, on) => {
-  const clock = mock.clock(on, { now: Date.parse("2026-10-06T12:00:00Z") });
-  mock.store(on);
-  mock.env(on, {});
-  on("command.register", async () => ({ value: {} }));
-  on("session.id", async () => ({ value: "session-live" }));
-  on("session.model", async () => ({ value: "claude-opus-5-5" }));
+  const { clock } = engine(on, { now: "2026-10-06T12:00:00Z", key: false, sessionId: "session-live" });
   const blits: { key: string; columns: number; rows: number }[] = [];
   on("ui.blit", async (_$, e) => {
     blits.push({ key: e.key, columns: e.columns ?? -1, rows: e.rows ?? -1 });
@@ -132,12 +114,7 @@ test("the Dice mascot is drawn and blitted only while the live tab shows", async
 });
 
 test("Pingo stays in the dashboard header and animates in the terminal", async ($, on) => {
-  const clock = mock.clock(on, { now: Date.parse("2026-10-06T12:00:00Z") });
-  mock.store(on);
-  mock.env(on, {});
-  on("command.register", async () => ({ value: {} }));
-  on("session.id", async () => ({ value: "session-mascot" }));
-  on("session.model", async () => ({ value: "claude-opus-5-5" }));
+  const { clock } = engine(on, { now: "2026-10-06T12:00:00Z", key: false, sessionId: "session-mascot" });
   const blits: string[] = [];
   on("ui.blit", async (_$, e) => {
     blits.push(e.key);

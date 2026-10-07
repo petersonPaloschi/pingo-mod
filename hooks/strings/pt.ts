@@ -618,6 +618,7 @@ export const pt: Record<keyof typeof en, string> = {
   "ui.models.delegation.no_delegation": "sem necessidade de delegar",
   "ui.models.delegation.low_confidence": "queria {agent} com {confidence}, exige ≥ {needed}",
   "ui.models.delegation.none": "sem delegação",
+  "ui.models.delegation.jev_declined": "o Jev ficou de fora: sem delegação",
   "ui.models.participation.in": "O Jev participa ({confidence})",
   "ui.models.participation.out": "O Jev fica de fora ({confidence})",
   "ui.models.participation.none": "sem resposta",

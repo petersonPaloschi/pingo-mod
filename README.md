@@ -269,8 +269,10 @@ Tests run in Claude Code's plugin test runtime with stubbed provider responses; 
 | Source | Responsibility |
 | --- | --- |
 | [`hooks/register.tsx`](hooks/register.tsx) | Session hooks, commands, model application, state, and UI integration. |
-| [`hooks/core/decide.ts`](hooks/core/decide.ts) | Routing checks, shortlisting, and fail-open decisions. |
-| [`hooks/core/plan.ts`](hooks/core/plan.ts) | Feature defaults and turn/subagent planning. |
+| [`hooks/core/decide.ts`](hooks/core/decide.ts) | Routing checks, shortlisting, the timed fail-open Jev call, and how a hint is attached. |
+| [`hooks/core/plan.ts`](hooks/core/plan.ts) | Feature defaults, turn/subagent planning, the one reading of every answer, and which models accept effort. |
+| [`hooks/core/reasons.ts`](hooks/core/reasons.ts) | A decision's reason code, what counts as a Jev failure, and the routing/key gate. |
+| [`hooks/sizing.ts`](hooks/sizing.ts) | The effort each model request goes out with, for the main loop and subagents alike. |
 | [`hooks/core/jev.ts`](hooks/core/jev.ts) | Provider adapters, response normalization, retries, and key validation. |
 | [`hooks/config.ts`](hooks/config.ts) | Settings, credential selection, thresholds, and request limits. |
 | [`hooks/input.ts`](hooks/input.ts), [`hooks/core/state.ts`](hooks/core/state.ts) | Transcript conversion and bounded provider context. |
