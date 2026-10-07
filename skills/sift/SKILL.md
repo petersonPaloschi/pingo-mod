@@ -74,7 +74,7 @@ sift rank "<query>" <inputs> [--top 10 | --all]
 sift find "<what you're looking for>" <files> [--top 5]
 sift ask "<question>" --state @file|"text"|- [--choice "a,b,c"]
 sift ask spec.json      # {"state": {...}, "questions": {"id": {"type": "noul|choice", ...}}}
-sift status             # provider, key source and model, checked with one real call
+sift status             # provider, key source and model checked with one real call, plus lifetime savings
 ```
 
 Add `--json` to any command for machine-readable output; the summary line goes to stderr.
