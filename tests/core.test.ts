@@ -25,7 +25,7 @@ const input = (over: Partial<RouterInput> = {}): RouterInput => ({
 });
 const answer = (choice: string, confidence: number, needs: number): SystemOneResult => ({
   answers: {
-    tool: { type: "choice", choice, confidence, probabilities: { [choice]: confidence } },
+    tool: { type: "choice", choice, confidence, probabilities: { [choice]: 1 } },
     needs_tool: { type: "noul", noul: needs },
   },
   usage: { input_tokens: 1234, output_tokens: 0 },
@@ -202,12 +202,12 @@ describe("Jev transport", () => {
     expect(free.posts).toBe(1);
   });
 
-  test("a missing confidence takes the winning probability", () => {
+  test("a missing confidence is never replaced by the winning probability", () => {
     const fixed = normalize({
       answers: { tool: { type: "choice", choice: "Read", probabilities: { Read: 0.8, Bash: 0.2 } } as never },
       usage: { input_tokens: 1, output_tokens: 0 },
     });
-    expect(fixed.answers.tool).toMatchObject({ confidence: 0.8 });
+    expect(fixed.answers.tool).toBeUndefined();
   });
 
   test("the provider response is narrowed before it becomes a router result", () => {

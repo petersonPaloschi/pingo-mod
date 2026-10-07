@@ -14,8 +14,9 @@ import type { EngineInterface, Register, UiBlitArgs } from "claude-code";
 
 import type { AgentRun, FeatureFlags, FeedEntry, FlowState, PaneScroll, FeedKind, FeedSpeaker, FeedTone, JevTab, LiveNow, RouteEvent, SetupDraft } from "../types";
 import { keyFor, keyOwner, providerBasis, resolveSettings, storedApplies, type ModOptions, type Settings, type StoredSettings } from "./config.ts";
-import { decide, hintText, type Decision } from "./core/decide.ts";
+import { decide, hintText, type AskJev, type Decision } from "./core/decide.ts";
 import { createAskJev, isProvider, PROVIDERS, redact, resolveModel, validateKey, type ProviderId, type Transport } from "./core/jev.ts";
+import type { ModelContext } from "./core/types.ts";
 import {
   DEFAULT_FEATURES,
   isSafeAgentName,
@@ -30,7 +31,7 @@ import {
   type TurnPlan,
 } from "./core/plan.ts";
 import { KEPT_EVENTS, RANGES, reasonKey } from "./events.ts";
-import { featureFlagsText, features as featureList, modelName, outputSize, short, toolDetails, toolSummary } from "./feed.ts";
+import { featureFlagsText, features as featureList, jevInput, jevOutput, modelName, outputSize, short, toolDetails, toolSummary } from "./feed.ts";
 import { resultText, toInput, type PendingResult } from "./input.ts";
 import { cellsOf } from "./dots.ts";
 import { diceFrame, diceSize } from "./mascots/dice.ts";
@@ -62,6 +63,8 @@ const STORE_EVENTS = "events";
 const STORE_ROUTING = "routing";
 const LEGACY_STORE_KEY = "apiKey";
 const STORE_PROVIDER = "provider";
+/** The key and provider accepted in Setup, kept in this plugin's store file under ~/.claude/plugins/store so a restart keeps them. */
+const STORE_CREDENTIALS = "credentials";
 const STORE_FEATURES = "features";
 const FEED_SIZE = 1000;
 /** Subagents kept for the Agents tab: every running one, then the latest finished. */
@@ -99,10 +102,12 @@ let draftKey = "";
 let sessionKey = "";
 /** The provider the Setup key was tested against: the two go together for the session. */
 let sessionProvider: ProviderId | undefined;
-/** Set when a model Jev chose was refused: model changes stop for the session. */
-let modelBroken = false;
-/** Empty answers in a row from a model Jev switched to; two in a row count as a refusal. */
-let switchedEmpty = 0;
+/** A failing candidate is excluded without disabling every other model. */
+const blockedModels = new Set<string>();
+const switchedEmpty = new Map<string, number>();
+let mainModel: string | undefined;
+let contextTokens = 0;
+let cacheReadTokens = 0;
 /**
  * Set when the person picked the main loop's model this session (/model, the picker, the SDK):
  * Jev's model then stays out, as it does for a subagent Claude named a model for. turn.step
@@ -162,10 +167,16 @@ async function processEnv($: EngineInterface): Promise<Record<string, string>> {
 }
 
 async function storedSettings($: EngineInterface, env: Record<string, string>): Promise<StoredSettings> {
-  // Older versions saved credentials as plain text in plugin state. Remove that copy and
-  // continue using only Claude Code's sensitive option or the provider's environment variable.
+  // Older versions kept the key under a bare "apiKey"; it moves to the credentials entry.
   const legacyKey = await $.store.get(LEGACY_STORE_KEY);
   if (typeof legacyKey === "string") await $.store.delete(LEGACY_STORE_KEY);
+  if (!sessionKey && !options.api_key?.trim()) {
+    const saved = (await $.store.get(STORE_CREDENTIALS).catch(() => undefined)) as { apiKey?: unknown; provider?: unknown } | undefined;
+    if (typeof saved?.apiKey === "string" && saved.apiKey.trim()) {
+      sessionKey = saved.apiKey.trim();
+      if (typeof saved.provider === "string" && isProvider(saved.provider)) sessionProvider = saved.provider;
+    }
+  }
   // Setup's fallback provider, as `{ provider, basis }` (a bare string from older versions). Once the
   // provider option or JEV_PROVIDER has changed since it was saved, that change wins and it goes.
   const saved = await $.store.get(STORE_PROVIDER);
@@ -183,7 +194,8 @@ const pluginOptions = (): ModOptions =>
 async function getSettings($: EngineInterface): Promise<Settings> {
   if (settings) return settings;
   const env = await processEnv($);
-  settings = resolveSettings(pluginOptions(), env, await storedSettings($, env));
+  const stored = await storedSettings($, env);
+  settings = resolveSettings(pluginOptions(), env, stored);
   return settings;
 }
 
@@ -410,18 +422,45 @@ async function asking<T>($: EngineInterface, work: () => Promise<T>): Promise<T>
   }
 }
 
+/** A Jev call that shows in the live log what it was sent and what it answered, with the odds. */
+function tracedAskJev($: EngineInterface, config: Settings): AskJev {
+  const ask = createAskJev(config, transport($, config.locale));
+  return async (request) => {
+    const sent = jevInput(request, config.locale);
+    await log($, "jev", "jev", "info", sent.text, undefined, { detail: sent.detail });
+    const startedAt = Date.now();
+    const result = await ask(request);
+    const got = jevOutput(result, config.locale);
+    await log($, "jev", "jev", "good", got.text, undefined, { meta: `${formatNumber(Date.now() - startedAt, config.locale)} ms`, detail: got.detail });
+    return result;
+  };
+}
+
 // --- Routing ---
+
+function modelContext(config: Settings): ModelContext {
+  return {
+    ...(mainModel ? { currentModel: mainModel } : {}),
+    contextTokens,
+    cacheReadTokens,
+    availableModels: config.claudeModels.filter((id) => !blockedModels.has(id)),
+  };
+}
 
 /** The turn's routing point: every feature that is on, in one Jev call. */
 async function planFor($: EngineInterface, userText: string): Promise<TurnPlan> {
   if (!(await read($, routing))) return { decision: { mode: "passthrough", reason: "routing_disabled" } };
   const config = await getSettings($);
   if (!config.apiKey) return { decision: { mode: "passthrough", reason: "no_api_key" } };
-  const flags = await read($, features);
+  const flags = { ...(await read($, features)) };
+  // A manual model must not indirectly suppress effort through an ignored Jev model choice.
+  if (userModel) flags.model = false;
+  if (flags.model && !mainModel) mainModel = await $.session.model();
   const [messages, roster] = await Promise.all([$.session.messages(), $.tool.list()]);
   lastToolCount = roster.length;
   const input = toInput(await systemText($), messages, roster, config.maxMessageChars, { userText }, config.locale);
-  return asking($, () => planTurn(input, config, createAskJev(config, transport($, config.locale)), flags, [...agentTypes.values()]));
+  input.session = modelContext(config);
+  return asking($, () => planTurn(input, config, tracedAskJev($, config), flags, [...agentTypes.values()]));
 }
 
 /** After a tool batch: only the next tool, when that feature is on and Jev did not stay out. */
@@ -434,7 +473,8 @@ async function routeTool($: EngineInterface, extra: { pending?: PendingResult })
   const [messages, roster] = await Promise.all([$.session.messages(), $.tool.list()]);
   lastToolCount = roster.length;
   const input = toInput(await systemText($), messages, roster, config.maxMessageChars, extra, config.locale);
-  return asking($, () => decide(input, config, createAskJev(config, transport($, config.locale))));
+  input.session = modelContext(config);
+  return asking($, () => decide(input, config, tracedAskJev($, config)));
 }
 
 /**
@@ -605,6 +645,7 @@ async function forgetKey($: EngineInterface): Promise<void> {
   draftKey = "";
   sessionKey = "";
   sessionProvider = undefined;
+  await $.store.delete(STORE_CREDENTIALS).catch(() => undefined);
   const refused = await saveKey($, "");
   settings = undefined;
   const config = await getSettings($);
@@ -728,9 +769,18 @@ async function submitKey($: EngineInterface, provider: string): Promise<void> {
   sessionProvider = id;
   draftKey = "";
   settings = undefined;
-  const refused = await saveKey($, key);
+  // The store copy is what survives a restart; Claude Code's secure option is a bonus on top of it.
+  const kept = await $.store.set(STORE_CREDENTIALS, { apiKey: key, provider: id }).then(
+    () => true,
+    () => false,
+  );
+  const refused = (await saveKey($, key)) && !kept ? "could not write the key" : undefined;
   // Saved together or not at all: the provider without its key would get the old key next session.
-  if (refused) await restoreProvider($, providerBefore, storedBefore);
+  if (refused) {
+    await restoreProvider($, providerBefore, storedBefore);
+    sessionKey = "";
+    sessionProvider = undefined;
+  }
   await update($, setup, (d) => ({
     ...d,
     busy: false,
@@ -814,6 +864,11 @@ function actor(agentId: string | undefined): Speaker {
 
 export const register: Register = (on, given) => {
   options = given as ModOptions;
+  blockedModels.clear();
+  switchedEmpty.clear();
+  mainModel = undefined;
+  contextTokens = 0;
+  cacheReadTokens = 0;
   settings = undefined;
   draftKey = "";
   sessionKey = "";
@@ -823,7 +878,8 @@ export const register: Register = (on, given) => {
     sessionId = (await $.session.id()).slice(0, 8);
     const config = await getSettings($);
     await restoreStoredState($);
-    await setLive($, { model: await $.session.model() });
+    mainModel = await $.session.model();
+    await setLive($, { model: mainModel });
     // "Idle" and the 5-minute windows move with the clock, not only with events.
     $.clock.every(1000, () => $.ui.invalidate("ui.render"));
     // Visible mascot animations stop when their pane is closed.
@@ -840,6 +896,9 @@ export const register: Register = (on, given) => {
   on("classic.SessionStart", async ($, e, next) => {
     if (e.source === "clear" || e.source === "resume" || e.source === "fork") {
       await restoreStoredState($);
+      contextTokens = 0;
+      cacheReadTokens = 0;
+      mainModel = await $.session.model();
     }
     return next(e);
   }).catch((_$, e, next) => next(e));
@@ -847,6 +906,9 @@ export const register: Register = (on, given) => {
   // A model the person picks is theirs: Jev's model stays out until they go back to the default.
   on("classic.PostModelSwitch", async (_$, e, next) => {
     if (e.source === "command" || e.source === "picker" || e.source === "sdk") userModel = e.requested_model !== null;
+    mainModel = e.to_model;
+    contextTokens = e.context_tokens;
+    cacheReadTokens = e.prompt_cache_warm ? e.context_tokens : 0;
     return next(e);
   }).catch((_$, e, next) => next(e));
 
@@ -869,7 +931,7 @@ export const register: Register = (on, given) => {
     pending = plan.decision;
     const reason = plan.decision.mode === "passthrough" ? plan.decision.reason : "";
     turnPlan = {
-      ...(plan.model ? { model: TIER_MODEL[plan.model.value] } : {}),
+      ...(plan.model ? { model: plan.model.id ?? TIER_MODEL[plan.model.value] } : plan.retainedModel ? { model: plan.retainedModel } : {}),
       ...(plan.effort ? { effort: plan.effort.value } : {}),
       ...(plan.effortIgnored ? { effortIgnored: plan.effortIgnored.value } : {}),
       ...(reason === "jev_declined" ? { declined: true } : {}),
@@ -1021,7 +1083,7 @@ export const register: Register = (on, given) => {
     const routingOn = await read($, routing);
     const plan =
       flags.agents && routingOn && config.apiKey && !e.fork && !e.model
-        ? await asking($, () => planAgent(e, config, createAskJev(config, transport($, config.locale)), flags))
+        ? await asking($, () => planAgent(e, config, tracedAskJev($, config), flags, undefined, modelContext(config)))
         : {};
     const result = await next(plan.model ? { ...e, model: plan.model.value } : e);
     if (result.deny !== undefined) {
@@ -1104,7 +1166,7 @@ export const register: Register = (on, given) => {
     } else {
       decision = pending ?? { mode: "passthrough", reason: (await read($, routing)) ? "not_asked" : "routing_disabled" };
       pending = undefined;
-      if (turnPlan?.model && !modelBroken && turnPlan.model !== e.model) {
+      if (turnPlan?.model && !blockedModels.has(turnPlan.model) && turnPlan.model !== e.model) {
         const kept: LocaleKey | undefined = userModel ? "feed.change.modelKeptChosen" : !switchableModel(e.model) ? "feed.change.modelKeptId" : undefined;
         if (!kept) {
           model = turnPlan.model;
@@ -1156,21 +1218,27 @@ export const register: Register = (on, given) => {
       sent = { ...withoutEffort, model, ...(effort === undefined ? {} : { effort }) };
     }
     const result = yield* next(sent);
-    // A model Jev picked that this account cannot use comes back empty: stop changing models.
+    // Repeated empty answers exclude only this candidate. An interrupt never counts as a refusal.
     // An interrupted step (Esc) comes back empty too and is not counted; a dropped connection
     // looks the same as a refusal, so it takes two empty answers in a row.
     if (model !== e.model && !next.signal.aborted) {
-      switchedEmpty = result.stopReason === null && !result.usage ? switchedEmpty + 1 : 0;
-      if (switchedEmpty >= 2) {
-        modelBroken = true;
+      const empty = result.stopReason === null && !result.usage ? (switchedEmpty.get(model) ?? 0) + 1 : 0;
+      switchedEmpty.set(model, empty);
+      if (empty >= 2) {
+        blockedModels.add(model);
         await log($, "mod", "error", "bad", text("feed.model.failed", locale, { model: modelName(model) }));
       }
     }
     if (result.answer.trim()) {
-      await log($, who, "message", "info", `“${short(result.answer, 600)}”`, e.agentId);
+      await log($, who, "message", "info", `“${short(result.answer, 320)}”`, e.agentId);
     }
     const usage = result.usage;
     const cacheRead = usage?.cache_read_input_tokens ?? 0;
+    if (!e.agentId && usage) {
+      mainModel = model;
+      contextTokens = usage.input_tokens + cacheRead + (usage.cache_creation_input_tokens ?? 0);
+      cacheReadTokens = cacheRead;
+    }
     const inTokens = usage ? usage.input_tokens + cacheRead + (usage.cache_creation_input_tokens ?? 0) : 0;
     const asked = [...new Set(result.toolUses.map((use) => use.name))];
     await patch($, requestLine, {

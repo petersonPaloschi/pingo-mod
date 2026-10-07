@@ -14,13 +14,13 @@ const PANE_PROPS = {
   placement: "dock",
   scroll: { offset: 0, bodyRows: 60, contentRows: 60 },
 } as unknown as RenderPropsOf["Pane"];
-const pick = (choice: string, confidence: number): Answer => ({ type: "choice", choice, confidence, probabilities: { [choice]: confidence } });
+const pick = (choice: string, confidence: number): Answer => ({ type: "choice", choice, confidence, probabilities: { [choice]: 1 } });
 const noul = (value: number): Answer => ({ type: "noul", noul: value });
 const ANSWERS = { tool: pick("Read", 0.9), needs_tool: noul(0.9), model: pick("sonnet", 0.9) };
 const DONE = { input_tokens: 10, output_tokens: 5, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 };
 
 /** The engine beneath the mod; `empty` says which requests come back with no response. */
-function world(on: On, features: Partial<Features>, empty: (index: number) => boolean = () => false) {
+function world(on: On, features: Partial<Features>, empty: (index: number) => boolean = () => false, table: Record<string, Answer> = ANSWERS) {
   mock.clock(on, { now: Date.parse("2026-10-07T12:00:00Z") });
   mock.store(on, { provider: "typesafe", features: { ...DEFAULT_FEATURES, ...features } });
   mock.env(on, { TYPESAFE_API_KEY: "test-key" });
@@ -30,12 +30,19 @@ function world(on: On, features: Partial<Features>, empty: (index: number) => bo
   on("session.model", async () => ({ value: "claude-opus-5-5" }));
   on("session.id", async () => ({ value: "session-fix" }));
   on("prompt.compose", async () => ({ sections: [] }));
-  const jev = { calls: 0 };
+  const jev = { calls: 0, asked: [] as SystemOneRequest[] };
   on("http.fetch", async (_$, e) => {
     jev.calls++;
     const request = JSON.parse(e.init?.body ?? "{}") as SystemOneRequest;
+    jev.asked.push(request);
     const answers: Record<string, Answer> = {};
-    for (const key of Object.keys(request.questions ?? {})) if (ANSWERS[key as keyof typeof ANSWERS]) answers[key] = ANSWERS[key as keyof typeof ANSWERS];
+    for (const [key, question] of Object.entries(request.questions ?? {})) {
+      const answer = table[key];
+      if (!answer) continue;
+      const offered = answer.type === "choice" && question.type === "choice"
+        ? Object.keys(question.criteria).find((id) => id === answer.choice || id.startsWith(`claude-${answer.choice}-`)) : undefined;
+      answers[key] = offered ? { ...answer, choice: offered, probabilities: { [offered]: 1 } } : answer;
+    }
     return { value: { status: 200, ok: true, headers: {}, text: JSON.stringify({ answers, usage: { input_tokens: 200, output_tokens: 0 } }) } };
   });
   on("prompt.submit", async (_$, e) => ({ text: e.text, ...(e.context ? { context: e.context } : {}) }));
@@ -48,13 +55,15 @@ function world(on: On, features: Partial<Features>, empty: (index: number) => bo
     return { value: undefined } as never;
   });
   const sent: string[] = [];
+  const sentEfforts: unknown[] = [];
   on("turn.step", async function* (_$, e) {
     sent.push(e.model);
+    sentEfforts.push(e.effort);
     return empty(e.index)
       ? { turnId: e.turnId, index: e.index, answer: "", toolUses: [], stopReason: null, usage: null }
       : { turnId: e.turnId, index: e.index, answer: "Done.", toolUses: [], stopReason: "end_turn" as const, usage: { ...DONE, model: e.model } };
   });
-  return { sent, jev, toasts };
+  return { sent, sentEfforts, jev, toasts };
 }
 
 async function step($: { turn: { step: (e: never) => AsyncGenerator<unknown, unknown> & { result: Promise<unknown> } } }, e: object) {
@@ -64,6 +73,19 @@ async function step($: { turn: { step: (e: never) => AsyncGenerator<unknown, unk
 }
 
 describe("the main loop's model switch", () => {
+  test("a manual model is not reclassified and keeps its supported effort planning", async ($, on) => {
+    const { sent, sentEfforts, jev } = world(on, { model: true, effort: true }, () => false,
+      { ...ANSWERS, model: pick("haiku", 0.99), effort: pick("max", 0.99) });
+    await $.session.start({ cwd: "/workspace" } as never).catch(() => undefined);
+    await $.classic.PostModelSwitch({ from_model: "claude-sonnet-5-5", to_model: "claude-opus-5-5", context_tokens: 0,
+      prompt_cache_warm: false, cache_ttl: "5m", estimated_cache_write_usd: 0, pricing: "catalog", requested_model: "opus", source: "command" });
+    await $.prompt.submit({ text: "investigate the race condition", wait: false, origin: ORIGIN });
+    await step($ as never, { turnId: "t1", index: 0, model: "claude-opus-5-5", effort: "high", messageCount: 1 });
+    expect(jev.asked[0]!.questions.model).toBeUndefined();
+    expect(sent).toEqual(["claude-opus-5-5"]);
+    expect(sentEfforts).toEqual(["max"]);
+  });
+
   test("a session on a [1m] context keeps its model", async ($, on) => {
     const { sent } = world(on, { model: true });
     await $.session.start({ cwd: "/workspace" } as never).catch(() => undefined);
@@ -101,6 +123,43 @@ describe("the main loop's model switch", () => {
 });
 
 describe("a switched model that comes back empty", () => {
+  test("excluding one failed candidate leaves other model changes available", async ($, on) => {
+    const table = { ...ANSWERS };
+    const { sent, jev } = world(on, { model: true }, (index) => index < 2, table);
+    await $.session.start({ cwd: "/workspace" } as never).catch(() => undefined);
+    await $.prompt.submit({ text: "fix the local bug", wait: false, origin: ORIGIN });
+    for (const index of [0, 1]) await step($ as never, { turnId: "t1", index, model: "claude-opus-5-5", messageCount: index + 1 });
+    table.model = pick("haiku", 0.99);
+    await $.prompt.submit({ text: "format the file", wait: false, origin: ORIGIN });
+    await step($ as never, { turnId: "t2", index: 2, model: "claude-opus-5-5", messageCount: 3 });
+    expect(sent).toEqual(["claude-sonnet-5-5", "claude-sonnet-5-5", "claude-haiku-4-5-20251001"]);
+    const question = jev.asked.at(-1)!.questions.model;
+    if (question?.type !== "choice") throw new Error("expected a model question");
+    expect(Object.keys(question.criteria)).not.toContain("claude-sonnet-5-5");
+  });
+
+  test("an uncertain downgrade keeps the last successful model across turns", async ($, on) => {
+    const table = { ...ANSWERS };
+    const { sent } = world(on, { model: true }, () => false, table);
+    await $.session.start({ cwd: "/workspace" } as never).catch(() => undefined);
+    await $.prompt.submit({ text: "implement the function", wait: false, origin: ORIGIN });
+    await step($ as never, { turnId: "t1", index: 0, model: "claude-opus-5-5", messageCount: 1 });
+    table.model = pick("haiku", 0.8);
+    await $.prompt.submit({ text: "fix the next issue", wait: false, origin: ORIGIN });
+    await step($ as never, { turnId: "t2", index: 1, model: "claude-opus-5-5", messageCount: 2 });
+    expect(sent).toEqual(["claude-sonnet-5-5", "claude-sonnet-5-5"]);
+  });
+
+  test("a configured exact model version reaches the native request", { options: { claude_models: "claude-sonnet-4-6,claude-opus-5-5", locale: "pt" } }, async ($, on) => {
+    const { sent, jev } = world(on, { model: true }, () => false, { ...ANSWERS, model: pick("claude-sonnet-4-6", 0.99) });
+    await $.session.start({ cwd: "/workspace" } as never).catch(() => undefined);
+    await $.prompt.submit({ text: "implemente esta função", wait: false, origin: ORIGIN });
+    await step($ as never, { turnId: "t1", index: 0, model: "claude-opus-5-5", messageCount: 1 });
+    expect(sent).toEqual(["claude-sonnet-4-6"]);
+    expect(jev.asked[0]!.questions.model?.instructions).toContain("Select the least costly");
+    expect(jev.asked[0]!.state.current_request).toBe("implemente esta função");
+  });
+
   test("one empty answer (an interrupt, a dropped connection) does not stop model switching", async ($, on) => {
     const { sent } = world(on, { model: true }, (index) => index === 0);
     await $.session.start({ cwd: "/workspace" } as never).catch(() => undefined);
@@ -110,7 +169,7 @@ describe("a switched model that comes back empty", () => {
     expect(sent).toEqual(["claude-sonnet-5-5", "claude-sonnet-5-5"]);
   });
 
-  test("two empty answers in a row stop it for the session", async ($, on) => {
+  test("two empty answers in a row exclude that model for the session", async ($, on) => {
     const { sent } = world(on, { model: true }, (index) => index < 2);
     await $.session.start({ cwd: "/workspace" } as never).catch(() => undefined);
     await $.prompt.submit({ text: "rename a variable", wait: false, origin: ORIGIN });

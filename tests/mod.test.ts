@@ -12,7 +12,7 @@ const PRESENTATION = { isFullscreen: true, columns: 160 };
 const jevReply = (choice: string, confidence: number, needs: number) =>
   JSON.stringify({
     answers: {
-      tool: { type: "choice", choice, confidence, probabilities: { [choice]: confidence } },
+      tool: { type: "choice", choice, confidence, probabilities: { [choice]: 1 } },
       needs_tool: { type: "noul", noul: needs },
     },
     usage: { input_tokens: 500, output_tokens: 0 },

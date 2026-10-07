@@ -713,6 +713,8 @@ export function speaker(entry: Pick<FeedEntry, "who" | "name" | "tone" | "mascot
 
 const FACE_WIDTH = 6;
 const NAME_WIDTH = 7;
+/** The finer points under a log line: one row each, cut at the edge, never wrapped under the time. */
+const DETAIL_ROWS = 6;
 
 /**
  * One line of the live log, dense: time, who (only where the speaker changes), what happened and
@@ -756,14 +758,19 @@ function feedLine(els: Els, view: View, entry: FeedEntry, first: boolean) {
           </Box>
         ) : null}
       </Box>
-      {!minor && entry.detail ? (
-        <Box flexDirection="row">
-          <Box width={gutter} flexShrink={0} />
-          <Box flexShrink={1}>
-            <Text color={INK.faint} wrap="wrap">{`└ ${entry.detail}`}</Text>
-          </Box>
-        </Box>
-      ) : null}
+      {!minor && entry.detail
+        ? entry.detail.split("\n").slice(0, DETAIL_ROWS).map((row, index) => (
+            <Box flexDirection="row">
+              <Box width={gutter} flexShrink={0} />
+              <Box width={2} flexShrink={0}>
+                <Text color={INK.faint}>{index === 0 ? "└ " : "  "}</Text>
+              </Box>
+              <Box flexShrink={1} flexGrow={1}>
+                <Text color={INK.faint} wrap="truncate-end">{row}</Text>
+              </Box>
+            </Box>
+          ))
+        : null}
     </Box>
   );
 }

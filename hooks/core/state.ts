@@ -23,9 +23,24 @@ export function truncate(value: string, max: number, locale?: Locale): string {
  * Jev state: the content the questions are asked about.
  * The newest turns are kept when the conversation exceeds the state budget.
  */
-export function buildState(input: Pick<RouterInput, "system" | "turns">, limits: Limits): { [key: string]: Json } {
+export function buildState(input: Pick<RouterInput, "system" | "turns" | "session">, limits: Limits): { [key: string]: Json } {
   const systemText = truncate(input.system, limits.maxMessageChars, limits.locale);
-  let budget = limits.maxStateChars - systemText.length;
+  const currentRequest = input.turns.findLast((turn) => turn.role === "user" && typeof turn.text === "string");
+  const latestResult = input.turns.findLast((turn) => turn.role === "tool_result");
+  const context: { [key: string]: Json } = {
+    ...(currentRequest ? { current_request: truncate(String(currentRequest.text), limits.maxMessageChars, limits.locale) } : {}),
+    ...(latestResult ? { latest_tool_result: {
+      tool: String(latestResult.tool ?? "unknown"),
+      content: truncate(String(latestResult.content ?? ""), limits.maxMessageChars, limits.locale),
+    } } : {}),
+    ...(input.session ? { session: {
+      ...(input.session.currentModel ? { current_model: input.session.currentModel } : {}),
+      context_tokens: input.session.contextTokens ?? 0,
+      cache_read_tokens: input.session.cacheReadTokens ?? 0,
+      ...(input.session.availableModels ? { available_models: [...input.session.availableModels] } : {}),
+    } } : {}),
+  };
+  let budget = limits.maxStateChars - systemText.length - JSON.stringify(context).length;
   const conversation: Turn[] = [];
   for (let i = input.turns.length - 1; i >= 0; i--) {
     const turn = input.turns[i]!;
@@ -35,6 +50,7 @@ export function buildState(input: Pick<RouterInput, "system" | "turns">, limits:
   }
   const omitted = input.turns.length - conversation.length;
   return {
+    ...context,
     ...(systemText ? { assistant_instructions: systemText } : {}),
     ...(omitted ? { earlier_turns_omitted: omitted } : {}),
     conversation,

@@ -371,3 +371,12 @@ test("legacy plain-text credentials are ignored", async ($, on) => {
   expect(await status($)).toContain("Key source: none");
   expect(await status($)).not.toContain("legacy-test-key");
 });
+
+test("a key accepted in Setup comes back after a restart from the plugin store", async ($, on) => {
+  mock.clock(on, { now: Date.parse("2026-10-06T12:00:00Z") });
+  mock.store(on, { credentials: { apiKey: "stored-key-7777", provider: "openrouter" } });
+  mock.env(on, {});
+  expect(await status($)).toContain("Provider: OpenRouter");
+  expect(await status($)).not.toContain("Key source: none");
+  expect(await status($)).not.toContain("stored-key-7777");
+});

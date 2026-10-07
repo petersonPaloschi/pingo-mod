@@ -42,9 +42,23 @@
     "locale": {
       "type": "string",
       "title": "Language",
-      "description": "Dashboard and prompt language. Auto follows the system locale.",
+      "description": "Dashboard, commands and hints language. Auto follows the system locale.",
       "options": ["auto", "en", "pt"],
       "default": "auto",
+      "required": false
+    },
+    "routing_locale": {
+      "type": "string",
+      "title": "Jev question language",
+      "description": "Language of Jev's decision questions and criteria, independent of the dashboard. User conversation text is preserved.",
+      "options": ["en", "pt"],
+      "default": "en",
+      "required": false
+    },
+    "claude_models": {
+      "type": "string",
+      "title": "Claude routing candidates",
+      "description": "Optional comma-separated first-party Haiku, Sonnet and Opus model IDs supported by your account. Empty uses the built-in IDs. Models that fail twice are excluded for the session.",
       "required": false
     }
   }

@@ -2,6 +2,7 @@
 import type { DecideConfig } from "./core/decide.ts";
 import { isProvider, PROVIDERS, resolveModel, resolveProvider, resolveUrl, type JevSettings, type ProviderId } from "./core/jev.ts";
 import { localeFor, localeOption, type Locale, type LocaleOption } from "./i18n.ts";
+import { modelTier, TIER_MODEL } from "./core/plan.ts";
 
 export interface ModOptions {
   provider?: string;
@@ -10,6 +11,8 @@ export interface ModOptions {
   min_confidence?: number;
   timeout_ms?: number;
   locale?: string;
+  routing_locale?: string;
+  claude_models?: string;
 }
 
 /** Non-sensitive settings retained by the plugin. */
@@ -26,6 +29,7 @@ export interface Settings extends DecideConfig, JevSettings {
   keySource: "plugin" | "environment" | "none";
   locale: Locale;
   localeOption: LocaleOption;
+  claudeModels: string[];
 }
 
 type Env = Record<string, string>;
@@ -94,6 +98,9 @@ export function resolveSettings(options: ModOptions, env: Env, stored: StoredSet
     ...keyFor(provider, options, env, stored),
     localeOption: localeOption(options.locale),
     locale: localeFor(options.locale === "auto" ? undefined : options.locale),
+    promptLocale: options.routing_locale === "pt" ? "pt" : "en",
+    claudeModels: [...new Set((options.claude_models?.trim() ? options.claude_models.split(",") : Object.values(TIER_MODEL))
+      .map((id) => id.trim()).filter((id) => id.length <= 128 && /^claude-[a-z0-9.-]+$/i.test(id) && modelTier(id)))].slice(0, 40),
     url: resolveUrl(provider),
     jevModel: resolveModel(provider, options.model?.trim()),
     timeoutMs: timeoutMs(options, env),

@@ -118,7 +118,7 @@ describe("answers out of range", () => {
         negative: { type: "choice", choice: "Read", confidence: -0.2 },
         bigNoul: { type: "noul", noul: 1.5 },
         negativeNoul: { type: "noul", noul: -0.1 },
-        fine: { type: "choice", choice: "Read", confidence: 0.9, probabilities: { Read: 0.9 } },
+        fine: { type: "choice", choice: "Read", confidence: 0.9, probabilities: { Read: 1 } },
         fineNoul: { type: "noul", noul: 1 },
       },
       usage: { input_tokens: 1, output_tokens: 0 },
@@ -273,7 +273,7 @@ describe("Setup", () => {
     await ui.unmount();
   });
 
-  test("when the pasted key cannot be saved, the saved provider goes back", async ($, on) => {
+  test("when Claude Code refuses the pasted key, the plugin store still keeps it and its provider", async ($, on) => {
     mock.clock(on, { now: Date.parse("2026-10-06T12:00:00Z") });
     mock.store(on);
     mock.env(on, {});
@@ -298,11 +298,10 @@ describe("Setup", () => {
     await ui.select({ key: "provider", value: "openrouter" });
     await ui.input({ key: "api-key", kind: "change", text: "or-test-9999" });
     await ui.press({ key: "validate" });
-    // The provider was set back, so a later session does not pair OpenRouter with the old key.
+    // The store copy keeps key and provider together, so nothing is rolled back.
     expect(written).toEqual([
       ["jev@inline.provider", "openrouter"],
       ["jev@inline.api_key", "or-test-9999"],
-      ["jev@inline.provider", "auto"],
     ]);
     // This session still uses the key it just checked, with its provider.
     expect(await status($)).toContain("Provider: OpenRouter");
@@ -316,7 +315,7 @@ describe("Setup", () => {
     expect(await status($)).toContain("Provider: Vercel AI Gateway");
   });
 
-  test("a successful CLI exit with an unconfigured key is reported as unsaved", async ($, on) => {
+  test("a CLI exit with an unconfigured key still leaves the key in the plugin store", async ($, on) => {
     mock.clock(on, { now: Date.parse("2026-10-06T12:00:00Z") });
     mock.store(on);
     mock.env(on, {});
@@ -333,8 +332,7 @@ describe("Setup", () => {
     await ui.select({ key: "provider", value: "openrouter" });
     await ui.input({ key: "api-key", kind: "change", text: "unpersisted-test-0000" });
     await ui.press({ key: "validate" });
-    expect(await ui.find({ type: "Text", text: /not saved: Claude Code did not confirm/ })).toBeDefined();
-    expect(written).toEqual([["jev@inline.provider", "openrouter"], ["jev@inline.provider", "auto"]]);
+    expect(written).toEqual([["jev@inline.provider", "openrouter"]]);
     expect(await status($)).toContain("Provider: OpenRouter");
     expect(JSON.stringify(await ui.drawn())).not.toContain("unpersisted-test-0000");
     await ui.unmount();

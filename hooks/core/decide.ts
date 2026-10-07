@@ -22,6 +22,7 @@ export interface DecideConfig extends Limits {
   jevModel: string;
   minConfidence: number;
   locale?: Locale;
+  promptLocale?: Locale;
 }
 
 export interface JevTrace {
@@ -66,22 +67,29 @@ async function shortlist(
   config: DecideConfig,
   askJev: AskJev,
 ): Promise<{ tools: RouterTool[]; inputTokens: number }> {
-  const { questions, shards } = buildShortlistQuestions(tools, config.locale);
+  const { questions, shards } = buildShortlistQuestions(tools, config.promptLocale ?? config.locale);
   const result = await askJev({ state, questions, model: config.jevModel });
-  const scored = shards.flatMap((shard, index) => {
+  const ranked = shards.map((shard, index) => {
     const answer = result.answers[shardKey(index)];
     if (answer?.type !== "choice") return [];
     const names = new Set(shard.map((tool) => tool.name));
     const scores = new Map(Object.entries(answer.probabilities ?? {}).filter(([name]) => names.has(name)));
-    // A confident choice counts even when the provider sent no probabilities.
-    if (names.has(answer.choice) && !scores.has(answer.choice)) scores.set(answer.choice, answer.confidence);
+    // A typed caller may supply only a confident choice; never turn confidence into probability.
+    if (!scores.size && names.has(answer.choice) && answer.confidence >= config.minConfidence) return [answer.choice];
     return [...scores]
       .sort(([, a], [, b]) => b - a)
       .slice(0, SHORTLIST_PER_SHARD)
-      .map(([name, score]) => ({ name, score }));
+      .map(([name]) => name);
   });
-  // The final question offers at most MAX_TOOLS: the likeliest across every shard, in roster order.
-  const best = new Set(scored.sort((a, b) => b.score - a.score).slice(0, MAX_TOOLS).map(({ name }) => name));
+  // Probabilities are conditional on a shard, so compare ranks within it, never scores across shards.
+  // ponytail: beyond MAX_TOOLS shards, roster order breaks ties; group routing if such rosters become common.
+  const best = new Set<string>();
+  for (let rank = 0; rank < SHORTLIST_PER_SHARD && best.size < MAX_TOOLS; rank++) {
+    for (const names of ranked) {
+      if (names[rank]) best.add(names[rank]!);
+      if (best.size === MAX_TOOLS) break;
+    }
+  }
   return { tools: tools.filter((tool) => best.has(tool.name)), inputTokens: result.usage.input_tokens };
 }
 
@@ -106,7 +114,7 @@ export async function decide(
       if (tools.length === 0) return { mode: "passthrough", reason: "jev_unexpected_answer" };
     }
     // Other features' questions ride in the same call: one Jev request per routing point.
-    result = await askJev({ state, questions: { ...buildQuestions(tools, config.locale), ...extra }, model: config.jevModel });
+    result = await askJev({ state, questions: { ...buildQuestions(tools, config.promptLocale ?? config.locale), ...extra }, model: config.jevModel });
   } catch (error) {
     // Fail open: a Jev outage must never stop the session.
     return { mode: "passthrough", reason: `jev_error: ${error instanceof Error ? error.message : String(error)}` };

@@ -26,11 +26,20 @@ export interface RouterInput {
   system: string;
   turns: Turn[];
   tools: RouterTool[];
+  session?: ModelContext;
+}
+
+/** Observed execution state, kept separate from conversation content. */
+export interface ModelContext {
+  currentModel?: string;
+  contextTokens?: number;
+  cacheReadTokens?: number;
+  availableModels?: readonly string[];
 }
 
 // --- Jev wire format (SystemOne) ---
 
-export type ChoiceQuestion = { type: "choice"; instructions: string; criteria: Record<string, string | null> };
+export type ChoiceQuestion = { type: "choice"; instructions: string; criteria: Record<string, Json> };
 export type NoulQuestion = { type: "noul"; instructions: string };
 export type Questions = Record<string, ChoiceQuestion | NoulQuestion>;
 

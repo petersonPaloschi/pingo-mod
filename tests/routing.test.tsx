@@ -31,7 +31,7 @@ function jev(table: Record<string, Answer>) {
   };
   return { asked, ask };
 }
-const pick = (choice: string, confidence: number): Answer => ({ type: "choice", choice, confidence, probabilities: { [choice]: confidence } });
+const pick = (choice: string, confidence: number): Answer => ({ type: "choice", choice, confidence, probabilities: { [choice]: 1 } });
 const noul = (value: number): Answer => ({ type: "noul", noul: value });
 
 describe("planTurn", () => {
@@ -173,7 +173,13 @@ function world(on: On, features: Partial<Features>, table: Record<string, Answer
   on("http.fetch", async (_$, e) => {
     const request = JSON.parse(e.init?.body ?? "{}") as SystemOneRequest;
     const answers: Record<string, Answer> = {};
-    for (const key of Object.keys(request.questions ?? {})) if (table[key]) answers[key] = table[key]!;
+    for (const [key, question] of Object.entries(request.questions ?? {})) {
+      const answer = table[key];
+      if (!answer) continue;
+      const offered = answer.type === "choice" && question.type === "choice"
+        ? Object.keys(question.criteria).find((id) => id === answer.choice || id.startsWith(`claude-${answer.choice}-`)) : undefined;
+      answers[key] = offered ? { ...answer, choice: offered, probabilities: { [offered]: 1 } } : answer;
+    }
     return { value: { status: 200, ok: true, headers: {}, text: JSON.stringify({ answers, usage: { input_tokens: 200, output_tokens: 0 } }) } };
   });
   on("prompt.submit", async (_$, e) => ({ text: e.text }));

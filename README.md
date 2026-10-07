@@ -62,9 +62,9 @@ On Windows, use a path such as `C:/Projects/pingo`; separate multiple plugin dir
 
 *The README animations were created with Higgsfield 3D Jutsu. They illustrate the mascot and an accepted hint, rather than recording the dashboard or measuring performance.*
 
-1. **Collect context.** At the start of a new turn, Pingo reads the composed system instructions, recent conversation, and available tool roster. A message submitted during a running turn keeps that turn's existing plan.
+1. **Collect context.** At the start of a new turn, Pingo reads the composed system instructions, recent conversation, and available tool roster. The current request and latest tool result are also named explicitly. Observed model, context-token and cache-token counts accompany configured model candidates. A message submitted during a running turn keeps that turn's existing plan.
 2. **Ask Jev.** The tool questions ask which tool fits next and whether a tool is needed. Enabled turn-planning questions travel in the same request. A roster over 120 tools adds a shortlisting call before the final choice.
-3. **Check the answer.** A tool hint must meet the confidence threshold, pass the tool-needed consistency check, name an offered tool, and target a tool the router can hint. Unknown choices, unsupported hosted-tool selections, and malformed answers fall through.
+3. **Check the answer.** A tool hint must meet the confidence threshold, pass the tool-needed consistency check, name an offered tool, and target a tool the router can hint. Choice answers need explicit confidence and a valid probability distribution; the router never substitutes winning probability for confidence. Unknown choices, unsupported hosted-tool selections, and malformed answers fall through. Large rosters keep top candidates within each group, without comparing probabilities from different groups as if they shared a distribution.
 4. **Give Claude a hint.** An accepted choice is added to Claude's context. It names the tool; Claude supplies the arguments and can choose a different action.
 5. **Repeat after tools.** With Tool hints enabled, Pingo consults Jev after the last result in a main-session tool batch. It does not route another plugin's own tool calls or each tool call inside a subagent.
 6. **Record activity.** The dashboard shows routing reasons, confidence, latency, token usage, visible replies, tools, and subagent activity.
@@ -94,6 +94,10 @@ For example, enable main-turn model planning with:
 
 A model explicitly selected by the user is preserved until they return to the default. Provider-specific model IDs and extended-context models are also preserved. Subagent planning skips workflow-managed agents, forks, and agents with an explicitly requested model. Haiku does not receive an effort setting.
 
+Model criteria describe both appropriate work and tasks to avoid. The main-turn question offers exact configured model IDs plus a choice to keep the current model. A rejected or missing recommendation retains the last successful model. With minimum confidence `c`, upgrades require `c`, downgrades require `c + (1-c)/2`, and downgrades with observed warm cache halve the remaining tolerated uncertainty again. At the default `0.7`, those thresholds are `0.7`, `0.85`, and `0.925`. This is a conservative policy, not a measured estimate of cache savings or task accuracy.
+
+Two consecutive empty responses from a switched model exclude that candidate for the session; other candidates remain eligible. Interrupts do not count. The live feed records why a recommendation was retained or rejected. Subagents continue to use the native tier aliases and omit tiers with no remaining configured candidates.
+
 ## Dashboard and visual language
 
 Pingo is a dotted sphere with six expressions. The same projected geometry is rendered as **braille cells in the terminal** and **SVG circles on the desktop**. Color indicates state; exact confidence, latency, and usage remain readable as text.
@@ -109,7 +113,7 @@ Pingo is a dotted sphere with six expressions. The same projected geometry is re
 
 **Overview** shows usage and routing totals. **Live** shows visible session events. **Agents** lists subagent state, model, effort, and activity; each agent has a numbered live pane and a distinct dotted mascot. **Flow** visualizes the main session and subagent work. **Features**, **Reasons**, **Baseline**, **Logs**, and **Setup** expose the controls and recorded metadata.
 
-The dashboard, commands, activity feed, and Jev prompts support English and Brazilian Portuguese. Set **Language** to `en`, `pt`, or `auto` in `/jev setup`. `auto` follows the system locale.
+The dashboard, commands, activity feed, and hints support English and Brazilian Portuguese. Set **Language** to `en`, `pt`, or `auto` in `/jev setup`. `auto` follows the system locale. Jev's decision questions and criteria default to English independently; set the `routing_locale` plugin option to `pt` for Portuguese. Conversation content is never translated.
 
 See [DESIGN.md](DESIGN.md) for the visual system and [media notes](docs/media/README.md) for the README animations.
 
@@ -131,24 +135,28 @@ Configure options through Setup or `/plugin configure jev@inline` when loaded wi
 | Option | Default | Purpose |
 | --- | --- | --- |
 | `provider` | `auto` | Choose `typesafe`, `openrouter`, `vercel`, or `opencode`. |
-| `api_key` | Empty | Sensitive credential; otherwise use the chosen provider's environment variable. |
+| `api_key` | Empty | Sensitive credential. Setup also retains a local key/provider pair; otherwise use the chosen provider's environment variable. |
 | `model` | Provider default | The **Jev** model ID, separate from the Claude model selected by turn planning. |
 | `min_confidence` | `0.7` | Minimum confidence for choice answers; accepts 0–1. Falls back to `JEV_MIN_CONFIDENCE` when unset or invalid. |
 | `timeout_ms` | `4000` | Budget for one Jev call, including its retry. Falls back to `JEV_TIMEOUT_MS` when unset; clamped to 500–30000 ms. |
-| `locale` | `auto` | Interface and Jev prompt language: `auto`, `en`, or `pt`. |
+| `locale` | `auto` | Interface, commands and hint language: `auto`, `en`, or `pt`. |
+| `routing_locale` | `en` | Language of Jev decision questions and criteria: `en` or `pt`. |
+| `claude_models` | Built-in Haiku, Sonnet and Opus IDs | Comma-separated first-party model IDs supported by your account. Versions are separate choices. Empty uses built-ins; invalid IDs are ignored, duplicates removed, and at most 40 candidates retained. |
+
+`claude_models` is an explicit candidate list, not automatic account discovery. Configure it through `/plugin configure jev@inline`, for example `claude-sonnet-4-6,claude-sonnet-5-5,claude-opus-5-5`. The existing safeguards preserve provider-specific and extended-context model selections.
 
 A retryable HTTP status or network failure gets one retry inside the call's time budget. A timeout or unreadable response does not get another attempt. Large tool rosters can require two separate calls, each with its own budget.
 
 <details>
 <summary>Credential selection and storage</summary>
 
-The explicit `provider` option takes precedence over `JEV_PROVIDER`. Under `auto`, Pingo uses the first provider with a key in the environment, in the table's order, or TypeSafe if none is set.
+When no Setup credential overrides the session, the explicit `provider` option takes precedence over `JEV_PROVIDER`. Under `auto`, Pingo uses the first provider with a key in the environment, in the table's order, or TypeSafe if none is set. A credential restored from the local store stays paired with its saved provider.
 
 Set the provider to match the issuer of `api_key`. Pingo cannot infer the issuer from the key. With neither an explicit provider nor `JEV_PROVIDER`, the sensitive option is treated as a TypeSafe key. A provider auto-detected from its environment variable gets that variable's key, never a key saved for a different provider.
 
-Setup tests a pasted key before saving it through Claude Code's sensitive `api_key` option, using `claude plugin configure --values-stdin`. A successful save restores the key automatically in future sessions; you do not need to paste or test it on every launch. Keys are never written to Pingo's own state or store. The setup field is masked and shows only the last four characters after saving; `/jev status` reports the source without revealing the key. **Remove key** reports a failure if the runtime cannot clear the saved option; the configuration CLI currently keeps existing values when given an empty input.
+Setup tests a pasted key, saves the accepted key/provider pair in the local plugin store under `~/.claude/plugins/store`, and also attempts to save Claude Code's sensitive `api_key` option using `claude plugin configure --values-stdin`. The local copy restores the key in future sessions when the sensitive option is absent. Treat plugin-store files as sensitive credential files. The setup field is masked and shows only the last four characters after saving; `/jev status` reports the source without revealing the key. **Remove key** clears the local copy and attempts to clear the saved option; a refusal from the configuration runtime is reported.
 
-If the runtime cannot save the option, the validated key works for the current session and Setup explains how to save it with `/plugin configure jev@inline`. If only the provider option cannot be saved, Pingo keeps a provider fallback in its store until `provider` or `JEV_PROVIDER` changes.
+If the runtime cannot save the sensitive option, the local plugin-store copy still persists the credential and its provider. If both saving paths fail, Setup reports the failure and restores the previous provider configuration. A separate provider fallback is retained when the provider option cannot be saved.
 
 **Test connection** sends a saved key only to its configured provider. Testing another provider uses that provider's environment key or asks for a new pasted key.
 
@@ -190,6 +198,7 @@ When routing is enabled, a key is configured, and an applicable feature is on, P
 - Recent prompts, visible replies, tool-call arguments, and tool results. Results can include source files, command output, web pages, and MCP responses. Each text or argument/result entry is truncated to 4,000 characters, retaining its head and tail; recent turns are kept within an approximate 60,000-character state budget.
 - Available tool names and bounded descriptions, or parameter names when descriptions are absent. Large rosters are shortlisted before the final question.
 - Enabled planning questions. Eligible subagent-planning calls instead contain the agent type, a task description capped at 400 characters, and a task prompt capped at 4,000 characters.
+- Configured model IDs and observed execution metadata: current model, context tokens and cache-read tokens. These counts describe the latest observed request, not the exact size of the next one.
 
 Truncation limits request size; it **does not redact secrets** from conversation or tool content. Only use routing for information you are allowed to share with that provider. `/jev routing off` stops every Jev request.
 
@@ -197,7 +206,7 @@ Pingo's views show observable activity and visible response text. They do not ex
 
 The latest **500 request records** are persisted in the plugin store under the Claude Code configuration directory. Records contain timestamps, a short session ID, model names, routing reason codes, tool counts, Jev choices and confidence, applied changes, latency, and token usage. They do not contain conversation prompts, tool arguments or results, provider response bodies, or API keys. Provider failures are stored as `jev_error`, without the error body.
 
-The store also retains the routing and feature switches, and a fallback provider selection when needed. `/jev clear` empties the request history and session feed.
+The store also retains the routing and feature switches, a fallback provider selection when needed, and the validated key/provider pair saved in Setup. The credential entry is separate from request records. `/jev clear` empties the request history and session feed; use Setup's **Remove key** action to remove the credential copy.
 
 ## Development
 

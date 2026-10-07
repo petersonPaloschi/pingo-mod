@@ -112,7 +112,7 @@ export interface JevSettings {
 const RETRYABLE = new Set([408, 429, 500, 502, 503, 504, 529]);
 const MODEL_GONE = new Set([404, 410]);
 
-/** Some gateways return choice answers without a confidence; the winning probability stands in. */
+/** Provider data stays untrusted until its fields have been checked. */
 const record = (value: unknown): Record<string, unknown> | undefined =>
   value !== null && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : undefined;
 
@@ -122,18 +122,20 @@ const share = (value: unknown): value is number => typeof value === "number" && 
 export function normalize(value: unknown, locale?: Locale): SystemOneResult {
   const result = record(value) as SystemOneWireResult | undefined;
   if (!result) throw new Error(text("provider.invalidResponse", locale));
-  const answers: Record<string, Answer> = {};
+  const answers: Record<string, Answer> = Object.create(null);
   for (const [name, raw] of Object.entries(record(result.answers) ?? {})) {
     const answer = record(raw);
     if (answer?.type === "choice" && typeof answer.choice === "string") {
-      const probabilities = Object.fromEntries(
-        Object.entries(record(answer.probabilities) ?? {}).filter((entry): entry is [string, number] => typeof entry[1] === "number" && Number.isFinite(entry[1])),
-      );
-      if (!Object.values(probabilities).every(share)) continue;
-      const confidence = typeof answer.confidence === "number" && Number.isFinite(answer.confidence)
-        ? answer.confidence
-        : Math.max(0, ...Object.values(probabilities));
-      if (!share(confidence)) continue;
+      // Confidence measures the distribution's concentration; a winning probability cannot replace it.
+      const confidence = answer.confidence;
+      const rawProbabilities = record(answer.probabilities);
+      if (!share(confidence) || !rawProbabilities) continue;
+      const values = Object.values(rawProbabilities);
+      if (!values.length || !values.every(share)) continue;
+      const probabilities = rawProbabilities as Record<string, number>;
+      // Allow small rounding errors without rewriting the provider's probabilities.
+      if (Math.abs(values.reduce((sum, probability) => sum + probability, 0) - 1) > 0.01) continue;
+      if (!Object.hasOwn(probabilities, answer.choice) || probabilities[answer.choice]! < Math.max(...values)) continue;
       answers[name] = { type: "choice", choice: answer.choice, confidence, probabilities };
     } else if (answer?.type === "noul" && share(answer.noul)) {
       answers[name] = { type: "noul", noul: answer.noul };
@@ -200,7 +202,15 @@ export function createAskJev(settings: JevSettings, transport: Transport): AskJe
       throw new JevReplyError(text("provider.invalidJson", settings.locale));
     }
     try {
-      return normalize(parsed, settings.locale);
+      const result = normalize(parsed, settings.locale);
+      for (const [name, answer] of Object.entries(result.answers)) {
+        const question = Object.hasOwn(request.questions, name) ? request.questions[name] : undefined;
+        if (!question || question.type !== answer.type || (answer.type === "choice" && question.type === "choice" &&
+          (!Object.hasOwn(question.criteria, answer.choice) || Object.keys(answer.probabilities).some((option) => !Object.hasOwn(question.criteria, option))))) {
+          delete result.answers[name];
+        }
+      }
+      return result;
     } catch (error) {
       throw new JevReplyError(error instanceof Error ? error.message : String(error));
     }

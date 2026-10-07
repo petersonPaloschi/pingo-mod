@@ -2,7 +2,8 @@
 // visible messages, Jev's answers). Never the model's reasoning: thinking is not read here.
 import type { FeatureFlags } from "../types";
 import type { FeatureId } from "./core/plan.ts";
-import { formatCompact, formatNumber, localeFor, text, type Locale, type LocaleKey } from "./i18n.ts";
+import type { Answer, SystemOneRequest, SystemOneResult } from "./core/types.ts";
+import { formatCompact, formatDecimal, formatNumber, localeFor, text, type Locale, type LocaleKey } from "./i18n.ts";
 
 /** Each feature, its one-click toggle key, and a short description. */
 const FEATURE_KEYS: readonly { id: FeatureId; name: LocaleKey; hotkey: string; description: LocaleKey }[] = [
@@ -83,7 +84,7 @@ export function toolDetails(tool: string, input: Record<string, unknown>, locale
     case "Bash":
     case "PowerShell": {
       const command = fieldText("command") ?? "";
-      if (command.length > 60) parts.push(short(command, 240));
+      if (command.length > 60) parts.push(short(command, 160));
       parts.push(fieldText("description"), input.run_in_background ? text("feed.detail.background", locale) : undefined);
       const timeout = number("timeout");
       if (timeout) parts.push(text("feed.detail.timeout", locale, { seconds: formatNumber(Math.round(timeout / 1000), locale) }));
@@ -146,3 +147,51 @@ export const featureFlagsText = (flags: FeatureFlags, locale: Locale = localeFor
   const names = features(locale).filter((feature) => flags[feature.id]).map((feature) => feature.name);
   return names.length ? new Intl.ListFormat(locale === "pt" ? "pt-BR" : "en-US", { style: "short", type: "conjunction" }).format(names) : text("feed.none", locale);
 };
+
+/** The most probable options of a choice, as "name 87.3%", likeliest first. */
+const TOP_PROBABILITIES = 5;
+
+function answerLine(name: string, answer: Answer, locale: Locale): string {
+  const percent = (value: number) => `${formatDecimal(value * 100, locale, 1)}%`;
+  if (answer.type === "noul") return text("feed.jev.answer.noul", locale, { question: name, value: percent(answer.noul) });
+  const ranked = Object.entries(answer.probabilities)
+    .sort(([, a], [, b]) => b - a)
+    .slice(0, TOP_PROBABILITIES)
+    .map(([option, probability]) => `${short(option, 40)} ${percent(probability)}`);
+  return text("feed.jev.answer.choice", locale, {
+    question: name,
+    choice: short(answer.choice, 60),
+    confidence: percent(answer.confidence),
+    odds: ranked.join(" · "),
+  });
+}
+
+/** What one Jev call was asked: the newest turn it read and the questions it had to answer. */
+export function jevInput(request: SystemOneRequest, locale: Locale = localeFor()): { text: string; detail: string } {
+  const conversation = Array.isArray(request.state.conversation) ? request.state.conversation : [];
+  const last = conversation.at(-1) as Record<string, unknown> | undefined;
+  const lastText = last ? String(last.text ?? last.content ?? JSON.stringify(last.tool_calls ?? last)) : "";
+  const questions = Object.keys(request.questions);
+  return {
+    text: text("feed.jev.input", locale, {
+      turns: formatNumber(conversation.length, locale),
+      questions: formatNumber(questions.length, locale),
+      chars: formatCompact(JSON.stringify(request.state).length, locale),
+    }),
+    detail: [
+      text("feed.jev.input.last", locale, { role: String(last?.role ?? "?"), text: short(lastText, 240) }),
+      text("feed.jev.input.questions", locale, { list: questions.join(", "), model: request.model }),
+    ].join("\n"),
+  };
+}
+
+/** What one Jev call answered: every question with its choice and the odds behind it. */
+export function jevOutput(result: SystemOneResult, locale: Locale = localeFor()): { text: string; detail: string } {
+  return {
+    text: text("feed.jev.output", locale, {
+      input: formatCompact(result.usage.input_tokens, locale),
+      output: formatCompact(result.usage.output_tokens, locale),
+    }),
+    detail: Object.entries(result.answers).map(([name, answer]) => answerLine(name, answer, locale)).join("\n"),
+  };
+}

@@ -25,7 +25,7 @@ const SPAWN = {
   background: false,
   fork: false,
 };
-const pick = (choice: string, confidence: number): Answer => ({ type: "choice", choice, confidence, probabilities: { [choice]: confidence } });
+const pick = (choice: string, confidence: number): Answer => ({ type: "choice", choice, confidence, probabilities: { [choice]: 1 } });
 
 /**
  * A session with Jev answering from `table`. The store is the test's own, so it can be read back,
