@@ -35,7 +35,7 @@ The palette and shared drawing functions live in `hooks/dots.ts`.
 - **Tetra**, **Gem**, **Can**, **Coil**, and **Top** represent concurrent subagents. Each uses a different solid and color so their activity is easy to follow.
 - Subagent mascots appear in the Agents tab, their live panes, and the band above the prompt.
 
-The renderers live in `hooks/mascots/dice.ts` and `hooks/mascots/agents.ts`. Mascot frames use `$.ui.blit` while their pane is visible; a refused blit stops that animation until the pane renders again.
+The renderers live in `hooks/mascots/pingo.ts`, `hooks/mascots/dice.ts`, and `hooks/mascots/agents.ts`. Mascot frames use `$.ui.blit` while their pane is visible; a refused blit stops that animation until the pane renders again.
 
 ## Dashboard
 
@@ -43,10 +43,10 @@ The renderers live in `hooks/mascots/dice.ts` and `hooks/mascots/agents.ts`. Mas
 - **Overview:** request totals, token usage, routing results, and a request timeline.
 - **Live:** visible events grouped by speaker. The feed does not display internal model reasoning.
 - **Agents:** subagent state, model, effort, tool and request counts, and recent activity.
-- **Flow:** a diagram of the current subagent wave, its review stage, and the resulting edits.
+- **Flow:** a live diagram of the latest subagent wave, any other running subagents, its review stage, and the resulting edits.
 - **Features:** independent switches with a short description of each feature.
 - **Reasons, baseline, and log:** routing explanations, comparison metrics, and persisted request metadata.
 
 ## Terminal and desktop
 
-The terminal uses braille rasters for dotted art and text for values. The desktop app uses SVG circles for the same mascot geometry. Other surfaces show the status text and available controls.
+The terminal uses braille rasters for dotted art and text for values. The desktop app uses SVG circles for the same mascot geometry. Other surfaces show the status text and available controls. Runtime text is available in English and Brazilian Portuguese; locale-specific strings live in `hooks/strings/en.ts` and `hooks/strings/pt.ts`.

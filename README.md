@@ -59,6 +59,10 @@ Older versions saved a plain-text key in plugin state. The current version remov
 
 Use `/jev status` to see the selected provider and key source. It never displays the key or part of it.
 
+## Language
+
+The dashboard, setup messages, command output, activity feed, Flow view, and prompts sent to Jev support English and Brazilian Portuguese. The **Language** option defaults to **auto**, which follows the system locale; set it to `en` or `pt` to choose a language explicitly.
+
 ## Commands
 
 | Command | Action |
@@ -67,7 +71,7 @@ Use `/jev status` to see the selected provider and key source. It never displays
 | `/jev live` | Open the live event view |
 | `/jev agents` | List subagents and their activity |
 | `/jev agent <number>` | Open a subagent's live pane |
-| `/jev flow` | Draw the latest wave of subagents as one diagram: main session → each subagent → back → you confirm → edits (tab `9`) |
+| `/jev flow` | Draw the latest subagent wave and any other running subagents as one live diagram: main session → agents → review → edits (tab `9`) |
 | `/jev features` | View and toggle routing features |
 | `/jev reasons` | See why requests were not routed |
 | `/jev baseline` | Compare routing with baseline behavior |

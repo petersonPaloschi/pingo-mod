@@ -40,7 +40,7 @@ Common types include `feat`, `fix`, `docs`, `refactor`, `test`, `chore`, and `ci
 
 ## Code and documentation
 
-- Keep user-facing text and repository documentation in English.
+- Keep repository documentation in English. Put runtime user-facing text in both `hooks/strings/en.ts` and `hooks/strings/pt.ts`.
 - Preserve the plugin's fail-open behavior: routing failures must not block Claude Code.
 - Do not log API keys or include them in request bodies, URLs, test output, screenshots, or issue reports.
 - Add or update tests for behavior changes and keep provider calls stubbed in tests.
