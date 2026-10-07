@@ -149,7 +149,11 @@ async function pool<T>(tasks: (() => Promise<T>)[], size: number): Promise<T[]> 
 
 // --- Inputs ---
 
-const rel = (file: string) => path.relative(process.cwd(), file).split(path.sep).join("/") || ".";
+/** Ids are paths from the working directory, or absolute once outside it: `../../..` chains only obscure the file. */
+const rel = (file: string) => {
+  const relative = path.relative(process.cwd(), file);
+  return (relative.startsWith("..") || path.isAbsolute(relative) ? file : relative).split(path.sep).join("/") || ".";
+};
 const readStdin = () => { try { return fs.readFileSync(0, "utf8"); } catch { return ""; } };
 
 function gitFiles(dir: string): string[] | undefined {
