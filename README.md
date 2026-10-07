@@ -113,18 +113,33 @@ Two consecutive empty responses from a switched model exclude that candidate for
 
 ### Sift: bulk judgments
 
-The plugin also ships the **`sift`** skill. When Claude is about to read many files, a long log, or a large list only to decide which parts matter, it can run `scripts/sift.ts` instead. Jev answers one yes/no or pick-a-label question per item, in parallel, and Claude reads back a compact shortlist with uncertain items marked `?`.
+The plugin also ships the **`sift`** skill. When Claude needs to decide which files, log lines, or list entries matter, it can delegate those judgments to Jev and read back a compact shortlist. Use it for semantic filtering, classification, ranking, and finding relevant lines. Use `rg` for exact matches and read the shortlisted content before editing or drawing conclusions.
+
+Sift requires **Node 22.18 or newer** and no additional dependencies. In the table below, `sift` means `node scripts/sift.ts` from the plugin checkout; it is not a separately installed executable. Claude's skill uses the script under `CLAUDE_PLUGIN_ROOT`.
 
 | Command | Use |
 | --- | --- |
-| `sift filter "<yes/no question>" <inputs>` | Keep the files, lines (`--lines`), or JSONL items (`--items`) where the answer is yes. Repeated log lines are folded into one pattern. |
+| `sift filter "<yes/no question>" <inputs>` | Keep the files, lines (`--lines`), or JSONL items (`--items`) where the answer is yes. Repeated lines within one log file are folded into one pattern. |
 | `sift classify --labels "a,b,c" <inputs>` | Put each item in one bucket, listing low-confidence items with their runner-up label. |
 | `sift rank "<query>" <inputs>` | Order items by relevance to a query. |
 | `sift find "<what>" <files>` | Locate the matching lines inside large files. |
 | `sift ask "<question>" --state @file` | One yes/no or `--choice` answer over a document, or a raw `{state, questions}` spec. |
 | `sift status` | Check the provider, key source, and model with one real call. |
 
-Sift uses the same provider, key, and model as routing: the key saved by `/jev setup`, the plugin options, then the provider environment variables. It runs outside the mod with Node 22.18 or newer, does not depend on the routing switch or features, and does not appear in the dashboard beyond its Bash call. Results are a shortlist, not proof: Claude is told to open the survivors and read the `?` items itself. Sift adapts [Quicksilver](https://github.com/UditAkhourii/quicksilver)'s approach to Pingo's providers and credentials.
+For example:
+
+```sh
+node scripts/sift.ts --help
+node scripts/sift.ts filter "Does this file handle authentication?" hooks --ext ts,tsx
+node scripts/sift.ts classify --labels "bug,feature,question" --items tickets.jsonl
+node scripts/sift.ts rank "model switching" hooks --top 5 --save ranked.json
+```
+
+Inputs can be files, directories, glob patterns, `-` for stdin, or `--items FILE.jsonl` with one `{ "id": "T1", "text": "..." }` entry per line. Directory and glob inputs respect Git ignores. Requests run 16 at a time by default (`--concurrency`), with one item per request; `--fast` packs small items together. Filter, classify, and rank clip each item at 60,000 characters by default (`--max-chars`). Find judges chunks of 150 non-empty lines (`--chunk`), with each line clipped at 400 characters.
+
+`?` marks uncertain judgments that need direct review; `~` marks clipped content in scored or verbose output. `--json` writes machine-readable results to stdout and the summary to stderr. `--save FILE` writes full filter/classify/rank results, all find hits above `--min-score`, or the raw ask response. Failed items or chunks are reported separately. Exit codes are `0` for a completed command (possibly with partial failures), `1` for invalid or blocked input, `3` for a missing/refused key, and `5` when no usable judgment was returned or the command failed unexpectedly.
+
+Sift reads exported plugin options, Setup's saved key/provider pair when no option key is present, and the provider environment variables. The model defaults to that provider's configured/default Jev model; `--model` overrides it for the command. `/jev setup` remains the credential configuration path. `sift status` makes one real validation call. Sift runs independently of routing and feature switches and appears in the dashboard only as its Bash invocation. It adapts [Quicksilver](https://github.com/UditAkhourii/quicksilver)'s approach to Pingo's providers and credentials.
 
 ## Dashboard and visual language
 
@@ -247,7 +262,9 @@ When routing is enabled, a key is configured, and an applicable feature is on, P
 
 Truncation limits request size; it **does not redact secrets** from conversation or tool content. Only use routing for information you are allowed to share with that provider. `/jev routing off` stops every routing request.
 
-When Claude runs the `sift` skill, the selected provider receives the content of each judged item (a file, line, or JSONL entry, cut at 60,000 characters by default) together with Claude's question, labels, or query. `/jev routing off` does not affect sift. It skips files that look like credentials (`.env*`, keys, certificates, `credentials`/`secrets` files), binaries, files over 2 MB, lockfiles, and paths ignored by git, but it does not redact secrets inside other files. Sift stores nothing; `--save FILE` writes results only where asked.
+When Claude runs the `sift` skill, the selected provider receives the judged content together with Claude's question, labels, or query. Filter, classify, and rank use the per-item character limit described above; find sends clipped line chunks. Ask sends the supplied state/spec without that per-item clipping. `/jev routing off` does not affect sift.
+
+File collection skips credential-like filenames (`.env*`, keys, certificates, `credentials`/`secrets` files), binaries, files over 2 MB, lockfiles, and common build/dependency directories. Credential and binary/size checks also apply to `--items`, `--state @file`, raw ask specs, and `--labels-json @file`. Directory and glob discovery respect Git ignores; explicitly named files and stdin are explicit inputs. These checks do not redact secrets inside ordinary content or inspect credentials pasted through stdin/literal state. Sift does not persist judgments unless `--save FILE` is supplied.
 
 Pingo's views show observable activity and visible response text. They do not expose the models' private internal reasoning. The live feed stays in session memory; it may contain shortened prompts, tool details, response text, and provider errors.
 
@@ -262,9 +279,10 @@ The store also retains the routing and feature switches, a fallback provider sel
 ```sh
 claude plugin validate .
 claude plugin test .
+node --test tests/sift-cli.test.mjs
 ```
 
-Tests run in Claude Code's plugin test runtime with stubbed provider responses; they do not need a real API key.
+The plugin tests use Claude Code's test runtime. The additional Node suite exercises the actual sift CLI with isolated configuration and a stubbed provider, including Git ignores, credential guards, saved output, and unusable answers. Both suites run without a real API key or provider request.
 
 | Source | Responsibility |
 | --- | --- |

@@ -20,7 +20,7 @@ import type { Answer, Json, SystemOneRequest, SystemOneResult } from "../hooks/c
 const IGNORE_DIRS = new Set(["node_modules", ".git", "dist", "build", "out", ".next", ".nuxt", ".svelte-kit",
   "target", "vendor", "__pycache__", ".venv", "venv", "coverage", ".turbo", ".cache", ".idea", ".vscode"]);
 /** Files that look like credentials are never sent, whatever the question. */
-const SECRET_RE = /(^|[\/\\])(\.env(\..*)?|.*\.(pem|key|p12|pfx|keystore|jks|crt|cer)|id_(rsa|dsa|ecdsa|ed25519)(\.pub)?|\.npmrc|\.pypirc|\.netrc|credentials(\.json)?|secrets?\.(json|ya?ml|toml))$/i;
+const SECRET_RE = /(^|[\/\\])(\.env[^\/\\]*|.*\.(pem|key|p12|pfx|p8|der|asc|keystore|jks|crt|cer)|id_(rsa|dsa|ecdsa|ed25519)(\.pub)?|\.npmrc|\.pypirc|\.netrc|\.?credentials[^\/\\]*|service-account[^\/\\]*\.json|\.?secrets?(\.(json|ya?ml|toml))?)$/i;
 const LOCK_RE = /(package-lock\.json|yarn\.lock|pnpm-lock\.yaml|bun\.lockb?|Cargo\.lock|poetry\.lock|composer\.lock|\.min\.(js|css)|\.map)$/i;
 const RETRYABLE = new Set([408, 409, 429, 500, 502, 503, 504, 529]);
 const MAX_FILE_BYTES = 2 * 1024 * 1024;
@@ -183,12 +183,17 @@ function expand(spec: string): string[] {
   if (/[*?[\]{}]/.test(spec)) {
     const glob = (fs as { globSync?: (pattern: string, options: object) => string[] }).globSync;
     if (!glob) fail("glob patterns need Node 22+; pass a directory instead");
-    return glob!(spec, { exclude: (file: string) => IGNORE_DIRS.has(path.basename(file)) }).filter(isFile);
+    const prefix = spec.slice(0, spec.search(/[*?[\]{}]/));
+    const dir = /[\/\\]$/.test(prefix) ? prefix : path.dirname(prefix || ".");
+    const tracked = gitFiles(dir);
+    const allowed = tracked ? new Set(tracked.map((file) => path.resolve(file))) : undefined;
+    return glob!(spec, { exclude: (file: string) => IGNORE_DIRS.has(path.basename(file)) })
+      .filter((file) => isFile(file) && (!allowed || allowed.has(path.resolve(file))));
   }
   if (!fs.existsSync(spec)) fail(`no such file or directory: ${spec}`);
   if (fs.statSync(spec).isFile()) return [spec];
   const tracked = gitFiles(spec);
-  return (tracked?.length ? tracked : walk(spec)).filter(isFile);
+  return (tracked ?? walk(spec)).filter(isFile);
 }
 
 /** The text of a file, or undefined for binaries and anything over 2 MB. */
@@ -196,6 +201,15 @@ function readText(file: string): string | undefined {
   if (fs.statSync(file).size > MAX_FILE_BYTES) return undefined;
   const buffer = fs.readFileSync(file);
   return buffer.subarray(0, 8192).includes(0) ? undefined : buffer.toString("utf8");
+}
+
+/** Explicit auxiliary inputs use the same guard and size limit as collected files. */
+function readInput(file: string, flags: Flags): string {
+  const id = rel(path.resolve(file));
+  if (!flags["no-secrets-guard"] && SECRET_RE.test(id)) fail(`${id} (secret-like, never sent)`);
+  const text = readText(file);
+  if (text === undefined) fail(`${id} (binary or >2MB)`);
+  return text;
 }
 
 function collect(pos: string[], flags: Flags): { items: Item[]; skipped: string[] } {
@@ -210,7 +224,7 @@ function collect(pos: string[], flags: Flags): { items: Item[]; skipped: string[
   const pushLines = (name: string, text: string) => text.split(/\r?\n/).forEach((line, i) => { if (line.trim()) push(`${name}:${i + 1}`, line); });
 
   if (typeof flags.items === "string") {
-    const raw = flags.items === "-" ? readStdin() : fs.readFileSync(flags.items, "utf8");
+    const raw = flags.items === "-" ? readStdin() : readInput(flags.items, flags);
     raw.split(/\r?\n/).forEach((line, i) => {
       if (!line.trim()) return;
       try {
@@ -241,6 +255,7 @@ function collect(pos: string[], flags: Flags): { items: Item[]; skipped: string[
     if (seen.has(abs)) continue;
     seen.add(abs);
     const id = rel(abs);
+    if (id.split("/").some((part) => IGNORE_DIRS.has(part))) continue;
     if (exts && !exts.includes(path.extname(file).toLowerCase())) continue;
     if (!flags["no-secrets-guard"] && SECRET_RE.test(id)) { skipped.push(`${id} (secret-like, never sent)`); continue; }
     if (LOCK_RE.test(id)) continue;
@@ -330,7 +345,7 @@ async function cmdFilter(pos: string[], flags: Flags) {
 function labelsFrom(flags: Flags): Record<string, Json> {
   if (typeof flags["labels-json"] === "string") {
     const raw = flags["labels-json"];
-    return JSON.parse(raw.startsWith("@") ? fs.readFileSync(raw.slice(1), "utf8") : raw);
+    return JSON.parse(raw.startsWith("@") ? readInput(raw.slice(1), flags) : raw);
   }
   if (typeof flags.labels !== "string") fail('classify needs --labels "a,b,c" or --labels-json \'{"a":"description"}\'');
   return parseLabels(flags.labels as string);
@@ -366,7 +381,8 @@ async function cmdRank(pos: string[], flags: Flags) {
   const shown = flags.all ? scored : scored.slice(0, num(flags.top, 10));
   const lines = shown.map((row) => `${f2(row.score)}  ${label(row.item, flags)}`);
   const stats = { ...newStats(run.provider, items, skipped), jevTokens: run.jevTokens, failed: run.failed, seconds: (Date.now() - started) / 1000 };
-  const foot = footer(stats, [`top ${shown.length}`], lines.join("\n"));
+  const saved = save(flags, scored.map((row) => ({ id: row.item.id, relevance: row.score, confidence: row.confidence })));
+  const foot = footer(stats, [`top ${shown.length}`], lines.join("\n")) + saved;
   emit(flags, shown.map((row) => ({ id: row.item.id, relevance: row.score, confidence: row.confidence })), lines, foot);
   finish(stats);
 }
@@ -388,7 +404,9 @@ async function cmdFind(pos: string[], flags: Flags) {
   const failed: RunStats["failed"] = [];
   const perChunk = await pool(chunks.map((chunk) => async () => {
     try {
-      return findHits(chunk.file, chunk.lines, (await ask(findRequest(query!, chunk.lines))).answers);
+      const result = await ask(findRequest(query!, chunk.lines));
+      if (result.answers.where?.type !== "choice" || result.answers.exists?.type !== "noul") throw new Error("no usable line judgment");
+      return findHits(chunk.file, chunk.lines, result.answers);
     } catch (error) {
       if (isAuthError(error)) authFail(error);
       failed.push({ id: `${chunk.file}:${chunk.lines[0]![0]}-${chunk.lines.at(-1)![0]}`, error: message(error) });
@@ -396,19 +414,20 @@ async function cmdFind(pos: string[], flags: Flags) {
     }
   }), num(flags.concurrency, 16));
   const minScore = num(flags["min-score"], 0.05);
-  const hits = perChunk.flat().filter((hit) => hit.score >= minScore).sort((a, b) => b.score - a.score).slice(0, num(flags.top, 5));
+  const allHits = perChunk.flat().filter((hit) => hit.score >= minScore).sort((a, b) => b.score - a.score);
+  const hits = allHits.slice(0, num(flags.top, 5));
   const lines = hits.map((hit) => `${f2(hit.score)}  ${hit.file}:${hit.line}  ${clip(hit.text.trim(), num(flags.width, 160))}`);
   if (!lines.length) lines.push("(no matching lines)");
   const stats = { ...newStats(provider, files, skipped), jevTokens: counter.jevTokens, failed, seconds: (Date.now() - started) / 1000 };
-  const foot = footer(stats, [`${chunks.length} chunks`], lines.join("\n"));
+  const foot = footer(stats, [`${chunks.length} chunks`], lines.join("\n")) + save(flags, allHits);
   emit(flags, hits, lines, foot);
   if (chunks.length && failed.length >= chunks.length) process.exitCode = 5;
 }
 
-function stateArg(value: string | true | undefined): string | undefined {
+function stateArg(value: string | true | undefined, flags: Flags): string | undefined {
   if (typeof value !== "string") return undefined;
   if (value === "-") return readStdin();
-  return value.startsWith("@") ? fs.readFileSync(value.slice(1), "utf8") : value;
+  return value.startsWith("@") ? readInput(value.slice(1), flags) : value;
 }
 
 async function cmdAsk(pos: string[], flags: Flags) {
@@ -416,13 +435,13 @@ async function cmdAsk(pos: string[], flags: Flags) {
   const first = pos[0];
   let request: Omit<SystemOneRequest, "model">;
   if (first && (first === "-" || first.endsWith(".json")) && flags.state === undefined) {
-    const spec = JSON.parse(first === "-" ? readStdin() : fs.readFileSync(first, "utf8"));
+    const spec = JSON.parse(first === "-" ? readStdin() : readInput(first, flags));
     if (!spec?.state || !spec?.questions) fail('a spec needs "state" and "questions"');
     request = { state: typeof spec.state === "string" ? { content: spec.state } : spec.state, questions: spec.questions };
   } else {
     const question = pos.join(" ");
     if (!question) fail('usage: ask "<question>" --state @file|text|- [--choice "a,b"]  or  ask spec.json');
-    const state = stateArg(flags.state);
+    const state = stateArg(flags.state, flags);
     if (state === undefined) fail("ask needs --state (@file, literal text, or - for stdin)");
     const instructions = `${question} (about \`content\`)`;
     request = {
@@ -439,10 +458,12 @@ async function cmdAsk(pos: string[], flags: Flags) {
     return isAuthError(error) ? authFail(error) : fail(message(error), 5);
   }
   const lines = Object.entries(result.answers).map(([id, answer]) => renderAnswer(id, answer));
+  for (const id of Object.keys(request.questions)) if (!Object.hasOwn(result.answers, id)) lines.push(`${id}  no usable answer`);
   for (const drop of result.dropped ?? []) lines.push(`${drop.name}  unusable (${drop.why})`);
   const stateText = JSON.stringify(request.state);
   const stats: RunStats = { scanned: 1, contentTokens: estTokens(stateText), jevTokens: counter.jevTokens, seconds: (Date.now() - started) / 1000, provider, failed: [], skipped: [] };
-  emit(flags, result, lines, footer(stats, [], lines.join("\n"), false));
+  emit(flags, result, lines, footer(stats, [], lines.join("\n"), false) + save(flags, result));
+  if (!Object.keys(result.answers).length) process.exitCode = 5;
 }
 
 async function cmdStatus(flags: Flags) {

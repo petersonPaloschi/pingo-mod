@@ -184,7 +184,8 @@ export function renderScored(rows: Scored[], flags: Flags): string[] {
   if (!flags.lines || flags["no-collapse"]) return rows.map((row) => `${f2(row.score)}  ${label(row.item, flags)}`);
   const groups = new Map<string, Scored[]>();
   for (const row of rows) {
-    const key = template(row.item.text);
+    const source = row.item.id.slice(0, row.item.id.lastIndexOf(":"));
+    const key = `${source}\0${template(row.item.text)}`;
     groups.set(key, [...(groups.get(key) ?? []), row]);
   }
   return [...groups.values()].map((group) => {

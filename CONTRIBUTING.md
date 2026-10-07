@@ -11,6 +11,7 @@ Thanks for helping improve Jev. Issues and pull requests should be written in En
    ```sh
    claude plugin validate .
    claude plugin test .
+   node --test tests/sift-cli.test.mjs
    ```
 
 4. Review the staged diff and confirm that it contains no credentials or private data.

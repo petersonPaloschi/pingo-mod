@@ -80,6 +80,17 @@ test("templates ignore numbers and ids, and line ranges stop at the limit", () =
   expect(ranges([1, 2, 3, 7, 8], 3)).toBe("1-3,… (+2; use --save for all)");
 });
 
+test("repeated log lines from different files keep their own source", () => {
+  const rows = [
+    { item: item("first.log:2", "ERROR request 12 failed"), score: 0.99 },
+    { item: item("second.log:7", "ERROR request 34 failed"), score: 0.98 },
+  ];
+  expect(renderFilter(rows, { lines: true }).lines).toEqual([
+    "0.99  first.log:2  ERROR request 12 failed",
+    "0.98  second.log:7  ERROR request 34 failed",
+  ]);
+});
+
 test("classify counts every label and names the runner-up of an unsure item", () => {
   const choice = (label: string, confidence: number, probabilities: Record<string, number>) => ({ type: "choice" as const, choice: label, confidence, probabilities });
   const rows = [
