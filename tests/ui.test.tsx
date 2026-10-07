@@ -60,7 +60,7 @@ test("the dashboard follows the configured Portuguese locale", { options: { loca
   await ui.press({ key: "tab-setup" });
   expect(await ui.find({ type: "Text", text: "Configuração do provedor" })).toBeDefined();
   await ui.press({ key: "tab-flow" });
-  expect(await ui.find({ type: "Text", text: /VERIFICAÇÃO ANTES DO ENVIO/ })).toBeDefined();
+  expect(await ui.find({ type: "Text", text: /Nenhuma execução registrada ainda/ })).toBeDefined();
   await ui.unmount();
 });
 

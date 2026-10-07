@@ -1,32 +1,13 @@
-// The Flow tab: the latest batch of subagents drawn as one diagram. The main session sends a
-// wave of subagents out, each works its task, the answers come back to the main session, you
-// confirm, and the main loop makes the edits in one pass. Drawn as a grid of characters so the
-// lines and branches line up like ASCII art; pure, so a test sees exactly what the pane draws.
-import type { AgentRun, FlowState } from "../types";
-import { AGENT_MASCOTS, isMascot } from "./mascots/agents.ts";
+// The Flow tab: one run as observed, from the message through Jev and the main loop, out to tools,
+// subagents and advisor calls, to the answer and its edits; earlier runs listed under it. The
+// branches appear in the order they first happened, since tools, subagents and the advisor can
+// come in any order and more than once. Drawn as a grid of characters so the trunk lines up; pure,
+// so a test sees exactly what the pane draws.
+import type { TraceAgent, TraceMessage, TraceRun, TraceState } from "../types";
 import { DOT, hex } from "./dots.ts";
-import { formatDuration, formatNumber, localeFor, text, type Locale, type LocaleKey } from "./i18n.ts";
+import { formatClock, formatDuration, formatNumber, localeFor, text, type Locale, type LocaleKey } from "./i18n.ts";
 import { displayWidth } from "./layout.ts";
-
-export type FlowStep = "plan" | "check" | "review" | "fix" | "done";
-
-/** Where the wave is: nothing sent, subagents working, answers back, edits under way, done. */
-export function flowStep(flow: FlowState, wave: readonly AgentRun[]): FlowStep {
-  if (wave.length === 0) return "plan";
-  if (wave.some((run) => run.state === "running")) return "check";
-  if (flow.confirmed || flow.edits > 0) return flow.working ? "fix" : "done";
-  return "review";
-}
-
-const STAGE: Record<FlowStep, number> = { plan: 0, check: 1, review: 2, fix: 3, done: 4 };
-
-/** The wave's subagents still kept on the Agents tab, in the order they started. */
-export function waveOf(flow: FlowState, agents: readonly AgentRun[]): AgentRun[] {
-  // A number listed twice is one subagent, drawn once.
-  const members = [...new Set(flow.wave)].map((n) => agents.find((run) => run.n === n)).filter((run): run is AgentRun => run !== undefined);
-  const inWave = new Set(members.map((run) => run.n));
-  return [...members, ...agents.filter((run) => run.state === "running" && !inWave.has(run.n))];
-}
+import { confirmedModels, isDone } from "./trace.ts";
 
 /** "claude-opus-5-5" → "Opus 5.5", "claude-haiku-4-5-20251001" → "Haiku 4.5", "claude-3-5-sonnet-20241022" → "Sonnet 3.5". */
 export function prettyModel(id: string | undefined): string {
@@ -40,9 +21,6 @@ export function prettyModel(id: string | undefined): string {
   if (old) return `${capital(old[3]!)} ${old[1]}${old[2] ? `.${old[2]}` : ""}`;
   return id.replace(/^claude-/, "").replace(/-\d{8}$/, "");
 }
-
-const WORDS: readonly LocaleKey[] = ["flow.word.zero", "flow.word.one", "flow.word.two", "flow.word.three", "flow.word.four", "flow.word.five", "flow.word.six", "flow.word.seven", "flow.word.eight", "flow.word.nine", "flow.word.ten"];
-const word = (n: number, locale: Locale) => (WORDS[n] ? text(WORDS[n]!, locale) : formatNumber(n, locale));
 
 /** One cell of the drawing: a character and how it is painted. */
 type Style = { color: string; bold?: boolean; bg?: string };
@@ -58,7 +36,6 @@ const C = {
   green: hex(DOT.route),
   fail: hex(DOT.fail),
   pass: hex(DOT.pass),
-  pill: "#2c2f36",
 };
 
 /** A grid of characters, each with its own style, turned into runs of one style per line. */
@@ -92,14 +69,6 @@ class Canvas {
       at += w;
     }
   }
-  /** Several runs in a row, starting at x; returns where they end. */
-  write(x: number, y: number, parts: readonly FlowSegment[]): number {
-    for (const { text, ...style } of parts) {
-      this.put(x, y, text, style);
-      x += displayWidth(text);
-    }
-    return x;
-  }
   /** Runs centered on column cx; cut to the width when they do not fit in it. */
   center(cx: number, y: number, parts: readonly FlowSegment[]) {
     let length = parts.reduce((sum, part) => sum + displayWidth(part.text), 0);
@@ -112,7 +81,11 @@ class Canvas {
       });
       length = this.width - room;
     }
-    return this.write(Math.max(0, cx - Math.floor(length / 2)), y, parts);
+    let x = Math.max(0, cx - Math.floor(length / 2));
+    for (const { text, ...style } of parts) {
+      this.put(x, y, text, style);
+      x += displayWidth(text);
+    }
   }
   lines(): FlowSegment[][] {
     return this.cells.map((row) => {
@@ -145,261 +118,443 @@ const fit = (text: string, width: number) => {
   return out + "…";
 };
 
-/** One column of the fan: who it is, how it is doing, what it runs on. */
-interface Column {
-  label: string;
+/** Word-wrapped to `width` columns, at most `max` lines: the last one cut with "…" when more is left. */
+function wrap(text: string, width: number, max = 3): string[] {
+  const room = Math.max(1, width);
+  const lines: string[] = [];
+  let line = "";
+  for (const word of text.replace(/\s+/g, " ").trim().split(" ")) {
+    const joined = line ? `${line} ${word}` : word;
+    if (displayWidth(joined) <= room) {
+      line = joined;
+      continue;
+    }
+    if (line) lines.push(line);
+    line = word;
+    // A word wider than the room takes lines of its own.
+    while (displayWidth(line) > room) {
+      let head = "";
+      for (const ch of line) {
+        if (head && displayWidth(head + ch) > room) break;
+        head += ch;
+      }
+      lines.push(head);
+      line = line.slice(head.length);
+    }
+  }
+  if (line) lines.push(line);
+  if (lines.length <= max) return lines;
+  return [...lines.slice(0, max - 1), fit(lines.slice(max - 1).join(" ") + " …", room)];
+}
+
+/** One line of a node's details: a sentence in one color. */
+type Detail = { text: string; color: string; bold?: boolean };
+
+/** A node of the run: its glyph on the trunk, its name, and what it came to. */
+export type NodeId = "message" | "jev" | "main" | "tools" | "agents" | "advisor" | "answer";
+
+interface FlowNode {
+  id: NodeId;
+  glyph: string;
   color: string;
-  state: string;
-  stateColor: string;
-  tune: string;
-  tuneColor: string;
+  label: string;
+  details: Detail[];
+  /** Tools, subagents and the advisor branch off the trunk; the rest sit on it. */
+  branch?: boolean;
 }
 
-function column(run: AgentRun, now: number, locale: Locale): Column {
-  const mascot = isMascot(run.mascot) ? AGENT_MASCOTS[run.mascot] : undefined;
-  const took = formatDuration((run.endedAt ?? now) - run.startedAt, locale);
-  const [state, stateColor] =
-    run.state === "running"
-      ? [`${Math.floor(now / 1000) % 2 ? "◉" : "●"} ${took}`, C.green]
-      : run.state === "done"
-        ? [`${text("flow.status.done", locale)} ${took}`, C.dim]
-        : run.state === "error"
-          ? [text("flow.status.error", locale), C.fail]
-          : [text("flow.status.aborted", locale, { duration: took }), C.pass];
-  return {
-    label: run.description.trim() || run.type,
-    color: mascot ? hex(mascot.color) : C.blue,
-    state,
-    stateColor,
-    tune: run.effort ?? prettyModel(run.model).split(" ")[0]!.toLowerCase(),
-    // Orange where Jev picked it, as in a pre-ship check where one group runs hotter.
-    tuneColor: run.jev ? C.orange : C.dim,
-  };
-}
-
-/** The pre-ship check the tab shows before any subagent has run: what a wave looks like. */
-const SAMPLE: readonly (readonly [LocaleKey, LocaleKey, string])[] = [
-  ["flow.sample.design", "flow.sample.checks5", "medium"],
-  ["flow.sample.mobile", "flow.sample.checks4", "medium"],
-  ["flow.sample.states", "flow.sample.checks4", "medium"],
-  ["flow.sample.realUser", "flow.sample.checks3", "high"],
-  ["flow.sample.launch", "flow.sample.checks4", "medium"],
-];
+const LABELS: readonly LocaleKey[] = ["flow.node.message", "flow.node.jev", "flow.node.main", "flow.node.tools", "flow.node.agents", "flow.node.advisor", "flow.node.answer"];
+const MAX_AGENT_LINES = 6;
+const MAX_ADVISOR_LINES = 4;
+const MAX_RECEIVED_LINES = 3;
 
 export interface FlowInput {
-  flow: FlowState;
-  agents: readonly AgentRun[];
-  /** The main session's model and effort. */
-  model?: string;
-  effort?: string;
-  /** The session's directory, for the prompt line at the bottom. */
-  cwd?: string;
+  trace: TraceState;
   now: number;
   width: number;
   locale?: Locale;
 }
 
-/** The whole diagram, line by line. */
+const duration = (from: number, to: number, locale: Locale) => formatDuration(to - from, locale);
+const unit = (count: number, one: LocaleKey, many: LocaleKey, locale: Locale) => text(count === 1 ? one : many, locale);
+const list = (items: readonly string[]) => items.join(", ");
+
+/** The run the tab draws: the one running, else the latest. */
+export const shownRun = (trace: TraceState): TraceRun | undefined => trace.runs.find((run) => run.id === trace.active) ?? trace.runs.at(-1);
+
+function messageNode(run: TraceRun, locale: Locale): FlowNode {
+  const details: Detail[] = [];
+  if (run.kind === "message" && run.message) {
+    details.push({ text: text("flow.message.text", locale, { text: run.message.text }), color: C.ink, bold: true });
+    const origin = run.message.origin !== "composer" ? ` · ${text("flow.message.origin", locale, { origin: run.message.origin })}` : "";
+    details.push({ text: formatClock(run.message.at, locale) + origin, color: C.faint });
+  } else if (run.kind === "continuation") {
+    details.push({ text: text("flow.message.continuation", locale), color: C.dim });
+  } else {
+    details.push({ text: run.text ? text("flow.message.unlinked", locale, { text: run.text }) : text("flow.message.noText", locale), color: C.dim });
+  }
+  for (const message of run.received.slice(-MAX_RECEIVED_LINES)) details.push({ text: text("flow.message.received", locale, { text: message.text }), color: C.pass });
+  return { id: "message", glyph: "●", color: C.you, label: text("flow.node.message", locale), details };
+}
+
+function jevNode(run: TraceRun, locale: Locale): FlowNode {
+  const plan = run.message?.plan;
+  const details: Detail[] = [];
+  let color = C.dim;
+  if (plan) {
+    const key: LocaleKey = plan.outcome === "consulted" ? "flow.jev.consulted" : plan.outcome === "declined" ? "flow.jev.declined" : plan.outcome === "failed" ? "flow.jev.failed" : "flow.jev.skipped";
+    color = plan.outcome === "consulted" ? C.green : plan.outcome === "failed" ? C.fail : C.dim;
+    details.push({ text: text(key, locale, { summary: plan.summary, reason: plan.summary }), color });
+    const hints = [
+      plan.tool ? text("flow.jev.hint.tool", locale, { tool: plan.tool }) : "",
+      plan.delegate ? text("flow.jev.hint.delegate", locale, { agent: plan.delegate }) : "",
+      plan.advisor ? text("flow.jev.hint.advisor", locale) : "",
+    ].filter(Boolean);
+    if (hints.length) details.push({ text: text("flow.jev.hints", locale, { hints: hints.join(" · ") }), color: C.ink });
+  } else {
+    details.push({ text: text("flow.jev.notAsked", locale), color: C.dim });
+  }
+  if (run.consultCount) {
+    const failed = run.consults.filter((one) => one.error).length;
+    const asking = run.consults.some((one) => one.endedAt === undefined);
+    details.push({
+      text: [
+        text("flow.jev.calls", locale, { count: formatNumber(run.consultCount, locale), unit: unit(run.consultCount, "unit.jevCall", "unit.jevCalls", locale) }),
+        failed ? text("flow.jev.callsFailed", locale, { count: formatNumber(failed, locale) }) : "",
+        asking ? `◉ ${text("flow.jev.asking", locale)}` : "",
+      ]
+        .filter(Boolean)
+        .join(" · "),
+      color: failed ? C.fail : C.dim,
+    });
+  }
+  return { id: "jev", glyph: "◆", color, label: text("flow.node.jev", locale), details };
+}
+
+function mainNode(run: TraceRun, now: number, locale: Locale): FlowNode {
+  const { original, sent, observed, effort, requests } = run.main;
+  const models = [
+    original ? prettyModel(original) : "—",
+    sent.some((model) => model !== original) ? text("flow.main.sent", locale, { model: list(sent.map(prettyModel)) }) : "",
+    observed.length ? text("flow.main.answered", locale, { model: list(observed.map(prettyModel)) }) : text("flow.main.noAnswer", locale),
+  ].filter(Boolean);
+  const last = run.steps.findLast((step) => !step.agentId);
+  const responding = run.endedAt === undefined && last !== undefined && last.endedAt === undefined;
+  return {
+    id: "main",
+    glyph: "◆",
+    color: C.orange,
+    label: text("flow.node.main", locale),
+    details: [
+      { text: models.join(" → "), color: C.ink, bold: true },
+      {
+        text: [
+          text("flow.main.requests", locale, { count: formatNumber(requests, locale), unit: unit(requests, "unit.request", "unit.requests", locale) }),
+          effort ? text("flow.main.effort", locale, { effort }) : "",
+          responding ? `${Math.floor(now / 1000) % 2 ? "◉" : "●"} ${text("flow.main.responding", locale)}` : "",
+        ]
+          .filter(Boolean)
+          .join(" · "),
+        color: responding ? C.green : C.dim,
+      },
+    ],
+  };
+}
+
+function toolsNode(run: TraceRun, locale: Locale): FlowNode {
+  const groups = Object.entries(run.toolSources)
+    .sort(([, a], [, b]) => b - a)
+    .map(([source, count]) => {
+      const n = formatNumber(count, locale);
+      if (source.startsWith("mcp:")) return text("flow.tools.mcp", locale, { server: source.slice(4), count: n });
+      if (source.startsWith("server:")) return text("flow.tools.server", locale, { name: source.slice(7), count: n });
+      return text("flow.tools.builtin", locale, { count: n });
+    });
+  const running = run.tools.filter((tool) => tool.endedAt === undefined && !tool.source.startsWith("server:")).map((tool) => tool.name);
+  const trouble = [
+    run.denied ? text("flow.tools.denied", locale, { count: formatNumber(run.denied, locale) }) : "",
+    run.failed ? text("flow.tools.failed", locale, { count: formatNumber(run.failed, locale) }) : "",
+  ].filter(Boolean);
+  return {
+    id: "tools",
+    glyph: "▸",
+    color: C.blue,
+    label: text("flow.node.tools", locale),
+    branch: true,
+    details: [
+      { text: groups.join(" · "), color: C.ink },
+      ...(trouble.length ? [{ text: trouble.join(" · "), color: run.failed ? C.fail : C.pass }] : []),
+      ...(running.length ? [{ text: `◉ ${text("flow.tools.running", locale, { tool: list([...new Set(running)]) })}`, color: C.green }] : []),
+    ],
+  };
+}
+
+function agentLine(agent: TraceAgent, now: number, locale: Locale): Detail {
+  const took = duration(agent.startedAt, agent.endedAt ?? now, locale);
+  const [state, color] =
+    agent.state === "running"
+      ? [text("flow.agent.running", locale, { duration: took }), C.green]
+      : agent.state === "done"
+        ? [text("flow.agent.done", locale, { duration: took }), C.dim]
+        : agent.state === "error"
+          ? [text("flow.agent.error", locale), C.fail]
+          : [text("flow.agent.aborted", locale, { duration: took }), C.pass];
+  const models = agent.observed.length ? list(agent.observed.map(prettyModel)) : text("flow.agent.noModel", locale);
+  return {
+    text: [agent.description ? `${agent.type} “${agent.description}”` : agent.type, state, models, agent.background ? text("flow.agent.background", locale) : ""].filter(Boolean).join(" · "),
+    color,
+  };
+}
+
+function agentsNode(run: TraceRun, now: number, locale: Locale): FlowNode {
+  const shown = run.agents.slice(-MAX_AGENT_LINES);
+  const hidden = run.agents.length - shown.length;
+  return {
+    id: "agents",
+    glyph: "◇",
+    color: C.blue,
+    label: text("flow.node.agents", locale),
+    branch: true,
+    details: [...(hidden > 0 ? [{ text: `+${formatNumber(hidden, locale)}`, color: C.faint }] : []), ...shown.map((agent) => agentLine(agent, now, locale))],
+  };
+}
+
+function advisorNode(run: TraceRun, trace: TraceState, locale: Locale): FlowNode {
+  const calls = run.advisor;
+  const details: Detail[] = [];
+  if (calls.length) {
+    const ended = calls.filter((call) => call.endedAt !== undefined).length;
+    details.push({ text: text("flow.advisor.calls", locale, { count: formatNumber(calls.length, locale), unit: unit(calls.length, "unit.call", "unit.calls", locale) }), color: C.ink, bold: true });
+    details.push({
+      text: [
+        ended ? text("flow.advisor.withResult", locale, { count: formatNumber(ended, locale) }) : "",
+        calls.length - ended ? text("flow.advisor.noResult", locale, { count: formatNumber(calls.length - ended, locale) }) : "",
+      ]
+        .filter(Boolean)
+        .join(" · "),
+      color: C.dim,
+    });
+    for (const call of calls.slice(-MAX_ADVISOR_LINES)) {
+      const owner = call.agentId ? (run.agents.find((agent) => agent.id === call.agentId)?.type ?? call.agentId) : text("flow.advisor.main", locale);
+      details.push({
+        text: text("flow.advisor.call", locale, { owner, step: formatNumber(call.step + 1, locale), state: text(call.endedAt !== undefined ? "flow.advisor.received" : "flow.advisor.notObserved", locale) }),
+        color: call.endedAt !== undefined ? C.dim : C.pass,
+      });
+    }
+  } else {
+    details.push({ text: text("flow.advisor.none", locale), color: C.dim });
+  }
+  if (trace.advisor?.configured) details.push({ text: text("flow.advisor.configured", locale, { model: prettyModel(trace.advisor.configured) }), color: C.faint });
+  const blocked = trace.advisor?.blocked;
+  if (blocked) details.push({ text: text("flow.advisor.blocked", locale, { reason: text(`flow.advisor.blocked.${blocked.kind}`, locale, { variable: blocked.variable }) }), color: C.pass });
+  if (calls.length) details.push({ text: text("flow.advisor.unexposed", locale), color: C.faint });
+  return { id: "advisor", glyph: "◈", color: C.pass, label: text("flow.node.advisor", locale), branch: true, details };
+}
+
+function answerNode(run: TraceRun, now: number, locale: Locale): FlowNode {
+  const details: Detail[] = [];
+  let color = C.green;
+  let glyph = "●";
+  if (run.endedAt === undefined) {
+    glyph = Math.floor(now / 1000) % 2 ? "◉" : "●";
+    details.push({ text: text("flow.answer.running", locale, { duration: duration(run.startedAt, now, locale) }), color: C.green });
+  } else {
+    const reason = run.reason ?? "answer";
+    color = reason === "answer" ? C.green : reason === "aborted" ? C.pass : reason === "superseded" ? C.dim : C.fail;
+    details.push({ text: text(`flow.answer.${reason}` as LocaleKey, locale, { duration: duration(run.startedAt, run.endedAt, locale) }), color, bold: true });
+  }
+  details.push({
+    text: run.edits
+      ? text("flow.answer.edits", locale, {
+          edits: formatNumber(run.edits, locale),
+          editUnit: unit(run.edits, "unit.edit", "unit.edits", locale),
+          files: formatNumber(run.files.length, locale),
+          fileUnit: unit(run.files.length, "unit.file", "unit.files", locale),
+        })
+      : text("flow.answer.noEdits", locale),
+    color: run.edits ? C.green : C.dim,
+  });
+  const running = run.agents.filter((agent) => agent.state === "running").length;
+  if (run.endedAt !== undefined && running) details.push({ text: text("flow.answer.agentsRunning", locale, { count: formatNumber(running, locale) }), color: C.green });
+  // Only the models a response named: an advisor whose model is not exposed is not one of them.
+  const models = confirmedModels(run);
+  details.push({
+    text: models.length ? text("flow.models", locale, { unit: unit(models.length, "unit.model", "unit.models", locale), models: list(models.map(prettyModel)) }) : text("flow.models.none", locale),
+    color: C.faint,
+  });
+  return { id: "answer", glyph, color, label: text("flow.node.answer", locale), details };
+}
+
+/** The run's nodes in order: message, Jev, main, then each branch as it first happened, then the answer. */
+export function runNodes(run: TraceRun, trace: TraceState, now: number, locale: Locale): FlowNode[] {
+  const branches: [number, FlowNode][] = [];
+  if (run.toolCount) branches.push([Math.min(...run.tools.map((tool) => tool.startedAt), Infinity), toolsNode(run, locale)]);
+  if (run.agents.length) branches.push([Math.min(...run.agents.map((agent) => agent.startedAt)), agentsNode(run, now, locale)]);
+  if (run.advisor.length || run.message?.plan?.advisor) branches.push([run.advisor.length ? Math.min(...run.advisor.map((call) => call.startedAt)) : Infinity, advisorNode(run, trace, locale)]);
+  branches.sort(([a], [b]) => a - b);
+  return [messageNode(run, locale), jevNode(run, locale), mainNode(run, now, locale), ...branches.map(([, node]) => node), answerNode(run, now, locale)];
+}
+
+/** Frames per second of the Flow's motion: a pulse running down the trunk into what is at work. */
+export const FLOW_FPS = 10;
+
+/** What the Flow draws at `now`: the run, its nodes, the one at work, and the animation frame. */
+export interface FlowScene {
+  run?: TraceRun;
+  nodes: FlowNode[];
+  /** The node at work, by index: the pulse runs down the trunk into it. Absent when nothing is. */
+  active?: number;
+  frame: number;
+  /** Something moves between events, so the pane is worth redrawing on a timer. */
+  moving: boolean;
+}
+
+/**
+ * What a run is busy with, from what has been observed: Jev being asked, a tool running, a main
+ * response on its way, subagents, or an answer still to come. An advisor call is never inferred
+ * from a pause: it is known only once its response has arrived.
+ */
+function atWork(run: TraceRun): NodeId | undefined {
+  if (isDone(run)) return undefined;
+  if (run.consults.some((one) => one.endedAt === undefined)) return "jev";
+  if (run.tools.some((tool) => tool.endedAt === undefined && !tool.source.startsWith("server:"))) return "tools";
+  const last = run.steps.findLast((step) => !step.agentId);
+  if (run.endedAt === undefined && last !== undefined && last.endedAt === undefined) return "main";
+  if (run.agents.some((agent) => agent.state === "running")) return "agents";
+  return run.endedAt === undefined ? "answer" : undefined;
+}
+
+/** The scene at `now`, pure: the same record and time always draw the same frame. */
+export function flowScene(trace: TraceState, now: number, locale: Locale = localeFor()): FlowScene {
+  const run = shownRun(trace);
+  const frame = Math.floor(now / (1000 / FLOW_FPS));
+  if (!run) return { nodes: [], frame, moving: false };
+  const nodes = runNodes(run, trace, now, locale);
+  const work = atWork(run);
+  const active = work ? nodes.findIndex((node) => node.id === work) : -1;
+  return { run, nodes, frame, moving: active > 0, ...(active > 0 ? { active } : {}) };
+}
+
+/** Messages not tied to a run that are worth showing: waiting ones, and ones refused since the run began. */
+function inboxShown(trace: TraceState, run: TraceRun | undefined): TraceMessage[] {
+  return trace.inbox.filter((message) => message.state === "waiting" || (message.state === "dropped" && (!run || message.at >= run.startedAt)));
+}
+
+/** One line for an earlier run: its number, how it ended, what started it, and its figures. */
+function earlierLine(run: TraceRun, now: number, locale: Locale): { text: string; color: string } {
+  const mark = run.endedAt === undefined ? "◉" : run.reason === "answer" ? "✓" : run.reason === "aborted" ? "⊘" : run.reason === "superseded" ? "·" : "×";
+  const what = run.kind === "message" && run.message ? `“${run.message.text}”` : run.kind === "continuation" ? text("flow.earlier.continuation", locale) : run.text ? `“${run.text}”` : "—";
+  const figures = [
+    text("flow.earlier.line", locale, {
+      requests: formatNumber(run.main.requests, locale),
+      requestUnit: unit(run.main.requests, "unit.request", "unit.requests", locale),
+      tools: formatNumber(run.toolCount, locale),
+      toolUnit: unit(run.toolCount, "unit.toolCall", "unit.toolCalls", locale),
+    }),
+    run.agents.length ? text("flow.earlier.agents", locale, { count: formatNumber(run.agents.length, locale), unit: unit(run.agents.length, "unit.agent", "unit.agents", locale) }) : "",
+    duration(run.startedAt, run.endedAt ?? now, locale),
+  ].filter(Boolean);
+  const color = run.endedAt === undefined ? C.green : run.reason === "answer" ? C.dim : run.reason === "superseded" ? C.faint : run.reason === "aborted" ? C.pass : C.fail;
+  return { text: `#${run.n} ${mark} ${what} · ${figures.join(" · ")}`, color };
+}
+
+/** The whole tab, line by line, at most `width` columns each. */
 export function flowLines(input: FlowInput): FlowSegment[][] {
   const locale = input.locale ?? localeFor();
-  // As wide as the pane: a narrow one drops the side panel and shortens lines rather than clip them.
-  const W = Math.max(20, input.width);
-  const wave = waveOf(input.flow, input.agents);
-  const sample = wave.length === 0;
-  const step = flowStep(input.flow, wave);
-  const stage = STAGE[step];
-  const cols = sample
-    ? SAMPLE.map(([label, state, tune]) => ({ label: text(label, locale), color: C.blue, state: text(state, locale), stateColor: C.ink, tune, tuneColor: tune === "high" ? C.orange : C.dim }))
-    : wave.map((run) => column(run, input.now, locale));
-  const total = cols.length;
-  const toolCalls = wave.reduce((sum, run) => sum + run.tools, 0);
-  const returned = wave.filter((run) => run.state !== "running").length;
-  const model = prettyModel(input.model);
-  const effort = input.effort ?? text("flow.effort.default", locale);
-
-  // Columns of at least 11 characters; the ones that do not fit are counted under the fan.
-  const fits = Math.max(1, Math.floor((W - 2) / 11));
-  const shown = cols.slice(0, fits);
-  const hidden = total - shown.length;
-  const colW = Math.min(16, Math.floor((W - 2) / shown.length));
-  const D = colW * shown.length;
-  const left = Math.floor((W - D) / 2);
-  const centers = shown.map((_, i) => left + i * colW + Math.floor(colW / 2));
-  const X = left + Math.floor(D / 2);
-
-  // A stage the wave has reached is in color; one still ahead is faint. The sample is all lit.
-  const lit = (from: number, color: string) => (sample || stage >= from ? color : C.faint);
-  const line = (from: number) => (stage > from || sample ? C.dim : C.faint);
-
+  const W = Math.max(1, input.width);
+  const { trace, now } = input;
+  const scene = flowScene(trace, now, locale);
+  const run = scene.run;
+  const waiting = inboxShown(trace, run);
   const g = new Canvas(W);
   let y = 0;
 
-  // Title and rule; a title too long for the pane drops its first words.
-  const title: FlowSegment[] = [
-    { text: text(sample ? "flow.title.sample" : "flow.title.live", locale), color: C.ink, bold: true },
-    { text: model.toUpperCase(), color: C.orange, bold: true },
-    { text: " + ", color: C.ink, bold: true },
-    { text: `${formatNumber(total, locale)} ${text(total === 1 ? "flow.subagent" : "flow.subagents", locale)}`, color: C.blue, bold: true },
-  ];
-  g.center(Math.floor(W / 2), y++, title.reduce((s, part) => s + displayWidth(part.text), 0) > W ? title.slice(1) : title);
-  g.put(0, y++, "=".repeat(W), { color: C.faint });
-  y++;
-
-  // The main session, and beside it what the wave is.
-  const pill = ` ${model} · ${effort} `;
-  const types = [...new Set(wave.map((run) => run.type))].join(", ");
-  const side = [
-    [
-      { text: text(total === 1 ? "flow.count.subagent" : "flow.count.subagents", locale, { count: formatNumber(total, locale) }), color: C.blue, bold: true },
-      { text: " · ", color: C.dim },
-      { text: sample ? text("flow.sample.readOnly", locale) : types || text("flow.live.subagents", locale), color: C.blue, bold: true },
-    ],
-    [{ text: text(sample ? "flow.sample.groups" : "flow.live.tasks", locale), color: C.ink }],
-    [],
-    [{ text: text("flow.eachOne", locale), color: C.dim }],
-    ...(
-      [
-        [text(sample ? "flow.sample.checksGroup" : "flow.live.worksTask", locale), 1],
-        [sample ? text("flow.sample.noEdits", locale) : text("flow.live.toolCalls", locale, { count: formatNumber(toolCalls, locale), unit: text(toolCalls === 1 ? "unit.toolCall" : "unit.toolCalls", locale) }), -1],
-        [text(sample ? "flow.sample.returnsList" : "flow.live.reportsBack", locale), 2],
-      ] as const
-    ).map(([text, at]) =>
-      (sample ? at === 1 : stage === at)
-        ? [
-            { text: "> ", color: C.ink, bold: true },
-            { text, color: C.ink, bold: true, bg: C.pill },
-          ]
-        : [
-            { text: "• ", color: C.blue },
-            { text, color: C.ink },
-          ],
-    ),
-  ] as FlowSegment[][];
-  // The panel sits at the right edge; the pill moves left of the trunk when it needs the room,
-  // and a dashed line joins the two, as in the pre-ship check.
-  const pillLength = displayWidth(pill);
-  const sideWidth = Math.min(28, Math.max(...side.map((parts) => parts.reduce((s, part) => s + displayWidth(part.text), 0))));
-  const sideX = W - sideWidth - 1;
-  const pillX = Math.min(X - Math.floor(pillLength / 2), sideX - 4 - pillLength);
-  const withSide = sideX >= X + 3 && pillX >= 1;
-  const sideRoom = W - sideX;
-  const top = y;
-  if (withSide) {
-    const pillEnd = g.write(pillX, y, [{ text: pill, color: C.ink, bold: true, bg: C.pill }]);
-    g.put(pillEnd + 1, y, "- ".repeat(Math.ceil((sideX - pillEnd - 2) / 2)).slice(0, sideX - pillEnd - 2), { color: C.dim });
-    side.forEach((parts, i) => {
-      let room = sideRoom;
-      const clipped = parts.map((part) => {
-        const text = room > 0 ? fit(part.text, room) : "";
-        room -= displayWidth(text);
-        return { ...part, text };
-      });
-      g.write(sideX, top + i, clipped.filter((part) => part.text));
-    });
-  } else {
-    g.center(X, y, [{ text: pill, color: C.ink, bold: true, bg: C.pill }]);
+  if (!run && waiting.length === 0) {
+    for (const line of wrap(text("flow.empty", locale), W, 8)) g.put(0, y++, line, { color: C.dim });
+    return g.lines();
   }
-  y++;
-  g.center(X, y++, [{ text: text("flow.mainSession", locale), color: C.ink, bg: C.pill }]);
-  if (!withSide) g.center(X, y++, side[0]!.map((part) => ({ ...part, text: fit(part.text, W - 4) })));
-  g.put(X, y++, "/", { color: C.orange, bold: true });
-  while (y < top + (withSide ? side.length : 0)) g.put(X, y++, "|", { color: C.dim });
-  g.put(X, y++, "|", { color: C.dim });
 
-  const turnText = input.flow.text ? `“${fit(input.flow.text, Math.max(10, W - 8))}”` : "";
-  g.center(X, y++, [
-    { text: text("flow.send", locale), color: C.ink },
-    { text: sample ? text("flow.sample.checks", locale) : text("flow.tasks", locale, { count: formatNumber(total, locale), unit: text(total === 1 ? "unit.task" : "unit.tasks", locale) }), color: C.blue, bold: true },
-  ]);
-  g.center(X, y++, [{ text: sample ? text("flow.sample.beforeShip", locale) : turnText || text("flow.fromPrompt", locale), color: sample ? C.ink : C.dim }]);
-  g.put(X, y++, "|", { color: C.dim });
+  // Title and rule.
+  const title: FlowSegment[] = run
+    ? [
+        { text: text("flow.title", locale, { n: formatNumber(run.n, locale) }), color: C.ink, bold: true },
+        ...(isDone(run) ? [] : [{ text: text("flow.title.running", locale), color: C.green, bold: true }]),
+      ]
+    : [{ text: "FLOW", color: C.ink, bold: true }];
+  g.center(Math.floor(W / 2), y++, title);
+  g.put(0, y++, "=".repeat(W), { color: C.faint });
 
-  // The fan: a bar out to every column, three rows each, a bar back in.
-  const bar = (row: number, color: string) => {
-    const from = centers[0]!;
-    const to = centers.at(-1)!;
-    g.put(from, row, "-".repeat(Math.max(1, to - from + 1)), { color });
-    for (const cx of centers) g.put(cx, row, "+", { color });
-    g.put(X, row, "+", { color });
-  };
-  const fanColor = line(0);
-  bar(y++, fanColor);
-  const pipes = (row: number) => centers.forEach((cx) => g.put(cx, row, "|", { color: fanColor }));
-  pipes(y++);
-  shown.forEach((col, i) => g.center(centers[i]!, y, [{ text: fit(col.label, colW - 2), color: col.color, bold: true }]));
-  y++;
-  pipes(y++);
-  shown.forEach((col, i) => g.center(centers[i]!, y, [{ text: fit(col.state, colW - 2), color: col.stateColor }]));
-  y++;
-  pipes(y++);
-  shown.forEach((col, i) => g.center(centers[i]!, y, [{ text: fit(col.tune, colW - 2), color: col.tuneColor, bold: col.tuneColor === C.orange }]));
-  y++;
-  pipes(y++);
-  bar(y++, line(1));
-  if (hidden > 0) g.center(X, y++, [{ text: text("flow.moreAgents", locale, { count: formatNumber(hidden, locale) }), color: C.dim }]);
-  g.put(X, y++, "|", { color: line(1) });
-
-  // Back to the main session, you confirm, one pass of edits.
-  const edits = input.flow.edits;
-  const files = input.flow.files.length;
-  g.center(X, y++, [{ text: text("flow.back", locale), color: lit(2, C.orange), bold: true }]);
-  g.center(X, y++, [
-    {
-      text: sample
-        ? text("flow.sample.issues", locale)
-        : `${text("flow.answers", locale, { count: formatNumber(returned, locale), total: formatNumber(total, locale), unit: text(returned === 1 ? "unit.answer" : "unit.answers", locale) })} · ${edits ? text("flow.edits", locale, { count: formatNumber(edits, locale), unit: text(edits === 1 ? "unit.edit" : "unit.edits", locale) }) : text("flow.noEdits", locale)}`,
-      color: stage >= 2 || sample ? C.ink : C.faint,
-    },
-  ]);
-  g.put(X, y++, "|", { color: line(2) });
-  g.center(X, y++, [{ text: text("flow.confirm", locale), color: lit(3, C.you), bold: true }]);
-  g.put(X, y++, "\\", { color: lit(3, C.orange), bold: true });
-  g.center(X, y++, [
-    { text: " " + model.split(" ")[0], color: lit(3, C.orange), bold: true, bg: C.pill },
-    { text: text("flow.fixes", locale), color: stage >= 3 || sample ? C.ink : C.faint, bg: C.pill },
-  ]);
-  g.center(X, y++, [{ text: text("flow.ownsEdits", locale), color: stage >= 3 || sample ? C.ink : C.faint, bg: C.pill }]);
-  g.put(X, y++, step === "fix" ? "◉" : "•", { color: step === "fix" ? C.green : line(3) });
-  g.center(X, y++, [
-    {
-      text: sample || !edits ? text("flow.screenshots", locale) : text("flow.files", locale, { edits: formatNumber(edits, locale), editUnit: text(edits === 1 ? "unit.edit" : "unit.edits", locale), files: formatNumber(files, locale), fileUnit: text(files === 1 ? "unit.file" : "unit.files", locale) }),
-      color: lit(4, C.green),
-      bold: true,
-      bg: C.pill,
-    },
-  ]);
+  for (const message of waiting) {
+    const line = message.state === "dropped" ? text("flow.message.dropped", locale, { text: message.text, reason: message.dropped ?? "" }) : text("flow.message.waiting", locale, { text: message.text });
+    for (const part of wrap(line, W, 2)) g.put(0, y++, part, { color: message.state === "dropped" ? C.fail : C.you });
+  }
+  if (!run) return g.lines();
   y++;
 
-  // The motto and the prompt line; on a narrow pane the motto takes a line per sentence.
-  const motto: FlowSegment[] = [
-    { text: text("flow.checkWith", locale, { count: word(total, locale) }), color: C.blue, bold: true },
-    { text: text("flow.confirmMotto", locale), color: C.you, bold: true },
-    { text: text("flow.fixWithOne", locale), color: C.green, bold: true },
-  ];
-  if (motto.reduce((s, part) => s + displayWidth(part.text), 0) <= W) g.center(Math.floor(W / 2), y++, motto);
-  else for (const part of motto) g.center(Math.floor(W / 2), y++, [{ ...part, text: part.text.trim() }]);
-  y++;
-  const labelled: FlowSegment[] = [
-    { text: text("flow.step", locale), color: C.dim },
-    { text: `[${text(("flow.step." + step) as LocaleKey, locale)}]`, color: C.ink, bold: true },
-    { text: text("flow.agents", locale), color: C.dim },
-    { text: `[${sample ? 0 : returned}/${total}]`, color: C.blue, bold: true },
-    { text: text("flow.editsLabel", locale), color: C.dim },
-    { text: `[${edits}]`, color: edits ? C.green : C.dim, bold: edits > 0 },
-  ];
-  // Too long for the pane, the status keeps its figures and drops their labels.
-  const status = displayWidth(labelled.map((part) => part.text).join("")) <= W ? labelled : labelled.filter((_, i) => i % 2).flatMap((part, i) => (i ? [{ text: " ", color: C.dim }, part] : [part]));
-  const statusLength = status.reduce((s, part) => s + displayWidth(part.text), 0);
-  const dir = input.cwd ? "~/" + (input.cwd.replace(/[\\/]+$/, "").split(/[\\/]/).at(-1) ?? "") : "~";
-  const promptRoom = W - statusLength - 2;
-  if (promptRoom >= 6) {
-    g.write(0, y, [
-      { text: fit(`${dir} $`, promptRoom - 2), color: C.green, bold: true },
-      { text: " ▌", color: C.ink },
-    ]);
-    g.write(W - statusLength, y, status);
-  } else {
-    g.write(Math.max(0, W - statusLength), y, status);
+  // The nodes on the trunk. Wide panes put the details beside the label; narrow ones under it.
+  const labelWidth = Math.min(11, Math.max(...LABELS.map((key) => displayWidth(text(key, locale)))));
+  const besideX = 3 + labelWidth + 1;
+  const beside = W - besideX >= 24;
+  const detailX = beside ? besideX : 3;
+  const nodes = scene.nodes;
+  /** The row each node's glyph sits on, for the pulse. */
+  const rows: number[] = [];
+  nodes.forEach((node, i) => {
+    rows.push(y);
+    const last = i === nodes.length - 1;
+    const trunk = () => {
+      if (!last) g.put(0, y, "│", { color: C.faint });
+    };
+    g.put(0, y, node.branch ? "├" : node.glyph, { color: node.branch ? C.faint : node.color, bold: true });
+    if (node.branch) g.put(1, y, node.glyph, { color: node.color, bold: true });
+    g.put(3, y, fit(node.label, Math.max(1, W - 3)), { color: node.color, bold: true });
+    let first = beside;
+    if (!beside) y++;
+    for (const detail of node.details) {
+      for (const part of wrap(detail.text, W - detailX)) {
+        if (!first) trunk();
+        g.put(detailX, y++, part, { color: detail.color, ...(detail.bold ? { bold: true } : {}) });
+        first = false;
+      }
+    }
+    if (first) y++;
+    if (!last) g.put(0, y++, "│", { color: C.faint });
+  });
+  // The pulse: one dot running down the trunk from the node before into the one at work.
+  if (scene.active !== undefined) {
+    const from = rows[scene.active - 1]! + 1;
+    const span = rows[scene.active]! - from;
+    if (span > 0) g.put(0, from + (scene.frame % span), "•", { color: C.green, bold: true });
+  }
+
+  // Earlier runs, newest first.
+  const earlier = trace.runs.filter((one) => one.id !== run.id).reverse();
+  if (earlier.length) {
+    y++;
+    g.put(0, y++, fit(text("flow.earlier", locale), W), { color: C.dim, bold: true });
+    for (const one of earlier) {
+      const line = earlierLine(one, now, locale);
+      g.put(0, y++, fit(line.text, W), { color: line.color });
+    }
   }
   return g.lines();
+}
+
+/** One line for the surfaces that draw no diagram, and for `/jev status`. */
+export function flowSummary(trace: TraceState, locale: Locale = localeFor()): string {
+  const run = shownRun(trace);
+  if (!run) return text("flow.status.empty", locale);
+  const requests = run.main.requests + run.agents.reduce((sum, agent) => sum + agent.requests, 0);
+  return text("flow.status.line", locale, {
+    n: formatNumber(run.n, locale),
+    state: isDone(run) && run.endedAt !== undefined ? `${text("flow.state.ended", locale)} (${duration(run.startedAt, run.endedAt, locale)})` : text("flow.state.running", locale),
+    requests: formatNumber(requests, locale),
+    requestUnit: unit(requests, "unit.request", "unit.requests", locale),
+    tools: formatNumber(run.toolCount, locale),
+    toolUnit: unit(run.toolCount, "unit.toolCall", "unit.toolCalls", locale),
+    agents: formatNumber(run.agents.length, locale),
+    agentUnit: unit(run.agents.length, "unit.agent", "unit.agents", locale),
+    advisor: formatNumber(run.advisor.length, locale),
+    advisorUnit: text(run.advisor.length === 1 ? "flow.status.advisorCall" : "flow.status.advisorCalls", locale),
+  });
 }

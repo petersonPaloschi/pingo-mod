@@ -21,7 +21,7 @@ const pick = (choice: string, confidence: number): Answer => ({ type: "choice", 
 const noul = (value: number): Answer => ({ type: "noul", noul: value });
 const DONE = { input_tokens: 10, output_tokens: 5, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 };
 
-const ON: Features = { tools: true, participation: true, model: true, effort: true, delegation: true, agents: false };
+const ON: Features = { tools: true, participation: true, model: true, effort: true, delegation: true, agents: false, advisor: true };
 const CTX: TurnContext = { features: ON, routing: true, hasKey: true, userModel: false, minConfidence: 0.7, session: { currentModel: "claude-opus-5-5" } };
 const planOf = (answers: Record<string, Answer>, extra: Partial<TurnPlan> = {}): TurnPlan => ({
   decision: { mode: "hint", tool: "Read", confidence: 0.9, answers },
@@ -206,6 +206,9 @@ describe("the Models tab", () => {
     const ui = await $.ui.mount({ plugin: "jev", surface: "terminal", component: "Pane", requestId: "jev", props: PANE_PROPS });
     await ui.press({ key: "tab-models" });
     expect(await ui.find({ type: "Text", text: /switched opus-5-5 → sonnet-5-5 · confidence 0\.90 \(needed 0\.85\)/ })).toBeDefined();
+    // The turn is still running: its model is set until the next prompt.
+    expect(await ui.find({ type: "Text", text: /A turn is running and its model is set/ })).toBeDefined();
+    await $.turn.complete({ turnId: "t1", answer: "Done.", durationMs: 10, isAborted: false, reason: "answer" });
     expect(await ui.find({ type: "Text", text: /Jev decides once per prompt/ })).toBeDefined();
     await ui.unmount();
   });

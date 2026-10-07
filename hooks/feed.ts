@@ -43,6 +43,12 @@ const FEATURE_KEYS: readonly { id: FeatureId; name: LocaleKey; hotkey: string; d
     hotkey: "g",
     description: "feature.agents.description",
   },
+  {
+    id: "advisor",
+    name: "feature.advisor.name",
+    hotkey: "a",
+    description: "feature.advisor.description",
+  },
 ];
 
 export const features = (locale: Locale = localeFor()) => FEATURE_KEYS.map((feature) => ({

@@ -44,7 +44,7 @@ The renderers live in `hooks/mascots/pingo.ts`, `hooks/mascots/dice.ts`, and `ho
 - **Live:** visible events, one row per event, each with its speaker. The feed does not display internal model reasoning. See Tab bar and Live log below.
 - **Models:** the model and effort running now, what blocks or allows a model change at the next prompt and the confidence each model needs, what each function (participation, tool hint, model, effort, delegation) decided at each prompt and why, and the latest subagents.
 - **Agents:** subagent state, model, effort, tool and request counts, and recent activity.
-- **Flow:** a live diagram of the latest subagent wave, any other running subagents, its review stage, and the resulting edits.
+- **Flow:** the latest run as observed, on one trunk: message, Jev, main loop, then tools, subagents and advisor calls as branches in the order they first happened, then the answer and its edits; earlier runs listed under it. No sample is drawn: an empty record says so. While the tab shows and a run is at work, a pulse runs down the trunk into the node at work (Jev asked, a tool running, a response on its way, subagents, the answer awaited) at 10 frames a second, one frame at a time; it stops when the run is done or the pane is not drawn. It stays text: a frame of a heavy run measured about 3 ms to lay out, so a Raster was not added. `/jev status` reports the measured redraw cost.
 - **Features:** independent switches with a short description of each feature.
 - **Reasons, baseline, and log:** routing explanations, comparison metrics, and persisted request metadata.
 

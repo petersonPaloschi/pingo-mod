@@ -5,6 +5,7 @@ import { resolveSettings } from "../hooks/config.ts";
 import { buildQuestions } from "../hooks/core/questions.ts";
 import { status, tiles } from "../hooks/events.ts";
 import { flowLines } from "../hooks/flow.ts";
+import { emptyTrace, startTurn } from "../hooks/trace.ts";
 import { en } from "../hooks/strings/en.ts";
 import { pt } from "../hooks/strings/pt.ts";
 
@@ -37,16 +38,12 @@ test("routing prompts and dashboard summaries are Portuguese", () => {
 });
 
 test("the Flow drawing uses Portuguese labels", () => {
-  const lines = flowLines({
-    flow: { turn: 0, wave: [], waveTurn: 0, confirmed: false, edits: 0, files: [], working: false },
-    agents: [],
-    model: "claude-opus-5-5",
-    now: Date.parse("2026-10-07T12:00:00Z"),
-    width: 72,
-    locale: "pt",
-  });
+  const now = Date.parse("2026-10-07T12:00:00Z");
+  const trace = startTurn(emptyTrace(), "t1", "", now - 5000);
+  const lines = flowLines({ trace, now, width: 72, locale: "pt" });
   const drawn = lines.map((row) => row.map((part) => part.text).join("")).join("\n");
-  expect(drawn).toContain("VERIFICAÇÃO ANTES DO ENVIO");
-  expect(drawn).toContain("sessão principal");
-  expect(drawn).toContain("planejar");
+  expect(drawn).toContain("FLOW · EXECUÇÃO 1 · EM ANDAMENTO");
+  expect(drawn).toContain("principal");
+  expect(drawn).toContain("continuação · sem nova mensagem");
+  expect(drawn).toContain("em andamento · 5s");
 });

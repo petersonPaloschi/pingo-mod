@@ -5,14 +5,15 @@
 // runs on, and whether to hand work to a subagent. After each tool batch (tool.call) it asks
 // again about the next tool. When a subagent starts (agent.spawn) it asks for that agent's model
 // and effort. turn.step applies the model and effort and meters every request; the live log
-// records what can be observed, never the model's reasoning.
+// records what can be observed, never the model's reasoning. The Flow tab's record (trace.ts) is
+// fed from the same events, whether or not Jev is on.
 //
 // Every function that reaches `$` is declared here at the top level, so `claude plugin validate`
 // can follow each call; the other files are pure.
 import { atom, read, update } from "claude-code";
 import type { EngineInterface, Register, UiBlitArgs } from "claude-code";
 
-import type { AgentRun, FeatureFlags, FeedEntry, FlowState, PaneScroll, FeedKind, FeedSpeaker, FeedTone, JevTab, LiveNow, RouteEvent, SetupDraft, WatchState } from "../types";
+import type { AdvisorInfo, AgentRun, FeatureFlags, FeedEntry, PaneScroll, FeedKind, FeedSpeaker, FeedTone, JevTab, LiveNow, RouteEvent, SetupDraft, TracePlan, TraceState, WatchState } from "../types";
 import { keyFor, keyOwner, providerBasis, resolveSettings, storedApplies, type ModOptions, type Settings, type StoredSettings } from "./config.ts";
 import { decide, hintText, type AskJev, type Decision } from "./core/decide.ts";
 import { createAskJev, isProvider, PROVIDERS, redact, resolveModel, validateKey, type ProviderId, type Transport } from "./core/jev.ts";
@@ -24,6 +25,7 @@ import {
   planHint,
   planSummary,
   planTurn,
+  NO_DELEGATION,
   TIER_MODEL,
   type AgentType,
   type Effort,
@@ -39,6 +41,27 @@ import { diceFrame, diceSize } from "./mascots/dice.ts";
 import { brailleFrame, type Mood } from "./mascots/pingo.ts";
 import { AGENT_MASCOTS, isMascot, mascotFrame, pickMascot, type MascotId } from "./mascots/agents.ts";
 import { forecast, keepTurns, settleModel, turnFunctions, type ModelOutcome } from "./watch.ts";
+import { FLOW_FPS, flowScene, flowSummary } from "./flow.ts";
+import {
+  advisorBlocker,
+  agentStart,
+  clearTrace,
+  completeTurn,
+  consultEnd,
+  consultStart,
+  emptyTrace,
+  planMessage,
+  promptEntered,
+  setAdvisorInfo,
+  startTurn,
+  stepEnd,
+  stepStart,
+  submitPrompt,
+  toolEnd,
+  toolStart,
+  traceOf,
+  type ConsultWhere,
+} from "./trace.ts";
 import { moodOf, pingoSize, renderAgentPane, renderBand, renderPane, type Actions, type View } from "./ui.tsx";
 import { formatCompact, formatDecimal, formatDuration, formatNumber, formatPercent, reasonTitle, text, type Locale, type LocaleKey, type LocaleOption } from "./i18n.ts";
 
@@ -57,7 +80,8 @@ const agentCount = atom({ plugin: "jev", key: "agentCount" } as const, 0);
 const scroll = atom({ plugin: "jev", key: "scroll" } as const, {} as PaneScroll);
 /** How far each pane body can scroll as last drawn, and whether it counts up from the newest line. */
 const scrollRoom = new Map<string, { max: number; fromEnd: boolean }>();
-const flow = atom({ plugin: "jev", key: "flow" } as const, { turn: 0, wave: [], waveTurn: 0, confirmed: false, edits: 0, files: [], working: false } as FlowState);
+/** The Flow tab's record, schema 2 under a key of its own: the old FlowState is never read as it. */
+const trace = atom({ plugin: "jev", key: "flowV2" } as const, emptyTrace() as TraceState);
 /** What Jev decided at each prompt and why, for the Models tab. */
 const watch = atom({ plugin: "jev", key: "watch" } as const, { turns: [], count: 0 } as WatchState);
 /** Tools whose call is an edit, for the Flow tab's count. */
@@ -134,6 +158,14 @@ const agentArt = new Map<string, { mascot: MascotId; columns: number; rows: numb
 const MASCOT_FPS = 10;
 /** A mascot frame is being sent. */
 let animating = false;
+/** The Flow tab as last drawn (real time) and whether something in it moves. */
+let flowShown: { at: number; moving: boolean } | undefined;
+/** When the Flow's last frame was asked for, until it is drawn: one frame at a time. */
+let flowAsked = 0;
+/** A pane not drawn for this long is taken as closed or on another tab: the motion stops. */
+const FLOW_STALE_MS = 1500;
+/** What drawing the pane costs while the Flow tab shows, in ms: the measure Raster would have to beat. */
+const flowCost = { frames: 0, total: 0, max: 0 };
 
 function transport($: EngineInterface, locale?: Locale): Transport {
   return {
@@ -271,19 +303,74 @@ async function updateRun($: EngineInterface, id: string, change: (run: AgentRun)
   await update($, agents, (list) => (list.some((run) => run.id === id) ? list.map((run) => (run.id === id ? change(run) : run)) : list));
 }
 
-/** True when the Flow tab's wave has subagents and none of them still runs. */
-async function waveEnded($: EngineInterface): Promise<boolean> {
-  const f = await read($, flow);
-  const list = await read($, agents);
-  const wave = list.filter((run) => f.wave.includes(run.n));
-  return wave.length > 0 && wave.every((run) => run.state !== "running");
+/** The Flow tab's record as kept; a value of another schema reads as empty. */
+async function readTrace($: EngineInterface): Promise<TraceState> {
+  return traceOf(await read($, trace));
 }
 
-/** A main-loop edit after the wave came back: the Flow tab counts it and its file. */
-async function countEdit($: EngineInterface, input: Record<string, unknown>): Promise<void> {
-  if (!(await waveEnded($))) return;
-  const file = typeof input.file_path === "string" ? input.file_path : typeof input.notebook_path === "string" ? input.notebook_path : undefined;
-  await update($, flow, (f) => ({ ...f, edits: f.edits + 1, files: file && !f.files.includes(file) ? [...f.files, file] : f.files }));
+/** One reducer step on the Flow tab's record. */
+async function updateTrace($: EngineInterface, change: (s: TraceState) => TraceState): Promise<TraceState> {
+  return update($, trace, (s) => change(traceOf(s)));
+}
+
+/** A subagent that started joins the Flow tab's run of the loop that spawned it. */
+async function traceSpawn(
+  $: EngineInterface,
+  e: { parentAgentId?: string; tool_use_id: string; subagentType: string; description: string; background?: boolean },
+  id: string,
+  model: string,
+): Promise<void> {
+  const at = await $.clock.now();
+  await updateTrace($, (s) =>
+    agentStart(s, {
+      id,
+      ...(e.parentAgentId ? { parent: e.parentAgentId } : {}),
+      ...(e.tool_use_id ? { toolUseId: e.tool_use_id } : {}),
+      type: e.subagentType,
+      description: e.description,
+      model,
+      ...(e.background ? { background: true } : {}),
+      at,
+    }),
+  );
+}
+
+/** The file an edit tool names, when it names one. */
+function editedFile(input: Record<string, unknown>): string | undefined {
+  return typeof input.file_path === "string" ? input.file_path : typeof input.notebook_path === "string" ? input.notebook_path : undefined;
+}
+
+/** What the Flow tab keeps of a routing point: the outcome, why, and which hints the context carried. */
+function tracePlan(plan: TurnPlan, summary: string, asked: boolean, failed: boolean): TracePlan {
+  const reason = plan.decision.mode === "passthrough" ? plan.decision.reason : "hint";
+  return {
+    outcome: failed ? "failed" : reason === "jev_declined" ? "declined" : asked ? "consulted" : "skipped",
+    reason: reason.startsWith("jev_error") ? "jev_error" : reason,
+    summary,
+    ...(plan.jev ? { latencyMs: plan.jev.latencyMs } : {}),
+    ...(plan.decision.mode === "hint" ? { tool: plan.decision.tool } : {}),
+    ...(plan.delegate && plan.delegate.value !== NO_DELEGATION ? { delegate: plan.delegate.value } : {}),
+    ...(plan.advisor?.value === "consult" ? { advisor: true } : {}),
+    ...(plan.advisor || plan.advisorWhy ? { advisorAsked: true } : {}),
+  };
+}
+
+/**
+ * What settings and the environment say about the advisor, for the Flow tab: informative only. A
+ * --advisor flag or /advisor can override the setting unseen, so it is shown as "configured".
+ */
+async function advisorInfo($: EngineInterface): Promise<AdvisorInfo> {
+  const settings = await $.settings.read().catch(() => ({}) as Record<string, unknown>);
+  const configured = typeof settings.advisorModel === "string" && settings.advisorModel.trim() ? settings.advisorModel.trim() : undefined;
+  const blocked = advisorBlocker({
+    DISABLE_TELEMETRY: await $.env.get("DISABLE_TELEMETRY"),
+    CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: await $.env.get("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"),
+    DO_NOT_TRACK: await $.env.get("DO_NOT_TRACK"),
+    CLAUDE_CODE_USE_BEDROCK: await $.env.get("CLAUDE_CODE_USE_BEDROCK"),
+    CLAUDE_CODE_USE_VERTEX: await $.env.get("CLAUDE_CODE_USE_VERTEX"),
+    CLAUDE_CODE_USE_FOUNDRY: await $.env.get("CLAUDE_CODE_USE_FOUNDRY"),
+  });
+  return { ...(configured ? { configured } : {}), ...(blocked ? { blocked } : {}) };
 }
 
 /**
@@ -418,6 +505,27 @@ async function animateMascots($: EngineInterface): Promise<void> {
   }
 }
 
+/**
+ * One frame of the Flow's motion. The text redraws through `$.ui.invalidate`, so a frame is asked
+ * only while the tab shows, something in it moves, and the frame before has been drawn.
+ */
+function animateFlow($: EngineInterface): void {
+  const now = Date.now();
+  if (!flowShown?.moving || now - flowShown.at > FLOW_STALE_MS) return;
+  if (flowAsked && now - flowAsked < FLOW_STALE_MS) return;
+  flowAsked = now;
+  $.ui.invalidate("ui.render");
+}
+
+/** The Flow tab was drawn: what it cost, and whether it is worth another frame. */
+function flowDrawn(ms: number, moving: boolean): void {
+  flowCost.frames++;
+  flowCost.total += ms;
+  flowCost.max = Math.max(flowCost.max, ms);
+  flowShown = { at: Date.now(), moving };
+  flowAsked = 0;
+}
+
 /** Marks the live status while a Jev request is in flight. */
 async function asking<T>($: EngineInterface, work: () => Promise<T>): Promise<T> {
   await setLive($, { asking: true });
@@ -428,24 +536,38 @@ async function asking<T>($: EngineInterface, work: () => Promise<T>): Promise<T>
   }
 }
 
-/** A Jev call that shows in the live log what it was sent and what it answered, with the odds. */
-function tracedAskJev($: EngineInterface, config: Settings): AskJev {
+/**
+ * A Jev call that shows in the live log what it was sent and what it answered, with the odds; the
+ * Flow tab counts it in the run it was asked for (`where`), a shortlist call included.
+ */
+function tracedAskJev($: EngineInterface, config: Settings, where: ConsultWhere & { origin: "prompt" | "tool" | "agent" }): AskJev {
   const ask = createAskJev(config, transport($, config.locale));
   return async (request) => {
     const sent = jevInput(request, config.locale);
     await log($, "jev", "jev", "info", sent.text, undefined, { detail: sent.detail });
     const startedAt = Date.now();
+    let consult = "";
+    const at = await $.clock.now();
+    await updateTrace($, (s) => {
+      const [next, id] = consultStart(s, where, { origin: where.origin, model: request.model, questions: Object.keys(request.questions), startedAt: at });
+      consult = id;
+      return next;
+    });
     let result;
     try {
       result = await ask(request);
     } catch (error) {
       const cause = error instanceof Error ? error.message : String(error);
+      const failedAt = await $.clock.now();
+      await updateTrace($, (s) => consultEnd(s, consult, failedAt, cause));
       await log($, "jev", "error", "bad", text("feed.request.failed", config.locale, { message: short(cause, 160) }), undefined, {
         meta: `${formatNumber(Date.now() - startedAt, config.locale)} ms`,
         detail: `${cause.slice(0, 240)}\n${failureHint(failureKind(cause), config.locale)}`,
       });
       throw error;
     }
+    const endedAt = await $.clock.now();
+    await updateTrace($, (s) => consultEnd(s, consult, endedAt));
     const got = jevOutput(result, config.locale);
     await log($, "jev", "jev", "good", got.text, undefined, { meta: `${formatNumber(Date.now() - startedAt, config.locale)} ms`, detail: got.detail });
     return result;
@@ -464,7 +586,7 @@ function modelContext(config: Settings): ModelContext {
 }
 
 /** The turn's routing point: every feature that is on, in one Jev call. */
-async function planFor($: EngineInterface, userText: string): Promise<TurnPlan> {
+async function planFor($: EngineInterface, userText: string, messageId: string): Promise<TurnPlan> {
   if (!(await read($, routing))) return { decision: { mode: "passthrough", reason: "routing_disabled" } };
   const config = await getSettings($);
   if (!config.apiKey) return { decision: { mode: "passthrough", reason: "no_api_key" } };
@@ -476,7 +598,7 @@ async function planFor($: EngineInterface, userText: string): Promise<TurnPlan> 
   lastToolCount = roster.length;
   const input = toInput(await systemText($), messages, roster, config.maxMessageChars, { userText }, config.locale);
   input.session = modelContext(config);
-  return asking($, () => planTurn(input, config, tracedAskJev($, config), flags, [...agentTypes.values()]));
+  return asking($, () => planTurn(input, config, tracedAskJev($, config, { origin: "prompt", messageId }), flags, [...agentTypes.values()]));
 }
 
 /** After a tool batch: only the next tool, when that feature is on and Jev did not stay out. */
@@ -490,7 +612,7 @@ async function routeTool($: EngineInterface, extra: { pending?: PendingResult })
   lastToolCount = roster.length;
   const input = toInput(await systemText($), messages, roster, config.maxMessageChars, extra, config.locale);
   input.session = modelContext(config);
-  return asking($, () => decide(input, config, tracedAskJev($, config)));
+  return asking($, () => decide(input, config, tracedAskJev($, config, { origin: "tool" })));
 }
 
 /**
@@ -553,6 +675,7 @@ async function clearHistory($: EngineInterface): Promise<void> {
   await update($, feed, () => []);
   await update($, agents, (list) => list.filter((run) => run.state === "running"));
   await update($, watch, (w) => ({ ...w, turns: [] }));
+  await updateTrace($, clearTrace);
 }
 
 async function openPane($: EngineInterface, which: JevTab): Promise<void> {
@@ -572,6 +695,10 @@ async function statusText($: EngineInterface): Promise<string> {
     text("ui.status.keySourceLine", locale, { source: text(`source.${config.keySource}` as LocaleKey, locale) }),
     text("ui.status.featuresLine", locale, { features: featureFlagsText(await read($, features), locale) }),
     text("ui.status.requestsLine", locale, { count: formatNumber(list.length, locale), kept: formatNumber(KEPT_EVENTS, locale) }),
+    flowSummary(await readTrace($), locale),
+    ...(flowCost.frames
+      ? [text("ui.status.flowRedraws", locale, { frames: formatNumber(flowCost.frames, locale), average: formatDecimal(flowCost.total / flowCost.frames, locale, 1), max: formatNumber(flowCost.max, locale) })]
+      : []),
   ].join("\n");
 }
 
@@ -862,7 +989,7 @@ async function view($: EngineInterface, width: number, rows: number, surface: st
     feed: await read($, feed),
     live: await read($, live),
     agents: await read($, agents),
-    flow: await read($, flow),
+    trace: await readTrace($),
     watch: await read($, watch),
     forecast: forecast({
       routing: await read($, routing),
@@ -876,7 +1003,6 @@ async function view($: EngineInterface, width: number, rows: number, surface: st
       available: config.claudeModels,
       blocked: [...blockedModels],
     }),
-    cwd: await $.session.cwd().catch(() => ""),
     now: await $.clock.now(),
     width,
     rows,
@@ -898,6 +1024,8 @@ export const register: Register = (on, given) => {
   blockedModels.clear();
   switchedEmpty.clear();
   unsettled = undefined;
+  flowShown = undefined;
+  flowAsked = 0;
   mainModel = undefined;
   contextTokens = 0;
   cacheReadTokens = 0;
@@ -912,10 +1040,14 @@ export const register: Register = (on, given) => {
     await restoreStoredState($);
     mainModel = await $.session.model();
     await setLive($, { model: mainModel });
+    const advisor = await advisorInfo($);
+    await updateTrace($, (s) => setAdvisorInfo(s, advisor));
     // "Idle" and the 5-minute windows move with the clock, not only with events.
     $.clock.every(1000, () => $.ui.invalidate("ui.render"));
     // Visible mascot animations stop when their pane is closed.
     $.clock.every(1000 / MASCOT_FPS, () => void animateMascots($).catch(() => undefined));
+    // The Flow's pulse: frames only while its tab shows and a run is at work.
+    $.clock.every(1000 / FLOW_FPS, () => animateFlow($));
     await $.command.register({
       name: "jev",
       description: text("ui.command.description", config.locale),
@@ -954,12 +1086,28 @@ export const register: Register = (on, given) => {
   // The turn's routing point: decide on the conversation plus the prompt being submitted.
   on("prompt.submit", async ($, e, next) => {
     const config = await getSettings($);
+    // The Flow tab records the message before Jev is asked, so it shows while Jev thinks.
+    const submittedAt = await $.clock.now();
+    let messageId = "";
+    await updateTrace($, (s) => {
+      const [nextState, id] = submitPrompt(s, { text: e.text, at: submittedAt, origin: e.origin.kind, ...(e.turnId ? { during: e.turnId } : {}) });
+      messageId = id;
+      return nextState;
+    });
+    // Once it entered (the turn it started has fired turn.start meanwhile) or was refused.
+    const entered = async (result: Awaited<ReturnType<typeof next>>) => {
+      const dropped = "drop" in result && typeof result.drop === "string" ? result.drop : undefined;
+      // Past `next`, nothing may throw: the guard below would submit the prompt again.
+      await updateTrace($, (s) => promptEntered(s, messageId, dropped)).catch(() => undefined);
+      return result;
+    };
     // A prompt typed into a running turn keeps that turn's plan: its tool hint, model and effort.
     if (e.turnId) {
       await log($, "jev", "jev", "muted", text("feed.request.midTurn", config.locale), undefined, { minor: true });
-      return next(e);
+      await updateTrace($, (s) => planMessage(s, messageId, { outcome: "skipped", reason: "mid_turn", summary: text("flow.jev.midTurn", config.locale) }));
+      return entered(await next(e));
     }
-    const plan = await planFor($, e.text);
+    const plan = await planFor($, e.text, messageId);
     pending = plan.decision;
     const reason = plan.decision.mode === "passthrough" ? plan.decision.reason : "";
     turnPlan = {
@@ -980,7 +1128,7 @@ export const register: Register = (on, given) => {
       minConfidence: config.minConfidence,
       session: modelContext(config),
     });
-    const turn = (await read($, flow)).turn + 1;
+    const turn = (await readTrace($)).turns + 1;
     const at = await $.clock.now();
     await update($, watch, (w) => {
       const seq = w.count + 1;
@@ -997,9 +1145,10 @@ export const register: Register = (on, given) => {
     } else {
       await log($, "jev", "jev", "muted", text("feed.request.notConsulted", config.locale, { summary }), undefined, { minor: true });
     }
+    await updateTrace($, (s) => planMessage(s, messageId, tracePlan(plan, summary, asked, failed)));
     const hint = planHint(plan, hintText, config.locale);
-    if (!hint) return next(e);
-    return next({ ...e, context: [...(e.context ?? []), `<system-reminder>${hint}</system-reminder>`] });
+    if (!hint) return entered(await next(e));
+    return entered(await next({ ...e, context: [...(e.context ?? []), `<system-reminder>${hint}</system-reminder>`] }));
   }).catch((_$, e, next) => next(e));
 
   on("turn.start", async ($, e, next) => {
@@ -1007,9 +1156,9 @@ export const register: Register = (on, given) => {
     if (e.text.trim()) await log($, "you", "turn", "info", short(e.text, 600));
     else await log($, "you", "turn", "muted", text("feed.request.continues", locale), undefined, { minor: true });
     await setLive($, { activity: text("feed.activity.waiting", locale) });
-    // A turn you start once the wave has come back is your go-ahead for the fixes.
-    const ended = await waveEnded($);
-    await update($, flow, (f) => ({ ...f, turn: f.turn + 1, working: true, prompt: e.text, confirmed: f.confirmed || ended }));
+    // The run opens here, tied to the idle message whose submission is still entering, if any.
+    const at = await $.clock.now();
+    await updateTrace($, (s) => startTurn(s, e.turnId, e.text, at));
     return next(e);
   });
 
@@ -1025,6 +1174,7 @@ export const register: Register = (on, given) => {
         detail: `${tokens || text("feed.turn.noUsage", locale)}${e.reason && e.reason !== "answer" ? text("feed.turn.endedBy", locale, { reason: ["error", "refusal", "aborted"].includes(e.reason) ? text(`feed.turn.reason.${e.reason}` as LocaleKey, locale) : e.reason }) : ""}`,
       });
       const endedAt = await $.clock.now();
+      await updateTrace($, (s) => completeTurn(s, e.turnId, endedAt, e.isAborted ? "aborted" : e.reason, id));
       await updateRun($, id, (one) => {
         const { activity: _activity, ...rest } = one;
         return {
@@ -1052,7 +1202,8 @@ export const register: Register = (on, given) => {
     });
     turnPlan = undefined;
     await setLive($, { activity: undefined, changed: undefined });
-    await update($, flow, (f) => ({ ...f, working: false }));
+    const endedAt = await $.clock.now();
+    await updateTrace($, (s) => completeTurn(s, e.turnId, endedAt, e.isAborted ? "aborted" : e.reason));
     return next(e);
   });
 
@@ -1063,7 +1214,10 @@ export const register: Register = (on, given) => {
     const locale = (await getSettings($)).locale;
     const who = actor(e.agentId);
     const summary = toolSummary(e.tool, e as unknown as Record<string, unknown>);
-    toolStarts.set(e.tool_use_id, await $.clock.now());
+    const startedAt = await $.clock.now();
+    toolStarts.set(e.tool_use_id, startedAt);
+    const toolUseId = e.tool_use_id;
+    await updateTrace($, (s) => toolStart(s, { id: toolUseId, ...(e.agentId ? { agentId: e.agentId } : {}), name: e.tool, at: startedAt }));
     // One line per call: written as it starts, rewritten with its outcome when it ends.
     const input = e as unknown as Record<string, unknown>;
     const toolDetail = toolDetails(e.tool, input, locale);
@@ -1071,8 +1225,15 @@ export const register: Register = (on, given) => {
     if (!e.agentId) await setLive($, { activity: text("feed.activity.running", locale, { activity: short(summary, 40) }) });
     else await updateRun($, e.agentId, (run) => ({ ...run, tools: run.tools + 1, activity: text("feed.activity.agentTool", locale, { activity: short(summary, 60) }) }));
     const result = await next(e);
-    const took = formatDuration((await $.clock.now()) - (toolStarts.get(e.tool_use_id) ?? 0), locale);
+    const endedAt = await $.clock.now();
+    const took = formatDuration(endedAt - (toolStarts.get(e.tool_use_id) ?? 0), locale);
     toolStarts.delete(e.tool_use_id);
+    const ending = result.deny !== undefined ? "denied" : result.isError ? "error" : "ok";
+    const file = editedFile(e as unknown as Record<string, unknown>);
+    // Past `next`, the record must not throw: the guard would run the call again.
+    await updateTrace($, (s) =>
+      toolEnd(s, { id: toolUseId, ...(e.agentId ? { agentId: e.agentId } : {}), at: endedAt, result: ending, edit: EDIT_TOOLS.has(e.tool), ...(file ? { file } : {}) }),
+    ).catch(() => undefined);
     if (result.deny !== undefined) {
       await patch($, line, { text: `⊘ ${summary}`, tone: "warn", meta: text("feed.tool.deniedLabel", locale), detail: [toolDetail, text("feed.tool.denied", locale, { message: short(result.deny, 160) })].filter(Boolean).join("\n") });
     } else {
@@ -1085,7 +1246,6 @@ export const register: Register = (on, given) => {
       });
     }
     if (e.agentId) await updateRun($, e.agentId, (run) => ({ ...run, activity: text("feed.activity.waiting", locale) }));
-    if (!e.agentId && EDIT_TOOLS.has(e.tool) && result.deny === undefined && !result.isError) await countEdit($, e as unknown as Record<string, unknown>);
     if (e.agentId || result.deny !== undefined) return result;
     await setLive($, { activity: text("feed.activity.waiting", locale) });
     const messages = await $.session.messages();
@@ -1128,13 +1288,18 @@ export const register: Register = (on, given) => {
 
   // Subagents: Jev picks the model and effort, unless Claude asked for a model itself.
   on("agent.spawn", async ($, e, next) => {
-    if (e.workflow) return next(e);
+    if (e.workflow) {
+      // Not planned and not on the Agents tab, but still a subagent of the run.
+      const result = await next(e);
+      if (result.deny === undefined) await traceSpawn($, e, result.agentId ?? e.tool_use_id, result.model).catch(() => undefined);
+      return result;
+    }
     const flags = await read($, features);
     const config = await getSettings($);
     const routingOn = await read($, routing);
     const plan =
       flags.agents && routingOn && config.apiKey && !e.fork && !e.model
-        ? await asking($, () => planAgent(e, config, tracedAskJev($, config), flags, undefined, modelContext(config)))
+        ? await asking($, () => planAgent(e, config, tracedAskJev($, config, { origin: "agent", ...(e.parentAgentId ? { agentId: e.parentAgentId } : {}) }), flags, undefined, modelContext(config)))
         : {};
     const result = await next(plan.model ? { ...e, model: plan.model.value } : e);
     if (result.deny !== undefined) {
@@ -1173,12 +1338,7 @@ export const register: Register = (on, given) => {
     else if (plan.latencyMs !== undefined) await log($, "jev", "jev", "good", text("feed.subagent.chose", config.locale, { type: e.subagentType, choice: jevChose || text("feed.subagent.nothingConfident", config.locale) }), id, { meta: `${formatNumber(plan.latencyMs, config.locale)} ms` });
     if (ignoredEffort) await log($, "mod", "feature", "warn", text("feed.subagent.ignoredEffort", config.locale, { effort: ignoredEffort.value, model: modelName(result.model) }), id);
     if (isMascot(run.mascot)) agentRuns.get(id)!.mascot = run.mascot;
-    // The first subagent of a turn starts a new wave; the rest of that turn's join it.
-    await update($, flow, (f) =>
-      f.waveTurn === f.turn && f.wave.length
-        ? { ...f, wave: [...f.wave, run.n] }
-        : { ...f, wave: [run.n], waveTurn: f.turn, ...(f.prompt ? { text: short(f.prompt, 200) } : {}), confirmed: false, edits: 0, files: [] },
-    );
+    await traceSpawn($, e, id, result.model).catch(() => undefined);
     await log($, actor(id), "agent", "info", text("feed.subagent.started", config.locale, { type: e.subagentType, number: formatNumber(run.n, config.locale), description: short(e.description, 80) }), undefined, {
       meta: `/jev agent ${run.n}`,
       detail: `${chosen.join(text("feed.usage.separator", config.locale))} · ${text("feed.subagent.task", config.locale, { prompt: short(e.prompt, 220) })}`,
@@ -1280,7 +1440,34 @@ export const register: Register = (on, given) => {
       const { effort: _originalEffort, ...withoutEffort } = e;
       sent = { ...withoutEffort, model, ...(effort === undefined ? {} : { effort }) };
     }
+    await updateTrace($, (s) =>
+      stepStart(s, {
+        turnId: e.turnId,
+        ...(e.agentId ? { agentId: e.agentId } : {}),
+        index: e.index,
+        original: e.model,
+        sent: sent.model,
+        ...(sent.effort === undefined ? {} : { effort: String(sent.effort) }),
+        at: startedAt,
+      }),
+    );
     const result = yield* next(sent);
+    // Advisor calls are read here, once the response is whole: the stream never shows one start.
+    const answeredAt = await $.clock.now();
+    await updateTrace($, (s) =>
+      stepEnd(s, {
+        turnId: e.turnId,
+        ...(e.agentId ? { agentId: e.agentId } : {}),
+        index: e.index,
+        at: answeredAt,
+        ...(result.usage?.model ? { observed: result.usage.model } : {}),
+        stop: result.stopReason,
+        ...(result.usage
+          ? { tokens: { input: result.usage.input_tokens + (result.usage.cache_read_input_tokens ?? 0) + (result.usage.cache_creation_input_tokens ?? 0), output: result.usage.output_tokens } }
+          : {}),
+        ...(result.serverToolUses ? { serverToolUses: result.serverToolUses.map(({ id, name, startedAt: from, endedAt: to }) => ({ id, name, startedAt: from, ...(to === undefined ? {} : { endedAt: to }) })) } : {}),
+      }),
+    );
     // Repeated empty answers exclude only this candidate. An interrupt never counts as a refusal.
     // An interrupted step (Esc) comes back empty too and is not counted; a dropped connection
     // looks the same as a refusal, so it takes two empty answers in a row.
@@ -1434,21 +1621,25 @@ export const register: Register = (on, given) => {
       const { Text } = $.ui.resolve(e);
       return <Text>{await statusText($)}</Text>;
     }
+    const began = Date.now();
     const els = $.ui.resolve(e);
-    const width = Math.max(30, e.props.bodyColumns ?? 60);
+    const width = Math.max(1, e.props.bodyColumns ?? 60);
     const rows = e.props.scroll?.bodyRows ?? e.viewport?.rows ?? 30;
     const key = await scrollKeyOf($, PANE);
     const shown = await view($, width, rows, e.surface, key);
     pingo = e.surface === "terminal" ? { mood: moodOf(shown), ...pingoSize(width) } : undefined;
     dice = e.surface === "terminal" && shown.tab === "live" ? diceSize(width) : undefined;
-    return renderPane(els, shown, actions($, key));
+    const tree = renderPane(els, shown, actions($, key));
+    if (shown.tab === "flow") flowDrawn(Date.now() - began, flowScene(shown.trace, shown.now, shown.locale).moving);
+    else flowShown = undefined;
+    return tree;
   });
 
   // Each subagent's own live pane, `jev-agent-<n>`: its task, its numbers and its lines only.
   on("ui.render", { component: "Pane" }, async ($, e, next) => {
     if (!e.requestId.startsWith(AGENT_PANE)) return next(e);
     const n = Number(e.requestId.slice(AGENT_PANE.length));
-    const width = Math.max(30, e.props.bodyColumns ?? 60);
+    const width = Math.max(1, e.props.bodyColumns ?? 60);
     const rows = e.props.scroll?.bodyRows ?? e.viewport?.rows ?? 30;
     const shown = await view($, width, rows, e.surface, e.requestId);
     const run = shown.agents.find((one) => one.n === n);

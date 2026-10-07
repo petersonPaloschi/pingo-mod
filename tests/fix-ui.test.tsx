@@ -1,10 +1,11 @@
-// Fixes in the pane, the band and the Flow drawing: locale keys that reach the screen, widths in
+// Fixes in the pane and the band: locale keys that reach the screen, widths in
 // terminal columns, a scrolled-back log that stays put, the turn's token detail, and the model names.
 import type { On, RenderPropsOf } from "claude-code";
 import { expect, mock, test } from "claude-code/testing";
 
-import type { AgentRun, FeedEntry, FlowState, RouteEvent } from "../types";
-import { flowLines, prettyModel, waveOf } from "../hooks/flow.ts";
+import type { FeedEntry, RouteEvent } from "../types";
+import { prettyModel } from "../hooks/flow.ts";
+import { emptyTrace } from "../hooks/trace.ts";
 import { formatClock, type Locale } from "../hooks/i18n.ts";
 import { displayWidth, rowsOf } from "../hooks/layout.ts";
 import { clip, clockWidth, oneLine, renderPane, shares, type Actions, type Els, type View } from "../hooks/ui.tsx";
@@ -20,7 +21,6 @@ const PANE_PROPS = {
   scroll: { offset: 0, bodyRows: 40, contentRows: 40 },
 } as unknown as RenderPropsOf["Pane"];
 const BAND_PROPS = { hasSurvey: false, isWorking: false, maxRows: 3, bodyColumns: 120 } as unknown as RenderPropsOf["AbovePrompt"];
-const FLOW: FlowState = { turn: 1, wave: [], waveTurn: 0, confirmed: false, edits: 0, files: [], working: false };
 
 /** A session with no key: Jev is never asked, so every prompt passes it by. */
 function noKey(on: On) {
@@ -132,7 +132,7 @@ function harness() {
     tab: "live",
     range: 0,
     setup: { provider: "typesafe", message: "", isOk: true },
-    features: { tools: true, participation: true, model: true, effort: true, delegation: true, agents: true },
+    features: { tools: true, participation: true, model: true, effort: true, delegation: true, agents: true, advisor: true },
     feed: [],
     live: {},
     now: NOW,
@@ -141,8 +141,7 @@ function harness() {
     surface: "terminal",
     meta: "",
     agents: [],
-    flow: FLOW,
-    cwd: "/workspace",
+    trace: emptyTrace(),
     scroll: 0,
     fixed: true,
     key: { source: "none", tail: "", provider: "typesafe" },
@@ -218,17 +217,6 @@ test("display width counts wide characters twice and marks not at all", () => {
   expect(rowsOf({ type: "Text", props: {}, children: ["中".repeat(50)] }, 40)).toBe(3);
 });
 
-test("Flow lines fit the pane in columns with wide labels", () => {
-  const agents = [1, 2, 3].map((n) => run(n, "running", { description: "检查网站设计和移动版本" }));
-  const lines = flowLines({ flow: { ...FLOW, wave: [1, 2, 3] }, agents, now: NOW, width: 60, locale: "en" });
-  for (const line of lines) expect(displayWidth(line.map((part) => part.text).join(""))).toBeLessThanOrEqual(60);
-  const drawn = lines.map((line) => line.map((part) => part.text).join(""));
-  // The labels are cut with "…" inside their own column, so the pipes under them stay aligned.
-  const label = drawn.find((line) => line.includes("检查"))!;
-  expect(label).toContain("…");
-  const pipes = drawn.filter((line) => /^\s*\|(\s+\|)+\s*$/.test(line));
-  expect(new Set(pipes.map((line) => line.trimEnd())).size).toBe(1);
-});
 
 test("a picture's columns are a fixed width in a row, so the text beside it has the rest", () => {
   const text = { type: "Text", props: {}, children: ["x".repeat(40)] };
@@ -267,46 +255,4 @@ test("model names: old ids and date suffixes", () => {
   expect(prettyModel("claude-haiku-4-5-20251001")).toBe("Haiku 4.5");
   expect(prettyModel("claude-opus-5-5")).toBe("Opus 5.5");
   expect(prettyModel("claude-instant-20230101")).toBe("instant");
-});
-
-const run = (n: number, state: AgentRun["state"], extra: Partial<AgentRun> = {}): AgentRun => ({
-  id: `a${n}`,
-  n,
-  mascot: "tetra",
-  type: "Explore",
-  description: `group ${n}`,
-  prompt: "check it",
-  model: "claude-sonnet-5-5",
-  effort: "medium",
-  startedAt: NOW - 30e3,
-  ...(state === "running" ? {} : { endedAt: NOW - 5e3 }),
-  state,
-  tools: 2,
-  requests: 1,
-  tokensIn: 0,
-  tokensOut: 0,
-  ...extra,
-});
-
-test("a subagent listed twice in a wave is drawn and counted once", () => {
-  const agents = [run(1, "done"), run(2, "done"), run(3, "done")];
-  const flow = { ...FLOW, wave: [1, 2, 3, 1] };
-  expect(waveOf(flow, agents).map((one) => one.n)).toEqual([1, 2, 3]);
-  const drawn = flowLines({ flow, agents, now: NOW, width: 72, locale: "en" }).map((line) => line.map((part) => part.text).join("")).join("\n");
-  expect(drawn).toContain("+ 3 SUBAGENTS");
-  expect(drawn).toContain("agents [3/3]");
-});
-
-test("the Flow drawing degrades on narrow panes instead of being clipped", () => {
-  for (const locale of ["en", "pt"] as const) {
-    for (const width of [28, 34, 41, 47]) {
-      const lines = flowLines({ flow: FLOW, agents: [], model: "claude-opus-5-5", now: NOW, width, locale });
-      for (const line of lines) expect(displayWidth(line.map((part) => part.text).join(""))).toBeLessThanOrEqual(width);
-      const drawn = lines.map((line) => line.map((part) => part.text).join("")).join("\n");
-      // The status keeps its figures whole.
-      expect(drawn).toContain(locale === "pt" ? "[planejar]" : "[plan]");
-      expect(drawn).toContain("[0/5]");
-      expect(drawn).toContain(locale === "pt" ? "Corrija com um." : "Fix with one.");
-    }
-  }
 });

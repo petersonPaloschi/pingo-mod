@@ -1,5 +1,6 @@
 // What Jev decides beyond the next tool: whether to take part at all, which model and effort the
-// turn runs on, whether to hand work to a subagent, and the model and effort of each subagent.
+// turn runs on, whether to hand work to a subagent, whether to suggest consulting the advisor, and
+// the model and effort of each subagent.
 // Every question rides in the routing point's one Jev call; each answer counts only above the
 // minimum confidence, otherwise Claude Code's own choice stands.
 import { decide, SAFE_TOOL_NAME, skipReason, type AskJev, type DecideConfig, type Decision, type JevTrace } from "./decide.ts";
@@ -7,7 +8,7 @@ import { buildState, truncate } from "./state.ts";
 import type { Answer, Json, ModelContext, Questions, RouterInput } from "./types.ts";
 import { formatDecimal, localeFor, reasonTitle, text, type Locale, type LocaleKey } from "../i18n.ts";
 
-export type FeatureId = "tools" | "participation" | "model" | "effort" | "delegation" | "agents";
+export type FeatureId = "tools" | "participation" | "model" | "effort" | "delegation" | "agents" | "advisor";
 export type Features = Record<FeatureId, boolean>;
 
 /** Only the tool hint is on by default: the rest change how Claude Code runs. */
@@ -18,6 +19,7 @@ export const DEFAULT_FEATURES: Features = {
   effort: false,
   delegation: false,
   agents: false,
+  advisor: false,
 };
 
 export type Tier = "haiku" | "sonnet" | "opus";
@@ -42,6 +44,10 @@ export const MODEL_KEY = "model";
 export const EFFORT_KEY = "effort";
 export const DELEGATE_KEY = "delegate";
 export const NO_DELEGATION = "no_delegation";
+export const ADVISOR_KEY = "advisor";
+/** "consult" asks Claude to consult the advisor tool; Claude still decides whether it calls it. */
+export const ADVISOR_CHOICES = ["none", "consult"] as const;
+export type AdvisorChoice = (typeof ADVISOR_CHOICES)[number];
 
 const MODEL_CRITERIA: Record<Tier, LocaleKey> = {
   haiku: "planning.model.haiku",
@@ -125,6 +131,13 @@ export function turnQuestions(features: Features, agents: readonly AgentType[], 
       criteria,
     };
   }
+  if (features.advisor) {
+    questions[ADVISOR_KEY] = {
+      type: "choice",
+      instructions: text("planning.advisor.question", locale),
+      criteria: { none: text("planning.advisor.none", locale), consult: text("planning.advisor.consult", locale) },
+    };
+  }
   return questions;
 }
 
@@ -200,7 +213,24 @@ export interface TurnPlan {
   /** Jev answered, but the selected tier does not accept effort. */
   effortIgnored?: Chosen<Effort>;
   delegate?: Chosen<string>;
+  /** Jev's usable answer on the advisor: "consult" attaches the hint, "none" does not. */
+  advisor?: Chosen<AdvisorChoice>;
+  /** A "consult" below the minimum confidence: no hint. */
+  advisorHeld?: Chosen<AdvisorChoice>;
+  /** Why the advisor answer was not used, when it was not. */
+  advisorWhy?: AdvisorWhy;
   jev?: JevTrace;
+}
+
+/** Why no advisor answer counts: Jev stayed out, the participation answer is missing, no usable answer, or too unsure. */
+export type AdvisorWhy = "jev_declined" | "participation_unavailable" | "unavailable" | "low_confidence";
+
+/** The advisor answer on its own: a malformed answer to another question does not void it. */
+function readAdvisor(answer: Answer | undefined, min: number): Pick<TurnPlan, "advisor" | "advisorHeld" | "advisorWhy"> {
+  if (answer?.type !== "choice" || !ADVISOR_CHOICES.includes(answer.choice as AdvisorChoice)) return { advisorWhy: "unavailable" };
+  const chosen = { value: answer.choice as AdvisorChoice, confidence: answer.confidence };
+  if (chosen.value === "consult" && chosen.confidence < min) return { advisorHeld: chosen, advisorWhy: "low_confidence" };
+  return { advisor: chosen };
 }
 
 /** One routing point: the tool decision plus the extra questions, in one Jev call. */
@@ -271,8 +301,19 @@ export function readTurnPlan(decision: Decision, features: Features, agents: rea
   // Jev chose to stay out: no hint and no delegation. The model and effort still apply, since a
   // trivial request is exactly the one a smaller model and less effort fit.
   if (participate !== undefined && participate < 0.5) {
-    return { decision: { mode: "passthrough", reason: "jev_declined", ...(decision.jev ? { jev: decision.jev } : {}) }, participate, ...sizing };
+    return {
+      decision: { mode: "passthrough", reason: "jev_declined", ...(decision.jev ? { jev: decision.jev } : {}) },
+      participate,
+      ...sizing,
+      ...(features.advisor ? { advisorWhy: "jev_declined" as const } : {}),
+    };
   }
+  // With participation on, its answer gates the advisor hint: no answer, no hint.
+  const advisor = !features.advisor
+    ? {}
+    : features.participation && participate === undefined
+      ? { advisorWhy: "participation_unavailable" as const }
+      : readAdvisor(answers?.[ADVISOR_KEY], minConfidence);
   // Only a name the question offered is taken; "no_delegation" is a confident no.
   const offered = [...offeredAgents(agents).map((agent) => agent.name), NO_DELEGATION];
   const delegated = features.delegation ? choice(answers, DELEGATE_KEY, offered, minConfidence) : undefined;
@@ -281,6 +322,7 @@ export function readTurnPlan(decision: Decision, features: Features, agents: rea
     ...(participate !== undefined ? { participate } : {}),
     ...sizing,
     ...(delegated ? { delegate: delegated } : {}),
+    ...advisor,
   };
 }
 
@@ -334,13 +376,14 @@ export async function planAgent(
   }
 }
 
-/** The context Claude reads for a turn: the tool hint and the delegation hint, in one note. */
+/** The context Claude reads for a turn: the tool hint, the delegation hint and the advisor hint, in one note. */
 export function planHint(plan: TurnPlan, toolHint: (tool: string, locale?: Locale) => string, locale?: Locale): string | undefined {
   const parts: string[] = [];
   if (plan.decision.mode === "hint") parts.push(toolHint(plan.decision.tool, locale));
   if (plan.delegate && plan.delegate.value !== NO_DELEGATION) {
     parts.push(text("planning.hint.delegate", locale, { agent: plan.delegate.value }));
   }
+  if (plan.advisor?.value === "consult") parts.push(text("planning.hint.advisor", locale));
   return parts.length ? parts.join(text("planning.hint.separator", locale)) : undefined;
 }
 
@@ -361,6 +404,7 @@ export function planSummary(plan: TurnPlan, locale?: Locale): string {
     plan.effort ? text("planning.summary.effort", locale, { effort: plan.effort.value }) : undefined,
     plan.effortIgnored ? text("planning.summary.effortIgnored", locale, { effort: plan.effortIgnored.value }) : undefined,
     plan.delegate && plan.delegate.value !== NO_DELEGATION ? text("planning.summary.delegate", locale, { agent: plan.delegate.value }) : undefined,
+    plan.advisor?.value === "consult" ? text("planning.summary.advisor", locale) : undefined,
   ].filter(Boolean);
   return parts.join(text("planning.summary.separator", locale));
 }

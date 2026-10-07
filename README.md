@@ -65,9 +65,9 @@ On Windows, use a path such as `C:/Projects/pingo`; separate multiple plugin dir
 1. **Collect context.** At the start of a new turn, Pingo reads the composed system instructions, recent conversation, and available tool roster. The current request and latest tool result are also named explicitly. Observed model, context-token and cache-token counts accompany configured model candidates. A message submitted during a running turn keeps that turn's existing plan.
 2. **Ask Jev.** The tool questions ask which tool fits next and whether a tool is needed. Enabled turn-planning questions travel in the same request. A roster over 120 tools adds a shortlisting call before the final choice.
 3. **Check the answer.** A tool hint must meet the confidence threshold, pass the tool-needed consistency check, name an offered tool, and target a tool the router can hint. Choice answers need explicit confidence and a valid probability distribution; the router never substitutes winning probability for confidence. Unknown choices, unsupported hosted-tool selections, and malformed answers fall through. Large rosters keep top candidates within each group, without comparing probabilities from different groups as if they shared a distribution.
-4. **Give Claude a hint.** An accepted choice is added to Claude's context. It names the tool; Claude supplies the arguments and can choose a different action.
+4. **Give Claude a hint.** An accepted tool choice is added to Claude's context. Enabled delegation and advisor recommendations can join the same note. Claude supplies tool arguments and decides whether to follow the suggestions.
 5. **Repeat after tools.** With Tool hints enabled, Pingo consults Jev after the last result in a main-session tool batch. It does not route another plugin's own tool calls or each tool call inside a subagent.
-6. **Record activity.** The dashboard shows routing reasons, confidence, latency, token usage, visible replies, tools, and subagent activity.
+6. **Record activity.** The dashboard shows routing reasons, confidence, latency, token usage, visible replies, tools, and subagent activity. Flow records each run from its submitted message to its answer, including activity observed while Jev routing is off.
 
 Low confidence, disagreement, an unavailable provider, a timeout, or an unreadable reply leaves Claude to continue without a tool hint. This is the mod's **fail-open** behavior.
 
@@ -80,17 +80,30 @@ Change features in `/jev features` or with `/jev feature <id> on|off`.
 | ID | Default | Behavior |
 | --- | --- | --- |
 | `tools` | On | Suggest the next tool when routing checks pass. |
-| `participation` | Off | Let Jev decline tool and delegation hints for a turn. Model and effort planning can still apply. |
+| `participation` | Off | Let Jev decline tool, delegation, and advisor hints for a turn. Model and effort planning can still apply. |
 | `model` | Off | Select Haiku, Sonnet, or Opus for the main turn, subject to the model safeguards below. |
 | `effort` | Off | Select an effort level where the target model and request support it. |
 | `delegation` | Off | Suggest an offered subagent type. Claude decides whether to start it. |
 | `agents` | Off | Plan model and effort for eligible subagents when Claude starts them. |
+| `advisor` | Off | Ask Jev whether planning, ambiguity, a recurring failure, or an independent check warrants consulting the advisor. A confident recommendation adds a hint; Claude decides whether to call it. |
 
 For example, enable main-turn model planning with:
 
 ```text
 /jev feature model on
 ```
+
+To request advisor recommendations and inspect their observed results:
+
+```text
+/jev feature advisor on
+/jev models
+/jev flow
+```
+
+The advisor question joins the prompt's existing Jev routing request. If every other feature is off, enabling it adds one Jev request per new prompt. A `consult` recommendation must meet the configured minimum confidence; a missing answer, low confidence, or a failed Jev call adds no advisor hint. When participation is enabled, Jev must also answer that question and choose to take part. Messages submitted during a running turn keep that turn's plan.
+
+This feature asks Claude to use its available advisor tool. It does not configure, enable, or change the advisor model. In Models, **applied** means the suggestion was attached to the prompt; an actual advisor call is recorded separately from the model response.
 
 A model explicitly selected by the user is preserved until they return to the default. Provider-specific model IDs and extended-context models are also preserved. Subagent planning skips workflow-managed agents, forks, and agents with an explicitly requested model. Haiku does not receive an effort setting.
 
@@ -111,7 +124,23 @@ Pingo is a dotted sphere with six expressions. The same projected geometry is re
 | Idle | No recent routing activity. |
 | Baseline | Routing is switched off. |
 
-**Overview** shows usage and routing totals. **Live** shows visible session events. **Models** shows every model switch Jev made or held back and why, what each function (participation, tool hint, model, effort, delegation) decided at each prompt, and the confidence a model change needs next. **Agents** lists subagent state, model, effort, and activity; each agent has a numbered live pane and a distinct dotted mascot. **Flow** visualizes the main session and subagent work. **Features**, **Reasons**, **Baseline**, **Logs**, and **Setup** expose the controls and recorded metadata.
+**Overview** shows usage and routing totals. **Live** shows visible session events. **Models** shows model switches, decisions for each enabled function, and the confidence the next model change needs. It also compares runs with and without an advisor hint: observed consultations, average duration, reported tokens, and completion. These observations do not measure answer quality or establish that the hint caused an improvement.
+
+**Agents** lists subagent state, model, effort, and activity. Each agent has a numbered live pane and a distinct dotted mascot. **Features**, **Reasons**, **Baseline**, **Logs**, and **Setup** expose controls and recorded metadata.
+
+**Flow** draws the submitted message, Jev consultations, the main loop's original, sent and answering models, tools grouped by source (built-in, MCP, API-run), subagents, advisor calls, and the answer with its edits. Earlier runs appear below. A message typed into a running turn appears with its association pending. An empty record shows an empty state instead of a sample diagram.
+
+Flow keeps the last 40 completed runs and every run with a main turn or subagent still active. Its text diagram adapts to the pane width. While Flow is visible and work is active, a pulse refreshes at up to 10 frames per second, with one redraw pending at a time. `/jev status` reports the latest run and measured redraw cost.
+
+### Observation limits
+
+Advisor calls become observable only when the model request's response arrives. The SDK exposes neither the advisor's model nor its token usage. A received result does not indicate whether the consultation succeeded. The advisor comparison includes only runs whose prompt asked the advisor question; duration covers the main turn, and token counts include reported main-loop and subagent usage, including cache reads and writes.
+
+The current implementation has three known limitations:
+
+- Remote workflow agents emit no local completion event, so their Flow entries can remain active after the main turn ends. Those runs remain outside the completed-run limit and survive `/jev clear`.
+- The advisor comparison includes a run as soon as its main turn ends, even if background subagents are still working. Its observed calls and token totals can therefore change afterward.
+- Branch ordering uses the retained call details. Once a run exceeds 30 tool calls or 24 advisor calls, discarded early timestamps can change the displayed order of branches.
 
 The dashboard, commands, activity feed, and hints support English and Brazilian Portuguese. Set **Language** to `en`, `pt`, or `auto` in `/jev setup`. `auto` follows the system locale. Jev's decision questions and criteria default to English independently; set the `routing_locale` plugin option to `pt` for Portuguese. Conversation content is never translated.
 
@@ -178,16 +207,16 @@ Do not put keys in slash-command arguments, repository files, screenshots, or is
 | `/jev agent <number, type, or mascot>` | Open a particular subagent's live pane, e.g. `/jev agent 3`. |
 | `/jev agent <number, type, or mascot> remove` | Remove a finished run and close its pane. |
 | `/jev agents clear` | Remove all finished runs; running agents stay. |
-| `/jev flow` | Open the live session and subagent diagram. |
-| `/jev features` | View and toggle the six routing features. |
+| `/jev flow` | Open the run diagram: message, Jev, models, tools, subagents, advisor calls, answer. |
+| `/jev features` | View and toggle the seven routing features. |
 | `/jev reasons` | Show why hints were not applied. |
 | `/jev baseline` | Compare recorded request metrics with routing on and off. |
 | `/jev logs`, `/jev log` | Browse request metadata. |
 | `/jev setup [provider]` | Configure and test a provider; enter the key in the masked field. |
-| `/jev status` | Show routing settings, features, and credential source. |
+| `/jev status` | Show routing settings, features, credential source, the latest Flow run, and measured Flow redraw cost. |
 | `/jev routing on`, `/jev routing off` | Enable Jev consultations or switch to baseline. |
 | `/jev feature <id> on`, `/jev feature <id> off` | Toggle a feature independently. |
-| `/jev clear` | Clear request history, the live log, and finished subagents. |
+| `/jev clear` | Clear request history, the live log, model decision history, finished subagents, and completed Flow runs; active runs stay. |
 
 Arguments are case-insensitive. Agent numbers are not reused within a session. The dashboard routing button and `r` shortcut also switch routing on and off.
 
@@ -206,6 +235,8 @@ Truncation limits request size; it **does not redact secrets** from conversation
 Pingo's views show observable activity and visible response text. They do not expose the models' private internal reasoning. The live feed stays in session memory; it may contain shortened prompts, tool details, response text, and provider errors.
 
 The latest **500 request records** are persisted in the plugin store under the Claude Code configuration directory. Records contain timestamps, a short session ID, model names, routing reason codes, tool counts, Jev choices and confidence, applied changes, latency, and token usage. Conversation prompts and tool arguments/results are not stored as record fields. Failed or unusable Jev replies also retain an observed cause capped at 240 characters; this can include a provider-error excerpt or discarded-answer details. The provider layer redacts the configured API key from error messages. The Models tab keeps up to 40 routing points in session memory, including failed consultation attempts and the accepted results of independent questions.
+
+Flow keeps a separate session-state record under `flowV2`, which survives plugin reloads in that session. It includes message excerpts capped at 200 characters, model IDs, tool names and sources, subagent summaries, advisor-call timestamps, edit paths, and reported token totals. Detailed call lists are bounded separately from aggregate tool and Jev counts. The previous Flow schema is not migrated into this record. Clearing completed Flow runs leaves active work available for later events.
 
 The store also retains the routing and feature switches, a fallback provider selection when needed, and the validated key/provider pair saved in Setup. The credential entry is separate from request records. `/jev clear` empties the request history and session feed; use Setup's **Remove key** action to remove the credential copy.
 
@@ -227,6 +258,7 @@ Tests run in Claude Code's plugin test runtime with stubbed provider responses; 
 | [`hooks/config.ts`](hooks/config.ts) | Settings, credential selection, thresholds, and request limits. |
 | [`hooks/input.ts`](hooks/input.ts), [`hooks/core/state.ts`](hooks/core/state.ts) | Transcript conversion and bounded provider context. |
 | [`hooks/ui.tsx`](hooks/ui.tsx), [`hooks/flow.ts`](hooks/flow.ts) | Dashboard and Flow rendering. |
+| [`hooks/trace.ts`](hooks/trace.ts) | The Flow tab's run record: pure reducers over the SDK's events. |
 | [`hooks/mascots/`](hooks/mascots/) | Pingo, user, and subagent geometry. |
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the development workflow and [SECURITY.md](SECURITY.md) for vulnerability reports.

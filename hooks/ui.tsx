@@ -2,7 +2,7 @@
 // and subagents. DESIGN.md describes the visual system; dots.ts draws the shared primitives.
 import type { ElementTable, RenderChildren } from "claude-code";
 
-import type { AgentRun, AgentState, FeatureFlags, FeedEntry, FeedTone, FlowState, FnResult, JevTab, LiveNow, RouteEvent, SetupDraft, TurnDecision, WatchState } from "../types";
+import type { AgentRun, AgentState, FeatureFlags, FeedEntry, FeedTone, FnResult, JevTab, LiveNow, RouteEvent, SetupDraft, TraceState, TurnDecision, WatchState } from "../types";
 import type { FeatureId } from "./core/plan.ts";
 import { features, modelName } from "./feed.ts";
 import { PROVIDER_IDS, PROVIDERS } from "./core/jev.ts";
@@ -25,8 +25,9 @@ import {
 import { cellsOf, constellation, DOT, hex, meter, rail } from "./dots.ts";
 import { failureHint, failureKind } from "./errors.ts";
 import { flowLines } from "./flow.ts";
+import { advisorStats, type HintGroup } from "./trace.ts";
 import { modelOf, type Forecast } from "./watch.ts";
-import { formatAge, formatClock, formatCompact, formatDecimal, formatDuration, formatNumber, localeFor, reasonTitle, text, type Locale, type LocaleKey, type LocaleOption } from "./i18n.ts";
+import { formatAge, formatClock, formatCompact, formatDecimal, formatDuration, formatNumber, formatPercent, localeFor, reasonTitle, text, type Locale, type LocaleKey, type LocaleOption } from "./i18n.ts";
 import { displayWidth, rowsOf } from "./layout.ts";
 import { DICE, diceFrame, diceSize, diceSvg } from "./mascots/dice.ts";
 import { brailleFrame, MOODS, pingoSvg, type Mood } from "./mascots/pingo.ts";
@@ -95,12 +96,11 @@ export interface View {
   surface: string;
   meta: string;
   agents: readonly AgentRun[];
-  flow: FlowState;
+  /** The Flow tab's record of each run. */
+  trace: TraceState;
   /** The Models tab: each routing point's decisions, and what it takes for the model to change next. */
   watch: WatchState;
   forecast: Forecast;
-  /** The session's directory, for the Flow tab's prompt line. */
-  cwd: string;
   /**
    * The body's own scroll position: rows from the top on most tabs, log lines back from the newest
    * on a live log. Only read when `fixed`: the pane is drawn exactly as tall as its room, the header
@@ -1066,21 +1066,12 @@ export function renderAgentPane(els: Els, view: View, run: AgentRun | undefined,
 }
 
 /**
- * The Flow tab: the latest wave of subagents as one diagram, from the main session out to each
- * subagent and back, then your go-ahead and the edits. Before any wave, a pre-ship check sample.
+ * The Flow tab: the latest run as observed, from the message through Jev and the main loop to its
+ * tools, subagents, advisor calls and answer, with the earlier runs under it.
  */
 function flowView(els: Els, view: View) {
   const { Box, Text } = els;
-  const lines = flowLines({
-    flow: view.flow,
-    agents: view.agents,
-    ...(view.live.model ? { model: view.live.model } : {}),
-    ...(view.live.effort ? { effort: view.live.effort } : {}),
-    cwd: view.cwd,
-    now: view.now,
-    width: view.width - 2,
-    locale: view.locale,
-  });
+  const lines = flowLines({ trace: view.trace, now: view.now, width: Math.max(1, view.width - 2), locale: view.locale });
   return (
     <Box flexDirection="column">
       {lines.map((parts) => (
@@ -1093,14 +1084,9 @@ function flowView(els: Els, view: View) {
           ))}
         </Text>
       ))}
-      {view.flow.wave.length === 0 ? (
-        <Box marginTop={1}>
-          <Text color={INK.faint} wrap="wrap">
-            {text("ui.flow.sampleDescription", view.locale)}
-          </Text>
-        </Box>
-      ) : null}
-      <Text color={INK.faint} wrap="wrap">{text("ui.flow.help", view.locale)}</Text>
+      <Box marginTop={1}>
+        <Text color={INK.faint} wrap="wrap">{text("ui.flow.help", view.locale)}</Text>
+      </Box>
       <Text color={INK.faint} wrap="wrap">{text("ui.flow.running", view.locale)}</Text>
     </Box>
   );
@@ -1147,6 +1133,12 @@ export function describeFn(fn: FnResult, settled: boolean, locale: Locale): stri
     if (fn.result === "applied") return text("ui.models.delegation.applied", locale, { agent: fn.value ?? "", confidence: conf });
     if (fn.result === "kept") return text("ui.models.delegation.low_confidence", locale, { agent: fn.value ?? "", confidence: conf, needed });
     return text(why === "no_delegation" ? "ui.models.delegation.no_delegation" : "ui.models.delegation.none", locale);
+  }
+  if (fn.id === "advisor") {
+    // Applied means the hint was attached, never that the advisor ran.
+    if (fn.result === "applied") return text("ui.models.advisor.applied", locale, { confidence: conf });
+    if (fn.result === "kept") return text("ui.models.advisor.low_confidence", locale, { confidence: conf, needed });
+    return text(key(`ui.models.advisor.${why || "unavailable"}`), locale);
   }
   return fn.result === "applied" ? text(fn.value === "out" ? "ui.models.participation.out" : "ui.models.participation.in", locale, { confidence: conf }) : text("ui.models.participation.none", locale);
 }
@@ -1207,7 +1199,7 @@ function forecastView(els: Els, view: View) {
   const blocked = blockers.length > 0;
   return (
     <Box flexDirection="column">
-      <Text color={INK.dim} wrap="wrap">{text(view.flow.working ? "ui.models.nextWorking" : "ui.models.nextTurn", view.locale)}</Text>
+      <Text color={INK.dim} wrap="wrap">{text(view.trace.active ? "ui.models.nextWorking" : "ui.models.nextTurn", view.locale)}</Text>
       <Text color={blocked ? INK.pass : INK.route} wrap="wrap">{text(blocked ? "ui.models.blocked" : "ui.models.canChange", view.locale)}</Text>
       {blockers.map((id) => (
         <Text color={INK.pass} wrap="wrap">{`  ✕ ${text(`ui.models.blocker.${id}` as LocaleKey, view.locale)}`}</Text>
@@ -1222,6 +1214,42 @@ function forecastView(els: Els, view: View) {
         );
       })}
       {cacheWarm && targets.some((target) => target.direction === "down") ? <Text color={INK.faint} wrap="wrap">{text("ui.models.cache", view.locale)}</Text> : null}
+    </Box>
+  );
+}
+
+/** One group of runs, measured: how often the advisor was called, how long the runs took, what they cost. */
+function hintLine(group: HintGroup, label: LocaleKey, locale: Locale): string {
+  const runs = group.runs;
+  return text("ui.models.hint.line", locale, {
+    label: text(label, locale),
+    runs: formatNumber(runs, locale),
+    runUnit: text(runs === 1 ? "unit.run" : "unit.runs", locale),
+    called: formatPercent(group.withCall, runs, locale),
+    calls: formatDecimal(runs ? group.calls / runs : 0, locale, 1),
+    duration: formatDuration(runs ? group.durationMs / runs : 0, locale),
+    tokens: formatCompact(runs ? group.tokens / runs : 0, locale),
+    completed: formatPercent(group.completed, runs, locale),
+  });
+}
+
+/** The advisor hint, measured over the runs kept: with it against without it, where the question was asked. */
+function hintView(els: Els, view: View) {
+  const { Box, Text } = els;
+  const { hinted, plain } = advisorStats(view.trace);
+  if (!view.features.advisor && !hinted.runs && !plain.runs) return null;
+  return (
+    <Box flexDirection="column">
+      {section(els, text("ui.models.hint.title", view.locale))}
+      {hinted.runs || plain.runs ? (
+        <Box flexDirection="column">
+          <Text color={INK.ink} wrap="wrap">{hintLine(hinted, "ui.models.hint.with", view.locale)}</Text>
+          <Text color={INK.dim} wrap="wrap">{hintLine(plain, "ui.models.hint.without", view.locale)}</Text>
+        </Box>
+      ) : (
+        <Text color={INK.faint} wrap="wrap">{text("ui.models.hint.empty", view.locale)}</Text>
+      )}
+      <Text color={INK.faint} wrap="wrap">{text("ui.models.hint.note", view.locale)}</Text>
     </Box>
   );
 }
@@ -1248,6 +1276,7 @@ function modelsView(els: Els, view: View) {
         {earlier.length ? <Box flexDirection="column">{earlier.slice(0, 12).map((turn) => turnLine(els, view, turn))}</Box> : null}
         <Text color={INK.faint} wrap="wrap">{text("ui.models.legend", view.locale)}</Text>
       </Box>
+      {hintView(els, view)}
       <Box flexDirection="column">
         {section(els, text("ui.models.subagents", view.locale))}
         {agents.length === 0 ? <Text color={INK.faint}>{text("ui.models.noSubagents", view.locale)}</Text> : null}

@@ -25,7 +25,7 @@ export type RouteEvent = {
 export type JevTab = "overview" | "live" | "models" | "agents" | "flow" | "reasons" | "baseline" | "log" | "features" | "setup";
 
 /** The functions Jev can decide a turn's plan with, in the order the Models tab lists them. */
-export type FnId = "participation" | "tools" | "model" | "effort" | "delegation";
+export type FnId = "participation" | "tools" | "model" | "effort" | "delegation" | "advisor";
 
 /**
  * What one function did for one turn. `why` is a code the pane words in the person's language
@@ -50,7 +50,7 @@ export type FnResult = {
 export type TurnDecision = {
   seq: number;
   time: number;
-  /** Main-loop turns seen this session, as FlowState.turn counts them. */
+  /** Main-loop turns seen this session, as TraceState.turns counts them. */
   turn: number;
   consulted: boolean;
   latencyMs?: number;
@@ -66,23 +66,173 @@ export type WatchState = {
   count: number;
 };
 
-/** The Flow tab: the latest batch of subagents, from the prompt that sent them to the edits after. */
-export type FlowState = {
-  /** Main-loop turns seen this session; a wave belongs to the turn it started in. */
-  turn: number;
-  /** The running turn's prompt, kept so a wave it starts can show it. */
-  prompt?: string;
-  /** The latest wave: its subagents' numbers (AgentRun.n), the turn it started in, that turn's prompt. */
-  wave: number[];
-  waveTurn: number;
-  text?: string;
-  /** You started a turn after every subagent of the wave had ended. */
+/**
+ * A message as the Flow tab records it. Its run is tied only when the engine confirms it: the turn
+ * that starts while its idle submission is still entering. A message typed into a running turn
+ * names that turn (`during`) and stays "queued": the engine may deliver it into that turn or run
+ * it later, and nothing observable says which.
+ */
+export type TraceMessage = {
+  id: string;
+  text: string;
+  at: number;
+  /** PromptOrigin.kind: "composer", "peer", "plugin", ... */
+  origin: string;
+  /** The turn that was running when it was submitted (prompt.submit's turnId). */
+  during?: string;
+  state: "waiting" | "linked" | "queued" | "dropped";
+  dropped?: string;
+  plan?: TracePlan;
+  /** Jev calls made for it before its run started. */
+  consults: TraceConsult[];
+};
+
+/** What Jev's routing point came to for a message. */
+export type TracePlan = {
+  outcome: "consulted" | "declined" | "failed" | "skipped";
+  /** A reason code ("jev_declined", "routing_disabled", "mid_turn", ...). */
+  reason: string;
+  /** The same one-line summary the live log shows. */
+  summary: string;
+  latencyMs?: number;
+  /** What the context Claude reads carried: the tool hint, the delegation hint, the advisor hint. */
+  tool?: string;
+  delegate?: string;
+  advisor?: boolean;
+  /** The advisor question was part of the routing point (the feature was on). */
+  advisorAsked?: boolean;
+};
+
+/** One Jev call: where it was asked from, the model asked, and the questions it carried. */
+export type TraceConsult = {
+  id: string;
+  origin: "prompt" | "tool" | "agent";
+  model: string;
+  questions: string[];
+  startedAt: number;
+  endedAt?: number;
+  error?: string;
+};
+
+/** One model request: the model the engine resolved, the one sent, and the one the response named. */
+export type TraceStep = {
+  agentId?: string;
+  turnId: string;
+  index: number;
+  original: string;
+  sent: string;
+  /** usage.model of the response; absent when no response (or no usage) arrived. */
+  observed?: string;
+  effort?: string;
+  startedAt: number;
+  endedAt?: number;
+  stop?: string | null;
+};
+
+/** One tool call Claude or a subagent made. `source` is "builtin" or "mcp:<server>". */
+export type TraceTool = {
+  id: string;
+  agentId?: string;
+  name: string;
+  source: string;
+  startedAt: number;
+  endedAt?: number;
+  result?: "ok" | "error" | "denied";
+};
+
+/** A subagent as the run keeps it: its summary outlives the Agents tab entry. */
+export type TraceAgent = {
+  id: string;
+  parent?: string;
+  toolUseId?: string;
+  type: string;
+  description: string;
+  /** What the engine said it starts on; `observed` is what its responses named. */
+  model?: string;
+  observed: string[];
+  state: AgentState;
+  background?: boolean;
+  startedAt: number;
+  endedAt?: number;
+  tools: number;
+  requests: number;
+};
+
+/**
+ * A server tool call (the advisor) read off a step's response. `endedAt` means its result arrived,
+ * not that the consultation succeeded; the SDK exposes no model, tokens or outcome for it.
+ */
+export type TraceAdvisor = {
+  id: string;
+  name: string;
+  agentId?: string;
+  turnId: string;
+  step: number;
+  startedAt: number;
+  endedAt?: number;
+};
+
+/** One main-loop run: a turn, from what started it to how it ended, with everything inside. */
+export type TraceRun = {
+  /** The engine's turnId, or a local id until one is seen (`confirmed` false). */
+  id: string;
   confirmed: boolean;
-  /** Main-loop edits since the wave ended, and the files they touched. */
+  /** Its number among the main-loop turns of this session. */
+  n: number;
+  kind: "message" | "continuation" | "unlinked";
+  /** turn.start's text, clipped. */
+  text: string;
+  startedAt: number;
+  endedAt?: number;
+  reason?: "answer" | "aborted" | "refusal" | "error" | "superseded";
+  message?: TraceMessage;
+  /** Messages submitted while it ran. */
+  received: TraceMessage[];
+  consults: TraceConsult[];
+  consultCount: number;
+  /** The main loop's models: the first the engine resolved, every one sent, every one a response named. */
+  main: { original?: string; sent: string[]; observed: string[]; effort?: string; requests: number };
+  steps: TraceStep[];
+  tools: TraceTool[];
+  toolCount: number;
+  toolSources: Record<string, number>;
+  denied: number;
+  failed: number;
+  agents: TraceAgent[];
+  advisor: TraceAdvisor[];
   edits: number;
   files: string[];
-  /** The main loop is running a turn. */
-  working: boolean;
+  /** Tokens the responses reported, main loop and subagents (cache reads and writes in `input`); the advisor's are not exposed. */
+  tokens?: { input: number; output: number };
+};
+
+/** The Flow tab (schema 2): what each run did, as observed. A value of another schema is not read. */
+export type TraceState = {
+  schemaVersion: 2;
+  /** The last local id handed out. */
+  seq: number;
+  /** Main-loop turns seen this session (the Models tab numbers prompts by it). */
+  turns: number;
+  /** The main loop's running run, by id. */
+  active?: string;
+  /** The idle message whose prompt.submit is still entering: the run that starts meanwhile is its. */
+  entering?: string;
+  /** Messages not tied to a run: awaiting their turn, or refused. */
+  inbox: TraceMessage[];
+  /** Oldest first: every run still active and the latest finished. */
+  runs: TraceRun[];
+  /** What settings and the environment say about the advisor: informative, never proof it runs. */
+  advisor?: AdvisorInfo;
+};
+
+/**
+ * `advisorModel` as settings.json has it (a --advisor flag or /advisor can override it unseen), and
+ * a variable that keeps the advisor off: one that stops feature-flag fetching, or a provider other
+ * than the Anthropic API.
+ */
+export type AdvisorInfo = {
+  configured?: string;
+  blocked?: { kind: "flags" | "provider"; variable: string };
 };
 
 /** The setup pane selects a provider and reports the connection check. */
@@ -104,6 +254,7 @@ export type FeatureFlags = {
   effort: boolean;
   delegation: boolean;
   agents: boolean;
+  advisor: boolean;
 };
 
 export type FeedKind = "turn" | "step" | "jev" | "tool" | "agent" | "message" | "feature" | "error";
@@ -198,7 +349,7 @@ declare module "claude-code" {
       agents: AgentRun[];
       /** The highest AgentRun.n handed out this session: numbers are never reused. */
       agentCount: number;
-      flow: FlowState;
+      flowV2: TraceState;
       watch: WatchState;
       scroll: PaneScroll;
     };

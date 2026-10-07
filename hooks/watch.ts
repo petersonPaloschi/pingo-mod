@@ -22,7 +22,7 @@ const choiceOf = (answer: Answer | undefined) => (answer?.type === "choice" ? an
 
 /** What each function did for the turn, from the plan Jev's answers made. The model is settled later. */
 export function turnFunctions(plan: TurnPlan, ctx: TurnContext): FnResult[] {
-  const ids = ["participation", "tools", "model", "effort", "delegation"] as const;
+  const ids = ["participation", "tools", "model", "effort", "delegation", "advisor"] as const;
   const gate = !ctx.routing ? "routing_disabled" : !ctx.hasKey ? "no_api_key" : undefined;
   if (gate) return ids.map((id) => ({ id, result: "off", why: gate }));
   const reason = plan.decision.mode === "passthrough" ? plan.decision.reason : "";
@@ -78,6 +78,19 @@ export function turnFunctions(plan: TurnPlan, ctx: TurnContext): FnResult[] {
         : wantedDelegate && wantedDelegate.confidence < min
           ? { id: "delegation", result: "kept", why: "low_confidence", value: wantedDelegate.choice, confidence: wantedDelegate.confidence, needed: min }
           : { id: "delegation", result: "none", why: "unavailable" },
+  );
+
+  // "applied" means the hint was attached: whether Claude calls the advisor is Claude's decision.
+  fns.push(
+    !ctx.features.advisor
+      ? off("advisor")
+      : plan.advisor?.value === "consult"
+        ? { id: "advisor", result: "applied", value: "consult", confidence: plan.advisor.confidence }
+        : plan.advisor
+          ? { id: "advisor", result: "none", why: "advisor_none", confidence: plan.advisor.confidence }
+          : plan.advisorWhy === "low_confidence" && plan.advisorHeld
+            ? { id: "advisor", result: "kept", why: "low_confidence", value: "consult", confidence: plan.advisorHeld.confidence, needed: min }
+            : { id: "advisor", result: "none", why: plan.advisorWhy ?? "unavailable" },
   );
   // A malformed tool answer does not invalidate the other independently accepted questions.
   return reason === "jev_unexpected_answer"
