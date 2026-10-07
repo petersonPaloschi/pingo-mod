@@ -171,9 +171,12 @@ export function redact(message: string, apiKey: string): string {
 const printable = (body: string) =>
   body.replace(/\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)?|[\x00-\x1f\x7f-\x9f]/g, " ");
 
+// A plain field, not a parameter property, so Node's type stripping can load this file for the sift script.
 class JevHttpError extends Error {
-  constructor(message: string, readonly status: number) {
+  readonly status: number;
+  constructor(message: string, status: number) {
     super(message);
+    this.status = status;
   }
 }
 

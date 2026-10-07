@@ -111,6 +111,21 @@ Model criteria describe both appropriate work and tasks to avoid. The main-turn 
 
 Two consecutive empty responses from a switched model exclude that candidate for the session; other candidates remain eligible. Interrupts do not count. The live feed records why a recommendation was retained or rejected. Subagents continue to use the native tier aliases and omit tiers with no remaining configured candidates.
 
+### Sift: bulk judgments
+
+The plugin also ships the **`sift`** skill. When Claude is about to read many files, a long log, or a large list only to decide which parts matter, it can run `scripts/sift.ts` instead. Jev answers one yes/no or pick-a-label question per item, in parallel, and Claude reads back a compact shortlist with uncertain items marked `?`.
+
+| Command | Use |
+| --- | --- |
+| `sift filter "<yes/no question>" <inputs>` | Keep the files, lines (`--lines`), or JSONL items (`--items`) where the answer is yes. Repeated log lines are folded into one pattern. |
+| `sift classify --labels "a,b,c" <inputs>` | Put each item in one bucket, listing low-confidence items with their runner-up label. |
+| `sift rank "<query>" <inputs>` | Order items by relevance to a query. |
+| `sift find "<what>" <files>` | Locate the matching lines inside large files. |
+| `sift ask "<question>" --state @file` | One yes/no or `--choice` answer over a document, or a raw `{state, questions}` spec. |
+| `sift status` | Check the provider, key source, and model with one real call. |
+
+Sift uses the same provider, key, and model as routing: the key saved by `/jev setup`, the plugin options, then the provider environment variables. It runs outside the mod with Node 22.18 or newer, does not depend on the routing switch or features, and does not appear in the dashboard beyond its Bash call. Results are a shortlist, not proof: Claude is told to open the survivors and read the `?` items itself. Sift adapts [Quicksilver](https://github.com/UditAkhourii/quicksilver)'s approach to Pingo's providers and credentials.
+
 ## Dashboard and visual language
 
 Pingo is a dotted sphere with six expressions. The same projected geometry is rendered as **braille cells in the terminal** and **SVG circles on the desktop**. Color indicates state; exact confidence, latency, and usage remain readable as text.
@@ -230,7 +245,9 @@ When routing is enabled, a key is configured, and an applicable feature is on, P
 - Enabled planning questions. Eligible subagent-planning calls instead contain the agent type, a task description capped at 400 characters, and a task prompt capped at 4,000 characters.
 - Configured model IDs and observed execution metadata: current model, context tokens and cache-read tokens. These counts describe the latest observed request, not the exact size of the next one.
 
-Truncation limits request size; it **does not redact secrets** from conversation or tool content. Only use routing for information you are allowed to share with that provider. `/jev routing off` stops every Jev request.
+Truncation limits request size; it **does not redact secrets** from conversation or tool content. Only use routing for information you are allowed to share with that provider. `/jev routing off` stops every routing request.
+
+When Claude runs the `sift` skill, the selected provider receives the content of each judged item (a file, line, or JSONL entry, cut at 60,000 characters by default) together with Claude's question, labels, or query. `/jev routing off` does not affect sift. It skips files that look like credentials (`.env*`, keys, certificates, `credentials`/`secrets` files), binaries, files over 2 MB, lockfiles, and paths ignored by git, but it does not redact secrets inside other files. Sift stores nothing; `--save FILE` writes results only where asked.
 
 Pingo's views show observable activity and visible response text. They do not expose the models' private internal reasoning. The live feed stays in session memory; it may contain shortened prompts, tool details, response text, and provider errors.
 
@@ -260,6 +277,7 @@ Tests run in Claude Code's plugin test runtime with stubbed provider responses; 
 | [`hooks/ui.tsx`](hooks/ui.tsx), [`hooks/flow.ts`](hooks/flow.ts) | Dashboard and Flow rendering. |
 | [`hooks/trace.ts`](hooks/trace.ts) | The Flow tab's run record: pure reducers over the SDK's events. |
 | [`hooks/mascots/`](hooks/mascots/) | Pingo, user, and subagent geometry. |
+| [`hooks/core/sift.ts`](hooks/core/sift.ts), [`scripts/sift.ts`](scripts/sift.ts), [`skills/sift/`](skills/sift/) | The sift skill: bulk-judgment questions and output (pure), the Node CLI that collects inputs and calls Jev, and Claude's instructions. |
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the development workflow and [SECURITY.md](SECURITY.md) for vulnerability reports.
 
