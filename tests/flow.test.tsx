@@ -61,8 +61,8 @@ function busyRun(): TraceState {
   for (const [n, type] of [[1, "Explore"], [2, "Explore"], [3, "Plan"]] as const) {
     s = agentStart(s, { id: `a${n}`, toolUseId: `tu-a${n}`, type, description: `group ${n}`, model: "claude-haiku-4-5-20251001", at: NOW - 70e3 });
   }
-  s = stepStart(s, { turnId: "ta2", agentId: "a2", index: 0, original: "claude-haiku-4-5-20251001", sent: "claude-haiku-4-5-20251001", at: NOW - 69e3 });
-  s = stepStart(s, { turnId: "ta1", agentId: "a1", index: 0, original: "claude-haiku-4-5-20251001", sent: "claude-haiku-4-5-20251001", at: NOW - 69e3 });
+  s = stepStart(s, { turnId: "ta2", agentId: "a2", index: 0, original: "claude-haiku-4-5-20251001", sent: "claude-haiku-4-5-20251001", effort: "medium", at: NOW - 69e3 });
+  s = stepStart(s, { turnId: "ta1", agentId: "a1", index: 0, original: "claude-haiku-4-5-20251001", sent: "claude-haiku-4-5-20251001", effort: "medium", at: NOW - 69e3 });
   s = stepEnd(s, { turnId: "ta1", agentId: "a1", index: 0, at: NOW - 60e3, observed: "claude-haiku-4-5-20251001", stop: "end_turn" });
   s = stepEnd(s, { turnId: "ta2", agentId: "a2", index: 0, at: NOW - 58e3, observed: "claude-haiku-4-5-20251001", stop: "end_turn", serverToolUses: [{ id: "adv-2", name: "advisor", startedAt: NOW - 59e3 }] });
   s = completeTurn(s, "ta1", NOW - 55e3, "answer", "a1");
@@ -254,47 +254,113 @@ describe("the drawing", () => {
     for (const line of [
       "FLOW · RUN 1 · RUNNING",
       "“check the site before launch”",
-      "consulted · tool Read (0.90) · advisor consultation requested",
+      "tool Read (0.90)",
       "hint attached: tool Read · advisor",
       "1 Jev call in this run",
-      "Opus 5.5 → sent Sonnet 5.5 → answered Sonnet 5.5",
+      "Opus 5.5 → sent Sonnet 5.5",
+      "answered Sonnet 5.5",
       "1 request · effort high",
       "Claude Code 3 · MCP github 1",
       "1 denied · 1 failed",
-      "Explore “group 1” · ✓ 15s · Haiku 4.5",
-      "Explore “group 2” · × error · Haiku 4.5",
-      "Plan “group 3” · running 1m 10s · model not observed yet",
+      "Lead · Sonnet 5.5",
+      "Subagent dispatcher",
+      "3 subagents",
+      "group 1",
+      "✓ 15s",
+      "used Haiku 4.5",
+      "group 2",
+      "error",
+      "group 3",
+      "running 1m 10s",
+      "effort medium",
       "2 calls observed",
-      "result received: 1 · result not observed: 1",
-      "main · request 1 · result received",
-      "Explore · request 1 · result not observed",
-      "configured in settings: Opus 5.5",
-      "its model and tokens are not exposed",
+      "result received: 1",
+      "not observed: 1",
+      "configured in settings",
+      "exposed",
+      "Return to main",
       "1 edit · 1 file",
-      "confirmed models: Sonnet 5.5, Haiku 4.5",
+      "confirmed models: Sonnet 5.5",
+      "Haiku 4.5",
     ]) {
       expect(picture).toContain(line);
     }
   });
 
-  test("branches follow the order things happened", () => {
-    const picture = draw(busyRun(), 100);
+  test("wide tree orders the lead, Jev, dispatcher and return while keeping advisor separate", () => {
+    const picture = draw(busyRun(), 96);
     const at = (label: string) => picture.split("\n").findIndex((line) => line.includes(label));
-    // The advisor was called before any tool, and the tools came before the subagents.
-    expect(at("◈ advisor")).toBeLessThan(at("▸ tools"));
-    expect(at("▸ tools")).toBeLessThan(at("◇ subagents"));
-    expect(at("◆  main")).toBeLessThan(at("◈ advisor"));
+    expect(at("Lead")).toBeLessThan(at("Jev"));
+    expect(at("Jev")).toBeLessThan(at("tools"));
+    expect(at("tools")).toBeLessThan(at("Subagent dispatcher"));
+    expect(at("Subagent dispatcher")).toBeLessThan(at("Return to main"));
+    expect(picture).toContain("CHECKPOINTS");
+    expect(picture).toContain("advisor");
+    expect(picture).toContain("group 1");
+    expect(picture).toContain("group 2");
+    expect(picture).toContain("group 3");
   });
 
-  test("every line fits at 20, 45, 60, 72 and 160 columns, in both languages", () => {
+  test("running agent duration advances in the recent activity log", () => {
+    let s = submitIdle(emptyTrace(), "delegate the search", "t1", NOW - 20e3);
+    s = agentStart(s, { id: "a1", toolUseId: "tu-a1", type: "Explore", description: "background search", at: NOW - 10e3 });
+    const renderAt = (now: number) => drawn(flowLines({ trace: s, now, width: 100, locale: "en" }));
+    expect(renderAt(NOW)).toContain("Explore · running 10s");
+    expect(renderAt(NOW)).not.toContain("Explore · running 0s");
+    expect(renderAt(NOW + 5e3)).toContain("Explore · running 15s");
+  });
+
+  test("a legacy advisor hint records the plan request, but not recovery or completion", () => {
+    const picture = draw(busyRun(), 100);
+    const panel = picture.split("\n").map((line) => line.slice(68)).join(" ").replace(/[│]/g, " ").replace(/\s+/g, " ");
+    expect(panel).toContain("Before plan · requested at");
+    expect(panel).toContain("Repeated tool failure · not requested");
+    expect(panel).toContain("Before done · not requested");
+  });
+
+  test("wide view shows requested checkpoints and separates model suggestions from actual models", () => {
+    let s = busyRun();
+    const messageId = runOf(s, "t1").message!.id;
+    s = planMessage(s, messageId, {
+      outcome: "consulted",
+      reason: "hint",
+      summary: "tool Read (0.90)",
+      model: "claude-haiku-5-5",
+      effort: "medium",
+      checkpoints: [{ kind: "plan", at: NOW - 89e3 }],
+    });
+    s = {
+      ...s,
+      runs: s.runs.map((run) => run.id === "t1"
+        ? { ...run, checkpoints: [...(run.checkpoints ?? []), { kind: "recovery", at: NOW - 75e3, agentId: "a2", tool: "mcp__github__get_issue", attempts: 2 }] }
+        : run),
+    };
+    const picture = draw(s, 100);
+    for (const line of [
+      "Before plan",
+      "requested at",
+      "Repeated tool failure",
+      "mcp__github__get_issue",
+      "×2",
+      "Before done",
+      "not requested",
+      "model Haiku 5.5 suggested",
+      "Lead · Sonnet 5.5",
+      "Session timeline",
+      "Recent run activity",
+    ]) expect(picture).toContain(line);
+    expect(picture).not.toContain("passed");
+  });
+
+  test("every line fits in compact and wide panes, in both languages", () => {
     const s = setAdvisorInfo(busyRun(), { configured: "claude-opus-5-5", blocked: { kind: "flags", variable: "DISABLE_TELEMETRY" } });
     for (const locale of ["en", "pt"] as const) {
-      for (const width of [20, 45, 60, 72, 160]) {
+      for (const width of [20, 45, 60, 72, 90, 96, 120, 160]) {
         const lines = flowLines({ trace: s, now: NOW, width, locale });
         for (const line of lines) expect(displayWidth(line.map((part) => part.text).join(""))).toBeLessThanOrEqual(width);
         const picture = drawn(lines);
-        expect(picture).toContain(locale === "pt" ? "principal" : "main");
-        expect(picture).toContain(locale === "pt" ? "resposta" : "answer");
+        expect(picture).toContain(width >= 90 ? (locale === "pt" ? "Líder" : "Lead") : (locale === "pt" ? "principal" : "main"));
+        expect(picture).toContain(width >= 90 ? (locale === "pt" ? "Retorno" : "Return to main") : (locale === "pt" ? "resposta" : "answer"));
       }
     }
   });
@@ -320,6 +386,7 @@ describe("the drawing", () => {
   test("model names: old ids and date suffixes", () => {
     expect(prettyModel("claude-haiku-4-5-20251001")).toBe("Haiku 4.5");
     expect(prettyModel("claude-opus-5-5")).toBe("Opus 5.5");
+    expect(prettyModel("claude-fable-5-1")).toBe("Fable 5.1");
   });
 });
 
@@ -393,7 +460,7 @@ describe("the Flow tab in the pane", () => {
     for (const surface of ["terminal", "desktop"] as const) {
       const ui = await $.ui.mount({ plugin: "jev", surface, component: "Pane", requestId: "jev", props: PANE_PROPS });
       await ui.press({ key: "tab-flow" });
-      for (const line of [/FLOW · RUN 1$/, /“ship the login fix”/, /not consulted · No API key/, /Opus 5\.5 → answered Opus 5\.5/, /Claude Code 2/, /1 denied/, /Explore “look around” · ✓ 0s · Sonnet 5\.5/, /1 call observed/, /configured in settings: Opus 5\.5/, /completed · 0s/, /1 edit · 1 file/]) {
+      for (const line of [/FLOW · RUN 1$/, /“ship the login fix”/, /not consulted · No API key/, /Opus 5\.5 → answered Opus 5\.5/, /Claude Code 2/, /1 denied/, /look around/, /✓ 0s/, /Sonnet 5\.5/, /1 call observed/, /configured in settings/, /completed · 0s/, /1 edit · 1 file/]) {
         expect(await ui.find({ type: "Text", text: line })).toBeDefined();
       }
       await ui.unmount();
@@ -417,8 +484,9 @@ describe("the Flow tab in the pane", () => {
     await $.prompt.submit({ text: "and the docs", wait: false, origin: ORIGIN, turnId: "t1" } as never);
     const ui = await $.ui.mount({ plugin: "jev", surface: "terminal", component: "Pane", requestId: "jev", props: PANE_PROPS });
     await ui.press({ key: "tab-flow" });
-    expect(await ui.find({ type: "Text", text: /↳ “also the tests” · received during this run · association pending/ })).toBeDefined();
-    expect(await ui.find({ type: "Text", text: /↳ “and the docs” · received during this run/ })).toBeDefined();
+    expect(await ui.find({ type: "Text", text: /also the tests/ })).toBeDefined();
+    expect(await ui.find({ type: "Text", text: /pending/ })).toBeDefined();
+    expect(await ui.find({ type: "Text", text: /and the docs/ })).toBeDefined();
     await ui.unmount();
   });
 
@@ -435,7 +503,8 @@ describe("the Flow tab in the pane", () => {
     await ui.press({ key: "tab-agents" });
     expect(await ui.find({ type: "Text", text: "  Explore #1" })).toBeUndefined();
     await ui.press({ key: "tab-flow" });
-    expect(await ui.find({ type: "Text", text: /Explore “look around” · ✓/ })).toBeDefined();
+    expect(await ui.find({ type: "Text", text: /look around/ })).toBeDefined();
+    expect(await ui.find({ type: "Text", text: /✓/ })).toBeDefined();
     await ui.unmount();
   });
 
@@ -470,7 +539,7 @@ describe("the Flow tab in the pane", () => {
 
 describe("the scene", () => {
   const pulseRow = (trace: TraceState, now: number) =>
-    flowLines({ trace, now, width: 100, locale: "en" }).findIndex((parts) => parts.some((part) => part.text.startsWith("•")));
+    flowLines({ trace, now, width: 100, locale: "en" }).findIndex((parts) => parts.some((part) => part.text.includes("•")));
 
   test("the node at work follows what was observed, and a finished run does not move", () => {
     let s = submitIdle(emptyTrace(), "fix it", "t1", NOW - 10e3);
@@ -499,21 +568,23 @@ describe("the scene", () => {
     expect(pulseRow(s, NOW)).toBe(-1);
   });
 
-  test("the pulse moves one row per frame, the same at the same time", () => {
+  test("the pulse blinks in the gap above the node at work, the same at the same time", () => {
     let s = submitIdle(emptyTrace(), "fix it", "t1", NOW - 10e3);
     s = stepStart(s, { turnId: "t1", index: 0, original: "claude-opus-5-5", sent: "claude-opus-5-5", at: NOW - 9e3 });
     const frame = 1000 / FLOW_FPS;
     const rows = [0, 1, 2, 3].map((i) => pulseRow(s, NOW + i * frame));
-    expect(rows.every((row) => row > 0)).toBe(true);
-    expect(new Set(rows).size).toBeGreaterThan(1);
+    const lit = rows.filter((row) => row > 0);
+    expect(lit.length).toBeGreaterThan(0);
+    expect(lit.length).toBeLessThan(rows.length);
+    expect(new Set(lit).size).toBe(1);
     expect(pulseRow(s, NOW)).toBe(rows[0]);
     expect(flowScene(s, NOW + frame, "en").frame - flowScene(s, NOW, "en").frame).toBe(1);
-    // The pulse stays on the trunk, between the node before and the one at work.
+    // The pulse sits in the row between the node before and the one at work.
     const picture = drawn(flowLines({ trace: s, now: NOW, width: 100, locale: "en" })).split("\n");
-    const jev = picture.findIndex((line) => line.startsWith("◆  jev"));
-    const main = picture.findIndex((line) => line.startsWith("◆  main"));
-    expect(rows[0]!).toBeGreaterThan(jev);
-    expect(rows[0]!).toBeLessThan(main);
+    const message = picture.findIndex((line) => line.startsWith("┌● message"));
+    const lead = picture.findIndex((line) => line.includes("Lead · Opus 5.5"));
+    expect(rows[0]!).toBeGreaterThan(message);
+    expect(rows[0]!).toBe(lead - 1);
   });
 });
 

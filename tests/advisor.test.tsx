@@ -132,7 +132,9 @@ describe("the advisor question", () => {
     const ui = await $.ui.mount({ plugin: "jev", surface: "terminal", component: "Pane", requestId: "jev", props: PANE_PROPS });
     await ui.press({ key: "tab-flow" });
     expect(await ui.find({ type: "Text", text: /hint attached: tool Read · advisor/ })).toBeDefined();
-    expect(await ui.find({ type: "Text", text: /Opus 5\.5 → sent Sonnet 5\.5 → answered Sonnet 5\.5/ })).toBeDefined();
+    // The responsive lead card wraps the routing history across rows.
+    expect(await ui.find({ type: "Text", text: /Opus 5\.5 → sent Sonnet 5\.5/ })).toBeDefined();
+    expect(await ui.find({ type: "Text", text: /→ answered/ })).toBeDefined();
     expect(await ui.find({ type: "Text", text: /no call observed/ })).toBeDefined();
     expect(await ui.find({ type: "Text", text: /configured in settings: Opus 5\.5/ })).toBeDefined();
     await ui.unmount();

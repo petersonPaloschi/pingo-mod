@@ -13,9 +13,10 @@
 import { atom, read, update } from "claude-code";
 import type { EngineInterface, Register, UiBlitArgs } from "claude-code";
 
-import type { AdvisorInfo, AgentRun, FeatureFlags, FeedEntry, PaneScroll, FeedKind, FeedSpeaker, FeedTone, JevTab, LiveNow, RouteEvent, SetupDraft, TraceConsult, TracePlan, TraceState, WatchState } from "../types";
+import type { AdvisorInfo, AgentRun, FeatureFlags, FeedEntry, PaneScroll, FeedKind, FeedSpeaker, FeedTone, JevTab, LiveNow, RouteEvent, SetupDraft, TraceCheckpoint, TraceConsult, TracePlan, TraceState, WatchState } from "../types";
 import { keyFor, keyOwner, providerBasis, resolveSettings, storedApplies, type ModOptions, type Settings, type StoredSettings } from "./config.ts";
-import { decide, hintText, type AskJev, type Decision } from "./core/decide.ts";
+import { decide, hintText, SAFE_TOOL_NAME, type AskJev, type Decision } from "./core/decide.ts";
+import { repeatedFailure, type FailureState } from "./core/harness.ts";
 import { channelFile, channelReader, FOLLOW_SCRIPT } from "./core/channel.ts";
 import { createAskJev, isProvider, observeAskJev, PROVIDERS, redact, resolveModel, validateKey, type JevEvent, type JevSent, type ProviderId, type Transport } from "./core/jev.ts";
 import type { ModelContext } from "./core/types.ts";
@@ -54,6 +55,7 @@ import {
   emptyTrace,
   planMessage,
   promptEntered,
+  requestCheckpoint,
   setAdvisorInfo,
   startTurn,
   stepEnd,
@@ -111,6 +113,9 @@ let pending: Decision | undefined;
 let turnPlan: RequestPlan & { declined?: boolean; summary?: string; modelKept?: boolean } | undefined;
 /** The routing point whose model result waits for the turn's first request. */
 let unsettled: number | undefined;
+/** Error signatures live only in this turn's memory; Flow retains the requested review alone. */
+const failures: FailureState = new Map();
+const recoveryPending = new Map<string, { checkpoint: TraceCheckpoint; runId: string }>();
 let lastToolCount = 0;
 let sessionId = "";
 let feedSeq = 0;
@@ -342,16 +347,19 @@ function editedFile(input: Record<string, unknown>): string | undefined {
 }
 
 /** What the Flow tab keeps of a routing point: the outcome, why, and which hints the context carried. */
-function tracePlan(plan: TurnPlan, summary: string, asked: boolean, failed: boolean): TracePlan {
+function tracePlan(plan: TurnPlan, summary: string, asked: boolean, failed: boolean, at: number): TracePlan {
   const reason = plan.decision.mode === "passthrough" ? plan.decision.reason : "hint";
   return {
     outcome: failed ? "failed" : reason === "jev_declined" ? "declined" : asked ? "consulted" : "skipped",
     reason: reasonCode(reason),
     summary,
     ...(plan.jev ? { latencyMs: plan.jev.latencyMs } : {}),
+    ...(plan.model ? { model: plan.model.id ?? TIER_MODEL[plan.model.value] } : {}),
+    ...(plan.effort ? { effort: plan.effort.value } : {}),
     ...(plan.decision.mode === "hint" ? { tool: plan.decision.tool } : {}),
     ...(plan.delegate && plan.delegate.value !== NO_DELEGATION ? { delegate: plan.delegate.value } : {}),
     ...(plan.advisor?.value === "consult" ? { advisor: true } : {}),
+    ...(plan.advisor?.value === "consult" ? { checkpoints: [{ kind: "plan" as const, at }] } : {}),
     ...(plan.advisor || plan.advisorWhy ? { advisorAsked: true } : {}),
   };
 }
@@ -739,6 +747,21 @@ async function routeTool($: EngineInterface, extra: { pending?: PendingResult })
   const input = toInput(await systemText($), messages, roster, config.maxMessageChars, extra, config.locale);
   input.session = modelContext(config);
   return asking($, () => withReplies(tracedAskJev($, config, { origin: "tool", ...(extra.pending ? { trigger: extra.pending.tool } : {}) }), (ask) => decide(input, config, ask)));
+}
+
+/** One local escalation after a repeated failure; no extra Jev call and no model switch. */
+async function recoveryHint($: EngineInterface, agentId = ""): Promise<string | undefined> {
+  const pendingReview = recoveryPending.get(agentId);
+  recoveryPending.delete(agentId);
+  if (!pendingReview) return undefined;
+  const config = await getSettings($);
+  if (turnPlan?.declined || featureGate(await activeFeatures($, config), "advisor") || (await advisorInfo($)).blocked) return undefined;
+  const state = await readTrace($);
+  if (agentId
+    ? !state.runs.some((run) => run.id === pendingReview.runId && run.agents.some((agent) => agent.id === agentId && agent.state === "running"))
+    : state.active !== pendingReview.runId) return undefined;
+  await updateTrace($, (s) => requestCheckpoint(s, pendingReview.checkpoint, pendingReview.runId));
+  return text("planning.hint.recovery", config.locale, { tool: pendingReview.checkpoint.tool ?? "", attempts: pendingReview.checkpoint.attempts ?? 2 });
 }
 
 /**
@@ -1150,6 +1173,8 @@ export const register: Register = (on, given) => {
   blockedModels.clear();
   switchedEmpty.clear();
   unsettled = undefined;
+  failures.clear();
+  recoveryPending.clear();
   flowShown = undefined;
   flowAsked = 0;
   mainModel = undefined;
@@ -1284,12 +1309,14 @@ export const register: Register = (on, given) => {
     } else {
       await log($, "jev", "jev", "muted", text("feed.request.notConsulted", config.locale, { summary }), undefined, { minor: true });
     }
-    await updateTrace($, (s) => planMessage(s, messageId, tracePlan(plan, summary, asked, failed)));
+    await updateTrace($, (s) => planMessage(s, messageId, tracePlan(plan, summary, asked, failed, at)));
     if (!hint) return entered(await next(e));
     return entered(await next({ ...e, context: withHint(e.context, hint) }));
   }).catch((_$, e, next) => next(e));
 
   on("turn.start", async ($, e, next) => {
+    failures.clear();
+    recoveryPending.clear();
     const locale = (await getSettings($)).locale;
     if (e.text.trim()) await log($, "you", "turn", "info", short(e.text, 600));
     else await log($, "you", "turn", "muted", text("feed.request.continues", locale), undefined, { minor: true });
@@ -1299,6 +1326,31 @@ export const register: Register = (on, given) => {
     await updateTrace($, (s) => startTurn(s, e.turnId, e.text, at));
     return next(e);
   });
+
+  // A single pre-flight pass for edited work. Stop's continuation flag prevents a review loop;
+  // the checkpoint records a request, never proof that the advisor or a test succeeded.
+  on("classic.Stop", async ($, e, next) => {
+    if (e.stop_hook_active) return next(e);
+    const config = await getSettings($);
+    if (turnPlan?.declined || featureGate(await activeFeatures($, config), "advisor") || (await advisorInfo($)).blocked) return next(e);
+    const state = await readTrace($);
+    const run = state.runs.find((one) => one.id === state.active);
+    if (!run?.edits || run.checkpoints?.some((checkpoint) => checkpoint.kind === "completion")) return next(e);
+    const result = await next(e);
+    if (result.block || result.preventContinuation) return result;
+    const at = await $.clock.now().catch(() => Date.now());
+    await updateTrace($, (s) => requestCheckpoint(s, { kind: "completion", at }, run.id)).catch(() => undefined);
+    return { ...result, block: text("planning.hint.completion", config.locale) };
+  }).catch((_$, e, next) => next.called ? {} : next(e));
+
+  // Core fires this once after the whole batch, including denied calls, before the next request.
+  on("classic.PostToolBatch", async ($, e, next) => {
+    if (!recoveryPending.has(e.agent_id ?? "")) return next(e);
+    const result = await next(e);
+    if (result.preventContinuation) return result;
+    const recovery = await recoveryHint($, e.agent_id).catch(() => undefined);
+    return recovery ? { ...result, additionalContext: withHint(result.additionalContext, recovery) } : result;
+  }).catch((_$, e, next) => next.called ? {} : next(e));
 
   on("turn.complete", async ($, e, next) => {
     const locale = (await getSettings($)).locale;
@@ -1372,73 +1424,90 @@ export const register: Register = (on, given) => {
     const result = await next(e).finally(() => {
       if (sift) $.clock.after(1000, () => siftRuns.delete(toolUseId));
     });
-    const endedAt = await $.clock.now();
-    const took = formatDuration(endedAt - (toolStarts.get(e.tool_use_id) ?? 0), locale);
-    toolStarts.delete(e.tool_use_id);
-    const ending = result.deny !== undefined ? "denied" : result.isError ? "error" : "ok";
-    const file = editedFile(e as unknown as Record<string, unknown>);
-    // Past `next`, the record must not throw: the guard would run the call again.
-    await updateTrace($, (s) =>
-      toolEnd(s, { id: toolUseId, ...(e.agentId ? { agentId: e.agentId } : {}), at: endedAt, result: ending, edit: EDIT_TOOLS.has(e.tool), ...(file ? { file } : {}) }),
-    ).catch(() => undefined);
-    if (result.deny !== undefined) {
-      await patch($, line, { text: `⊘ ${summary}`, tone: "warn", meta: text("feed.tool.deniedLabel", locale), detail: [toolDetail, text("feed.tool.denied", locale, { message: short(result.deny, 160) })].filter(Boolean).join("\n") });
-    } else {
-      const outcome = result.isError ? text("feed.tool.error", locale, { message: short(String(result.text ?? ""), 160) }) : outputSize(resultText(result.result), locale);
-      await patch($, line, {
-        text: `${result.isError ? "✗" : "✓"} ${summary}`,
-        tone: result.isError ? "bad" : "good",
-        meta: took,
-        detail: [toolDetail, outcome].filter(Boolean).join(" → "),
-      });
-    }
-    if (e.agentId) await updateRun($, e.agentId, (run) => ({ ...run, activity: text("feed.activity.waiting", locale) }));
-    if (e.agentId || result.deny !== undefined) return result;
-    await setLive($, { activity: text("feed.activity.waiting", locale) });
-    const messages = await $.session.messages();
-    const batch = [...messages].reverse().find((message) => message.toolUses?.some((use) => use.tool_use_id === e.tool_use_id));
-    const stillRunning = batch?.toolUses.some((use) => use.tool_use_id !== e.tool_use_id && use.text === undefined);
-    if (stillRunning) return result;
-    const decision = await routeTool($, {
-      pending: {
-        toolUseId: e.tool_use_id,
-        tool: e.tool,
-        text: result.isError ? String(result.text ?? "") : resultText(result.result),
-      },
-    });
-    if (!decision) return result;
-    pending = decision;
-    if (decision.jev) {
-      const failed = decision.mode === "passthrough" && isJevFailure(decision.reason);
-      const what = decision.mode === "hint"
-        ? text("feed.tool.next", locale, { tool: decision.tool, confidence: formatDecimal(decision.confidence, locale) })
-        : text("feed.tool.noHint", locale, { reason: reasonTitle(decision.reason, locale) });
-      const picked = decision.jev.confidence !== undefined && decision.jev.choice !== undefined
-        ? text("feed.tool.after", locale, {
-            tool: e.tool,
-            confidence: formatDecimal(decision.jev.confidence, locale),
-            choice: decision.jev.choice,
-            shortlist: decision.jev.shortlist ? text("feed.tool.shortlist", locale, { count: formatNumber(decision.jev.shortlist.length, locale) }) : "",
-          }) + (decision.jev.needsTool !== undefined ? text("feed.decision.needsTool", locale, { value: `${formatDecimal(decision.jev.needsTool * 100, locale, 0)}%` }) : "")
-        : undefined;
-      const rows = [
-        failed && decision.mode === "passthrough" ? failureNote(decision.reason, decision.detail, locale) : picked,
-        decision.mode === "hint" ? text("feed.decision.hint", locale, { hint: hintText(decision.tool, locale) }) : failed ? undefined : text("feed.decision.noHint", locale),
-      ];
-      await log($, "jev", "jev", failed ? "bad" : "good", text("feed.decision.tool", locale, { tool: e.tool, summary: what }), undefined, {
-        meta: `${formatNumber(decision.jev.latencyMs, locale)} ms`,
-        detail: rows.filter(Boolean).join("\n"),
-      });
-      await setLive($, { decision: failed ? text("ui.band.jevFailed", locale) : what, jevUsed: true });
-    } else if (decision.mode === "passthrough" && isJevFailure(decision.reason)) {
-      // A thrown call was already printed with its cause by the traced call; an unusable answer was not.
-      if (decision.reason === "jev_unexpected_answer") {
-        await log($, "jev", "jev", "bad", text("feed.request.failed", locale, { message: reasonTitle(decision.reason, locale) }), undefined, { detail: failureNote(decision.reason, decision.detail, locale) ?? "" });
+    // Reporting or routing may fail after a tool ran; return its result rather than run it again.
+    try {
+      const endedAt = await $.clock.now();
+      const took = formatDuration(endedAt - (toolStarts.get(e.tool_use_id) ?? 0), locale);
+      toolStarts.delete(e.tool_use_id);
+      const ending = result.deny !== undefined ? "denied" : result.isError ? "error" : "ok";
+      const file = editedFile(e as unknown as Record<string, unknown>);
+      // Past `next`, the record must not throw: the guard would run the call again.
+      await updateTrace($, (s) =>
+        toolEnd(s, { id: toolUseId, ...(e.agentId ? { agentId: e.agentId } : {}), at: endedAt, result: ending, edit: EDIT_TOOLS.has(e.tool), ...(file ? { file } : {}) }),
+      ).catch(() => undefined);
+      if (SAFE_TOOL_NAME.test(e.tool)) {
+        const target = String(input.command ?? input.file_path ?? input.path ?? JSON.stringify(Object.fromEntries(
+          Object.entries(input)
+            .filter(([key]) => !["tool_use_id", "tool", "context", "agentId"].includes(key))
+            .sort(([a], [b]) => a.localeCompare(b)),
+        )));
+        const attempts = repeatedFailure(failures, { tool: e.tool, target: JSON.stringify([e.agentId ?? "", target]), ...(result.deny !== undefined ? { denied: true } : result.isError ? { error: String(result.text ?? resultText(result.result)) } : {}) });
+        if (attempts) {
+          const state = await readTrace($).catch(() => emptyTrace());
+          const run = state.runs.findLast((one) => one.tools.some((tool) => tool.id === toolUseId));
+          if (run) recoveryPending.set(e.agentId ?? "", { runId: run.id, checkpoint: { kind: "recovery", at: endedAt, tool: e.tool, attempts, ...(e.agentId ? { agentId: e.agentId } : {}) } });
+        }
       }
-      await setLive($, { decision: text("ui.band.jevFailed", locale), jevUsed: true });
+      if (result.deny !== undefined) {
+        await patch($, line, { text: `⊘ ${summary}`, tone: "warn", meta: text("feed.tool.deniedLabel", locale), detail: [toolDetail, text("feed.tool.denied", locale, { message: short(result.deny, 160) })].filter(Boolean).join("\n") });
+      } else {
+        const outcome = result.isError ? text("feed.tool.error", locale, { message: short(String(result.text ?? ""), 160) }) : outputSize(resultText(result.result), locale);
+        await patch($, line, {
+          text: `${result.isError ? "✗" : "✓"} ${summary}`,
+          tone: result.isError ? "bad" : "good",
+          meta: took,
+          detail: [toolDetail, outcome].filter(Boolean).join(" → "),
+        });
+      }
+      if (e.agentId) await updateRun($, e.agentId, (run) => ({ ...run, activity: text("feed.activity.waiting", locale) }));
+      if (e.agentId || result.deny !== undefined) return result;
+      await setLive($, { activity: text("feed.activity.waiting", locale) });
+      const messages = await $.session.messages();
+      const batch = [...messages].reverse().find((message) => message.toolUses?.some((use) => use.tool_use_id === e.tool_use_id));
+      const stillRunning = batch?.toolUses.some((use) => use.tool_use_id !== e.tool_use_id && use.text === undefined);
+      if (stillRunning) return result;
+      const decision = await routeTool($, {
+        pending: {
+          toolUseId: e.tool_use_id,
+          tool: e.tool,
+          text: result.isError ? String(result.text ?? "") : resultText(result.result),
+        },
+      });
+      if (!decision) return result;
+      pending = decision;
+      if (decision.jev) {
+        const failed = decision.mode === "passthrough" && isJevFailure(decision.reason);
+        const what = decision.mode === "hint"
+          ? text("feed.tool.next", locale, { tool: decision.tool, confidence: formatDecimal(decision.confidence, locale) })
+          : text("feed.tool.noHint", locale, { reason: reasonTitle(decision.reason, locale) });
+        const picked = decision.jev.confidence !== undefined && decision.jev.choice !== undefined
+          ? text("feed.tool.after", locale, {
+              tool: e.tool,
+              confidence: formatDecimal(decision.jev.confidence, locale),
+              choice: decision.jev.choice,
+              shortlist: decision.jev.shortlist ? text("feed.tool.shortlist", locale, { count: formatNumber(decision.jev.shortlist.length, locale) }) : "",
+            }) + (decision.jev.needsTool !== undefined ? text("feed.decision.needsTool", locale, { value: `${formatDecimal(decision.jev.needsTool * 100, locale, 0)}%` }) : "")
+          : undefined;
+        const rows = [
+          failed && decision.mode === "passthrough" ? failureNote(decision.reason, decision.detail, locale) : picked,
+          decision.mode === "hint" ? text("feed.decision.hint", locale, { hint: hintText(decision.tool, locale) }) : failed ? undefined : text("feed.decision.noHint", locale),
+        ];
+        await log($, "jev", "jev", failed ? "bad" : "good", text("feed.decision.tool", locale, { tool: e.tool, summary: what }), undefined, {
+          meta: `${formatNumber(decision.jev.latencyMs, locale)} ms`,
+          detail: rows.filter(Boolean).join("\n"),
+        });
+        await setLive($, { decision: failed ? text("ui.band.jevFailed", locale) : what, jevUsed: true });
+      } else if (decision.mode === "passthrough" && isJevFailure(decision.reason)) {
+        // A thrown call was already printed with its cause by the traced call; an unusable answer was not.
+        if (decision.reason === "jev_unexpected_answer") {
+          await log($, "jev", "jev", "bad", text("feed.request.failed", locale, { message: reasonTitle(decision.reason, locale) }), undefined, { detail: failureNote(decision.reason, decision.detail, locale) ?? "" });
+        }
+        await setLive($, { decision: text("ui.band.jevFailed", locale), jevUsed: true });
+      }
+      return decision.mode === "hint" ? { ...result, context: withHint(result.context, hintText(decision.tool, locale)) } : result;
+    } catch {
+      return result;
     }
-    if (decision.mode !== "hint") return result;
-    return { ...result, context: withHint(result.context, hintText(decision.tool, locale)) };
   }).catch((_$, e, next) => next(e));
 
   // Subagents: Jev picks the model and effort, unless Claude asked for a model itself.

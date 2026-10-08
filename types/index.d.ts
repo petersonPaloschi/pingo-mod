@@ -97,12 +97,25 @@ export type TracePlan = {
   /** The same one-line summary the live log shows. */
   summary: string;
   latencyMs?: number;
+  /** Accepted recommendations; the main requests separately record what was actually sent. */
+  model?: string;
+  effort?: string;
+  checkpoints?: TraceCheckpoint[];
   /** What the context Claude reads carried: the tool hint, the delegation hint, the advisor hint. */
   tool?: string;
   delegate?: string;
   advisor?: boolean;
   /** The advisor question was part of the routing point (the feature was on). */
   advisorAsked?: boolean;
+};
+
+/** A review requested by the harness, never proof that validation or advice succeeded. */
+export type TraceCheckpoint = {
+  kind: "plan" | "recovery" | "completion";
+  at: number;
+  tool?: string;
+  attempts?: number;
+  agentId?: string;
 };
 
 /** One Jev call: where it was asked from, the model asked, and the questions it carried. */
@@ -152,6 +165,8 @@ export type TraceAgent = {
   /** What the engine said it starts on; `observed` is what its responses named. */
   model?: string;
   observed: string[];
+  /** Effort on the latest observed request. */
+  effort?: string;
   state: AgentState;
   background?: boolean;
   startedAt: number;
@@ -202,6 +217,7 @@ export type TraceRun = {
   failed: number;
   agents: TraceAgent[];
   advisor: TraceAdvisor[];
+  checkpoints?: TraceCheckpoint[];
   edits: number;
   files: string[];
   /** Tokens the responses reported, main loop and subagents (cache reads and writes in `input`); the advisor's are not exposed. */

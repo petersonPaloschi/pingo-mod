@@ -6,7 +6,7 @@
 // the engine confirms it: the turn that starts while its idle submission is still entering. A
 // message typed into a running turn names that turn and stays queued. A subagent's turns raise no
 // turn.start: its steps, tools and advisor calls join the run that spawned it.
-import type { AdvisorInfo, AgentState, TraceAdvisor, TraceAgent, TraceConsult, TraceMessage, TracePlan, TraceRun, TraceState, TraceStep, TraceTool } from "../types";
+import type { AdvisorInfo, AgentState, TraceAdvisor, TraceAgent, TraceCheckpoint, TraceConsult, TraceMessage, TracePlan, TraceRun, TraceState, TraceStep, TraceTool } from "../types";
 
 export const TRACE_SCHEMA = 2;
 /** Finished runs kept; runs still active (or with a subagent still running) are always kept. */
@@ -182,7 +182,20 @@ export function submitPrompt(s: TraceState, input: Submitted): [TraceState, stri
 }
 
 /** What Jev's routing point came to for the message. */
-export const planMessage = (s: TraceState, id: string, plan: TracePlan): TraceState => changeMessage(s, id, (message) => ({ ...message, plan }));
+export function planMessage(s: TraceState, id: string, plan: TracePlan): TraceState {
+  const next = changeMessage(s, id, (message) => ({ ...message, plan }));
+  return {
+    ...next,
+    runs: next.runs.map((run) => run.message?.id === id && plan.checkpoints?.length
+      ? { ...run, checkpoints: [...(run.checkpoints ?? []), ...plan.checkpoints].slice(-KEPT_ADVISOR) }
+      : run),
+  };
+}
+
+/** Record a requested review on its exact run; no error text or tool arguments are retained. */
+export function requestCheckpoint(s: TraceState, checkpoint: TraceCheckpoint, turnId = s.active): TraceState {
+  return turnId ? withRun(s, turnId, (run) => ({ ...run, checkpoints: [...(run.checkpoints ?? []), checkpoint].slice(-KEPT_ADVISOR) })) : s;
+}
 
 /** prompt.submit's `next` resolved: the message entered (its run started meanwhile, or it waits), or was refused. */
 export function promptEntered(s: TraceState, id: string, dropped?: string): TraceState {
@@ -240,6 +253,7 @@ export function startTurn(s: TraceState, turnId: string, text: string, at: numbe
   if (entering) {
     // The consultations made for the message move to its run, which counts them.
     run.message = { ...entering, state: "linked", consults: [] };
+    if (entering.plan?.checkpoints?.length) run.checkpoints = [...entering.plan.checkpoints];
     run.consults = entering.consults;
     run.consultCount = entering.consults.length;
     next = { ...omit(next, "entering"), inbox: next.inbox.filter((message) => message.id !== entering.id) };
@@ -273,7 +287,7 @@ export function stepStart(s: TraceState, step: StepStart): TraceState {
     const agentId = step.agentId;
     const [next, runId] = ensureAgent(s, agentId, step.at);
     // A teammate waking for its next turn runs again.
-    const woken = withAgent(next, runId, agentId, (agent) => ({ ...omit(agent, "endedAt"), state: "running", requests: agent.requests + 1 }));
+    const woken = withAgent(next, runId, agentId, (agent) => ({ ...omit(omit(agent, "endedAt"), "effort"), state: "running", requests: agent.requests + 1, ...(step.effort ? { effort: step.effort } : {}) }));
     return withRun(woken, runId, pushStep);
   }
   const [next, runId] = ensureMain(s, step.at, step.turnId);

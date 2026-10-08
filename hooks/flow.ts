@@ -165,6 +165,10 @@ interface FlowNode {
 
 const LABELS: readonly LocaleKey[] = ["flow.node.message", "flow.node.jev", "flow.node.main", "flow.node.tools", "flow.node.agents", "flow.node.advisor", "flow.node.answer"];
 const MAX_AGENT_LINES = 6;
+/** Columns between boxes side by side. */
+const GAP = 2;
+/** The narrowest a subagent card gets before the row wraps. */
+const AGENT_CARD = 22;
 const MAX_ADVISOR_LINES = 4;
 const MAX_RECEIVED_LINES = 3;
 
@@ -211,6 +215,8 @@ function jevNode(run: TraceRun, locale: Locale): FlowNode {
       plan.advisor ? text("flow.jev.hint.advisor", locale) : "",
     ].filter(Boolean);
     if (hints.length) details.push({ text: text("flow.jev.hints", locale, { hints: hints.join(" · ") }), color: C.ink });
+    if (plan.model) details.push({ text: text("flow.plan.model" as LocaleKey, locale, { model: prettyModel(plan.model) }), color: C.ink });
+    if (plan.effort) details.push({ text: text("flow.plan.effort" as LocaleKey, locale, { effort: plan.effort }), color: C.ink });
   } else {
     details.push({ text: text("flow.jev.notAsked", locale), color: C.dim });
   }
@@ -289,19 +295,31 @@ function toolsNode(run: TraceRun, locale: Locale): FlowNode {
   };
 }
 
-function agentLine(agent: TraceAgent, now: number, locale: Locale): Detail {
+function agentStatus(agent: TraceAgent, now: number, locale: Locale): [string, string] {
   const took = duration(agent.startedAt, agent.endedAt ?? now, locale);
-  const [state, color] =
-    agent.state === "running"
-      ? [text("flow.agent.running", locale, { duration: took }), C.green]
-      : agent.state === "done"
-        ? [text("flow.agent.done", locale, { duration: took }), C.dim]
-        : agent.state === "error"
-          ? [text("flow.agent.error", locale), C.fail]
-          : [text("flow.agent.aborted", locale, { duration: took }), C.pass];
-  const models = agent.observed.length ? list(agent.observed.map(prettyModel)) : text("flow.agent.noModel", locale);
+  return agent.state === "running"
+    ? [text("flow.agent.running", locale, { duration: took }), C.green]
+    : agent.state === "done"
+      ? [text("flow.agent.done", locale, { duration: took }), C.dim]
+      : agent.state === "error"
+        ? [text("flow.agent.error", locale), C.fail]
+        : [text("flow.agent.aborted", locale, { duration: took }), C.pass];
+}
+
+function agentLine(agent: TraceAgent, now: number, locale: Locale): Detail {
+  const [state, color] = agentStatus(agent, now, locale);
+  const models = agent.observed.length
+    ? text("flow.agent.observed" as LocaleKey, locale, { models: list(agent.observed.map(prettyModel)) })
+    : text("flow.agent.noModel", locale);
   return {
-    text: [agent.description ? `${agent.type} “${agent.description}”` : agent.type, state, models, agent.background ? text("flow.agent.background", locale) : ""].filter(Boolean).join(" · "),
+    text: [
+      agent.description ? `${agent.type} “${agent.description}”` : agent.type,
+      state,
+      agent.model ? text("flow.agent.startedModel" as LocaleKey, locale, { model: prettyModel(agent.model) }) : "",
+      agent.effort ? text("flow.agent.effort" as LocaleKey, locale, { effort: agent.effort }) : "",
+      models,
+      agent.background ? text("flow.agent.background", locale) : "",
+    ].filter(Boolean).join(" · "),
     color,
   };
 }
@@ -344,7 +362,7 @@ function advisorNode(run: TraceRun, trace: TraceState, locale: Locale): FlowNode
   } else {
     details.push({ text: text("flow.advisor.none", locale), color: C.dim });
   }
-  if (trace.advisor?.configured) details.push({ text: text("flow.advisor.configured", locale, { model: prettyModel(trace.advisor.configured) }), color: C.faint });
+  if (trace.advisor?.configured) details.push({ text: text("flow.advisor.configured", locale, { model: prettyModel(trace.advisor.configured) }), color: C.dim });
   const blocked = trace.advisor?.blocked;
   if (blocked) details.push({ text: text("flow.advisor.blocked", locale, { reason: text(`flow.advisor.blocked.${blocked.kind}`, locale, { variable: blocked.variable }) }), color: C.pass });
   if (calls.length) details.push({ text: text("flow.advisor.unexposed", locale), color: C.faint });
@@ -458,6 +476,260 @@ function earlierLine(run: TraceRun, now: number, locale: Locale): { text: string
   return { text: `#${run.n} ${mark} ${what} · ${figures.join(" · ")}`, color };
 }
 
+/** How long a new event stays highlighted in the activity log. */
+const FRESH_MS = 2000;
+
+const CHECKPOINT_KINDS = ["plan", "recovery", "completion"] as const;
+
+function checkpointDetails(run: TraceRun, locale: Locale): Detail[] {
+  const checkpoints = [...(run.message?.plan?.checkpoints ?? []), ...(run.checkpoints ?? [])];
+  return CHECKPOINT_KINDS.flatMap((kind) => {
+    const checkpoint = checkpoints.findLast((one) => one.kind === kind)
+      ?? (kind === "plan" && run.message?.plan?.advisor === true ? { kind, at: run.message.at } : undefined);
+    const label = text(`flow.checkpoint.${kind}` as LocaleKey, locale);
+    if (!checkpoint) return [{ text: `${label} · ${text("flow.checkpoint.notRequested" as LocaleKey, locale)}`, color: C.faint }];
+    const owner = checkpoint.agentId
+      ? run.agents.find((agent) => agent.id === checkpoint.agentId)?.type ?? checkpoint.agentId.slice(0, 8)
+      : "";
+    const extra = [owner, checkpoint.tool, checkpoint.attempts ? `×${formatNumber(checkpoint.attempts, locale)}` : ""].filter(Boolean).map((part) => ` · ${part}`).join("");
+    return [{ text: `${label} · ${text("flow.checkpoint.detail" as LocaleKey, locale, { at: formatClock(checkpoint.at, locale), detail: extra })}`, color: C.ink }];
+  });
+}
+
+function drawCard(
+  g: Canvas,
+  x: number,
+  y: number,
+  width: number,
+  title: string,
+  glyph: string,
+  color: string,
+  details: readonly Detail[],
+  active = false,
+  maxLinesPerDetail = 2,
+  minBottom = 0,
+  frame = 0,
+): number {
+  // One blank column inside each border, so the text never touches the box.
+  const pad = width >= 8 ? 1 : 0;
+  const inside = Math.max(1, width - 2 - pad * 2);
+  g.put(x, y, `┌${"─".repeat(Math.max(0, width - 2))}┐`, { color, bold: true });
+  const heading = fit(` ${glyph ? `${glyph} ` : ""}${title}${active ? ` ${spinner(frame)}` : ""} `, Math.max(1, width - 3));
+  g.put(x + 1 + pad, y, heading, { color, bold: true });
+  let row = y + 1;
+  for (const detail of details) {
+    if (!detail.text) continue;
+    for (const part of wrap(detail.text, inside, maxLinesPerDetail)) {
+      g.put(x, row, "│", { color });
+      g.put(x + 1 + pad, row++, fit(part, inside), { color: detail.color, ...(detail.bold ? { bold: true } : {}) });
+      g.put(x + width - 1, row - 1, "│", { color });
+    }
+  }
+  const bottom = Math.max(row, minBottom);
+  while (row < bottom) {
+    g.put(x, row, "│", { color });
+    g.put(x + width - 1, row++, "│", { color });
+  }
+  g.put(x, bottom, `└${"─".repeat(Math.max(0, width - 2))}┘`, { color, bold: true });
+  return bottom + 1;
+}
+
+const SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏";
+/** The spinner's glyph at `frame`: one turn per second at FLOW_FPS. */
+const spinner = (frame: number) => [...SPINNER][((frame % SPINNER.length) + SPINNER.length) % SPINNER.length]!;
+
+
+function agentCardDetails(agent: TraceAgent, now: number, locale: Locale): Detail[] {
+  const [state, color] = agentStatus(agent, now, locale);
+  return [
+    ...(agent.description ? [{ text: agent.description, color: C.dim }] : []),
+    { text: state, color },
+    ...(agent.model ? [{ text: text("flow.agent.startedModel" as LocaleKey, locale, { model: prettyModel(agent.model) }), color: C.ink }] : []),
+    ...(agent.effort ? [{ text: text("flow.agent.effort" as LocaleKey, locale, { effort: agent.effort }), color: C.dim }] : []),
+    ...(agent.observed.length
+      ? [{ text: text("flow.agent.observed" as LocaleKey, locale, { models: list(agent.observed.map(prettyModel)) }), color: C.ink }]
+      : []),
+    ...(agent.background ? [{ text: text("flow.agent.background", locale), color: C.faint }] : []),
+  ];
+}
+
+function recentActivity(run: TraceRun, now: number, locale: Locale): Detail[] {
+  const events: { at: number; detail: Detail }[] = [];
+  const plan = run.message?.plan;
+  if (run.message && plan?.summary) events.push({ at: run.message.at, detail: { text: `${text("flow.node.jev", locale)} · ${plan.summary}`, color: plan.outcome === "failed" ? C.fail : C.dim } });
+  for (const tool of run.tools) {
+    const result = tool.result;
+    const marker = result === "error" ? "✗" : result === "denied" ? "⊘" : result === "ok" ? "✓" : "◉";
+    events.push({ at: tool.endedAt ?? tool.startedAt, detail: { text: `${marker} ${tool.name}`, color: result === "error" ? C.fail : result === "denied" ? C.pass : result === "ok" ? C.dim : C.green } });
+  }
+  for (const call of run.advisor) {
+    const owner = call.agentId ? run.agents.find((agent) => agent.id === call.agentId)?.type ?? call.agentId : text("flow.advisor.main", locale);
+    events.push({
+      at: call.endedAt ?? call.startedAt,
+      detail: {
+        text: `${text("flow.node.advisor", locale)} · ${owner} · ${text(call.endedAt !== undefined ? "flow.advisor.received" : "flow.advisor.notObserved", locale)}`,
+        color: call.endedAt !== undefined ? C.dim : C.pass,
+      },
+    });
+  }
+  for (const agent of run.agents) {
+    const [state, color] = agentStatus(agent, agent.endedAt ?? now, locale);
+    events.push({ at: agent.endedAt ?? agent.startedAt, detail: { text: `${agent.type} · ${state}`, color } });
+  }
+  // What just happened flashes for a moment, so the log is seen to move.
+  return events
+    .sort((a, b) => a.at - b.at)
+    .slice(-4)
+    .map(({ at, detail }) => {
+      const fresh = now - at >= 0 && now - at < FRESH_MS;
+      return { ...detail, text: `${formatClock(at, locale)} · ${detail.text}`, ...(fresh ? { color: C.green, bold: true } : {}) };
+    });
+}
+
+function drawTimeline(g: Canvas, x: number, y: number, width: number, run: TraceRun, now: number, locale: Locale, frame = 0): number {
+  const events = [
+    ...run.steps.map((step) => {
+      const agent = step.agentId ? run.agents.find((one) => one.id === step.agentId) : undefined;
+      const owner = step.agentId ? agent?.type ?? text("flow.node.agents", locale) : text("flow.node.lead" as LocaleKey, locale);
+      return {
+        label: `${owner} · ${prettyModel(step.observed ?? step.sent ?? step.original)}`,
+        startedAt: step.startedAt,
+        endedAt: step.endedAt,
+        color: step.agentId ? C.blue : C.orange,
+      };
+    }),
+    ...run.tools.map((tool) => ({
+      label: tool.name,
+      startedAt: tool.startedAt,
+      endedAt: tool.endedAt,
+      color: tool.result === "error" ? C.fail : tool.result === "denied" ? C.pass : C.blue,
+    })),
+    ...run.advisor.map((call) => ({
+      label: text("flow.node.advisor", locale),
+      startedAt: call.startedAt,
+      endedAt: call.endedAt,
+      color: C.pass,
+    })),
+  ].sort((a, b) => a.startedAt - b.startedAt).slice(-8);
+  if (events.length === 0) return y;
+
+  g.put(x, y++, text("flow.panel.timeline" as LocaleKey, locale), { color: C.dim, bold: true });
+  const labelWidth = Math.min(18, Math.max(8, Math.floor(width * 0.28)));
+  const durationWidth = 6;
+  const barWidth = Math.max(5, width - labelWidth - durationWidth - 3);
+  const minAt = Math.min(...events.map((event) => event.startedAt));
+  const maxAt = Math.max(...events.map((event) => event.endedAt ?? now));
+  const span = Math.max(1, maxAt - minAt);
+  for (const event of events) {
+    const finish = event.endedAt ?? now;
+    const startAt = Math.max(0, Math.min(barWidth - 1, Math.round(((event.startedAt - minAt) / span) * (barWidth - 1))));
+    const endAt = Math.max(startAt, Math.min(barWidth - 1, Math.round(((finish - minAt) / span) * (barWidth - 1))));
+    g.put(x, y, fit(event.label, labelWidth), { color: event.color });
+    g.put(x + labelWidth + 1, y, "·".repeat(barWidth), { color: C.faint });
+    const running = event.endedAt === undefined;
+    if (endAt > startAt) {
+      g.put(x + labelWidth + 1 + startAt, y, "━".repeat(endAt - startAt + 1), { color: event.color });
+      // A running bar shimmers: a bright cell travels from its start to its head.
+      if (running) g.put(x + labelWidth + 1 + startAt + (frame % (endAt - startAt + 1)), y, "━", { color: C.ink, bold: true });
+    }
+    g.put(x + labelWidth + 1 + endAt, y, running ? (frame % 4 < 2 ? "●" : "○") : "◆", { color: event.color, bold: true });
+    g.put(x + labelWidth + 1 + barWidth + 1, y, fit(duration(event.startedAt, finish, locale), durationWidth), { color: C.dim });
+    y++;
+  }
+  return y;
+}
+
+function drawWideFlow(g: Canvas, trace: TraceState, scene: FlowScene, now: number, locale: Locale, y: number, width: number): void {
+  const run = scene.run;
+  if (!run) return;
+  // Every gap between boxes is the same: GAP columns side by side, one row stacked.
+  const panelWidth = Math.max(32, Math.floor(width * 0.3) + 2);
+  const panelX = width - panelWidth;
+  const centerWidth = Math.max(1, panelX - GAP);
+  const centerX = 0;
+  const center = Math.floor(centerWidth / 2);
+  const nodes = new Map(scene.nodes.map((node) => [node.id, node]));
+  const active = scene.active === undefined ? undefined : scene.nodes[scene.active]?.id;
+  let end = y;
+  /** A box under the one before, one row apart; the arrow in that row pulses into the node at work. */
+  let first = true;
+  const card = (id: NodeId, title: string, glyph: string, color: string, details: readonly Detail[], lines = 1) => {
+    if (!first) {
+      const moving = active === id && scene.moving;
+      g.put(center, end++, moving && scene.frame % 4 < 2 ? "•" : "↓", { color: moving ? C.green : C.faint, bold: moving });
+    }
+    first = false;
+    end = drawCard(g, centerX, end, centerWidth, title, glyph, color, details, active === id && id !== "message", lines, 0, scene.frame);
+  };
+
+  const message = nodes.get("message");
+  if (message) card("message", message.label, message.glyph, message.color, message.details, 2);
+
+  const main = nodes.get("main");
+  if (main) {
+    const model = run.main.observed.at(-1) ?? run.main.sent.at(-1) ?? run.main.original;
+    card("main", `${text("flow.node.lead" as LocaleKey, locale)}${model ? ` · ${prettyModel(model)}` : ""}`, main.glyph, main.color, main.details);
+  }
+
+  const jev = nodes.get("jev");
+  if (jev) card("jev", jev.label, jev.glyph, jev.color, jev.details);
+
+  const tools = nodes.get("tools");
+  if (tools) card("tools", tools.label, tools.glyph, tools.color, tools.details);
+
+  const agents = run.agents.slice(-MAX_AGENT_LINES);
+  const hidden = run.agents.length - agents.length;
+  if (agents.length) {
+    card("agents", text("flow.node.dispatcher" as LocaleKey, locale), "◇", C.blue, [
+      { text: text("flow.dispatcher.count" as LocaleKey, locale, { count: formatNumber(run.agents.length, locale) }) + (hidden ? ` · +${formatNumber(hidden, locale)}` : ""), color: C.ink, bold: true },
+    ]);
+    // As many subagent cards to a row as fit, the rows one row apart like every other box.
+    const columns = Math.min(agents.length, Math.max(1, Math.floor((centerWidth + GAP) / (AGENT_CARD + GAP))));
+    const cardWidth = Math.floor((centerWidth - GAP * (columns - 1)) / columns);
+    for (let i = 0; i < agents.length; i += columns) {
+      const row = agents.slice(i, i + columns);
+      g.put(center, end++, "↓", { color: C.faint });
+      let rowEnd = end;
+      row.forEach((agent, column) => {
+        const [_, color] = agentStatus(agent, now, locale);
+        // The last card takes the columns left over, so every row ends where the boxes above do.
+        const left = centerX + column * (cardWidth + GAP);
+        const span = column === columns - 1 ? centerX + centerWidth - left : cardWidth;
+        rowEnd = Math.max(rowEnd, drawCard(g, left, end, span, agent.type, "◇", color, agentCardDetails(agent, now, locale), agent.state === "running", 1, 0, scene.frame));
+      });
+      end = rowEnd;
+    }
+  }
+
+  const answer = nodes.get("answer");
+  if (answer) card("answer", text("flow.node.return" as LocaleKey, locale), answer.glyph, answer.color, answer.details);
+
+  // Under the tree, in its column: the summary, the timeline and the live log; the advisor runs beside them.
+  end++;
+  g.put(0, end++, fit(flowSummary(trace, locale), centerWidth), { color: C.dim });
+  end = drawTimeline(g, 0, end, centerWidth, run, now, locale, scene.frame);
+  end = drawCard(g, 0, end + 1, centerWidth, text("flow.panel.log" as LocaleKey, locale), "·", C.dim, recentActivity(run, now, locale), false, 1);
+  const treeEnd = end;
+
+  const earlier = trace.runs.filter((one) => one.id !== run.id).reverse();
+  const advisor = advisorNode(run, trace, locale);
+  const panelEnd = drawCard(g, panelX, y, panelWidth, advisor.label, advisor.glyph, advisor.color, [
+    { text: text("flow.panel.checkpoints" as LocaleKey, locale), color: C.ink, bold: true },
+    ...checkpointDetails(run, locale),
+    ...advisor.details,
+  ], false, 6, treeEnd - 1);
+
+  let lower = Math.max(treeEnd, panelEnd);
+  if (earlier.length) {
+    lower++;
+    g.put(0, lower++, fit(text("flow.earlier", locale), width), { color: C.dim, bold: true });
+    for (const one of earlier) {
+      const line = earlierLine(one, now, locale);
+      g.put(0, lower++, fit(line.text, width), { color: line.color });
+    }
+  }
+}
+
 /** The whole tab, line by line, at most `width` columns each. */
 export function flowLines(input: FlowInput): FlowSegment[][] {
   const locale = input.locale ?? localeFor();
@@ -489,6 +761,10 @@ export function flowLines(input: FlowInput): FlowSegment[][] {
     for (const part of wrap(line, W, 2)) g.put(0, y++, part, { color: message.state === "dropped" ? C.fail : C.you });
   }
   if (!run) return g.lines();
+  if (W >= 90) {
+    drawWideFlow(g, trace, scene, now, locale, y, W);
+    return g.lines();
+  }
   y++;
 
   // The nodes on the trunk. Wide panes put the details beside the label; narrow ones under it.
@@ -525,6 +801,12 @@ export function flowLines(input: FlowInput): FlowSegment[][] {
     const from = rows[scene.active - 1]! + 1;
     const span = rows[scene.active]! - from;
     if (span > 0) g.put(0, from + (scene.frame % span), "•", { color: C.green, bold: true });
+  }
+
+  y++;
+  g.put(0, y++, fit(text("flow.panel.checkpoints" as LocaleKey, locale), W), { color: C.dim, bold: true });
+  for (const detail of checkpointDetails(run, locale)) {
+    for (const part of wrap(detail.text, W, 2)) g.put(0, y++, part, { color: detail.color });
   }
 
   // Earlier runs, newest first.

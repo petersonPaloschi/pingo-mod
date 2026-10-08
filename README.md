@@ -67,7 +67,7 @@ On Windows, use a path such as `C:/Projects/pingo`; separate multiple plugin dir
 3. **Check the answer.** A tool hint must meet the confidence threshold, pass the tool-needed consistency check, name an offered tool, and target a tool the router can hint. Choice answers need explicit confidence and a valid probability distribution; the router never substitutes winning probability for confidence. Unknown choices, unsupported hosted-tool selections, and malformed answers fall through. Large rosters keep top candidates within each group, without comparing probabilities from different groups as if they shared a distribution.
 4. **Give Claude a hint.** An accepted tool choice is added to Claude's context. Enabled delegation and advisor recommendations can join the same note. Claude supplies tool arguments and decides whether to follow the suggestions.
 5. **Repeat after tools.** With Tool hints enabled, Pingo consults Jev after the last result in a main-session tool batch. It does not route another plugin's own tool calls or each tool call inside a subagent.
-6. **Record activity.** The dashboard shows routing reasons, confidence, latency, token usage, visible replies, tools, and subagent activity. Flow records each run from its submitted message to its answer, including activity observed while Jev routing is off.
+6. **Record activity.** The dashboard shows routing reasons, confidence, latency, token usage, visible replies, tools, and subagent activity. Flow records each run from its submitted message to its answer, including activity observed while Jev routing is off, suggested model and effort, and checkpoint requests.
 
 Low confidence, disagreement, an unavailable provider, a timeout, or an unreadable reply leaves Claude to continue without a tool hint. This is the mod's **fail-open** behavior.
 
@@ -85,12 +85,16 @@ Change features in `/jev features` or with `/jev feature <id> on|off`.
 | `effort` | Off | Select an effort level for the model actually sent, even when the request did not already specify effort. |
 | `delegation` | Off | Suggest an offered subagent type. Claude decides whether to start it. |
 | `agents` | Off | Plan model and effort for eligible subagents when Claude starts them. |
-| `advisor` | Off | Ask Jev whether planning, ambiguity, a recurring failure, or an independent check warrants consulting the advisor. A confident recommendation adds a hint; Claude decides whether to call it. |
+| `advisor` | Off | Ask Jev for planning guidance, request recovery after a repeated failure, and request one post-edit review pass before completion. Pingo records review requests separately from observed advisor calls. |
 
-For example, enable main-turn model planning with:
+For coordinated model, effort, delegation and advisor guidance, enable the existing features (they remain off by default):
 
 ```text
 /jev feature model on
+/jev feature effort on
+/jev feature delegation on
+/jev feature agents on
+/jev feature advisor on
 ```
 
 To request advisor recommendations and inspect their observed results:
@@ -103,11 +107,12 @@ To request advisor recommendations and inspect their observed results:
 
 The advisor question joins the prompt's existing Jev routing request. If every other feature is off, enabling it adds one Jev request per new prompt. A `consult` recommendation must meet the configured minimum confidence; a missing answer, low confidence, or a failed Jev call adds no advisor hint. When participation is enabled, Jev must also answer that question and choose to take part. Messages submitted during a running turn keep that turn's plan.
 
-This feature asks Claude to use its available advisor tool. Known environment blockers, such as a provider or telemetry setting that disables the advisor, suppress the hint. It does not configure, enable, or change the advisor model. In Models, **applied** means the suggestion was attached to the prompt; an actual advisor call is recorded separately from the model response.
+When the advisor feature, routing and credentials are available and there is no known environment blocker, Pingo adds a single completion stop gate after edits. It asks Claude to compare the full diff with scope, acceptance, auth and schema requirements, run relevant checks, seek independent advisor review when available, and report results and gaps honestly. Pingo does not configure or call the advisor, or verify that the requested review succeeded. The gate is one-shot; Flow shows that the checkpoint was requested, never that it passed. Recovery guidance applies after the same task sees the same tool fail on the same target with the same error twice, even when the tools feature is off; it asks Claude to stop repeating the approach and investigate the cause. Recovery follows the advisor feature, routing, credentials and environment gates. If participation is enabled and Jev declines, Pingo withholds the checkpoint. The native `/advisor` command selects the advisor model when needed.
 
 A model explicitly selected by the user is preserved until they return to the default. Provider-specific model IDs and extended-context models are also preserved. Subagent planning skips workflow-managed agents, forks, and agents with an explicitly requested model. Effort is checked against the model actually sent, so a rejected Haiku switch cannot discard effort intended for an eligible Opus or Sonnet request. Haiku 5.5 supports selected effort; older Haiku versions and unresolved Haiku aliases omit effort when Jev sizes the request. Requests outside that feature retain their original settings.
 
 Model criteria describe both appropriate work and tasks to avoid. The main-turn question offers exact configured model IDs plus a choice to keep the current model. A rejected, missing or failed recommendation leaves Claude Code's original request model in place, instead of reapplying a selection from a previous turn. With minimum confidence `c`, upgrades require `c`, downgrades require `c + (1-c)/2`, and downgrades with observed warm cache halve the remaining tolerated uncertainty again. At the default `0.7`, those thresholds are `0.7`, `0.85`, and `0.925`. This is a conservative policy, not a measured estimate of cache savings or task accuracy.
+The main session owns edits, tests and final verification; choose the least costly supplied model that can do them reliably. Sonnet can suit implementation when offered, but the role does not pin a model. Subagents are useful for bounded independent code or documentation lookup; choose the least costly capable option, with Haiku often sufficient for targeted searches and medium effort for multi-step investigation.
 
 Two consecutive empty responses from a switched model exclude that candidate for the session; other candidates remain eligible. Interrupts do not count. The live feed records why a recommendation was retained or rejected. Subagents continue to use the native tier aliases and omit tiers with no remaining configured candidates.
 
@@ -248,7 +253,7 @@ Do not put keys in slash-command arguments, repository files, screenshots, or is
 | `/jev agent <number, type, or mascot>` | Open a particular subagent's live pane, e.g. `/jev agent 3`. |
 | `/jev agent <number, type, or mascot> remove` | Remove a finished run and close its pane. |
 | `/jev agents clear` | Remove all finished runs; running agents stay. |
-| `/jev flow` | Open the run diagram: message, Jev, models, tools, subagents, advisor calls, answer. |
+| `/jev flow` | Open the run flow: main session, observed agent models, tools, dispatcher branches, configured advisor, return to main, answer and checkpoint requests. |
 | `/jev features` | View and toggle the seven routing features. |
 | `/jev reasons` | Show why hints were not applied. |
 | `/jev baseline` | Compare recorded request metrics with routing on and off. |
@@ -281,7 +286,7 @@ Pingo's views show observable activity and visible response text. They do not ex
 
 The latest **500 request records** are persisted in the plugin store under the Claude Code configuration directory. Records contain timestamps, a short session ID, model names, routing reason codes, tool counts, Jev choices and confidence, applied changes, latency, and token usage. Conversation prompts and tool arguments/results are not stored as record fields. Failed or unusable Jev replies also retain an observed cause capped at 240 characters; this can include a provider-error excerpt or discarded-answer details. The provider layer redacts the configured API key from error messages. The Models tab keeps up to 40 routing points in session memory, including failed consultation attempts and the accepted results of independent questions.
 
-Flow keeps a separate session-state record under `flowV2`, which survives plugin reloads in that session. It includes message excerpts capped at 200 characters, model IDs, tool names and sources, subagent summaries, advisor-call timestamps, edit paths, and reported token totals. Detailed call lists are bounded separately from aggregate tool and Jev counts. The previous Flow schema is not migrated into this record. Clearing completed Flow runs leaves active work available for later events.
+Flow keeps a separate session-state record under `flowV2`, which survives plugin reloads in that session. It includes message excerpts capped at 200 characters, model IDs, tool names and sources, subagent summaries, configured advisor model, advisor-call timestamps, checkpoint request statuses, edit paths, and reported token totals. Detailed call lists are bounded separately from aggregate tool and Jev counts. A checkpoint marked requested is not evidence that a review or verification passed. The previous Flow schema is not migrated into this record. Clearing completed Flow runs leaves active work available for later events.
 
 The store also retains the routing and feature switches, a fallback provider selection when needed, and the validated key/provider pair saved in Setup. The credential entry is separate from request records. `/jev clear` empties the request history and session feed; use Setup's **Remove key** action to remove the credential copy.
 
