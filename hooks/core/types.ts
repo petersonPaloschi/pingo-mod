@@ -61,6 +61,8 @@ export interface SystemOneResult {
   usage: { input_tokens: number; output_tokens: number };
   /** Answers the reply carried that could not be used, and why: for the failure the router reports. */
   dropped?: { name: string; why: string }[];
+  /** The provider's reply body as it came (control characters blanked, clipped): for debugging an unusable answer. */
+  raw?: string;
 }
 
 /** Untrusted provider fields are narrowed before normalize() builds SystemOneResult. */

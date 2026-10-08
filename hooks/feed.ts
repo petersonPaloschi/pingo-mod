@@ -1,8 +1,10 @@
 // The live log's wording: short summaries of what can be observed (requests, tools, agents,
 // visible messages, Jev's answers). Never the model's reasoning: thinking is not read here.
 import type { FeatureFlags } from "../types";
-import type { FeatureId } from "./core/plan.ts";
-import type { Answer, SystemOneRequest, SystemOneResult } from "./core/types.ts";
+import type { JevAsk, JevSent } from "./core/jev.ts";
+import { ADVISOR_KEY, DELEGATE_KEY, EFFORT_KEY, MODEL_KEY, PARTICIPATE_KEY, type FeatureId } from "./core/plan.ts";
+import { NEEDS_TOOL_KEY, TOOL_KEY } from "./core/questions.ts";
+import type { Answer, SystemOneResult } from "./core/types.ts";
 import { formatCompact, formatDecimal, formatNumber, localeFor, text, type Locale, type LocaleKey } from "./i18n.ts";
 
 /** Each feature, its one-click toggle key, and a short description. */
@@ -166,49 +168,116 @@ export const featureFlagsText = (flags: FeatureFlags, locale: Locale = localeFor
 };
 
 /** The most probable options of a choice, as "name 87.3%", likeliest first. */
-const TOP_PROBABILITIES = 5;
+const TOP_PROBABILITIES = 4;
 
-function answerLine(name: string, answer: Answer, locale: Locale): string {
-  const percent = (value: number) => `${formatDecimal(value * 100, locale, 1)}%`;
-  if (answer.type === "noul") return text("feed.jev.answer.noul", locale, { question: name, value: percent(answer.noul) });
-  const ranked = Object.entries(answer.probabilities)
+const percent = (value: number, locale: Locale) => `${formatDecimal(value * 100, locale, 1)}%`;
+
+/** Where a Jev call was asked from: the routing point, and what set it off (a tool, a subagent type). */
+export interface JevCaller {
+  origin: "prompt" | "tool" | "agent" | "sift" | "setup";
+  trigger?: string;
+}
+
+/** The function in hooks/core that asked, so the log names exactly what ran. */
+const ASKED_BY: Record<JevCaller["origin"], string> = {
+  prompt: "planTurn()",
+  tool: "decide()",
+  agent: "planAgent()",
+  sift: "sift",
+  setup: "validateKey()",
+};
+
+/** What each question makes Jev judge, by its name (core/questions.ts and core/plan.ts). */
+const JOBS: Record<string, LocaleKey> = {
+  [TOOL_KEY]: "feed.jev.job.tool",
+  [NEEDS_TOOL_KEY]: "feed.jev.job.needsTool",
+  [PARTICIPATE_KEY]: "feed.jev.job.participate",
+  [MODEL_KEY]: "feed.jev.job.model",
+  [EFFORT_KEY]: "feed.jev.job.effort",
+  [DELEGATE_KEY]: "feed.jev.job.delegate",
+  [ADVISOR_KEY]: "feed.jev.job.advisor",
+};
+const isShard = (name: string) => name.startsWith("shard:");
+
+/** The function and the routing point of one call: "decide() › shortlist" "after Bash". */
+function jevHead(caller: JevCaller, questions: readonly string[], locale: Locale): { fn: string; from: string; jobs: string } {
+  const shortlist = questions.some(isShard);
+  const fn = shortlist ? `${ASKED_BY[caller.origin]} › shortlist()` : ASKED_BY[caller.origin];
+  const trigger = caller.trigger ? short(caller.trigger, 40) : undefined;
+  const from =
+    caller.origin === "tool"
+      ? trigger ? text("feed.jev.from.tool", locale, { trigger }) : text("feed.jev.from.toolAny", locale)
+      : caller.origin === "agent"
+        ? trigger ? text("feed.jev.from.agent", locale, { trigger }) : text("feed.jev.from.agentAny", locale)
+        : text(`feed.jev.from.${caller.origin}`, locale);
+  const jobs = [...new Set(questions.map((name) => (isShard(name) ? text("feed.jev.job.shortlist", locale) : JOBS[name] ? text(JOBS[name]!, locale) : name)))];
+  return { fn, from, jobs: jobs.join(", ") };
+}
+
+/** One question as Jev was asked it: its name, its kind, and the prompt itself. */
+function askLine(ask: JevAsk, locale: Locale): string {
+  const prompt = short(ask.prompt, 400);
+  if (!prompt) return text("feed.jev.ask.bare", locale, { name: ask.name });
+  return ask.type === "choice"
+    ? text("feed.jev.ask.choice", locale, { name: ask.name, count: formatNumber(ask.optionCount, locale), prompt })
+    : text("feed.jev.ask.noul", locale, { name: ask.name, prompt });
+}
+
+function answerLine(answer: Answer | undefined, locale: Locale): string {
+  if (!answer) return text("feed.jev.answer.missing", locale);
+  if (answer.type === "noul") return text("feed.jev.answer.noul", locale, { value: percent(answer.noul, locale) });
+  const odds = Object.entries(answer.probabilities ?? {})
+    .filter(([option]) => option !== answer.choice)
     .sort(([, a], [, b]) => b - a)
-    .slice(0, TOP_PROBABILITIES)
-    .map(([option, probability]) => `${short(option, 40)} ${percent(probability)}`);
+    .slice(0, TOP_PROBABILITIES - 1)
+    .map(([option, probability]) => `${short(option, 32)} ${percent(probability, locale)}`);
   return text("feed.jev.answer.choice", locale, {
-    question: name,
     choice: short(answer.choice, 60),
-    confidence: percent(answer.confidence),
-    odds: ranked.join(" · "),
+    confidence: percent(answer.confidence, locale),
+    odds: odds.length ? text("feed.jev.answer.odds", locale, { odds: odds.join(" · ") }) : "",
   });
 }
 
-/** What one Jev call was asked: the newest turn it read and the questions it had to answer. */
-export function jevInput(request: SystemOneRequest, locale: Locale = localeFor()): { text: string; detail: string } {
-  const conversation = Array.isArray(request.state.conversation) ? request.state.conversation : [];
-  const last = conversation.at(-1) as Record<string, unknown> | undefined;
-  const lastText = last ? String(last.text ?? last.content ?? JSON.stringify(last.tool_calls ?? last)) : "";
-  const questions = Object.keys(request.questions);
-  return {
-    text: text("feed.jev.input", locale, {
-      turns: formatNumber(conversation.length, locale),
-      questions: formatNumber(questions.length, locale),
-      chars: formatCompact(JSON.stringify(request.state).length, locale),
-    }),
-    detail: [
-      text("feed.jev.input.last", locale, { role: String(last?.role ?? "?"), text: short(lastText, 240) }),
-      text("feed.jev.input.questions", locale, { list: questions.join(", "), model: request.model }),
-    ].join("\n"),
-  };
+/** A Jev call as the live log shows it: one line that starts asking and turns into its answer. */
+export interface JevCard {
+  text: string;
+  detail: string;
 }
 
-/** What one Jev call answered: every question with its choice and the odds behind it. */
-export function jevOutput(result: SystemOneResult, locale: Locale = localeFor()): { text: string; detail: string } {
-  return {
-    text: text("feed.jev.output", locale, {
-      input: formatCompact(result.usage.input_tokens, locale),
-      output: formatCompact(result.usage.output_tokens, locale),
+/** What it reads and the questions with their prompts, one row each: the call while it runs. */
+function sentRows(sent: JevSent, locale: Locale): string[] {
+  const asks = sent.asks ?? sent.questions.map((name) => ({ name, type: "noul" as const, prompt: "", options: [], optionCount: 0 }));
+  return [
+    text("feed.jev.sent", locale, { model: sent.model, turns: formatNumber(sent.turns, locale), chars: formatCompact(sent.chars, locale), role: sent.role, text: short(sent.last, 200) }),
+    ...asks.map((ask) => askLine(ask, locale)),
+  ];
+}
+
+/** A call just sent: which function asked, from where, for what, and each question's prompt. */
+export function jevAsked(sent: JevSent, caller: JevCaller, locale: Locale = localeFor()): JevCard {
+  return { text: text("feed.jev.call.running", locale, jevHead(caller, sent.questions, locale)), detail: sentRows(sent, locale).join("\n") };
+}
+
+/** The same call answered: each question's prompt with Jev's answer and the odds right under it. */
+export function jevAnswered(sent: JevSent, caller: JevCaller, result: SystemOneResult, locale: Locale = localeFor()): JevCard {
+  const [first, ...asked] = sentRows(sent, locale);
+  const names = sent.asks?.map((ask) => ask.name) ?? sent.questions;
+  const rows = [
+    `${text("feed.jev.usage", locale, { input: formatCompact(result.usage.input_tokens, locale), output: formatCompact(result.usage.output_tokens, locale) })} · ${first}`,
+    ...asked.flatMap((row, i) => {
+      const name = names[i]!;
+      const dropped = result.dropped?.find((one) => one.name === name);
+      return [row, !result.answers[name] && dropped ? text("feed.jev.answer.dropped", locale, { why: dropped.why }) : answerLine(result.answers[name], locale)];
     }),
-    detail: Object.entries(result.answers).map(([name, answer]) => answerLine(name, answer, locale)).join("\n"),
-  };
+  ];
+  // Something unusable came back: the reply as Jev sent it, for debugging (the request log shows it whole).
+  const unusable = (result.dropped?.length ?? 0) > 0 || names.some((name) => !result.answers[name]);
+  if (unusable && result.raw) rows.push(text("feed.jev.raw", locale, { raw: result.raw }));
+  return { text: text("feed.jev.call.done", locale, jevHead(caller, sent.questions, locale)), detail: rows.join("\n") };
+}
+
+/** The same call failed: the cause, then what it had asked. */
+export function jevFailed(sent: JevSent, caller: JevCaller, error: string, hint: string, locale: Locale = localeFor()): JevCard {
+  const head = jevHead(caller, sent.questions, locale);
+  return { text: text("feed.jev.call.failed", locale, { ...head, message: short(error, 120) }), detail: [error.slice(0, 240), hint, ...sentRows(sent, locale)].filter(Boolean).join("\n") };
 }

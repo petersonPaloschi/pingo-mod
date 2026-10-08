@@ -189,7 +189,13 @@ describe("routing in a session", () => {
 
     const ui = await $.ui.mount({ plugin: "jev", surface: "terminal", component: "Pane", requestId: "jev", props: PANE_PROPS });
     await ui.press({ key: "tab-live" });
-    expect(await ui.find({ type: "Text", text: /consulted: .*model sonnet · effort max/ })).toBeDefined();
+    expect(await ui.find({ type: "Text", text: /decision on your prompt: .*model sonnet · effort max/ })).toBeDefined();
+    // The call names the function that asked, each question's prompt, Jev's answer and what Claude receives.
+    expect(await ui.find({ type: "Text", text: /✓ planTurn\(\) · on your prompt — pick the next tool/ })).toBeDefined();
+    expect(await ui.find({ type: "Text", text: /^\? effort · choice of 5: “/ })).toBeDefined();
+    expect(await ui.find({ type: "Text", text: /^→ max 80\.0%/ })).toBeDefined();
+    expect(await ui.find({ type: "Text", text: /^→ Claude receives: “.*Read/ })).toBeDefined();
+    expect(await ui.find({ type: "Text", text: /^→ this turn runs on sonnet-5-5 · effort max/ })).toBeDefined();
     expect(await ui.find({ type: "Text", text: /changed request 1: model opus-5-5→sonnet-5-5, effort high→max/ })).toBeDefined();
     expect(await ui.find({ type: "Text", text: /“Done\.”/ })).toBeDefined();
     // Each speaker is named in the gutter: Jev and Claude.
@@ -205,12 +211,12 @@ describe("routing in a session", () => {
     expect(sent[0]).toEqual({ model: "claude-opus-5-5", effort: "high" });
   });
 
-  test("a Haiku choice does not receive inherited effort", async ($, on) => {
+  test("a Haiku 5.5 choice receives Jev's selected effort", async ($, on) => {
     const sent = world(on, { model: true, effort: true }, { tool: pick("Read", 0.9), needs_tool: noul(0.9), model: pick("haiku", 0.9), effort: pick("max", 0.9) });
     await $.session.start({ cwd: "/workspace" } as never).catch(() => undefined);
     await $.prompt.submit({ text: "rename a variable", wait: false, origin: ASK.origin });
     await step($ as never, { turnId: "t1", index: 0, model: "claude-opus-5-5", effort: "high", messageCount: 1 });
-    expect(sent[0]).toEqual({ model: "claude-haiku-4-5-20251001", effort: undefined });
+    expect(sent[0]).toEqual({ model: "claude-haiku-5-5", effort: "max" });
   });
 
   test("a subagent gets Jev's model at spawn and its effort on each request", async ($, on) => {
@@ -300,6 +306,30 @@ describe("routing in a session", () => {
     expect(spawned).toMatchObject({ model: "haiku", agentId: "agent-3" });
     await step($ as never, { turnId: "t3", index: 0, model: "claude-haiku-4-5-20251001", messageCount: 1, agentId: "agent-3" });
     expect(sent[0]).toEqual({ model: "claude-haiku-4-5-20251001", effort: undefined, agentId: "agent-3" });
+  });
+
+  test("a Haiku tier alias resolves to 5.5 before effort is sized for the subagent", async ($, on) => {
+    const sent = world(on, { agents: true }, { model: pick("haiku", 0.9), effort: pick("max", 0.9) });
+    let requestedModel: string | undefined;
+    on("agent.spawn", async (_$, e) => {
+      requestedModel = e.model;
+      return { model: "claude-haiku-5-5", agentId: "agent-5" };
+    });
+    await $.session.start({ cwd: "/workspace" } as never).catch(() => undefined);
+    const spawned = await $.agent.spawn({
+      tool_use_id: "toolu_5",
+      prompt: "Find every caller of decide()",
+      description: "find callers",
+      subagentType: "Explore",
+      provider: { plugin: "engine", tier: "core" },
+      parentModel: "claude-opus-5-5",
+      background: false,
+      fork: false,
+    } as never);
+    expect(requestedModel).toBe("haiku");
+    expect(spawned).toMatchObject({ model: "claude-haiku-5-5", agentId: "agent-5" });
+    await step($ as never, { turnId: "t5", index: 0, model: "claude-haiku-5-5", effort: "medium", messageCount: 1, agentId: "agent-5" });
+    expect(sent[0]).toEqual({ model: "claude-haiku-5-5", effort: "max", agentId: "agent-5" });
   });
 
   test("a model Claude asked for explicitly is kept", async ($, on) => {

@@ -20,6 +20,8 @@ export type RouteEvent = {
   plan?: string;
   /** The observed cause when Jev failed or its answer was unusable: a message, never a key or a prompt. */
   error?: string;
+  /** Jev's reply bodies behind a failed decision, as the provider sent them (clipped): the log shows them whole. */
+  jevRaw?: string[];
 };
 
 export type JevTab = "overview" | "live" | "models" | "agents" | "flow" | "reasons" | "baseline" | "log" | "features" | "setup";
@@ -106,7 +108,7 @@ export type TracePlan = {
 /** One Jev call: where it was asked from, the model asked, and the questions it carried. */
 export type TraceConsult = {
   id: string;
-  origin: "prompt" | "tool" | "agent";
+  origin: "prompt" | "tool" | "agent" | "sift" | "setup";
   model: string;
   questions: string[];
   startedAt: number;

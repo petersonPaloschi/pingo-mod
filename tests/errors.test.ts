@@ -40,5 +40,5 @@ test("decide carries the detail of an unusable answer", async () => {
   const config = { jevModel: "jev", minConfidence: 0.7, maxStateChars: 10000, maxMessageChars: 2000 };
   const decision = await decide(input, config, async () => ({ answers: { needs_tool: { type: "noul", noul: 0.9 } }, usage: { input_tokens: 1, output_tokens: 1 }, dropped: [{ name: "tool", why: 'unoffered choice "Grep"' }] }));
   expect(decision).toMatchObject({ mode: "passthrough", reason: "jev_unexpected_answer" });
-  expect((decision as { detail?: string }).detail).toBe('missing "tool"; got needs_tool; dropped tool (unoffered choice "Grep")');
+  expect((decision as { detail?: string }).detail).toBe('missing "tool"; got needs_tool; dropped tool (unoffered choice "Grep"); Jev model jev');
 });

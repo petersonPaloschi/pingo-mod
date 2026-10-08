@@ -53,8 +53,11 @@ describe("one reading of a choice answer", () => {
 });
 
 describe("effort", () => {
-  test("Haiku refuses effort in every form its id takes", () => {
-    for (const id of ["haiku", "claude-haiku-4-5-20251001", "us.anthropic.claude-haiku-4-5-v1:0"]) expect(supportsEffort(id)).toBe(false);
+  test("Haiku needs an explicit 5.5 or newer model id for effort", () => {
+    for (const id of ["haiku", "claude-haiku-4-5-20251001", "us.anthropic.claude-haiku-4-5-v1:0", "claude-haiku-5-4"])
+      expect(supportsEffort(id)).toBe(false);
+    for (const id of ["claude-haiku-5-5", "claude-haiku-5-6[1m]", "claude-haiku-6-0"])
+      expect(supportsEffort(id)).toBe(true);
     for (const id of ["opus", "claude-sonnet-5-5", "claude-opus-5-5[1m]"]) expect(supportsEffort(id)).toBe(true);
     expect(supportsEffort(undefined)).toBe(false);
   });
@@ -81,6 +84,21 @@ describe("effort", () => {
       .toMatchObject({ request: { model: "claude-haiku-4-5-20251001" }, ignoredEffort: "medium" });
     expect(sizeRequest({ model: opus.model }, { effort: "high" }, effortOnly))
       .toMatchObject({ request: { model: opus.model, effort: "high" }, effortOutcome: { kind: "applied", value: "high" } });
+  });
+
+  test("Jev applies effort to Haiku 5.5 and drops it for Haiku 4.5", () => {
+    const effortOnly = { model: false, effort: true };
+    expect(sizeRequest({ model: "claude-haiku-5-5", effort: "low" as const }, { effort: "max" }, effortOnly))
+      .toMatchObject({
+        request: { model: "claude-haiku-5-5", effort: "max" },
+        effortOutcome: { kind: "applied", value: "max", from: "low" },
+      });
+    expect(sizeRequest({ model: "claude-haiku-4-5-20251001", effort: "medium" as const }, { effort: "high" }, effortOnly))
+      .toMatchObject({
+        request: { model: "claude-haiku-4-5-20251001" },
+        effortOutcome: { kind: "ignored", value: "high", why: "haiku_no_effort" },
+        ignoredEffort: "high",
+      });
   });
 });
 

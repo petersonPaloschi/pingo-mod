@@ -81,15 +81,16 @@ export function modelTier(id: string | undefined): Tier | undefined {
 /** Whether this model generation accepts an effort setting. Unknown models fail closed. */
 export function supportsEffort(modelId: string | undefined): boolean {
   const model = parseModelId(modelId);
-  if (!model || model.tier === "haiku") return false;
-  if (model.alias) return true;
+  if (!model) return false;
+  if (model.alias) return model.tier !== "haiku";
   const major = model.major ?? 0;
   const minor = model.minor ?? 0;
+  if (model.tier === "haiku") return major > 5 || (major === 5 && minor >= 5);
   return model.tier === "opus" ? major > 4 || (major === 4 && minor >= 5) : major > 4 || (major === 4 && minor >= 6);
 }
 /** The ids a main-loop request is sent with; agents take the alias itself. */
 export const TIER_MODEL: Record<Tier, string> = {
-  haiku: "claude-haiku-4-5-20251001",
+  haiku: "claude-haiku-5-5",
   sonnet: "claude-sonnet-5-5",
   opus: "claude-opus-5-5",
 };

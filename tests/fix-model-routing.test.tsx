@@ -118,7 +118,7 @@ describe("a switched model that comes back empty", () => {
     table.model = pick("haiku", 0.99);
     await $.prompt.submit({ text: "format the file", wait: false, origin: ORIGIN });
     await step($ as never, { turnId: "t2", index: 2, model: "claude-opus-5-5", messageCount: 3 });
-    expect(sent).toEqual(["claude-sonnet-5-5", "claude-sonnet-5-5", "claude-haiku-4-5-20251001"]);
+    expect(sent).toEqual(["claude-sonnet-5-5", "claude-sonnet-5-5", "claude-haiku-5-5"]);
     const question = jev.asked.at(-1)!.questions.model;
     if (question?.type !== "choice") throw new Error("expected a model question");
     expect(Object.keys(question.criteria)).not.toContain("claude-sonnet-5-5");

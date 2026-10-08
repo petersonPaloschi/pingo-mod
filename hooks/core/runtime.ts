@@ -65,7 +65,7 @@ export function sizeRequest<T extends { model: string; effort?: Effort | number 
     }
   }
   // Strip inherited effort only for a request Jev is actually sizing for Haiku.
-  if (modelTier(model) === "haiku" && (wanted !== undefined || modelOutcome?.kind === "switched")) {
+  if (modelTier(model) === "haiku" && !supportsEffort(model) && (wanted !== undefined || modelOutcome?.kind === "switched")) {
     ignoredEffort ??= effort;
     effort = undefined;
   }

@@ -9,7 +9,8 @@ import os from "node:os";
 import path from "node:path";
 
 import { resolveSettings, storedApplies, type ModOptions, type StoredSettings } from "../hooks/config.ts";
-import { createAskJev, PROVIDERS, resolveModel, validateKey, type Transport } from "../hooks/core/jev.ts";
+import { CHANNEL_ENV, channelFile, channelLine } from "../hooks/core/channel.ts";
+import { createAskJev, observeAskJev, PROVIDERS, resolveModel, validateKey, type JevEvent, type Transport } from "../hooks/core/jev.ts";
 import {
   addRun, batches, classifyQuestion, clip, f2, filterQuestion, findHits, findRequest, footer, groupRequest, label, num, parseArgs,
   parseLabels, rankQuestion, relevance, renderAnswer, renderClassify, renderFilter, renderTally, estTokens, toTally,
@@ -116,12 +117,37 @@ const transport: Transport = {
 
 type Ask = (request: Omit<SystemOneRequest, "model">) => Promise<SystemOneResult>;
 
+/**
+ * Where each Jev call is reported: the channel file the mod named for this session, which it
+ * follows into the live log and the Flow tab. From a plain shell there is none, and nothing is written.
+ */
+function channel(): (event: JevEvent) => void {
+  const name = channelFile(process.env[CHANNEL_ENV]);
+  if (!name) return () => undefined;
+  const file = path.join(os.tmpdir(), name);
+  return (event) => {
+    // POSIX refuses symlinks; on Windows the temp directory ACL is per-user.
+    const flags = fs.constants.O_WRONLY | fs.constants.O_APPEND | fs.constants.O_CREAT | (fs.constants.O_NOFOLLOW ?? 0) | (fs.constants.O_NONBLOCK ?? 0);
+    const fd = fs.openSync(file, flags, 0o600);
+    try {
+      const stat = fs.fstatSync(fd);
+      if (!stat.isFile() || stat.nlink !== 1 || (typeof process.getuid === "function" && stat.uid !== process.getuid())) {
+        throw new Error("unsafe Jev channel file");
+      }
+      if (process.platform !== "win32") fs.fchmodSync(fd, 0o600);
+      fs.writeSync(fd, channelLine(event), undefined, "utf8");
+    } finally {
+      fs.closeSync(fd);
+    }
+  };
+}
+
 function asker(flags: Flags, stats: { jevTokens: number }) {
   const config = settings(flags);
   if (!config.apiKey) {
     fail(`no Jev key. Run /jev setup in Claude Code, or set ${PROVIDERS[config.provider].keyEnv}.`, 3);
   }
-  const ask = createAskJev({ ...config, timeoutMs: 180_000 }, transport);
+  const ask = observeAskJev(createAskJev({ ...config, timeoutMs: 180_000 }, transport), channel(), Date.now, `sift-${process.pid}-`);
   const run: Ask = async (request) => {
     const result = await ask({ ...request, model: config.jevModel });
     stats.jevTokens += result.usage.input_tokens;
@@ -489,7 +515,7 @@ async function cmdStatus(flags: Flags) {
   const config = settings(flags);
   const info = PROVIDERS[config.provider];
   if (!config.apiKey) fail(`not configured: run /jev setup in Claude Code, or set ${info.keyEnv} (key from ${info.keyUrl})`, 3);
-  const check = await validateKey(config.provider, config.apiKey, transport, config.jevModel, config.locale);
+  const check = await validateKey(config.provider, config.apiKey, transport, config.jevModel, config.locale, channel());
   if (!check.ok) fail(`${info.label} · key from ${config.source} · ${check.message}`, check.refused ? 3 : 5);
   console.log(`ready · ${info.label} · key from ${config.source} · model ${config.jevModel} · ${check.ms} ms`);
   const tally = toTally(readTally());

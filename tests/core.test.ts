@@ -208,6 +208,39 @@ describe("Jev transport", () => {
       usage: { input_tokens: 1, output_tokens: 0 },
     });
     expect(fixed.answers.tool).toBeUndefined();
+    expect(fixed.dropped).toEqual([{ name: "tool", why: "missing confidence" }]);
+  });
+
+  test("a low in-range confidence remains valid and distinct from the winning probability", () => {
+    const fixed = normalize({
+      answers: { tool: { type: "choice", choice: "Read", confidence: 0.19, probabilities: { Read: 0.8, Bash: 0.2 } } },
+      usage: { input_tokens: 1, output_tokens: 0 },
+    });
+    expect(fixed.answers.tool).toMatchObject({ type: "choice", choice: "Read", confidence: 0.19 });
+  });
+
+  test("malformed choice answers identify the exact validation failure", () => {
+    const fixed = normalize({
+      answers: {
+        confidenceOutOfRange: { type: "choice", choice: "Read", confidence: 1.1, probabilities: { Read: 1 } },
+        probabilitiesMissing: { type: "choice", choice: "Read", confidence: 0.9 },
+        probabilitiesNotMap: { type: "choice", choice: "Read", confidence: 0.9, probabilities: [] },
+        probabilitiesInvalidValue: { type: "choice", choice: "Read", confidence: 0.9, probabilities: { Read: 1.1 } },
+        probabilitiesDoNotSum: { type: "choice", choice: "Read", confidence: 0.9, probabilities: { Read: 0.7, Bash: 0.2 } },
+        choiceMissing: { type: "choice", confidence: 0.9, probabilities: { Read: 1 } },
+        choiceNotHighest: { type: "choice", choice: "Grep", confidence: 0.9, probabilities: { Read: 0.8, Grep: 0.2 } },
+      },
+      usage: { input_tokens: 1, output_tokens: 0 },
+    });
+    expect(fixed.dropped).toEqual([
+      { name: "confidenceOutOfRange", why: "invalid confidence" },
+      { name: "probabilitiesMissing", why: "missing probabilities" },
+      { name: "probabilitiesNotMap", why: "invalid probabilities" },
+      { name: "probabilitiesInvalidValue", why: "invalid probabilities" },
+      { name: "probabilitiesDoNotSum", why: "probabilities do not sum to one" },
+      { name: "choiceMissing", why: "missing choice" },
+      { name: "choiceNotHighest", why: "choice is not highest-probability option" },
+    ]);
   });
 
   test("the provider response is narrowed before it becomes a router result", () => {
@@ -221,7 +254,7 @@ describe("Jev transport", () => {
     expect(fixed).toEqual({
       answers: {},
       usage: { input_tokens: 0, output_tokens: 0 },
-      dropped: [{ name: "invalidChoice", why: "malformed" }, { name: "invalidNoul", why: "malformed" }],
+      dropped: [{ name: "invalidChoice", why: "invalid choice" }, { name: "invalidNoul", why: "malformed" }],
     });
     expect(() => normalize(null, "pt")).toThrow("O provedor retornou uma resposta em formato inválido.");
   });

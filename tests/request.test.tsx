@@ -1,7 +1,7 @@
 import { describe, expect, test } from "claude-code/testing";
 
 import { decide, type DecideConfig } from "../hooks/core/decide.ts";
-import { MAX_TOOLS } from "../hooks/core/questions.ts";
+import { MAX_TOOLS, NONE_OF_THESE, NO_TOOL } from "../hooks/core/questions.ts";
 import { askTimed } from "../hooks/core/request.ts";
 import type { RouterInput, SystemOneRequest, SystemOneResult } from "../hooks/core/types.ts";
 
@@ -65,7 +65,7 @@ describe("askTimed", () => {
   });
 
   test("keeps shortlist metrics when no usable tools remain", async () => {
-    const malformed: SystemOneResult = { answers: {}, usage: { input_tokens: 89, output_tokens: 0 } };
+    const malformed: SystemOneResult = { answers: {}, usage: { input_tokens: 89, output_tokens: 0 }, dropped: [{ name: "shard:0", why: "missing confidence" }] };
     const tools = Array.from({ length: MAX_TOOLS + 1 }, (_, i) => ({ kind: "function" as const, name: `tool_${i}` }));
     let calls = 0;
     let time = 500;
@@ -79,5 +79,41 @@ describe("askTimed", () => {
     expect(decision).toMatchObject({ mode: "passthrough", reason: "jev_unexpected_answer", jev: { inputTokens: 89, latencyMs: 35 } });
     expect(decision.jev?.choice).toBeUndefined();
     expect(decision.jev?.confidence).toBeUndefined();
+    expect(decision.mode === "passthrough" && decision.detail).toContain("missing confidence");
+    expect(decision.mode === "passthrough" && decision.detail).toContain("Jev model jev-latest");
+  });
+
+  test("a valid empty shortlist still checks no-tool and asks the other features", async () => {
+    const tools = Array.from({ length: MAX_TOOLS + 1 }, (_, i) => ({ kind: "function" as const, name: `tool_${i}` }));
+    const calls: SystemOneRequest[] = [];
+    let time = 500;
+    const decision = await decide({ ...input, tools }, config, async (dto) => {
+      calls.push(dto);
+      time += calls.length === 1 ? 35 : 15;
+      if (calls.length === 1) {
+        const answers: SystemOneResult["answers"] = {};
+        for (const [key, question] of Object.entries(dto.questions)) {
+          if (question.type !== "choice") throw new Error("expected a shard choice");
+          const probabilities = Object.fromEntries(Object.keys(question.criteria).map((name) => [name, name === NONE_OF_THESE ? 1 : 0]));
+          answers[key] = { type: "choice", choice: NONE_OF_THESE, confidence: 0.9, probabilities };
+        }
+        return { answers, usage: { input_tokens: 89, output_tokens: 0 } };
+      }
+      return {
+        answers: {
+          tool: { type: "choice", choice: NO_TOOL, confidence: 0.9, probabilities: { [NO_TOOL]: 1 } },
+          needs_tool: { type: "noul", noul: 0.1 },
+          model: { type: "choice", choice: "sonnet", confidence: 0.9, probabilities: { sonnet: 1 } },
+        },
+        usage: { input_tokens: 17, output_tokens: 0 },
+      };
+    }, () => time, { model: { type: "choice", instructions: "Choose a model", criteria: { sonnet: null } } });
+
+    expect(calls).toHaveLength(2);
+    const toolQuestion = calls[1]!.questions.tool;
+    if (toolQuestion?.type !== "choice") throw new Error("expected the no-tool choice");
+    expect(Object.keys(toolQuestion.criteria)).toEqual([NO_TOOL]);
+    expect(decision).toMatchObject({ mode: "passthrough", reason: "no_tool_needed", answers: { model: { choice: "sonnet" } } });
+    expect(decision.jev).toMatchObject({ inputTokens: 106, latencyMs: 50, shortlist: [] });
   });
 });

@@ -1,11 +1,13 @@
 // Exercise the real Node CLI with an isolated config and a stubbed provider.
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import test from "node:test";
+
+import { channelFile, channelReader, FOLLOW_SCRIPT } from "../hooks/core/channel.ts";
 
 const cli = fileURLToPath(new URL("../scripts/sift.ts", import.meta.url));
 
@@ -39,7 +41,7 @@ function fixture(t) {
   `);
   const env = { ...process.env };
   for (const name of Object.keys(env)) {
-    if (/^CLAUDE_PLUGIN_OPTION_/.test(name) || ["JEV_PROVIDER", "TYPESAFE_API_KEY", "OPENROUTER_API_KEY", "AI_GATEWAY_API_KEY", "OPENCODE_API_KEY", "NODE_OPTIONS"].includes(name)) delete env[name];
+    if (/^CLAUDE_PLUGIN_OPTION_/.test(name) || ["JEV_PROVIDER", "TYPESAFE_API_KEY", "OPENROUTER_API_KEY", "AI_GATEWAY_API_KEY", "OPENCODE_API_KEY", "NODE_OPTIONS", "PINGO_JEV_CHANNEL"].includes(name)) delete env[name];
   }
   Object.assign(env, { CLAUDE_CONFIG_DIR: path.join(dir, "config"), CLAUDE_PLUGIN_OPTION_PROVIDER: "typesafe", CLAUDE_PLUGIN_OPTION_API_KEY: "test-key", SIFT_TEST_CALLS: calls });
   const run = (args, extra = {}) => spawnSync(process.execPath, ["--import", pathToFileURL(stub).href, cli, ...args], {
@@ -101,5 +103,79 @@ test("find and ask report unusable provider answers as failures", (t) => {
     const result = f.run(args, { SIFT_TEST_EMPTY: "1" });
     assert.equal(result.status, 5, result.stderr);
     assert.match(result.stdout, /not judged|no usable answer/);
+  }
+});
+
+test("each Jev call goes to the session's channel, which the follower streams back whole", async (t) => {
+  const f = fixture(t);
+  f.write("a.txt", "retry the request\n");
+  f.write("b.txt", "unrelated notes\n");
+  const name = `test-${process.pid}-${Date.now()}`;
+  const file = path.join(os.tmpdir(), channelFile(name));
+  t.after(() => fs.rmSync(file, { force: true }));
+
+  const quiet = f.run(["filter", "Does it retry?", "a.txt", "b.txt"]);
+  assert.equal(quiet.status, 0, quiet.stderr);
+  assert(!fs.existsSync(file), "a plain shell writes no channel");
+
+  const result = f.run(["filter", "Does it retry?", "a.txt", "b.txt"], { PINGO_JEV_CHANNEL: name });
+  assert.equal(result.status, 0, result.stderr);
+  const written = fs.readFileSync(file, "utf8");
+  if (process.platform !== "win32") assert.equal(fs.statSync(file).mode & 0o777, 0o600);
+  const events = channelReader()(written);
+  assert.deepEqual(events.map((event) => event.phase).sort(), ["end", "end", "start", "start"]);
+  for (const start of events.filter((event) => event.phase === "start")) {
+    assert.equal(start.sent.role, "state");
+    assert.equal(start.sent.turns, 0);
+    const end = events.find((event) => event.phase === "end" && event.call === start.call);
+    assert(end, `call ${start.call} ends`);
+    assert.equal(end.result.usage.input_tokens, 17);
+  }
+  assert.match(events[0].call, /^sift-\d+-/);
+  assert.equal(channelFile("../escape"), undefined);
+
+  const follower = spawn(process.execPath, ["-e", FOLLOW_SCRIPT, channelFile(name)]);
+  let out = "";
+  follower.stdout.setEncoding("utf8").on("data", (piece) => (out += piece));
+  const deadline = Date.now() + 5000;
+  while (out.length < written.length && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 50));
+  follower.kill();
+  assert.equal(out, written);
+
+  const recovery = events.find((event) => event.phase === "end");
+  assert(recovery);
+  const longName = `${name}-long`;
+  const longFile = path.join(os.tmpdir(), channelFile(longName));
+  t.after(() => fs.rmSync(longFile, { force: true }));
+  fs.writeFileSync(longFile, `${"x".repeat((1 << 20) + 1)}\n${JSON.stringify(recovery)}\n`);
+  const longFollower = spawn(process.execPath, ["-e", FOLLOW_SCRIPT, channelFile(longName)]);
+  let longOut = "";
+  longFollower.stdout.setEncoding("utf8").on("data", (piece) => (longOut += piece));
+  const longDeadline = Date.now() + 5000;
+  while (!channelReader()(longOut).length && Date.now() < longDeadline) await new Promise((resolve) => setTimeout(resolve, 50));
+  longFollower.kill();
+  assert.deepEqual(channelReader()(longOut), [recovery]);
+
+  if (process.platform !== "win32") {
+    fs.chmodSync(file, 0o644);
+    const existing = f.run(["filter", "Does it retry?", "a.txt"], { PINGO_JEV_CHANNEL: name });
+    assert.equal(existing.status, 0, existing.stderr);
+    assert.equal(fs.statSync(file).mode & 0o777, 0o600);
+
+    const linkName = `${name}-link`;
+    const linkFile = path.join(os.tmpdir(), channelFile(linkName));
+    const target = path.join(f.dir, "target.txt");
+    fs.writeFileSync(target, "leave this file alone\n");
+    fs.symlinkSync(target, linkFile);
+    t.after(() => fs.rmSync(linkFile, { force: true }));
+    const linkReader = spawn(process.execPath, ["-e", FOLLOW_SCRIPT, channelFile(linkName)]);
+    let linkOut = "";
+    linkReader.stdout.setEncoding("utf8").on("data", (piece) => (linkOut += piece));
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    linkReader.kill();
+    assert.equal(linkOut, "");
+    const linked = f.run(["filter", "Does it retry?", "a.txt"], { PINGO_JEV_CHANNEL: linkName });
+    assert.equal(linked.status, 0, linked.stderr);
+    assert.equal(fs.readFileSync(target, "utf8"), "leave this file alone\n");
   }
 });

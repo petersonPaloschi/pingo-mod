@@ -111,6 +111,8 @@ export interface JevSettings {
 
 const RETRYABLE = new Set([408, 429, 500, 502, 503, 504, 529]);
 const MODEL_GONE = new Set([404, 410]);
+/** How much of a reply body is kept for debugging. */
+const RAW_CLIP = 16_000;
 
 /** Provider data stays untrusted until its fields have been checked. */
 const record = (value: unknown): Record<string, unknown> | undefined =>
@@ -126,18 +128,23 @@ export function normalize(value: unknown, locale?: Locale): SystemOneResult {
   const dropped: { name: string; why: string }[] = [];
   for (const [name, raw] of Object.entries(record(result.answers) ?? {})) {
     const answer = record(raw);
-    const malformed = () => void dropped.push({ name, why: "malformed" });
-    if (answer?.type === "choice" && typeof answer.choice === "string") {
+    const malformed = (why = "malformed") => void dropped.push({ name, why });
+    if (answer?.type === "choice") {
+      if (typeof answer.choice !== "string") { malformed(answer.choice === undefined ? "missing choice" : "invalid choice"); continue; }
       // Confidence measures the distribution's concentration; a winning probability cannot replace it.
       const confidence = answer.confidence;
       const rawProbabilities = record(answer.probabilities);
-      if (!share(confidence) || !rawProbabilities) { malformed(); continue; }
+      if (confidence === undefined) { malformed("missing confidence"); continue; }
+      if (!share(confidence)) { malformed("invalid confidence"); continue; }
+      if (answer.probabilities === undefined || answer.probabilities === null) { malformed("missing probabilities"); continue; }
+      if (!rawProbabilities) { malformed("invalid probabilities"); continue; }
       const values = Object.values(rawProbabilities);
-      if (!values.length || !values.every(share)) { malformed(); continue; }
+      if (!values.length || !values.every(share)) { malformed("invalid probabilities"); continue; }
       const probabilities = rawProbabilities as Record<string, number>;
       // Allow small rounding errors without rewriting the provider's probabilities.
-      if (Math.abs(values.reduce((sum, probability) => sum + probability, 0) - 1) > 0.01) { malformed(); continue; }
-      if (!Object.hasOwn(probabilities, answer.choice) || probabilities[answer.choice]! < Math.max(...values)) { malformed(); continue; }
+      if (Math.abs(values.reduce((sum, probability) => sum + probability, 0) - 1) > 0.01) { malformed("probabilities do not sum to one"); continue; }
+      if (!Object.hasOwn(probabilities, answer.choice)) { malformed("choice missing from probabilities"); continue; }
+      if (probabilities[answer.choice]! < Math.max(...values)) { malformed("choice is not highest-probability option"); continue; }
       answers[name] = { type: "choice", choice: answer.choice, confidence, probabilities };
     } else if (answer?.type === "noul" && share(answer.noul)) {
       answers[name] = { type: "noul", noul: answer.noul };
@@ -203,11 +210,12 @@ export function createAskJev(settings: JevSettings, transport: Transport): AskJe
         reply.status,
       );
     }
+    const raw = printable(redact(reply.text, settings.apiKey)).slice(0, RAW_CLIP);
     let parsed: unknown;
     try {
       parsed = JSON.parse(reply.text);
     } catch {
-      throw new JevReplyError(text("provider.invalidJson", settings.locale));
+      throw new JevReplyError(`${text("provider.invalidJson", settings.locale)} ${raw.slice(0, 300)}`.trim());
     }
     try {
       const result = normalize(parsed, settings.locale);
@@ -221,6 +229,7 @@ export function createAskJev(settings: JevSettings, transport: Transport): AskJe
         }
       }
       if (unusable.length) result.dropped = [...(result.dropped ?? []), ...unusable];
+      result.raw = raw;
       return result;
     } catch (error) {
       throw new JevReplyError(error instanceof Error ? error.message : String(error));
@@ -252,6 +261,92 @@ export function createAskJev(settings: JevSettings, transport: Transport): AskJe
   };
 }
 
+/** What one Jev call was sent, cut to what the live log shows: the same record for every caller. */
+export interface JevSent {
+  model: string;
+  questions: string[];
+  /** Turns in the state's conversation; 0 for a call over plain content, as sift's are. */
+  turns: number;
+  /** The state's size in JSON characters. */
+  chars: number;
+  /** Who spoke last, or "state" when the call carries no conversation. */
+  role: string;
+  /** The newest turn, or the start of the state, clipped. */
+  last: string;
+  /** Each question as Jev read it: its kind, the instructions (the prompt itself) and the options offered. */
+  asks?: JevAsk[];
+}
+
+/** One question of a call, cut for the live log: what Jev was told to judge, and among what. */
+export interface JevAsk {
+  name: string;
+  type: "choice" | "noul";
+  prompt: string;
+  /** The options' names, for a choice; their count is `optionCount`. */
+  options: string[];
+  optionCount: number;
+}
+
+/** One Jev call as its caller reports it, whichever process asked: the mod's routing points and sift alike. */
+export type JevEvent =
+  | { phase: "start"; call: string; at: number; sent: JevSent }
+  | { phase: "end"; call: string; at: number; result: SystemOneResult }
+  | { phase: "fail"; call: string; at: number; error: string };
+
+const SENT_CLIP = 240;
+const PROMPT_CLIP = 600;
+const OPTIONS_KEPT = 12;
+
+export function jevSent(request: SystemOneRequest): JevSent {
+  const conversation = Array.isArray(request.state?.conversation) ? request.state.conversation : [];
+  const last = conversation.at(-1) as Record<string, unknown> | undefined;
+  const state = JSON.stringify(request.state);
+  return {
+    model: request.model,
+    questions: Object.keys(request.questions),
+    turns: conversation.length,
+    chars: state.length,
+    role: last ? String(last.role ?? "?") : "state",
+    last: (last ? String(last.text ?? last.content ?? JSON.stringify(last.tool_calls ?? last)) : state).slice(0, SENT_CLIP),
+    asks: Object.entries(request.questions).map(([name, question]) => {
+      const options = question.type === "choice" ? Object.keys(question.criteria ?? {}) : [];
+      return {
+        name,
+        type: question.type === "choice" ? "choice" : "noul",
+        prompt: String(question.instructions ?? "").slice(0, PROMPT_CLIP),
+        options: options.slice(0, OPTIONS_KEPT),
+        optionCount: options.length,
+      };
+    }),
+  };
+}
+
+/**
+ * The one way to Jev: every caller wraps `createAskJev` in this, so `report` hears each call start
+ * and end and the live log and the Flow tab show them all. A report that throws never fails the call.
+ */
+export function observeAskJev(ask: AskJev, report: (event: JevEvent) => unknown, now: () => number | Promise<number>, prefix = ""): AskJev {
+  let count = 0;
+  const tell = async (event: JevEvent) => {
+    try {
+      await report(event);
+    } catch {}
+  };
+  return async (request) => {
+    const call = `${prefix}${++count}`;
+    await tell({ phase: "start", call, at: await now(), sent: jevSent(request) });
+    let result: SystemOneResult;
+    try {
+      result = await ask(request);
+    } catch (error) {
+      await tell({ phase: "fail", call, at: await now(), error: error instanceof Error ? error.message : String(error) });
+      throw error;
+    }
+    await tell({ phase: "end", call, at: await now(), result });
+    return result;
+  };
+}
+
 /** The setup check: one real call with a trivial question. */
 export async function validateKey(
   id: ProviderId,
@@ -259,38 +354,51 @@ export async function validateKey(
   transport: Transport,
   model: string = provider(id).model,
   locale?: Locale,
+  report: (event: JevEvent) => unknown = () => undefined,
 ): Promise<{ ok: true; ms: number } | { ok: false; refused: boolean; message: string }> {
   const info = provider(id);
   const startedAt = Date.now();
+  // A setup check is a Jev call too: reported as observeAskJev reports the others.
+  const call = `setup-${startedAt}`;
+  const tell = async (event: JevEvent) => {
+    try {
+      await report(event);
+    } catch {}
+  };
+  const request = {
+    model,
+    state: text("provider.setupState", locale),
+    questions: { ok: { type: "noul", instructions: text("provider.setupQuestion", locale) } },
+  } as unknown as SystemOneRequest;
+  const failed = async (message: string, refused = false) => {
+    await tell({ phase: "fail", call, at: Date.now(), error: message });
+    return { ok: false as const, refused, message };
+  };
+  await tell({ phase: "start", call, at: startedAt, sent: jevSent(request) });
   try {
-    const reply = await transport.within(
-      15_000,
-      transport.post(
-        info.url,
-        headersFor(apiKey),
-        JSON.stringify({
-          model,
-          state: text("provider.setupState", locale),
-          questions: { ok: { type: "noul", instructions: text("provider.setupQuestion", locale) } },
-        }),
-      ),
-    );
-    if (reply.ok) return { ok: true, ms: Date.now() - startedAt };
+    const reply = await transport.within(15_000, transport.post(info.url, headersFor(apiKey), JSON.stringify(request)));
+    if (reply.ok) {
+      let result: SystemOneResult = { answers: {}, usage: { input_tokens: 0, output_tokens: 0 } };
+      try {
+        result = normalize(JSON.parse(reply.text), locale);
+      } catch {}
+      await tell({ phase: "end", call, at: Date.now(), result });
+      return { ok: true, ms: Date.now() - startedAt };
+    }
     const refused = reply.status === 401 || reply.status === 403;
     const paidHint = paidModelHint(id, model, reply.status, locale, true);
-    return {
-      ok: false,
-      refused,
-      message: text("provider.requestError", locale, {
+    return failed(
+      text("provider.requestError", locale, {
         status: reply.status,
         provider: info.label,
         hint: paidHint,
         message: printable(redact(reply.text, apiKey).slice(0, 160)),
       }),
-    };
+      refused,
+    );
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    return { ok: false, refused: false, message: text("provider.networkError", locale, { message: redact(message, apiKey) }) };
+    return failed(text("provider.networkError", locale, { message: redact(message, apiKey) }));
   }
 }
 

@@ -558,8 +558,35 @@ function logEntry(els: Els, view: View, event: RouteEvent) {
       {event.reason ? <Text color={kind === "failed" ? INK.fail : INK.faint}>{fit(text("ui.log.reason", view.locale, { reason: reasonTitle(event.reason, view.locale) }), view.width - 2)}</Text> : null}
       {kind === "failed" && event.error ? <Text color={INK.fail} wrap="wrap">{text("ui.log.cause", view.locale, { cause: event.error })}</Text> : null}
       {kind === "failed" ? <Text color={INK.pass} wrap="wrap">{text("ui.log.hint", view.locale, { hint: failureHint(failureKind(event.error ?? "", event.reason), view.locale) })}</Text> : null}
+      {kind === "failed"
+        ? (event.jevRaw ?? []).map((raw, index, all) => (
+            <Box flexDirection="column" marginLeft={2}>
+              <Text color={INK.ink} bold wrap="truncate">
+                {text("ui.log.raw", view.locale, {
+                  part: all.length > 1 ? text("ui.log.rawPart", view.locale, { n: formatNumber(index + 1, view.locale), total: formatNumber(all.length, view.locale) }) : "",
+                  chars: formatNumber(raw.length, view.locale),
+                })}
+              </Text>
+              <Text color={INK.dim} wrap="wrap">{rawReply(raw, view.locale)}</Text>
+            </Box>
+          ))
+        : null}
     </Box>
   );
+}
+
+/** Rows of a raw reply the log shows before saying how many more there are. */
+const RAW_ROWS = 120;
+
+/** A reply body for reading: indented when it is JSON, cut after RAW_ROWS rows. */
+function rawReply(raw: string, locale: Locale): string {
+  let body = raw;
+  try {
+    body = JSON.stringify(JSON.parse(raw), null, 2);
+  } catch {}
+  const lines = body.split("\n");
+  if (lines.length <= RAW_ROWS) return body;
+  return [...lines.slice(0, RAW_ROWS), text("ui.log.rawMore", locale, { count: formatNumber(lines.length - RAW_ROWS, locale) })].join("\n");
 }
 
 /** One step of the setup: a number, a label column, and what is set there. */
@@ -727,13 +754,17 @@ const NAME_WIDTH = 7;
 const DETAIL_ROWS = 3;
 /** Jev's and Claude's own words take at most this many rows: the log shows more events at once. */
 const SPOKEN_ROWS = 2;
+/** A Jev call's card: what it read, each question's prompt and Jev's answer under it. */
+const JEV_DETAIL_ROWS = 18;
+/** A prompt or a hint wraps to at most this many rows, so a long one never buries the log. */
+const PROMPT_ROWS = 3;
 
 /**
  * One line of the live log, dense: time, who (only where the speaker changes), what happened and
  * a short figure at the end. The finer points go on a faint line under it; bookkeeping (a request
  * sent, a turn's end) is one faint line with its figures folded in.
  */
-function feedLine(els: Els, view: View, entry: FeedEntry) {
+function feedLine(els: Els, view: View, entry: FeedEntry, maxRows?: number) {
   const { Box, Text } = els;
   const who = speaker(entry, view.locale);
   // The time is no column: it sits faint under the text (at the end of a bookkeeping line).
@@ -743,8 +774,29 @@ function feedLine(els: Els, view: View, entry: FeedEntry) {
   const when = clock(entry.time, view.locale);
   const spoken = entry.who === "jev" || entry.who === "claude";
   const room = Math.max(10, view.width - gutter - metaWidth - 3);
-  const body = spoken ? clip(entry.text, room * SPOKEN_ROWS) : entry.text;
-  const rows = !minor && entry.detail ? entry.detail.split("\n").slice(0, DETAIL_ROWS) : [];
+  const jev = entry.who === "jev";
+  const detailRoom = Math.max(10, view.width - gutter - 2);
+  // A single card must fit in the live log's physical viewport so the user can scroll to it whole.
+  const bodyLimit = jev && maxRows !== undefined ? room * Math.max(1, Math.min(SPOKEN_ROWS, maxRows - 1)) : room * SPOKEN_ROWS;
+  const body = spoken ? clip(entry.text, bodyLimit) : entry.text;
+  let rows = !minor && entry.detail ? entry.detail.split("\n").slice(0, jev ? JEV_DETAIL_ROWS : DETAIL_ROWS) : [];
+  if (jev && maxRows !== undefined) {
+    const bodyRows = rowsOf({ type: "Text", props: { wrap: "wrap" }, children: [body] }, room);
+    const detailBudget = Math.max(0, maxRows - bodyRows);
+    let used = 0;
+    const visible: string[] = [];
+    for (const [index, row] of rows.entries()) {
+      const shown = index === 0 ? `${when} · ${row}` : clip(row, detailRoom * PROMPT_ROWS);
+      const height = index === 0 ? 1 : rowsOf({ type: "Text", props: { wrap: "wrap" }, children: [shown] }, detailRoom);
+      if (used + height > detailBudget) break;
+      visible.push(row);
+      used += height;
+    }
+    // Completed cards keep question and answer pairs intact when the viewport runs out.
+    if (visible.at(-1)?.startsWith("?") && rows[visible.length]?.startsWith("→")) visible.pop();
+    rows = visible;
+  }
+  const detailLines = rows.length ? rows : jev && maxRows !== undefined && entry.detail ? [] : [""];
   return (
     <Box flexDirection="column" flexShrink={0}>
       <Box flexDirection="row">
@@ -774,14 +826,21 @@ function feedLine(els: Els, view: View, entry: FeedEntry) {
         ) : null}
       </Box>
       {!minor
-        ? (rows.length ? rows : [""]).map((row, index) => (
+        ? detailLines.map((row, index) => (
             <Box flexDirection="row">
               <Box width={gutter} flexShrink={0} />
               <Box width={2} flexShrink={0}>
                 <Text color={INK.faint}>{index === 0 ? "╰ " : "  "}</Text>
               </Box>
               <Box flexShrink={1} flexGrow={1}>
-                <Text color={INK.faint} wrap="truncate-end">{index === 0 ? (row ? `${when} · ${row}` : when) : row}</Text>
+                {jev && index > 0 ? (
+                  // A Jev card: the prompts wrap so they can be read, Jev's answers stand out.
+                  <Text color={row.startsWith("✕") ? INK.fail : row.startsWith("→") ? (entry.tone === "bad" ? INK.fail : INK.route) : row.startsWith("?") ? INK.dim : INK.faint} wrap="wrap">
+                    {clip(row, detailRoom * PROMPT_ROWS)}
+                  </Text>
+                ) : (
+                  <Text color={INK.faint} wrap="truncate-end">{index === 0 ? (row ? `${when} · ${row}` : when) : row}</Text>
+                )}
               </Box>
             </Box>
           ))
@@ -794,12 +853,12 @@ function feedLine(els: Els, view: View, entry: FeedEntry) {
  * The log as a conversation, newest last: no gaps between speakers, the face and name drawn where
  * the speaker changes. The Live tab draws every line; a subagent's pane draws only its own.
  */
-function conversation(els: Els, view: View, lines: readonly FeedEntry[], empty: string) {
+function conversation(els: Els, view: View, lines: readonly FeedEntry[], empty: string, maxEntryRows?: number) {
   const { Box, Text } = els;
   return (
     <Box flexDirection="column" flexShrink={0}>
       {lines.length === 0 ? <Text color={INK.dim}>{empty}</Text> : null}
-      {lines.map((entry) => feedLine(els, view, entry))}
+      {lines.map((entry) => feedLine(els, view, entry, maxEntryRows))}
     </Box>
   );
 }
@@ -816,12 +875,13 @@ function stuckLog(els: Els, view: View, lines: readonly FeedEntry[], rows: numbe
   const shown = lines.slice(Math.max(0, end - rows), end);
   const atStart = end - rows <= 0;
   const footer = back > 0 ? 1 : 0;
+  const cardRows = Math.max(1, rows - footer - (atStart && before ? rowsOf(before, view.width) : 0));
   return (
     <Box flexDirection="column" height={rows} overflow="hidden" flexShrink={0}>
       <Box flexDirection="column" flexGrow={1} flexShrink={1} justifyContent="flex-end" overflow="hidden">
         <Box flexDirection="column" flexShrink={0}>
           {atStart && before ? before : null}
-          {conversation(els, view, shown, empty)}
+          {conversation(els, view, shown, empty, cardRows)}
         </Box>
       </Box>
       {footer ? (
@@ -857,37 +917,62 @@ function liveView(els: Els, view: View, act: Actions, rows: number) {
   );
 }
 
-/** The Live tab's fixed top: Dice, and the face and color of everyone who speaks in the log. */
+/** Jev's record over the kept requests: its decisions, the hints they gave, tokens and latency. */
+function jevTally(events: readonly RouteEvent[]) {
+  const asked = events.filter((event) => event.jev);
+  return {
+    calls: asked.length,
+    hints: events.filter(routed).length,
+    tokens: asked.reduce((s, event) => s + event.jev!.inputTokens, 0),
+    latency: asked.length ? Math.round(asked.reduce((s, event) => s + event.jev!.latencyMs, 0) / asked.length) : undefined,
+  };
+}
+
+/**
+ * The Live tab's fixed top: Dice, then what happens now (Jev's state, the model and effort, what
+ * runs), Jev's last decision and its record, and one line saying who is who in the log.
+ */
 function liveTop(els: Els, view: View) {
   const { Box, Text } = els;
   const state = status(view.events, view.routing, view.now, view.locale);
   const running = view.agents.filter((run) => run.state === "running").length;
+  const mood = MOODS[moodOf(view)];
+  const now = view.live;
+  const tally = jevTally(view.events);
   return (
     <Box flexDirection="column" flexShrink={0}>
       <Box flexDirection="row" columnGap={2}>
         {diceArt(els, view)}
         <Box flexDirection="column" flexShrink={1}>
           {section(els, text("ui.live.title", view.locale))}
-          <Text wrap="wrap">
+          <Text wrap="truncate">
+            <Text bold color={hex(mood.color)}>{`${mood.face} Jev`}</Text>
+            <Text color={now.asking ? INK.route : INK.dim}>{` · ${now.asking ? text("ui.live.asking", view.locale) : state.title}`}</Text>
+            <Text color={INK.faint}>{` · ${text("ui.live.nowModel", view.locale, { model: modelName(now.model), effort: now.effort ? ` · ${now.effort}` : "" })}`}</Text>
+            {now.changed ? <Text color={INK.pass}>{` · ${text("ui.band.changed", view.locale, { change: now.changed })}`}</Text> : null}
+          </Text>
+          <Text wrap="truncate" color={now.activity ? INK.ink : INK.faint}>{now.activity ? `▶ ${now.activity}` : text("ui.live.nowIdle", view.locale)}</Text>
+          <Text wrap="truncate" color={now.jevUsed ? INK.route : INK.dim}>
+            {now.decision ? text("ui.live.lastDecision", view.locale, { summary: now.decision }) : text("ui.live.noDecision", view.locale)}
+          </Text>
+          <Text wrap="truncate" color={INK.dim}>
+            {text("ui.live.session", view.locale, {
+              calls: formatNumber(tally.calls, view.locale),
+              hints: formatNumber(tally.hints, view.locale),
+              tokens: formatCompact(tally.tokens, view.locale),
+              latency: tally.latency === undefined ? "" : text("ui.live.sessionLatency", view.locale, { value: formatNumber(tally.latency, view.locale) }),
+            })}
+          </Text>
+          <Text wrap="truncate">
             <Text bold color={INK.you}>{`${DICE.face} ${text("ui.live.you", view.locale)}`}</Text>
-            <Text color={INK.dim}>{` · ${text("ui.live.dice", view.locale)}`}</Text>
-          </Text>
-          <Text wrap="wrap">
-            <Text bold color={hex(MOODS[moodOf(view)].color)}>{`${MOODS[moodOf(view)].face} Jev`}</Text>
-            <Text color={INK.dim}>{` · ${text("ui.live.pingo", view.locale)} · ${view.live.asking ? text("ui.live.asking", view.locale) : state.title}`}</Text>
-          </Text>
-          <Text wrap="wrap">
+            <Text color={INK.faint}>{` ${text("ui.live.dice", view.locale)} · `}</Text>
             <Text bold color={INK.claude}>Claude</Text>
-            <Text color={INK.faint}>{`   ⠿ ${text("ui.live.mod", view.locale)}`}</Text>
-          </Text>
-          <Text wrap="wrap">
-            <Text color={INK.dim}>{text("ui.live.subagents", view.locale)} </Text>
+            <Text color={INK.faint}>{` · ⠿ ${text("ui.live.mod", view.locale)} ·`}</Text>
             {MASCOT_ORDER.map((id) => (
-              <Text bold color={hex(AGENT_MASCOTS[id].color)}>{` ${AGENT_MASCOTS[id].face} ${AGENT_MASCOTS[id].name} `}</Text>
+              <Text bold color={hex(AGENT_MASCOTS[id].color)}>{` ${AGENT_MASCOTS[id].face} ${AGENT_MASCOTS[id].name}`}</Text>
             ))}
           </Text>
           {running ? <Text color={INK.route} wrap="wrap">{text("ui.live.runningAgents", view.locale, { count: formatNumber(running, view.locale), unit: text(running === 1 ? "unit.agent" : "unit.agents", view.locale) })}</Text> : null}
-          <Text color={INK.faint} wrap="wrap">{text("ui.live.observable", view.locale)}</Text>
         </Box>
       </Box>
     </Box>

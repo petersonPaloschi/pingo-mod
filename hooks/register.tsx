@@ -13,10 +13,11 @@
 import { atom, read, update } from "claude-code";
 import type { EngineInterface, Register, UiBlitArgs } from "claude-code";
 
-import type { AdvisorInfo, AgentRun, FeatureFlags, FeedEntry, PaneScroll, FeedKind, FeedSpeaker, FeedTone, JevTab, LiveNow, RouteEvent, SetupDraft, TracePlan, TraceState, WatchState } from "../types";
+import type { AdvisorInfo, AgentRun, FeatureFlags, FeedEntry, PaneScroll, FeedKind, FeedSpeaker, FeedTone, JevTab, LiveNow, RouteEvent, SetupDraft, TraceConsult, TracePlan, TraceState, WatchState } from "../types";
 import { keyFor, keyOwner, providerBasis, resolveSettings, storedApplies, type ModOptions, type Settings, type StoredSettings } from "./config.ts";
 import { decide, hintText, type AskJev, type Decision } from "./core/decide.ts";
-import { createAskJev, isProvider, PROVIDERS, redact, resolveModel, validateKey, type ProviderId, type Transport } from "./core/jev.ts";
+import { channelFile, channelReader, FOLLOW_SCRIPT } from "./core/channel.ts";
+import { createAskJev, isProvider, observeAskJev, PROVIDERS, redact, resolveModel, validateKey, type JevEvent, type JevSent, type ProviderId, type Transport } from "./core/jev.ts";
 import type { ModelContext } from "./core/types.ts";
 import { featureGate, sizeRequest, switchableModel, totalInput, withHint, type FeatureContext, type RequestPlan } from "./core/runtime.ts";
 import {
@@ -34,7 +35,7 @@ import {
   type TurnPlan,
 } from "./core/plan.ts";
 import { KEPT_EVENTS, RANGES, reasonKey } from "./events.ts";
-import { featureFlagsText, features as featureList, jevInput, jevOutput, modelName, outputSize, short, toolDetails, toolSummary } from "./feed.ts";
+import { featureFlagsText, features as featureList, jevAnswered, jevAsked, jevFailed, modelName, outputSize, short, toolDetails, toolSummary, type JevCaller } from "./feed.ts";
 import { resultText, toInput, type PendingResult } from "./input.ts";
 import { cellsOf } from "./dots.ts";
 import { failureCause, failureHint, failureKind, failureNote, isJevFailure, reasonCode } from "./errors.ts";
@@ -536,42 +537,155 @@ async function asking<T>($: EngineInterface, work: () => Promise<T>): Promise<T>
   }
 }
 
+/** Where a Jev call was asked from: the run the Flow tab counts it in, who asked, and what set it off. */
+type JevWhere = ConsultWhere & { origin: TraceConsult["origin"]; trigger?: string };
+
 /**
- * A Jev call that shows in the live log what it was sent and what it answered, with the odds; the
- * Flow tab counts it in the run it was asked for (`where`), a shortlist call included.
+ * Where every Jev call lands, the mod's own and sift's: one live-log line per call, naming the
+ * function that asked and each question's prompt, turned into Jev's answers with their odds when
+ * it ends; the Flow tab counts it in the run it was asked for. `where` is read as each call
+ * starts, since sift's calls arrive from whichever loop ran the command.
  */
-function tracedAskJev($: EngineInterface, config: Settings, where: ConsultWhere & { origin: "prompt" | "tool" | "agent" }): AskJev {
-  const ask = createAskJev(config, transport($, config.locale));
-  return async (request) => {
-    const sent = jevInput(request, config.locale);
-    await log($, "jev", "jev", "info", sent.text, undefined, { detail: sent.detail });
-    const startedAt = Date.now();
-    let consult = "";
-    const at = await $.clock.now();
-    await updateTrace($, (s) => {
-      const [next, id] = consultStart(s, where, { origin: where.origin, model: request.model, questions: Object.keys(request.questions), startedAt: at });
-      consult = id;
-      return next;
-    });
-    let result;
-    try {
-      result = await ask(request);
-    } catch (error) {
-      const cause = error instanceof Error ? error.message : String(error);
-      const failedAt = await $.clock.now();
-      await updateTrace($, (s) => consultEnd(s, consult, failedAt, cause));
-      await log($, "jev", "error", "bad", text("feed.request.failed", config.locale, { message: short(cause, 160) }), undefined, {
-        meta: `${formatNumber(Date.now() - startedAt, config.locale)} ms`,
-        detail: `${cause.slice(0, 240)}\n${failureHint(failureKind(cause), config.locale)}`,
+function jevReporter($: EngineInterface, locale: Locale, where: () => JevWhere): (event: JevEvent) => Promise<void> {
+  const open = new Map<string, { consult: string; startedAt: number; line: number; sent: JevSent; caller: JevCaller }>();
+  return async (event) => {
+    if (event.phase === "start") {
+      const at = where();
+      const caller: JevCaller = { origin: at.origin, ...(at.trigger ? { trigger: at.trigger } : {}) };
+      const card = jevAsked(event.sent, caller, locale);
+      const line = await log($, "jev", "jev", "info", card.text, undefined, { detail: card.detail, meta: text("feed.jev.asking", locale) });
+      let consult = "";
+      await updateTrace($, (s) => {
+        const [next, id] = consultStart(s, at, { origin: at.origin, model: event.sent.model, questions: event.sent.questions, startedAt: event.at });
+        consult = id;
+        return next;
       });
-      throw error;
+      open.set(event.call, { consult, startedAt: event.at, line, sent: event.sent, caller });
+      return;
     }
-    const endedAt = await $.clock.now();
-    await updateTrace($, (s) => consultEnd(s, consult, endedAt));
-    const got = jevOutput(result, config.locale);
-    await log($, "jev", "jev", "good", got.text, undefined, { meta: `${formatNumber(Date.now() - startedAt, config.locale)} ms`, detail: got.detail });
-    return result;
+    const call = open.get(event.call);
+    open.delete(event.call);
+    const meta = call ? `${formatNumber(Math.max(0, event.at - call.startedAt), locale)} ms` : undefined;
+    if (event.phase === "fail") {
+      if (call) await updateTrace($, (s) => consultEnd(s, call.consult, event.at, event.error));
+      const hint = failureHint(failureKind(event.error), locale);
+      if (call) {
+        const card = jevFailed(call.sent, call.caller, event.error, hint, locale);
+        await patch($, call.line, { text: card.text, tone: "bad", detail: card.detail, ...(meta ? { meta } : {}) });
+        return;
+      }
+      await log($, "jev", "error", "bad", text("feed.request.failed", locale, { message: short(event.error, 160) }), undefined, {
+        meta,
+        detail: `${event.error.slice(0, 240)}\n${hint}`,
+      });
+      return;
+    }
+    if (!call) return;
+    await updateTrace($, (s) => consultEnd(s, call.consult, event.at));
+    const card = jevAnswered(call.sent, call.caller, event.result, locale);
+    await patch($, call.line, { text: card.text, tone: "good", detail: card.detail, ...(meta ? { meta } : {}) });
   };
+}
+
+/** The mod's own Jev call, through the one path every caller takes (observeAskJev, then jevReporter). */
+function tracedAskJev($: EngineInterface, config: Settings, where: JevWhere): AskJev {
+  return observeAskJev(createAskJev(config, transport($, config.locale)), jevReporter($, config.locale, () => where), () => $.clock.now());
+}
+
+/**
+ * Runs one routing point's Jev calls and, when the decision is a failure, keeps the reply bodies
+ * Jev sent on it: the request log shows them whole, for debugging an answer the router could not use.
+ */
+async function withReplies(ask: AskJev, decide: (ask: AskJev) => Promise<Decision>): Promise<Decision> {
+  const replies: string[] = [];
+  const decision = await decide(async (request) => {
+    const result = await ask(request);
+    if (result.raw) replies.push(result.raw);
+    return result;
+  });
+  return decision.mode === "passthrough" && isJevFailure(decision.reason) && replies.length ? { ...decision, raw: replies } : decision;
+}
+
+// --- Sift: its Jev calls, from the shells Claude's Bash tool starts ---
+
+/** The session's channel name, set for every shell started after; sift appends its calls to that file. */
+let siftChannel: string | undefined;
+let siftChannelReady: Promise<void> | undefined;
+/** The channel's follower is running: one per session, started at the first sift command. */
+let siftFollowing = false;
+/** Sift commands running now, by tool call, with the subagent each runs in: their calls count there. */
+const siftRuns = new Map<string, string | undefined>();
+/** Channel events already reported: a follower started again reads the file from its start. */
+const siftSeen = new Set<string>();
+const KEPT_SIFT_SEEN = 20_000;
+/** A Bash command that runs sift (skills/sift: node ".../scripts/sift.ts" ...). */
+const SIFT_COMMAND = /\bsift\.ts\b/;
+
+/** Attribute channel events only when exactly one sift command can own them. */
+export function uniqueSiftAgent(runs: readonly (string | undefined)[]): string | undefined {
+  return runs.length === 1 ? runs[0] : undefined;
+}
+
+/**
+ * Before a sift command runs: names the channel for the shells to come, and follows it, so each of
+ * sift's Jev calls reaches jevReporter as it happens, as the mod's own do.
+ */
+async function followSift($: EngineInterface): Promise<void> {
+  if (!siftChannelReady) {
+    const name = `${sessionId || "s"}-${Math.random().toString(36).slice(2, 10)}`;
+    siftChannelReady = Promise.resolve().then(async () => {
+      await $.env.set("PINGO_JEV_CHANNEL", name);
+      siftChannel = name;
+    }).catch((error) => {
+      siftChannelReady = undefined;
+      throw error;
+    });
+  }
+  await siftChannelReady;
+  const file = channelFile(siftChannel);
+  if (siftFollowing || !file) return;
+  siftFollowing = true;
+  try {
+    const locale = (await getSettings($)).locale;
+    const report = jevReporter($, locale, () => {
+      const agentId = uniqueSiftAgent([...siftRuns.values()]);
+      return { origin: "sift", ...(agentId ? { agentId } : {}) };
+    });
+    const read = channelReader();
+    // The follower lives for the session (the module unloading ends it); a host without processes skips it.
+    void (async () => {
+      try {
+        for await (const piece of $.process.spawn({ argv: ["node", "-e", FOLLOW_SCRIPT, file] })) {
+          for (const event of read(piece.text)) {
+            const seen = `${event.call} ${event.phase}`;
+            if (siftSeen.has(seen)) continue;
+            if (siftSeen.size >= KEPT_SIFT_SEEN) siftSeen.delete(siftSeen.values().next().value!);
+            siftSeen.add(seen);
+            try {
+              await report(event);
+            } catch (error) {
+              await logSiftFailure($, locale, error);
+            }
+          }
+        }
+      } catch (error) {
+        await logSiftFailure($, locale, error);
+      } finally {
+        siftFollowing = false;
+      }
+    })();
+  } catch (error) {
+    siftFollowing = false;
+    throw error;
+  }
+}
+
+/** Use the same user-facing failure detail when the channel or its reporter fails. */
+async function logSiftFailure($: EngineInterface, locale: Locale, error: unknown): Promise<void> {
+  const cause = error instanceof Error ? error.message : String(error);
+  await log($, "jev", "error", "bad", text("feed.request.failed", locale, { message: short(cause, 160) }), undefined, {
+    detail: `${cause.slice(0, 240)}\n${failureHint(failureKind(cause), locale)}`,
+  }).catch(() => undefined);
 }
 
 // --- Routing ---
@@ -604,7 +718,14 @@ async function planFor($: EngineInterface, userText: string, messageId: string):
   const input = toInput(await systemText($), messages, roster, config.maxMessageChars, { userText }, config.locale);
   input.session = modelContext(config);
   if (flags.advisor) input.session.advisorAvailable = !(await advisorInfo($)).blocked;
-  return asking($, () => planTurn(input, config, tracedAskJev($, config, { origin: "prompt", messageId }), flags, [...agentTypes.values()]));
+  return asking($, async () => {
+    let plan: TurnPlan | undefined;
+    const decision = await withReplies(tracedAskJev($, config, { origin: "prompt", messageId }), async (ask) => {
+      plan = await planTurn(input, config, ask, flags, [...agentTypes.values()]);
+      return plan.decision;
+    });
+    return { ...plan!, decision };
+  });
 }
 
 /** After a tool batch: only the next tool, when that feature is on and Jev did not stay out. */
@@ -617,7 +738,7 @@ async function routeTool($: EngineInterface, extra: { pending?: PendingResult })
   lastToolCount = roster.length;
   const input = toInput(await systemText($), messages, roster, config.maxMessageChars, extra, config.locale);
   input.session = modelContext(config);
-  return asking($, () => decide(input, config, tracedAskJev($, config, { origin: "tool" })));
+  return asking($, () => withReplies(tracedAskJev($, config, { origin: "tool", ...(extra.pending ? { trigger: extra.pending.tool } : {}) }), (ask) => decide(input, config, ask)));
 }
 
 /**
@@ -868,7 +989,7 @@ async function checkSetup($: EngineInterface): Promise<void> {
   }
   settings = undefined;
   await update($, setup, (d) => ({ ...d, provider: id, message: text("ui.setup.checking", locale, { provider: names.provider }), isOk: true }));
-  const check = await validateKey(id, apiKey, transport($, locale), resolveModel(id, options.model?.trim()), locale);
+  const check = await validateKey(id, apiKey, transport($, locale), resolveModel(id, options.model?.trim()), locale, jevReporter($, locale, () => ({ origin: "setup" })));
   if (!check.ok) {
     const message = check.refused
       ? text("ui.setup.refused", locale, { provider: names.provider, message: check.message })
@@ -895,7 +1016,7 @@ async function submitKey($: EngineInterface, provider: string): Promise<void> {
     return;
   }
   await update($, setup, (d) => ({ ...d, provider: id, busy: true, isOk: true, message: text("ui.setup.testing", locale, { provider: PROVIDERS[id].label }) }));
-  const check = await validateKey(id, key, transport($, locale), resolveModel(id, options.model?.trim()), locale);
+  const check = await validateKey(id, key, transport($, locale), resolveModel(id, options.model?.trim()), locale, jevReporter($, locale, () => ({ origin: "setup" })));
   if (!check.ok) {
     await update($, setup, (d) => ({
       ...d,
@@ -1038,6 +1159,12 @@ export const register: Register = (on, given) => {
   draftKey = "";
   sessionKey = "";
   sessionProvider = undefined;
+  // The module unloading ended the follower: a reload names a channel of its own.
+  siftChannel = undefined;
+  siftChannelReady = undefined;
+  siftFollowing = false;
+  siftRuns.clear();
+  siftSeen.clear();
 
   on("session.start", async ($, e, next) => {
     sessionId = (await $.session.id()).slice(0, 8);
@@ -1140,18 +1267,24 @@ export const register: Register = (on, given) => {
       return { turns: keepTurns(w.turns, { seq, time: at, turn, consulted: asked, ...(plan.jev ? { latencyMs: plan.jev.latencyMs } : {}), fns, settled: false }), count: seq };
     });
     await setLive($, { decision: summary, jevUsed: asked });
+    const hint = planHint(plan, hintText, config.locale);
     if (asked) {
       const note = plan.decision.mode === "passthrough" && plan.decision.reason === "jev_unexpected_answer" ? failureNote(plan.decision.reason, plan.decision.detail, config.locale) : undefined;
-      await log($, "jev", "jev", failed ? "bad" : "good", text("feed.request.consulted", config.locale, { summary }), undefined, {
-        ...(note ? { detail: note } : {}),
-        ...(plan.jev ? { meta: `${formatNumber(plan.jev.latencyMs, config.locale)} ms`,
-          ...(plan.jev.confidence !== undefined && plan.jev.choice !== undefined ? { detail: text("feed.request.confidence", config.locale, { value: formatDecimal(plan.jev.confidence, config.locale), tokens: formatCompact(plan.jev.inputTokens, config.locale), choice: plan.jev.choice }) } : {}) } : {}),
+      const picked = plan.jev?.confidence !== undefined && plan.jev.choice !== undefined
+        ? text("feed.request.confidence", config.locale, { value: formatDecimal(plan.jev.confidence, config.locale), tokens: formatCompact(plan.jev.inputTokens, config.locale), choice: plan.jev.choice })
+        : undefined;
+      const runsOn = turnPlan.model || turnPlan.effort
+        ? text("feed.decision.model", config.locale, { model: modelName(turnPlan.model ?? mainModel), effort: turnPlan.effort ? text("feed.decision.effort", config.locale, { effort: turnPlan.effort }) : "" })
+        : undefined;
+      const rows = [picked ?? note, hint ? text("feed.decision.hint", config.locale, { hint: short(hint, 400) }) : failed ? undefined : text("feed.decision.noHint", config.locale), runsOn];
+      await log($, "jev", "jev", failed ? "bad" : "good", text("feed.decision.prompt", config.locale, { summary }), undefined, {
+        detail: rows.filter(Boolean).join("\n"),
+        ...(plan.jev ? { meta: `${formatNumber(plan.jev.latencyMs, config.locale)} ms` } : {}),
       });
     } else {
       await log($, "jev", "jev", "muted", text("feed.request.notConsulted", config.locale, { summary }), undefined, { minor: true });
     }
     await updateTrace($, (s) => planMessage(s, messageId, tracePlan(plan, summary, asked, failed)));
-    const hint = planHint(plan, hintText, config.locale);
     if (!hint) return entered(await next(e));
     return entered(await next({ ...e, context: withHint(e.context, hint) }));
   }).catch((_$, e, next) => next(e));
@@ -1222,6 +1355,12 @@ export const register: Register = (on, given) => {
     const startedAt = await $.clock.now();
     toolStarts.set(e.tool_use_id, startedAt);
     const toolUseId = e.tool_use_id;
+    // Sift's Jev calls happen in the shell this command starts: follow them in before it runs.
+    const sift = e.tool === "Bash" && SIFT_COMMAND.test(String((e as unknown as Record<string, unknown>).command ?? ""));
+    if (sift) {
+      siftRuns.set(toolUseId, e.agentId);
+      await followSift($).catch((error) => logSiftFailure($, locale, error));
+    }
     await updateTrace($, (s) => toolStart(s, { id: toolUseId, ...(e.agentId ? { agentId: e.agentId } : {}), name: e.tool, at: startedAt }));
     // One line per call: written as it starts, rewritten with its outcome when it ends.
     const input = e as unknown as Record<string, unknown>;
@@ -1229,7 +1368,10 @@ export const register: Register = (on, given) => {
     const line = await log($, who, "tool", "info", `▸ ${summary}`, e.agentId, { meta: text("feed.tool.running", locale), ...(toolDetail ? { detail: toolDetail } : {}) });
     if (!e.agentId) await setLive($, { activity: text("feed.activity.running", locale, { activity: short(summary, 40) }) });
     else await updateRun($, e.agentId, (run) => ({ ...run, tools: run.tools + 1, activity: text("feed.activity.agentTool", locale, { activity: short(summary, 60) }) }));
-    const result = await next(e);
+    // The follower reads the channel every 100 ms: the command's last calls still count where it ran.
+    const result = await next(e).finally(() => {
+      if (sift) $.clock.after(1000, () => siftRuns.delete(toolUseId));
+    });
     const endedAt = await $.clock.now();
     const took = formatDuration(endedAt - (toolStarts.get(e.tool_use_id) ?? 0), locale);
     toolStarts.delete(e.tool_use_id);
@@ -1271,15 +1413,21 @@ export const register: Register = (on, given) => {
       const what = decision.mode === "hint"
         ? text("feed.tool.next", locale, { tool: decision.tool, confidence: formatDecimal(decision.confidence, locale) })
         : text("feed.tool.noHint", locale, { reason: reasonTitle(decision.reason, locale) });
-      await log($, "jev", "jev", failed ? "bad" : "good", text("feed.request.consulted", locale, { summary: what }), undefined, {
+      const picked = decision.jev.confidence !== undefined && decision.jev.choice !== undefined
+        ? text("feed.tool.after", locale, {
+            tool: e.tool,
+            confidence: formatDecimal(decision.jev.confidence, locale),
+            choice: decision.jev.choice,
+            shortlist: decision.jev.shortlist ? text("feed.tool.shortlist", locale, { count: formatNumber(decision.jev.shortlist.length, locale) }) : "",
+          }) + (decision.jev.needsTool !== undefined ? text("feed.decision.needsTool", locale, { value: `${formatDecimal(decision.jev.needsTool * 100, locale, 0)}%` }) : "")
+        : undefined;
+      const rows = [
+        failed && decision.mode === "passthrough" ? failureNote(decision.reason, decision.detail, locale) : picked,
+        decision.mode === "hint" ? text("feed.decision.hint", locale, { hint: hintText(decision.tool, locale) }) : failed ? undefined : text("feed.decision.noHint", locale),
+      ];
+      await log($, "jev", "jev", failed ? "bad" : "good", text("feed.decision.tool", locale, { tool: e.tool, summary: what }), undefined, {
         meta: `${formatNumber(decision.jev.latencyMs, locale)} ms`,
-        ...(failed && decision.mode === "passthrough" ? { detail: failureNote(decision.reason, decision.detail, locale) ?? "" } : {}),
-        ...(decision.jev.confidence !== undefined && decision.jev.choice !== undefined ? { detail: text("feed.tool.after", locale, {
-          tool: e.tool,
-          confidence: formatDecimal(decision.jev.confidence, locale),
-          choice: decision.jev.choice,
-          shortlist: decision.jev.shortlist ? text("feed.tool.shortlist", locale, { count: formatNumber(decision.jev.shortlist.length, locale) }) : "",
-        }) } : {}),
+        detail: rows.filter(Boolean).join("\n"),
       });
       await setLive($, { decision: failed ? text("ui.band.jevFailed", locale) : what, jevUsed: true });
     } else if (decision.mode === "passthrough" && isJevFailure(decision.reason)) {
@@ -1305,7 +1453,7 @@ export const register: Register = (on, given) => {
     const ctx = await activeFeatures($, config);
     const proposed =
       !featureGate(ctx, "agents") && !e.fork && !e.model
-        ? await asking($, () => planAgent(e, config, tracedAskJev($, config, { origin: "agent", ...(e.parentAgentId ? { agentId: e.parentAgentId } : {}) }), ctx.features, undefined, modelContext(config)))
+        ? await asking($, () => planAgent(e, config, tracedAskJev($, config, { origin: "agent", trigger: e.subagentType, ...(e.parentAgentId ? { agentId: e.parentAgentId } : {}) }), ctx.features, undefined, modelContext(config)))
         : {};
     const current = await activeFeatures($, config);
     const plan = featureGate(current, "agents") ? {} : proposed;
@@ -1496,6 +1644,7 @@ export const register: Register = (on, given) => {
       ...(effort === undefined ? {} : { effort: String(effort) }),
       ...(changes.length ? { plan: changes.join(", ") } : {}),
       ...(decision.mode === "passthrough" && failureCause(decision.reason, decision.detail) ? { error: failureCause(decision.reason, decision.detail)! } : {}),
+      ...(decision.raw?.length ? { jevRaw: decision.raw } : {}),
       ...(usage
         ? {
             usage: {

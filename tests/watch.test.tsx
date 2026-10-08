@@ -221,8 +221,8 @@ describe("the Models tab", () => {
     await step($ as never, opusStep);
     const ui = await $.ui.mount({ plugin: "jev", surface: "desktop", component: "Pane", requestId: "jev", props: PANE_PROPS });
     await ui.press({ key: "tab-models" });
-    expect(await ui.find({ type: "Text", text: /kept opus-5-5; Jev wanted haiku-4-5 at 0\.80, needs ≥ 0\.85/ })).toBeDefined();
-    expect(await ui.find({ type: "Text", text: /↓ haiku-4-5\s+needs ≥ 0\.85/ })).toBeDefined();
+    expect(await ui.find({ type: "Text", text: /kept opus-5-5; Jev wanted haiku-5-5 at 0\.80, needs ≥ 0\.85/ })).toBeDefined();
+    expect(await ui.find({ type: "Text", text: /↓ haiku-5-5\s+needs ≥ 0\.85/ })).toBeDefined();
     await ui.unmount();
   });
 

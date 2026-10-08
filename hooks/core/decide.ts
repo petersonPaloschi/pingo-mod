@@ -39,7 +39,12 @@ export interface JevTrace {
 }
 
 /** `answers`: every answer of the Jev call, for the questions other features added to it. */
-export type Decision = { jev?: JevTrace; answers?: Record<string, Answer> } & (
+export type Decision = {
+  jev?: JevTrace;
+  answers?: Record<string, Answer>;
+  /** Jev's reply bodies for this routing point, kept on a failure so the request log can show them whole. */
+  raw?: string[];
+} & (
   | { mode: "passthrough"; reason: string; /** What was observed behind a failure: shown in the log. */ detail?: string }
   /** Jev picked the tool; the LLM is told, not forced. */
   | { mode: "hint"; tool: string; confidence: number }
@@ -70,7 +75,7 @@ async function shortlist(
   config: DecideConfig,
   askJev: AskJev,
   now: () => number,
-): Promise<{ tools: RouterTool[]; inputTokens: number; latencyMs: number } | { failure: string }> {
+): Promise<{ tools: RouterTool[]; inputTokens: number; latencyMs: number; detail?: string } | { failure: string }> {
   const { questions, shards } = buildShortlistQuestions(tools, config.promptLocale ?? config.locale);
   const asked = await askTimed({ state, questions, model: config.jevModel }, askJev, now);
   if ("failure" in asked) return asked;
@@ -79,7 +84,7 @@ async function shortlist(
     const answer = result.answers[shardKey(index)];
     if (answer?.type !== "choice") return [];
     const names = new Set(shard.map((tool) => tool.name));
-    const scores = new Map(Object.entries(answer.probabilities ?? {}).filter(([name]) => names.has(name)));
+    const scores = new Map(Object.entries(answer.probabilities ?? {}).filter(([name, probability]) => names.has(name) && probability > 0));
     // A typed caller may supply only a confident choice; never turn confidence into probability.
     if (!scores.size && names.has(answer.choice) && answer.confidence >= config.minConfidence) return [answer.choice];
     return [...scores]
@@ -96,7 +101,19 @@ async function shortlist(
       if (best.size === MAX_TOOLS) break;
     }
   }
-  return { tools: tools.filter((tool) => best.has(tool.name)), inputTokens: result.usage.input_tokens, latencyMs: asked.latencyMs };
+  const selected = tools.filter((tool) => best.has(tool.name));
+  const declined = shards.every((_, index) => {
+    const answer = result.answers[shardKey(index)];
+    return answer?.type === "choice" && answer.choice === NONE_OF_THESE;
+  });
+  return {
+    tools: selected,
+    inputTokens: result.usage.input_tokens,
+    latencyMs: asked.latencyMs,
+    ...(selected.length === 0 && !declined ? {
+      detail: `no usable shortlist candidates; ${unusableAnswer(Object.keys(questions), Object.keys(result.answers), result.dropped)}; Jev model ${config.jevModel}`,
+    } : {}),
+  };
 }
 
 export async function decide(
@@ -119,8 +136,9 @@ export async function decide(
     if ("failure" in result) return { mode: "passthrough", reason: result.failure };
     ({ tools, inputTokens: shortlistTokens } = result);
     latencyMs += result.latencyMs;
-    if (tools.length === 0) return { mode: "passthrough", reason: "jev_unexpected_answer", detail: "the tool shortlist came back empty", jev: jevMetrics(shortlistTokens) };
+    if (result.detail) return { mode: "passthrough", reason: "jev_unexpected_answer", detail: result.detail, jev: jevMetrics(shortlistTokens) };
   }
+  // A valid empty shortlist still needs the no-tool check and the other enabled features.
   // Other features' questions ride in the same call: one Jev request per routing point.
   const asked = await askTimed({ state, questions: { ...buildQuestions(tools, config.promptLocale ?? config.locale), ...extra }, model: config.jevModel }, askJev, now);
   if ("failure" in asked) return { mode: "passthrough", reason: asked.failure };
@@ -135,7 +153,7 @@ export async function decide(
     return {
       mode: "passthrough",
       reason: "jev_unexpected_answer",
-      detail: unusableAnswer([TOOL_KEY, NEEDS_TOOL_KEY], Object.keys(answers), result.dropped),
+      detail: `${unusableAnswer([TOOL_KEY, NEEDS_TOOL_KEY], Object.keys(answers), result.dropped)}; Jev model ${config.jevModel}`,
       answers,
       jev: metrics,
     };

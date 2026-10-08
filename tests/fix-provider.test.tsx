@@ -84,7 +84,7 @@ describe("one Jev call", () => {
 
   test("an unusable 200 is not retried and is reported as an invalid response", async () => {
     for (const [body, expected] of [
-      ["not json", "Provider returned invalid JSON."],
+      ["not json", "Provider returned invalid JSON. not json"],
       ["null", "Provider returned an invalid response shape."],
     ] as const) {
       const broken = transport([{ status: 200, text: body }, { status: 200, text: GOOD }]);
