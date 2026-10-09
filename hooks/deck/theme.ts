@@ -1,8 +1,8 @@
 // Colors and small helpers shared by the Deck drawings. Pure, no I/O.
 // Every color comes from hooks/theme.ts: the state and tier hues, the track and tick tones, and the text tones.
-import { css, DECK_ACCENT, HUE, PAINT, SVG_PAINT } from "../theme.ts";
+import { css, DECK_ACCENT, DECK_GLYPH, HUE, PAINT, SVG_PAINT } from "../theme.ts";
 export type RGB = [number, number, number];
-export type StyleName = "run" | "ask" | "hot" | "done" | "ok" | "warn";
+export type StyleName = keyof typeof DECK_GLYPH;
 export type TierName = "haiku" | "sonnet" | "opus";
 
 /** fill and pill-text colors for the terminal, glyph, and the desktop color (text on it is `on`) */
@@ -71,12 +71,12 @@ export interface TextProps {
 const fill = (color: number) => css(color);
 
 export const STYLE: Record<StyleName, Style> = {
-  run: { fill: fill(HUE.brand), on: PAINT.onFill, glyph: "●", desk: fill(HUE.brand) },
-  ask: { fill: fill(HUE.warn), on: PAINT.onFill, glyph: "?", desk: fill(HUE.warn) },
-  hot: { fill: fill(HUE.fail), on: PAINT.onFill, glyph: "!", desk: fill(HUE.fail) },
-  done: { fill: fill(HUE.ok), on: PAINT.onFill, glyph: "✓", desk: fill(HUE.ok) },
-  ok: { fill: fill(HUE.ok), on: PAINT.onFill, glyph: "◔", desk: fill(HUE.ok) },
-  warn: { fill: fill(HUE.warn), on: PAINT.onFill, glyph: "◑", desk: fill(HUE.warn) },
+  run: { fill: fill(HUE.brand), on: PAINT.onFill, glyph: DECK_GLYPH.run, desk: fill(HUE.brand) },
+  ask: { fill: fill(HUE.warn), on: PAINT.onFill, glyph: DECK_GLYPH.ask, desk: fill(HUE.warn) },
+  hot: { fill: fill(HUE.fail), on: PAINT.onFill, glyph: DECK_GLYPH.hot, desk: fill(HUE.fail) },
+  done: { fill: fill(HUE.ok), on: PAINT.onFill, glyph: DECK_GLYPH.done, desk: fill(HUE.ok) },
+  ok: { fill: fill(HUE.ok), on: PAINT.onFill, glyph: DECK_GLYPH.ok, desk: fill(HUE.ok) },
+  warn: { fill: fill(HUE.warn), on: PAINT.onFill, glyph: DECK_GLYPH.warn, desk: fill(HUE.warn) },
 };
 
 export const TIER: Record<TierName, { term: string; desk: string }> = {

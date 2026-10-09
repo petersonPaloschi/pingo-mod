@@ -76,6 +76,16 @@ export const GLYPH = {
   branch: "└",
 } as const;
 
+/** The Deck's row marks, shared by its model status and renderers. */
+export const DECK_GLYPH = {
+  run: GLYPH.on,
+  ask: GLYPH.ask,
+  hot: GLYPH.warn,
+  done: GLYPH.ok,
+  ok: "◔",
+  warn: "◑",
+} as const;
+
 /** Eighth blocks, thinnest first: a bar's fraction of a cell. */
 export const EIGHTHS = "▏▎▍▌▋▊▉█";
 

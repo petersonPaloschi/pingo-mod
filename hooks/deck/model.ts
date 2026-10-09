@@ -5,6 +5,7 @@
 
 import type { RouteEvent } from "../../types";
 import { EFFORTS } from "../core/contracts.ts";
+import { DECK_GLYPH } from "../theme.ts";
 import { text, type Locale, type LocaleKey } from "../i18n.ts";
 import { type DeckSettings, type Section, type Show, SECTIONS } from "./settings.ts";
 import { trunc } from "./theme.ts";
@@ -32,8 +33,8 @@ export const TIER_MODEL: Record<string, string> = { fast: "haiku", balanced: "so
 const MODEL_RANK: Record<string, number> = { haiku: 0, sonnet: 1, opus: 2 };
 
 // the row styles: a state's glyph and its color role (rows.ts maps a style to the palette)
-export type RowStyle = "run" | "ask" | "hot" | "done" | "ok" | "warn";
-export const STYLE_GLYPH: Record<RowStyle, string> = { run: "●", ask: "?", hot: "!", done: "✓", ok: "◔", warn: "◑" };
+export type RowStyle = keyof typeof DECK_GLYPH;
+export const STYLE_GLYPH: Record<RowStyle, string> = DECK_GLYPH;
 const STATE_STYLE: Record<BarState, RowStyle> = { running: "run", needs_input: "ask", error: "hot", done: "done" };
 
 export type BarState = "running" | "needs_input" | "done" | "error";
