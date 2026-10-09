@@ -1127,7 +1127,7 @@ export function barRow(s: DeckState, bar: Bar, show: Show, now: number, locale: 
     name: shortName,
     count: count + agentNote,
     right: Math.round(pct) + "%",
-    short: done ? "✓ " + trunc(bar.title, 14) : trunc(name, 16) + " " + count,
+    short: done ? STYLE_GLYPH.done + " " + trunc(bar.title, 14) : trunc(name, 16) + " " + count,
     stage: w.finished,
     animating: !done,
     strips: visibleStrips(s, bar.id, bar.agentsDoneAt, show, now),

@@ -341,7 +341,7 @@ function terminalRows(els: ElementTable, band: DeckBand, shown: number, hasLane:
 function agentLine(els: ElementTable, band: DeckBand, ag: Agent, frame: number, labelW: number) {
   const { Box, Text } = els;
   const ast = STYLE[AGENT_STYLE[ag.state]];
-  const glyph = ag.state === "running" ? (frame % 6 < 3 ? "○" : "●") : ast.glyph;
+  const glyph = ag.state === "running" ? (frame % 6 < 3 ? GLYPH.off : GLYPH.on) : ast.glyph;
   return (
     <Box key={"agent-" + ag.id} flexDirection="row" columnGap={1}>
       <Text color={TRACK}>{ag.depth ? `    ${BRANCH}` : `  ${BRANCH}`}</Text>

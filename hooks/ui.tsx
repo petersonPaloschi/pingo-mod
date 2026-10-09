@@ -1047,7 +1047,7 @@ function roleRows(els: Els, view: View, policy: OrchestrationPolicy, role: Role,
   const locale = view.locale;
   const setting = policy.roles[role];
   const chip = (on: boolean, label: string, line: string, key: string) => (
-    <Button key={key} label={`${on ? "✓" : "·"} ${label}`} plain dimColor={!on} onPress={() => act.orchestration(line)} />
+    <Button key={key} label={`${on ? GLYPH.ok : GLYPH.leader} ${label}`} plain dimColor={!on} onPress={() => act.orchestration(line)} />
   );
   return (
     <Box flexDirection="column" key={"role-" + role}>
@@ -1525,8 +1525,8 @@ function liveTop(els: Els, view: View, act: Actions) {
 }
 
 const AGENT_STATE: Record<AgentState, [label: LocaleKey, glyph: string, color: string]> = {
-  running: ["ui.agents.state.running", "●", INK.route],
-  done: ["ui.agents.state.done", "✓", INK.dim],
+  running: ["ui.agents.state.running", GLYPH.on, INK.route],
+  done: ["ui.agents.state.done", GLYPH.ok, INK.dim],
   error: ["ui.agents.state.error", "✗", INK.fail],
   aborted: ["ui.agents.state.aborted", "⊘", INK.pass],
 };

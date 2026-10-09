@@ -539,7 +539,7 @@ function recentActivity(run: TraceRun, now: number, locale: Locale): Detail[] {
   if (run.message && plan?.summary) events.push({ at: run.message.at, detail: { text: `${text("flow.node.jev", locale)} · ${plan.summary}`, color: plan.outcome === "failed" ? C.fail : C.dim } });
   for (const tool of run.tools) {
     const result = tool.result;
-    const marker = result === "error" ? "✗" : result === "denied" ? "⊘" : result === "ok" ? "✓" : "◉";
+    const marker = result === "error" ? "✗" : result === "denied" ? "⊘" : result === "ok" ? GLYPH.ok : "◉";
     events.push({ at: tool.endedAt ?? tool.startedAt, detail: { text: `${marker} ${tool.name}`, color: result === "error" ? C.fail : result === "denied" ? C.pass : result === "ok" ? C.dim : C.green } });
   }
   for (const call of run.advisor) {

@@ -3,6 +3,7 @@
 import type { RouteEvent, TraceConsult } from "../types";
 import { formatAge, formatDecimal, formatNumber, formatPercent, localeFor, reasonTitle, text, type Locale, type LocaleKey } from "./i18n.ts";
 import { isJevFailure, reasonCode } from "./core/reasons.ts";
+import { GLYPH } from "./theme.ts";
 
 export type { RouteEvent };
 
@@ -82,7 +83,7 @@ export function status(events: readonly RouteEvent[], routing: boolean, now: num
     const n = recent.length;
     return {
       kind: "baseline",
-      icon: "◌",
+      icon: GLYPH.baseline,
       title: text("status.baseline.title", locale),
       text: text("status.baseline.text", locale, {
         count: formatNumber(n, locale ?? "en"),
@@ -94,7 +95,7 @@ export function status(events: readonly RouteEvent[], routing: boolean, now: num
     const last = events.at(-1);
     return {
       kind: "idle",
-      icon: "–",
+      icon: GLYPH.idle,
       title: text("status.idle.title", locale),
       text: text("status.idle.text", locale, {
         last: last ? text("status.idle.last", locale, { age: formatAge(now - at(last), locale ?? localeFor()), mode: text(`category.mode.${last.mode}` as LocaleKey, locale) }) : "",
@@ -106,7 +107,7 @@ export function status(events: readonly RouteEvent[], routing: boolean, now: num
   if (latest && failed(latest)) {
     return {
       kind: "failing",
-      icon: "!",
+      icon: GLYPH.warn,
       title: text("status.failing.title", locale),
       text: text("status.failing.text", locale, { reason: reasonTitle(latest.reason ?? "unknown", locale) }),
     };
@@ -115,7 +116,7 @@ export function status(events: readonly RouteEvent[], routing: boolean, now: num
   if (decided) {
     return {
       kind: "routing",
-      icon: "✓",
+      icon: GLYPH.ok,
       title: text("status.routing.title", locale),
       text: text("status.routing.text", locale, {
         decided: formatNumber(decided, locale ?? "en"),
@@ -127,7 +128,7 @@ export function status(events: readonly RouteEvent[], routing: boolean, now: num
   const reasons = tally(recent.map((event) => reasonCode(event.reason ?? "unknown")));
   return {
     kind: "passthrough",
-    icon: "→",
+    icon: GLYPH.route,
     title: text("status.passthrough.title", locale),
     text: text("status.passthrough.text", locale, {
       count: formatNumber(recent.length, locale ?? "en"),
