@@ -5,7 +5,6 @@ import { formatAge, formatDecimal, formatNumber, formatPercent, localeFor, reaso
 import { isJevFailure, reasonCode } from "./core/reasons.ts";
 
 export type { RouteEvent };
-export const reasonKey = reasonCode;
 
 export const KEPT_EVENTS = 500;
 export const IDLE_MS = 5 * 60 * 1000;
@@ -66,10 +65,6 @@ export function tally(keys: readonly string[]): [string, number][] {
   const counts = new Map<string, number>();
   for (const name of keys) counts.set(name, (counts.get(name) ?? 0) + 1);
   return [...counts].sort((a, b) => b[1] - a[1]);
-}
-
-export function inRange(events: readonly RouteEvent[], range: number, now: number): RouteEvent[] {
-  return range > 0 ? events.filter((event) => now - at(event) < range) : [...events];
 }
 
 export type StatusKind = "baseline" | "idle" | "failing" | "routing" | "passthrough";
@@ -226,18 +221,4 @@ export function reasons(events: readonly RouteEvent[], locale: Locale = localeFo
     const [whoKey, meaningKey] = REASON_KEYS[name] ?? REASON_KEYS.unknown!;
     return { name, count, who: text(whoKey, locale), meaning: text(meaningKey, locale) };
   });
-}
-
-/** 36 buckets of request counts per category, oldest first. */
-export function timeline(events: readonly RouteEvent[], range: number, now: number, buckets = 36): Map<Category, number>[] {
-  const from = range > 0 ? now - range : Math.min(now - (RANGES[0]?.[1] ?? 0), ...events.map(at));
-  const width = Math.max(1, (now - from) / buckets);
-  const out = Array.from({ length: buckets }, () => new Map<Category, number>());
-  for (const event of events) {
-    const index = Math.floor((at(event) - from) / width);
-    const bucket = out[Math.min(buckets - 1, index)];
-    if (!bucket || index < 0) continue;
-    bucket.set(category(event), (bucket.get(category(event)) ?? 0) + 1);
-  }
-  return out;
 }

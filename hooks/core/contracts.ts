@@ -1,4 +1,4 @@
-import type { FeatureFlags, FeatureId } from "../../types";
+import type { FeatureFlags } from "../../types";
 
 export type { FeatureId } from "../../types";
 export type Features = FeatureFlags;
@@ -6,7 +6,6 @@ export type Features = FeatureFlags;
 export const DEFAULT_FEATURES: Features = {
   agents: false,
 };
-export const FEATURE_IDS = Object.keys(DEFAULT_FEATURES) as FeatureId[];
 
 export type Tier = "haiku" | "sonnet" | "opus";
 export type Effort = "low" | "medium" | "high" | "xhigh" | "max";

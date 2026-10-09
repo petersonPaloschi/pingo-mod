@@ -1,20 +1,9 @@
 // The pane and the band draw valid trees on both surfaces, and their controls act.
 import type { On, RenderPropsOf } from "claude-code";
 import { expect, mock, test } from "claude-code/testing";
+import { PANE_PROPS, status, successfulFetches } from "./helpers.ts";
 
-const PANE_PROPS = {
-  title: "Jev",
-  isFocused: true,
-  bodyColumns: 80,
-  placement: "dock",
-  scroll: { offset: 0, bodyRows: 40, contentRows: 40 },
-} as unknown as RenderPropsOf["Pane"];
 const BAND_PROPS = { hasSurvey: false, isWorking: false, maxRows: 3, bodyColumns: 100 } as unknown as RenderPropsOf["AbovePrompt"];
-
-const ASK = { origin: { kind: "composer" }, presentation: { isFullscreen: true, columns: 160 } } as const;
-async function status($: { command: { run: (input: never) => Promise<{ text?: string }> } }) {
-  return (await $.command.run({ command: "jev", args: "status", ...ASK } as never)).text ?? "";
-}
 
 const EVENT = {
   seq: 1,
@@ -43,6 +32,7 @@ test("every tab draws on the terminal and the desktop app", async ($, on) => {
       ["tab-agents", /No subagents/],
       ["tab-logs", /Newest first/],
       ["tab-configuration", /paste its key/],
+      ["tab-deck", /Every \/deck command as a control/],
     ] as const) {
       await ui.press({ key });
       expect(await ui.find({ type: "Text", text })).toBeDefined();
@@ -61,6 +51,9 @@ test("the dashboard follows the configured Portuguese locale", { options: { loca
   expect(await ui.find({ type: "Text", text: "Provedor e idioma" })).toBeDefined();
   await ui.press({ key: "tab-live" });
   expect(await ui.find({ type: "Text", text: /Nenhuma execução registrada ainda/ })).toBeDefined();
+  await ui.press({ key: "tab-deck" });
+  expect(await ui.find({ type: "Text", text: /Todos os comandos \/deck como controles/ })).toBeDefined();
+  expect(await ui.find({ type: "Text", text: "Faixa acima do prompt" })).toBeDefined();
   await ui.unmount();
 });
 
@@ -234,16 +227,12 @@ test("setup does not call a provider without a key", async ($, on) => {
   mock.clock(on, { now: Date.parse("2026-10-06T12:00:00Z") });
   mock.store(on);
   mock.env(on, {});
-  let requests = 0;
-  on("http.fetch", async () => {
-    requests++;
-    return { value: { status: 200, ok: true, headers: {}, text: "{}" } };
-  });
+  const fetches = successfulFetches(on);
   const ui = await $.ui.mount({ plugin: "jev", surface: "terminal", component: "Pane", requestId: "jev", props: PANE_PROPS });
   await ui.press({ key: "tab-configuration" });
   expect(await ui.find({ type: "Text", text: /No key yet/ })).toBeDefined();
   await ui.press({ key: "validate" });
-  expect(requests).toBe(0);
+  expect(fetches.length).toBe(0);
   expect(await ui.find({ type: "Text", text: /No key is configured/ })).toBeDefined();
   await ui.unmount();
 });
@@ -269,11 +258,7 @@ test("a pasted key is shown masked, tested, saved in secure plugin storage and u
   mock.env(on, {});
   const written: unknown[] = [];
   configRows(on, written);
-  const auth: (string | undefined)[] = [];
-  on("http.fetch", async (_$, e) => {
-    auth.push(e.init?.headers?.authorization);
-    return { value: { status: 200, ok: true, headers: {}, text: "{}" } };
-  });
+  const auth = successfulFetches(on);
   const ui = await $.ui.mount({ plugin: "jev", surface: "terminal", component: "Pane", requestId: "jev", props: PANE_PROPS });
   await ui.press({ key: "tab-configuration" });
   await ui.input({ key: "api-key", kind: "change", text: "dummy-test-1234" });

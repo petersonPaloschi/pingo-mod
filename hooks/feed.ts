@@ -122,9 +122,6 @@ export interface Usage {
   cache_creation_input_tokens?: number | null;
 }
 
-/** Every input token a request read: fresh, from the cache and written to it. */
-export { totalInput as inputTokens } from "./core/runtime.ts";
-
 export const featureFlagsText = (flags: FeatureFlags, locale: Locale = localeFor()) => {
   const names = features(locale).filter((feature) => flags[feature.id]).map((feature) => feature.name);
   return names.length ? new Intl.ListFormat(locale === "pt" ? "pt-BR" : "en-US", { style: "short", type: "conjunction" }).format(names) : text("feed.none", locale);

@@ -1,7 +1,7 @@
 // A failed Jev call names its cause, and the cause names the next step.
 import { expect, test } from "claude-code/testing";
 
-import { failureCause, failureKind, failureNote, unusableAnswer } from "../hooks/errors.ts";
+import { failureCause, failureKind, unusableAnswer } from "../hooks/errors.ts";
 
 test("a failure is sorted by what the provider layer wrote", () => {
   expect(failureKind("401 from TypeSafe: bad key")).toBe("auth");
@@ -24,7 +24,6 @@ test("the cause is the message after the reason, and nothing for a reason that i
   expect(failureCause("jev_error: 401 from TypeSafe: bad key")).toBe("401 from TypeSafe: bad key");
   expect(failureCause("jev_unexpected_answer", "missing \"tool\"; got needs_tool")).toBe("missing \"tool\"; got needs_tool");
   expect(failureCause("low_confidence")).toBeUndefined();
-  expect(failureNote("jev_error: 429 from X: slow", undefined, "en")).toContain("rate limiting");
   expect(failureCause("jev_error: " + "x".repeat(1000))!.length).toBe(240);
 });
 

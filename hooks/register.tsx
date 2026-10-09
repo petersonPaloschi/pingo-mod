@@ -4,7 +4,7 @@
 // Every function that reaches `$` is declared here at the top level, so `claude plugin validate`
 // can follow each call; the other files are pure.
 import { atom, read, update } from "claude-code";
-import type { EngineInterface, Register } from "claude-code";
+import type { ElementTable, EngineInterface, Register, Timer } from "claude-code";
 
 import type { AdvisorInfo, AgentRun, FeatureFlags, FeedEntry, PaneScroll, FeedKind, FeedSpeaker, FeedTone, JevTab, LiveNow, RouteEvent, SetupDraft, TraceState } from "../types";
 import { keyFor, keyOwner, providerBasis, resolveSettings, storedApplies, type ModOptions, type Settings, type StoredSettings } from "./config.ts";
@@ -41,9 +41,63 @@ import {
   traceOf,
   type ConsultWhere,
 } from "./trace.ts";
-import { renderAgentPane, renderBand, renderPane, type Actions, type View } from "./ui.tsx";
+import { renderAbove, renderAgentPane, renderPane, type Actions, type DeckPanel, type View } from "./ui.tsx";
 import { flowSummary } from "./flow.ts";
 import { formatCompact, formatDecimal, formatDuration, formatNumber, formatPercent, text, type Locale, type LocaleKey, type LocaleOption } from "./i18n.ts";
+import { renderDeck, FRAME_MS, type DeckBand, type Surface } from "./deck/band.tsx";
+import { DEFAULT_SETTINGS, parseSettings, serializeSettings, type DeckSettings } from "./deck/settings.ts";
+import {
+  ASK_DELAY_MS,
+  askedQuestion,
+  callAnswered,
+  callDone,
+  callStart,
+  clearRows,
+  clockText,
+  collectRows,
+  costSeenFrom,
+  createDeckState,
+  DECK_VERSION,
+  demoTick,
+  dismissRow,
+  finishAgent,
+  hasLiveAgents,
+  histFrom,
+  markWaiting,
+  petMood,
+  react,
+  readRouteLog,
+  readRouteStatus,
+  sampleRow,
+  sampleUsage,
+  settleAgents,
+  spendFrom,
+  spendRecord,
+  startAgent,
+  promptSubmitted,
+  startDemo,
+  statusText as deckStatusText,
+  takePingoRoute,
+  takeUsage,
+  taskCompleted,
+  taskCreated,
+  turnEnded,
+  turnStarted,
+  weatherText,
+  type CallResult,
+  type ContextUsage,
+  type DeckRow,
+  type DeckSound,
+  type DeckState,
+  type ToolCall,
+} from "./deck/model.ts";
+import { createPet, petLaneCells, petLaneColumns, stepPet, PET_BRAILLE, type Pet } from "./deck/pet.ts";
+import { cellsOf } from "./dots.ts";
+import { FOLD_FADE, FOLD_STEP, TRACK_H, toTrackRow, type DrawCaches } from "./deck/rows.ts";
+import { DESKTOP_STYLES, DESKTOP_STYLE_NAMES, desktopTrack } from "./deck/styles-desktop.ts";
+import { TERMINAL_STYLES, TERMINAL_STYLE_NAMES, terminalBar } from "./deck/styles-terminal.ts";
+import { applyDeckCommand, deckUsage, deckWords, openReply } from "./deck/wire.ts";
+import { DIM, STYLE, runs } from "./deck/theme.ts";
 
 const PANE = "jev";
 type FeatureId = keyof FeatureFlags;
@@ -60,6 +114,11 @@ const agents = atom({ plugin: "jev", key: "agents" } as const, [] as AgentRun[])
 /** The highest subagent number handed out: kept beside the runs, so it lives exactly as long as they do. */
 const agentCount = atom({ plugin: "jev", key: "agentCount" } as const, 0);
 const scroll = atom({ plugin: "jev", key: "scroll" } as const, {} as PaneScroll);
+/** Deck's preferences as shown, and whether its band is expanded now (it may open itself). */
+const deckSettings = atom({ plugin: "jev", key: "deckSettings" } as const, DEFAULT_SETTINGS as DeckSettings);
+const deckExpanded = atom({ plugin: "jev", key: "deckExpanded" } as const, false);
+/** Bumped on each Deck change: the band and its panes read it, so a change redraws them through the atom. */
+const deckRevision = atom({ plugin: "jev", key: "deckRevision" } as const, 0);
 /** How far each pane body can scroll as last drawn, and whether it counts up from the newest line. */
 const scrollRoom = new Map<string, { max: number; fromEnd: boolean }>();
 /** The Flow tab's record, schema 2 under a key of its own: the old FlowState is never read as it. */
@@ -74,6 +133,15 @@ const STORE_PROVIDER = "provider";
 /** The key and provider accepted in Setup, kept in this plugin's store file under ~/.claude/plugins/store so a restart keeps them. */
 const STORE_CREDENTIALS = "credentials";
 const STORE_FEATURES = "features";
+/** Deck's preferences, and its spend with the session that counted it. */
+const STORE_DECK = "deck";
+const STORE_DECK_SPEND = "deckSpend";
+/** Deck's usage history, for the sparklines and burn rates: kept across sessions. */
+const STORE_DECK_HIST = "deckHist";
+/** An open or close in progress: its rows step one a step, and the ticks it has run. */
+type DeckFold = { dir: "open" | "close"; start: number; ticks: number };
+/** The fold's timer tick, in milliseconds. */
+const FOLD_TICK = 33;
 const FEED_SIZE = 1000;
 /** Subagents kept for the Agents tab: every running one, then the latest finished. */
 const KEPT_AGENTS = 40;
@@ -83,6 +151,8 @@ const AGENT_PANE = "jev-agent-";
 let options: ModOptions = {};
 let settings: Settings | undefined;
 let sessionId = "";
+/** The session's full id: Deck keys what each session has counted by it. */
+let deckSessionId = "";
 let feedSeq = 0;
 /** The highest request-log number this module wrote, and the tail of its queue of writes. */
 let eventSeq = 0;
@@ -103,6 +173,40 @@ let sessionKey = "";
 /** The provider the Setup key was tested against: the two go together for the session. */
 let sessionProvider: ProviderId | undefined;
 let mainModel: string | undefined;
+/**
+ * Deck's rows and draw memories for this session. The rows hold Maps, so they live here and not in
+ * an atom; the caches keep a moving bar or strip from restarting between redraws.
+ */
+let deck: DeckState | undefined;
+let deckCaches: DrawCaches = { head: new Map(), strip: new Map() };
+let deckPet: Pet | undefined;
+/** The band's clock (every 150 ms), its frame count, the fold in progress and its timer, and the demo's timer. */
+let deckLoop: Timer | undefined;
+let deckFrame = 0;
+let deckFold: DeckFold | undefined;
+let deckFoldTimer: Timer | undefined;
+let deckDemo: Timer | undefined;
+/**
+ * When a band was last drawn on each surface, and when the Jev dashboard was: what moves, and how often, depends on
+ * what is on screen, which is what was drawn within this long.
+ */
+let deckShownTerminalAt = Number.NEGATIVE_INFINITY;
+let deckShownDesktopAt = Number.NEGATIVE_INFINITY;
+let paneShownAt = Number.NEGATIVE_INFINITY;
+/** Longer than the second between the clock's redraws, so a late timer never reads a band that is there as gone. */
+const ON_SCREEN_MS = 2500;
+/** The terminal sites that draw the pet's lane, by the requestId they are drawn under: their width, the cells last put there, and when each was last drawn. */
+const deckLanes = new Map<string, { columns: number; cells: string; seenAt: number }>();
+/** When the rows' own motion last asked for a redraw. */
+let rowsRedrawnAt = Number.NEGATIVE_INFINITY;
+/** The host would not take a repaint (no `$.ui.blit`, or it threw): the terminal pet then moves with a slow redraw instead. */
+let blitBroken = false;
+/**
+ * The dashboard's Deck tab: the last reply to a control (with the command word that earned it and the
+ * settings and language it was given under) and the city being typed.
+ */
+let deckNote: (NonNullable<DeckPanel["note"]> & { key: string }) | null = null;
+let deckDraft = "";
 
 function transport($: EngineInterface, locale?: Locale): Transport {
   return {
@@ -568,7 +672,534 @@ async function record($: EngineInterface, event: Omit<RouteEvent, "seq">): Promi
     const kept = [...stored, { ...event, seq }].slice(-KEPT_EVENTS);
     await $.store.set(STORE_EVENTS, kept);
     await update($, events, () => kept);
+    // Deck's route row is pingo's own decision, as this request logged it.
+    const now = await $.clock.now();
+    takePingoRoute(deckOf(now), { ...event, seq }, now);
   });
+}
+
+// --- Deck: the band above the prompt ---
+
+/** Deck's rows for this session, made on first use. */
+function deckOf(now: number): DeckState {
+  deck ??= createDeckState(now, deckSessionId);
+  return deck;
+}
+
+/** Deck's pet, made on first use; it is walked on each tick. */
+function petOf(now: number): Pet {
+  deckPet ??= createPet(now);
+  return deckPet;
+}
+
+/** A field of a saved record, when the record is an object. */
+const fieldOf = (saved: unknown, key: string): unknown => (typeof saved === "object" && saved !== null ? (saved as Record<string, unknown>)[key] : undefined);
+
+/** Redraws the band and its panes: they read the revision atom, which this bumps. */
+function redrawDeck($: EngineInterface): void {
+  void update($, deckRevision, (n) => n + 1).catch(() => undefined);
+}
+
+/** Saves Deck's preferences: the store, then the atom the band reads. */
+async function saveDeckSettings($: EngineInterface, next: DeckSettings): Promise<void> {
+  await $.store.set(STORE_DECK, serializeSettings(next));
+  await update($, deckSettings, () => next);
+}
+
+/** Saves what this session has spent: the day and month totals, and this session's count among the recent sessions. */
+async function saveDeckSpend($: EngineInterface, now: number): Promise<void> {
+  const saved = await $.store.get(STORE_DECK_SPEND);
+  await $.store.set(STORE_DECK_SPEND, spendRecord(deckOf(now), saved, deckSessionId));
+}
+
+/** Saves the usage history when a reading changed it, so the sparklines and burn rates survive a restart. */
+async function noteUsage($: EngineInterface, now: number): Promise<void> {
+  if (sampleUsage(deckOf(now), now)) await $.store.set(STORE_DECK_HIST, deckOf(now).hist);
+}
+
+/** One sound cue, started and not awaited, so a clip never holds up a draw. Gain 0.6. */
+function playDeckSound($: EngineInterface, name: DeckSound): void {
+  try {
+    void $.audio.play({ asset: `sounds/${name}.wav` }, { gain: 0.6 }).catch(() => undefined);
+  } catch {}
+}
+
+/** How far a fold has run: the wall time, or the timer's own ticks if those ran further. */
+const foldAgeOf = (fold: DeckFold, now: number): number => Math.max(now - fold.start, fold.ticks * FOLD_TICK);
+
+/** How many of n rows the fold shows now: an opening adds a row a step, a closing takes one away. */
+function foldCount(n: number, now: number): number {
+  if (!deckFold) return n;
+  const k = Math.floor(foldAgeOf(deckFold, now) / FOLD_STEP);
+  return deckFold.dir === "open" ? Math.min(n, k + 1) : Math.max(0, n - k);
+}
+
+/** Whether the band is open, or opening: what the toggle and the footer show. */
+async function isDeckOpen($: EngineInterface): Promise<boolean> {
+  return deckFold ? deckFold.dir === "open" : read($, deckExpanded);
+}
+
+/**
+ * Opens or shuts the band, and keeps that as the default for the next session. Opening shows the band
+ * at once; closing keeps it up while its rows fold, and the expanded state drops when they have.
+ */
+async function setDeckOpen($: EngineInterface, open: boolean): Promise<void> {
+  const shown = await read($, deckExpanded);
+  const closing = deckFold?.dir === "close";
+  if (open ? shown && !closing : !shown || closing) return;
+  deckFoldTimer?.cancel();
+  deckFold = { dir: open ? "open" : "close", start: await $.clock.now(), ticks: 0 };
+  if (open) await update($, deckExpanded, () => true);
+  await saveDeckSettings($, { ...(await read($, deckSettings)), open });
+  deckFoldTimer = $.clock.every(FOLD_TICK, () => void foldTick($).catch(() => undefined));
+  redrawDeck($);
+}
+
+/** One fold tick: the rows step on until the last one has had its step (and its fade), then the fold ends. */
+async function foldTick($: EngineInterface): Promise<void> {
+  const fold = deckFold;
+  if (!fold) return;
+  fold.ticks++;
+  const now = await $.clock.now();
+  const config = await getSettings($);
+  const n = collectRows(deckOf(now), (await read($, deckSettings)).show, now, config.locale).length;
+  const span = (n + 1) * FOLD_STEP + (fold.dir === "open" ? FOLD_FADE : 0);
+  if (foldAgeOf(fold, now) >= span) {
+    deckFoldTimer?.cancel();
+    if (fold.dir === "close") await update($, deckExpanded, () => false);
+    deckFold = undefined;
+  }
+  redrawDeck($);
+}
+
+/** The toggle: opens the band when it is shut, shuts it when it is open. */
+async function toggleDeck($: EngineInterface): Promise<void> {
+  await setDeckOpen($, !(await isDeckOpen($)));
+}
+
+/** A tool call Deck tracks, opened before the call runs and answered after it. */
+type DeckCallOpen = { s: DeckState; call: ToolCall; locale: Locale };
+
+/** The fields of a tool call that Deck reads. */
+type ToolCallLike = { tool: string; agentId?: string; tool_use_id?: string };
+
+/** The call starts on the bars: a subagent's tool, the activity's count and action, a todo list, a question. */
+async function deckCallOpen($: EngineInterface, e: ToolCallLike): Promise<DeckCallOpen> {
+  const now = await $.clock.now();
+  const locale = (await getSettings($)).locale;
+  const s = deckOf(now);
+  const call: ToolCall = {
+    tool: e.tool,
+    ...(e.agentId ? { agentId: e.agentId } : {}),
+    ...(e.tool_use_id ? { toolUseId: e.tool_use_id } : {}),
+    input: e as unknown as Record<string, unknown>,
+  };
+  callStart(s, call, now, locale);
+  redrawDeck($);
+  return { s, call, locale };
+}
+
+/** The call ends: its waiting mark clears, and a call that ran cleanly updates the task list or the plan. Never throws past the call. */
+async function deckCallClose<R extends CallResult>($: EngineInterface, open: DeckCallOpen, pending: Promise<R>): Promise<R> {
+  let ran: R;
+  try {
+    ran = await pending;
+  } finally {
+    callDone(open.s, open.call);
+  }
+  try {
+    callAnswered(open.s, open.call, ran, await $.clock.now(), open.locale);
+    redrawDeck($);
+  } catch {}
+  return ran;
+}
+
+/** A subagent that started: its row goes on the bar that started it. A spawn that was denied starts nothing. */
+async function deckSpawnStarted($: EngineInterface, e: { description: string; subagentType: string; parentAgentId?: string }, started: unknown, locale: Locale): Promise<void> {
+  const r = started as { agentId?: string; model?: string; deny?: unknown } | undefined;
+  if (!r || r.deny !== undefined || !r.agentId) return;
+  const now = await $.clock.now();
+  startAgent(
+    deckOf(now),
+    { id: r.agentId, description: e.description, subagentType: e.subagentType, model: r.model ?? "", ...(e.parentAgentId ? { parentAgentId: e.parentAgentId } : {}) },
+    now,
+    locale,
+  );
+  redrawDeck($);
+}
+
+/** Fetches the city's forecast; a failed fetch keeps the last reading and says nothing. */
+async function refreshWeather($: EngineInterface): Promise<void> {
+  const cfg = await read($, deckSettings);
+  if (!cfg.city || !cfg.show.weather) return;
+  try {
+    const { lat, lon, name } = cfg.city;
+    const r = await $.http.fetch(`https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&current=temperature_2m,weather_code`);
+    if (!r.ok) return;
+    const cur = JSON.parse(r.text).current;
+    deckOf(await $.clock.now()).weather = { temp: cur.temperature_2m, code: cur.weather_code, name };
+    redrawDeck($);
+  } catch {}
+}
+
+/** `/deck city <name>`: looks the name up, stores the city, turns weather on and fetches it. Returns the reply. */
+async function setDeckCity($: EngineInterface, query: string, locale: Locale): Promise<string> {
+  try {
+    const r = await $.http.fetch("https://geocoding-api.open-meteo.com/v1/search?count=1&name=" + encodeURIComponent(query));
+    const hit = r.ok ? JSON.parse(r.text).results?.[0] : null;
+    if (!hit) return text("deck.reply.cityNone", locale, { query });
+    const cfg = await read($, deckSettings);
+    deckOf(await $.clock.now()).weather = null;
+    await saveDeckSettings($, { ...cfg, city: { name: hit.name, lat: hit.latitude, lon: hit.longitude }, show: { ...cfg.show, weather: true } });
+    await refreshWeather($);
+    return text("deck.reply.city", locale, { city: hit.name, country: hit.country ? ", " + hit.country : "" });
+  } catch (err) {
+    return text("deck.reply.cityFailed", locale, { message: String((err as Error)?.message ?? err) });
+  }
+}
+
+/** Reads the session's usage into Deck: the context, the limits, and the spend since its last reading. */
+async function refreshUsage($: EngineInterface): Promise<void> {
+  try {
+    const now = await $.clock.now();
+    const u = await $.session.usage();
+    const cfg = await read($, deckSettings);
+    const added = takeUsage(deckOf(now), { context: contextOf(u.context), rateLimits: u.rateLimits, cost: u.cost ?? null }, now, cfg.cost);
+    await noteUsage($, now);
+    if (added > 0) await saveDeckSpend($, now);
+    redrawDeck($);
+  } catch {}
+}
+
+/** A session's context as Deck keeps it: none until the window has a percentage. */
+const contextOf = (c: { tokens?: number; window: number; percent?: number | null } | null | undefined): ContextUsage | null =>
+  c && c.percent != null ? { tokens: c.tokens ?? 0, window: c.window, percent: c.percent } : null;
+
+/** Settles the subagents the runtime reports finished. */
+async function syncAgents($: EngineInterface, now: number, locale: Locale): Promise<void> {
+  try {
+    settleAgents(deckOf(now), await $.agent.list(), now, locale);
+  } catch {}
+}
+
+/** One tick of the band's clock, every 150 ms: the cues the rows call for, the pet's walk, and the polls. */
+async function tickDeck($: EngineInterface): Promise<void> {
+  deckFrame++;
+  const config = await getSettings($);
+  const cfg = await read($, deckSettings);
+  const now = await $.clock.now();
+  const s = deckOf(now);
+  const rows = collectRows(s, cfg.show, now, config.locale);
+  const cues = react(s, rows, now);
+  if (cfg.sound) for (const name of cues.sounds) playDeckSound($, name);
+  if (cfg.auto && cues.wantOpen) await setDeckOpen($, true);
+  const moved = cfg.show.pet && stepPet(petOf(now), petMood(s, rows, now), now);
+  // What is on screen decides what moves. A band never drawn, or drawn long ago, stays still. The terminal pet is
+  // repainted in place and asks for no redraw; a desktop band moves by CSS and is redrawn once per new scene; the
+  // terminal's rows step their frames, so they are redrawn, every other frame, or every fourth with the dashboard
+  // open (every redraw draws that again too).
+  const terminal = now - deckShownTerminalAt < ON_SCREEN_MS;
+  const desktop = now - deckShownDesktopAt < ON_SCREEN_MS;
+  if (cfg.show.pet && terminal && !blitBroken) await paintLanes($, now);
+  let redraw = (moved && desktop) || (cues.sounds.length > 0 && (terminal || desktop));
+  const animated = rows.some((r) => r.animating) || (blitBroken && cfg.show.pet);
+  // (half a frame short of the step, so a timer a little late does not skip a whole one)
+  if (terminal && animated && now - rowsRedrawnAt >= ((now - paneShownAt < ON_SCREEN_MS ? 4 : 2) - 0.5) * FRAME_MS) {
+    redraw = true;
+    rowsRedrawnAt = now;
+  }
+  if (redraw) $.ui.invalidate("ui.render");
+  if (deckFrame % 14 === 0 && hasLiveAgents(s)) await syncAgents($, now, config.locale);
+  if (deckFrame % 400 === 0) await refreshUsage($);
+  else if (deckFrame % 100 === 0) await noteUsage($, now);
+  if (deckFrame % 8000 === 0) await refreshWeather($);
+}
+
+/** Repaints the pet's terminal lanes in place: the host takes the new cells at its next frame and draws nothing else. */
+async function paintLanes($: EngineInterface, now: number): Promise<void> {
+  const pet = petOf(now);
+  for (const [requestId, lane] of [...deckLanes]) {
+    // a lane not drawn lately is not on screen
+    if (now - lane.seenAt > ON_SCREEN_MS) {
+      deckLanes.delete(requestId);
+      continue;
+    }
+    const cells = cellsOf(petLaneCells(pet, now, lane.columns));
+    if (cells === lane.cells) continue;
+    try {
+      const result = await $.ui.blit({ requestId, key: "deck-pet", cells, columns: lane.columns, rows: PET_BRAILLE.rows });
+      // not mounted, or another size: the next draw of the band puts the site back
+      if (result.deny) deckLanes.delete(requestId);
+      else lane.cells = cells;
+    } catch {
+      blitBroken = true;
+      deckLanes.delete(requestId);
+    }
+  }
+}
+
+/** The timer that drives the band: it runs from session start, and a new start replaces the old one. */
+function startDeckClock($: EngineInterface): void {
+  deckLoop?.cancel();
+  deckLoop = $.clock.every(150, () => void tickDeck($).catch(() => undefined));
+}
+
+/** `/deck demo`: the sample plan, one step every 1.4 s until it is done. */
+function runDemo($: EngineInterface, locale: Locale): void {
+  deckDemo?.cancel();
+  let n = 0;
+  deckDemo = $.clock.every(1400, () => {
+    n++;
+    void (async () => {
+      const now = await $.clock.now();
+      if (!demoTick(deckOf(now), n, now, locale)) deckDemo?.cancel();
+      redrawDeck($);
+    })().catch(() => undefined);
+  });
+}
+
+/** The ✕ on a row: its bar, line or section goes; a demo's timer stops with its bar. */
+async function dismissDeckRow($: EngineInterface, row: DeckRow): Promise<void> {
+  const now = await $.clock.now();
+  if (row.kind === "bar" && row.bar?.id === "demo") deckDemo?.cancel();
+  const section = dismissRow(deckOf(now), row);
+  if (section) {
+    const cfg = await read($, deckSettings);
+    await saveDeckSettings($, { ...cfg, show: { ...cfg.show, [section]: false } });
+  }
+  redrawDeck($);
+}
+
+/**
+ * Runs one `/deck` argument string and returns its reply. The verbs that touch the live rows, the network
+ * or a pane (toggle, picker, panel, city, demo, clear, status, version) are handled here; the settings go
+ * through applyDeckCommand. The slash command and the dashboard's Deck tab both come through here.
+ */
+async function runDeckCommand($: EngineInterface, args: string): Promise<{ text?: string }> {
+  const locale = (await getSettings($)).locale;
+  const now = await $.clock.now();
+  const { verb, rest } = deckWords(args);
+  const arg = (rest[0] ?? "").toLowerCase();
+  const s = deckOf(now);
+  const cfg = await read($, deckSettings);
+  if (verb === "") {
+    await toggleDeck($);
+    return { text: openReply(await isDeckOpen($), locale) };
+  }
+  if (verb === "expand" || verb === "collapse") {
+    // the settings rule gives the reply and the state it asks for; the fold is this module's
+    const reply = applyDeckCommand(cfg, args, locale);
+    await setDeckOpen($, reply.settings.open);
+    return { text: reply.text };
+  }
+  if (verb === "style" && rest.length === 0) {
+    await $.ui.open({ id: "deck-style", title: text("deck.picker.title", locale), focus: true, closeOnEscape: true });
+    return {};
+  }
+  if (verb === "panel") {
+    if (arg === "off") {
+      await $.ui.close({ id: "deck-panel" });
+      return { text: text("deck.reply.panelClosed", locale) };
+    }
+    if (arg === "" || arg === "on") {
+      await $.ui.open({ id: "deck-panel", title: "Deck" });
+      return { text: text("deck.reply.panelOpened", locale) };
+    }
+    return { text: deckUsage(cfg, locale) };
+  }
+  if (verb === "city") {
+    const query = rest.join(" ");
+    return { text: query ? await setDeckCity($, query, locale) : deckUsage(cfg, locale) };
+  }
+  if (verb === "version") return { text: text("deck.reply.version", locale, { version: DECK_VERSION }) };
+  if (verb === "status") {
+    const rows = collectRows(s, cfg.show, now, locale);
+    return { text: deckStatusText(rows, cfg, petOf(now).act, DECK_VERSION, locale, await isDeckOpen($)) };
+  }
+  if (verb === "demo") {
+    startDemo(s, now, locale);
+    runDemo($, locale);
+    await setDeckOpen($, true);
+    const sampled = [s.demoRoute && text("deck.demo.routing", locale), s.demoUsage && text("deck.demo.limits", locale)].filter(Boolean);
+    return {
+      text: sampled.length
+        ? text("deck.demo.reply", locale, { what: sampled.join(text("deck.demo.joiner", locale)) })
+        : text("deck.demo.replyPlain", locale),
+    };
+  }
+  if (verb === "clear") {
+    deckDemo?.cancel();
+    clearRows(s);
+    redrawDeck($);
+    return { text: text("deck.reply.cleared", locale) };
+  }
+  const reply = applyDeckCommand(cfg, args, locale);
+  if (reply.settings !== cfg) {
+    await saveDeckSettings($, reply.settings);
+    await update($, deckExpanded, () => reply.settings.open);
+  }
+  if (verb === "cost" && arg === "on") await refreshUsage($);
+  if (verb === "sound" && arg === "on") playDeckSound($, "chime");
+  // weather switched on with a city already set: its forecast comes now, not at the next poll
+  if (reply.settings.show.weather && !cfg.show.weather) await refreshWeather($);
+  redrawDeck($);
+  return { text: reply.text };
+}
+
+/** The settings and the language a reply was given under: the Deck tab shows it only while they stay as they were. */
+const noteKey = (cfg: DeckSettings, locale: Locale): string => locale + JSON.stringify(serializeSettings(cfg));
+
+/** Records the reply a Deck tab control got, to show under that control until the settings or the language change. */
+async function noteDeck($: EngineInterface, verb: string, reply: string): Promise<void> {
+  const locale = (await getSettings($)).locale;
+  deckNote = { verb, text: reply, key: noteKey(await read($, deckSettings), locale) };
+  redrawDeck($);
+}
+
+/** A Deck command run from the dashboard: its reply becomes the note the Deck tab shows under that control. */
+async function runDeckFromTab($: EngineInterface, args: string): Promise<void> {
+  const { verb } = deckWords(args);
+  const reply = await runDeckCommand($, args).catch((err: unknown) => ({ text: String((err as Error)?.message ?? err) }));
+  // a command with no words of its own (the style picker opening) leaves the other controls' note as it was
+  if (reply.text) await noteDeck($, verb, reply.text);
+  else redrawDeck($);
+}
+
+/** A style chosen in the Deck tab's Select: the picker's setter, with the reply `/deck style <name>` gives. */
+async function setDeckStyleFromTab($: EngineInterface, surface: Surface, name: string): Promise<void> {
+  await setDeckStyle($, surface, name);
+  const locale = (await getSettings($)).locale;
+  await noteDeck($, "style", text("deck.reply.style", locale, { name, surfaces: text(surface === "desktop" ? "deck.surface.desktop" : "deck.surface.cli", locale) }));
+}
+
+/**
+ * What the dashboard's Deck tab shows now. It reads the revision, so a Deck change redraws the tab, but it
+ * is made only when that tab is open and never marks the band as drawn, which would keep its animation running.
+ */
+async function deckPanelOf($: EngineInterface, locale: Locale): Promise<DeckPanel> {
+  await read($, deckRevision);
+  const now = await $.clock.now();
+  const cfg = await read($, deckSettings);
+  const open = await isDeckOpen($);
+  const rows = collectRows(deckOf(now), cfg.show, now, locale);
+  return {
+    settings: cfg,
+    open,
+    status: deckStatusText(rows, cfg, petOf(now).act, DECK_VERSION, locale, open),
+    version: DECK_VERSION,
+    note: deckNote && deckNote.key === noteKey(cfg, locale) ? { verb: deckNote.verb, text: deckNote.text } : null,
+    draft: deckDraft,
+  };
+}
+
+/**
+ * The band's inputs for this draw: the rows the settings show, how many of them a fold has drawn so far,
+ * the extras, and the pet. A pane draws every row at once (folding false).
+ */
+async function deckBandOf($: EngineInterface, cols: number, surface: Surface, maxRows?: number, folding = true): Promise<DeckBand> {
+  await read($, deckRevision);
+  const config = await getSettings($);
+  const cfg = await read($, deckSettings);
+  const now = await $.clock.now();
+  if (surface === "terminal") deckShownTerminalAt = now;
+  else deckShownDesktopAt = now;
+  const s = deckOf(now);
+  const rows = collectRows(s, cfg.show, now, config.locale);
+  return {
+    rows,
+    ...(folding && deckFold ? { shown: foldCount(rows.length, now) } : {}),
+    ...(maxRows !== undefined ? { maxRows } : {}),
+    settings: cfg,
+    expanded: await read($, deckExpanded),
+    locale: config.locale,
+    cols,
+    now,
+    caches: deckCaches,
+    routeHist: s.routeHist,
+    spend: s.spend,
+    extras: [
+      cfg.show.clock ? (surface === "desktop" ? "◷ " : "") + clockText(new Date(now)) : "",
+      cfg.show.weather ? weatherText(s.weather, cfg.city, surface === "desktop", config.locale) : "",
+    ].filter(Boolean),
+    pet: petOf(now),
+    toggle: () => void toggleDeck($),
+    dismiss: (row) => void dismissDeckRow($, row),
+    foldAge: folding && deckFold?.dir === "open" ? foldAgeOf(deckFold, now) : null,
+  };
+}
+
+/** Remembers where a terminal band draws the pet's lane, so the lane can be repainted there without drawing the band again. */
+function noteLane(requestId: string, band: DeckBand, surface: Surface): void {
+  if (surface !== "terminal" || !band.settings.show.pet) {
+    deckLanes.delete(requestId);
+    return;
+  }
+  const columns = petLaneColumns(band.cols);
+  deckLanes.set(requestId, { columns, cells: cellsOf(petLaneCells(band.pet, band.now, columns)), seenAt: band.now });
+}
+
+/** The surface a Deck view is drawn for: the terminal's look, or the Desktop look for every other surface. */
+const deckSurface = (surface: string): Surface => (surface === "terminal" ? "terminal" : "desktop");
+
+/** One surface's bar style: a key press in the style picker and the dashboard's style Select both land here. */
+async function setDeckStyle($: EngineInterface, surface: Surface, name: string): Promise<void> {
+  const next = await read($, deckSettings);
+  await saveDeckSettings($, { ...next, style: surface === "desktop" ? { ...next.style, desktop: name } : { ...next.style, terminal: name } });
+  redrawDeck($);
+}
+
+/** The style picker: every style drawn with the live row, one key each. */
+function stylePicker(
+  $: EngineInterface,
+  els: ElementTable,
+  surface: Surface,
+  cfg: DeckSettings,
+  row: DeckRow,
+  locale: Locale,
+  cols: number,
+  nowMs: number,
+) {
+  const { Box, Text, Button } = els;
+  const desktop = surface === "desktop";
+  const { Svg } = els as ElementTable<"desktop">;
+  const list: readonly string[] = desktop ? DESKTOP_STYLES : TERMINAL_STYLES;
+  const names: Record<string, string> = desktop ? DESKTOP_STYLE_NAMES : TERMINAL_STYLE_NAMES;
+  const current = desktop ? cfg.style.desktop : cfg.style.terminal;
+  const pw = Math.max(200, Math.min(420, cols * 8 - 160));
+  const lines = list.map((name, i) => {
+    const track = toTrackRow({ ...row, id: "pick-" + name });
+    const preview = desktop ? (
+      <Svg
+        alt={names[name] + " style"}
+        width={pw}
+        height={TRACK_H}
+        source={`<svg xmlns="http://www.w3.org/2000/svg" width="${pw}" height="${TRACK_H}">${desktopTrack(name, track, pw, nowMs, new Map())}</svg>`}
+      />
+    ) : (
+      <Box flexDirection="row">{runs(Text, terminalBar(name, track, Math.max(24, Math.min(48, cols - 26)), deckFrame))}</Box>
+    );
+    return (
+      <Box key={"style-row-" + name} flexDirection="row" columnGap={2} alignItems="center">
+        <Box width={14} flexShrink={0}>
+          <Button
+            key={"style-" + name}
+            label={names[name] ?? name}
+            plain
+            hotkey={String(i + 1)}
+            onPress={() => setDeckStyle($, surface, name)}
+          />
+        </Box>
+        {preview}
+        <Text color={name === current ? STYLE.ok.fill : DIM}>{name === current ? "← now" : " "}</Text>
+      </Box>
+    );
+  });
+  return (
+    <Box flexDirection="column" gap={desktop ? 1 : 0}>
+      {lines}
+      <Text color={DIM}>{text("deck.picker.hint", locale, { keys: list.map((_, i) => i + 1).join("/") })}</Text>
+    </Box>
+  );
 }
 
 /** Restore persisted choices after a session reset such as /clear, /resume, or /branch. */
@@ -629,6 +1260,7 @@ export function normalizeTab(value: unknown): JevTab {
     case "agents":
     case "logs":
     case "configuration":
+    case "deck":
       return value;
     case "flow":
       return "live";
@@ -930,6 +1562,19 @@ function actions($: EngineInterface, scrollKey = ""): Actions {
     removeAgent: (n) => void removeRuns($, (run) => run.n === n),
     clearAgents: () => void removeRuns($, () => true),
     jevLive: () => void openPane($, "live"),
+    deck: (args) => void runDeckFromTab($, args),
+    deckStyle: (surface, name) => void setDeckStyleFromTab($, surface, name),
+    deckType: (value) => {
+      deckDraft = value;
+      redrawDeck($);
+    },
+    deckCity: (value) => {
+      const query = value.trim();
+      if (!query) return;
+      // Enter carries the field as it stands, and it stays there: a city that is not found can be corrected
+      deckDraft = value;
+      void runDeckFromTab($, `city ${query}`);
+    },
   };
 }
 
@@ -966,6 +1611,7 @@ async function view($: EngineInterface, width: number, rows: number, surface: st
     surface,
     meta: text("ui.meta", config.locale, { provider: PROVIDERS[config.provider].label, model: config.jevModel, confidence: formatNumber(config.minConfidence, config.locale, 2), source: text(`source.${config.keySource}`, config.locale) }),
     key: { source: config.keySource, tail: config.apiKey ? config.apiKey.slice(-4) : "", provider: config.provider },
+    deck: null,
   };
 }
 
@@ -981,6 +1627,11 @@ export const register: Register = (on, given) => {
   mainModel = undefined;
   settings = undefined;
   draftKey = "";
+  deckNote = null;
+  deckDraft = "";
+  deckLanes.clear();
+  blitBroken = false;
+  deckShownTerminalAt = deckShownDesktopAt = paneShownAt = rowsRedrawnAt = Number.NEGATIVE_INFINITY;
   sessionKey = "";
   sessionProvider = undefined;
   // The module unloading ended the follower: a reload names a channel of its own.
@@ -991,19 +1642,43 @@ export const register: Register = (on, given) => {
   siftSeen.clear();
 
   on("session.start", async ($, e, next) => {
-    sessionId = (await $.session.id()).slice(0, 8);
+    deckSessionId = await $.session.id();
+    sessionId = deckSessionId.slice(0, 8);
     const config = await getSettings($);
     await restoreStoredState($);
     mainModel = await $.session.model();
     await setLive($, { model: mainModel });
     const advisor = await advisorInfo($);
     await updateTrace($, (s) => setAdvisorInfo(s, advisor));
+    // Deck's preferences, usage history and this session's spend: the store is read once, here.
+    const now = await $.clock.now();
+    const savedDeck = await $.store.get(STORE_DECK).catch(() => undefined);
+    const savedSpend = await $.store.get(STORE_DECK_SPEND).catch(() => undefined);
+    const savedHist = await $.store.get(STORE_DECK_HIST).catch(() => undefined);
+    deck = createDeckState(now, deckSessionId, new Date(now));
+    deck.spend = spendFrom(fieldOf(savedSpend, "spend"), new Date(now));
+    deck.costSeen = costSeenFrom(savedSpend, deckSessionId);
+    deck.hist = histFrom(savedHist, now);
+    deck.sessionModel = mainModel ?? "";
+    const deckConfig = parseSettings(savedDeck);
+    await update($, deckSettings, () => deckConfig);
+    await update($, deckExpanded, () => deckConfig.open);
+    // The session's usage and the city's weather now, then the band's clock.
+    await refreshUsage($);
+    void refreshWeather($);
+    startDeckClock($);
     // "Idle" and the 5-minute windows move with the clock, not only with events.
     $.clock.every(1000, () => $.ui.invalidate("ui.render"));
     await $.command.register({
       name: "jev",
       description: text("ui.command.description", config.locale),
       argumentHint: text("ui.command.argumentHint", config.locale),
+      immediate: true,
+    });
+    await $.command.register({
+      name: "deck",
+      description: text("deck.command.description", config.locale),
+      argumentHint: text("deck.command.argumentHint", config.locale),
       immediate: true,
     });
     return next(e);
@@ -1019,6 +1694,7 @@ export const register: Register = (on, given) => {
 
   on("classic.PostModelSwitch", async ($, e, next) => {
     mainModel = e.to_model;
+    deckOf(await $.clock.now()).sessionModel = e.to_model;
     await setLive($, { model: e.to_model });
     if (e.from_model !== e.to_model) {
       const locale = (await getSettings($)).locale;
@@ -1034,6 +1710,7 @@ export const register: Register = (on, given) => {
   // Record prompt timing and whether the engine accepted it; Jev does not plan main turns.
   on("prompt.submit", async ($, e, next) => {
     const submittedAt = await $.clock.now();
+    promptSubmitted(deckOf(submittedAt), e.text, submittedAt);
     let messageId = "";
     await updateTrace($, (s) => {
       const [nextState, id] = submitPrompt(s, { text: e.text, at: submittedAt, origin: e.origin.kind, ...(e.turnId ? { during: e.turnId } : {}) });
@@ -1058,11 +1735,21 @@ export const register: Register = (on, given) => {
     // The run opens here, tied to the idle message whose submission is still entering, if any.
     const at = await $.clock.now();
     await updateTrace($, (s) => startTurn(s, e.turnId, e.text, at));
+    turnStarted(deckOf(at), e.text, at, locale);
+    redrawDeck($);
     return next(e);
   });
 
   on("turn.complete", async ($, e, next) => {
     const locale = (await getSettings($)).locale;
+    // Deck first: a subagent's turn ends its row, and a main turn ends its activity line.
+    const deckNow = await $.clock.now();
+    const deckState = deckOf(deckNow);
+    if (e.agentId && deckState.agents.has(e.agentId)) {
+      finishAgent(deckState, e.agentId, e.isAborted ? "stopped" : e.reason === "answer" ? "done" : "failed", deckNow, locale);
+      redrawDeck($);
+    }
+    if (!e.agentId) turnEnded(deckState, deckNow);
     const seconds = formatDuration(e.durationMs, locale);
     const usage = e.usage;
     const inputComplete = typeof usage?.input_tokens === "number"
@@ -1126,8 +1813,10 @@ export const register: Register = (on, given) => {
 
   // Log every native tool call and its result; advice never interrupts the tool flow.
   on("tool.call", async ($, e, next) => {
+    // Deck tracks every call, another plugin's own included; the Jev path below is Claude's calls only.
+    const deckCall = await deckCallOpen($, e);
     // Another plugin's own call ($.tool.call) is no step of Claude's.
-    if (!e.tool_use_id || next.origin.plugin !== "engine") return next(e);
+    if (!e.tool_use_id || next.origin.plugin !== "engine") return deckCallClose($, deckCall, next(e));
     const locale = (await getSettings($)).locale;
     const who = actor(e.agentId);
     const summary = toolSummary(e.tool, e as unknown as Record<string, unknown>);
@@ -1148,9 +1837,9 @@ export const register: Register = (on, given) => {
     if (!e.agentId) await setLive($, { activity: text("feed.activity.running", locale, { activity: short(summary, 40) }) });
     else await updateRun($, e.agentId, (run) => ({ ...run, tools: run.tools + 1, activity: text("feed.activity.agentTool", locale, { activity: short(summary, 60) }) }));
     // The follower reads the channel every 100 ms: the command's last calls still count where it ran.
-    const result = await next(e).finally(() => {
+    const result = await deckCallClose($, deckCall, next(e).finally(() => {
       if (sift) $.clock.after(1000, () => siftRuns.delete(toolUseId));
-    });
+    }));
     // Reporting or routing may fail after a tool ran; return its result rather than run it again.
     try {
       const endedAt = await $.clock.now();
@@ -1186,6 +1875,7 @@ export const register: Register = (on, given) => {
     if (e.workflow) {
       // Not planned and not on the Agents tab, but still a subagent of the run.
       const result = await next(e);
+      await deckSpawnStarted($, e, result, (await getSettings($)).locale);
       if (result.deny === undefined) await traceSpawn($, e, result.agentId ?? e.tool_use_id, result.model).catch(() => undefined);
       return result;
     }
@@ -1198,6 +1888,7 @@ export const register: Register = (on, given) => {
     const current = await activeFeatures($, config);
     const plan = featureGate(current, "agents") ? {} : proposed;
     const result = await next(plan.model ? { ...e, model: plan.model.value } : e);
+    await deckSpawnStarted($, e, result, config.locale);
     if (result.deny !== undefined) {
       await log($, "claude", "agent", "warn", text("feed.subagent.denied", config.locale, { type: e.subagentType, message: short(result.deny, 80) }));
       return result;
@@ -1243,6 +1934,8 @@ export const register: Register = (on, given) => {
 
   // Each model request: apply Jev's model and effort, then meter it.
   on("turn.step", async function* ($, e, next) {
+    // Deck's route row starts from the main loop's first request as Claude sent it, before Jev sizes it.
+    if (!e.agentId && e.index === 0) deckOf(await $.clock.now()).seen = { model: e.model, effort: typeof e.effort === "string" ? e.effort : "" };
     const config = await getSettings($);
     const locale = config.locale;
     const startedAt = await $.clock.now();
@@ -1380,6 +2073,9 @@ export const register: Register = (on, given) => {
     return result;
   });
 
+  // /deck: the band above the prompt; the dashboard's Deck tab runs the same commands through runDeckCommand
+  on("command.run", { command: "deck" }, ($, e) => runDeckCommand($, e.args));
+
   on("command.run", { command: "jev" }, async ($, e) => {
     const locale = (await getSettings($)).locale;
     const [verb = "", arg = "", value = ""] = e.args.trim().toLowerCase().split(/\s+/);
@@ -1395,6 +2091,7 @@ export const register: Register = (on, given) => {
       flow: "live",
       features: "configuration",
       configuration: "configuration",
+      deck: "deck",
       reasons: "logs",
       logs: "logs",
       log: "logs",
@@ -1459,7 +2156,10 @@ export const register: Register = (on, given) => {
     const rows = e.props.scroll?.bodyRows ?? e.viewport?.rows ?? 30;
     const key = await scrollKeyOf($, PANE);
     const shown = await view($, width, rows, e.surface, key);
-    return renderPane(els, shown, actions($, key));
+    paneShownAt = shown.now;
+    // Deck's state is read for its own tab only: no other tab, band or agent pane subscribes to it
+    const panel = shown.tab === "deck" ? await deckPanelOf($, shown.locale) : null;
+    return renderPane(els, { ...shown, deck: panel }, actions($, key));
   });
 
   // Each subagent's own live pane, `jev-agent-<n>`: its task, its numbers and its lines only.
@@ -1494,9 +2194,145 @@ export const register: Register = (on, given) => {
     return {};
   }).catch((_$, e, next) => next(e));
 
+  // --- Deck's hooks: events no pingo hook above takes; the events pingo already hooks carry Deck's calls inside them ---
+
+  // a session cleared empties the rows; the rest of the state stays
+  on("session.end", async ($, e, next) => {
+    if (e.reason === "clear") {
+      clearRows(deckOf(await $.clock.now()));
+      redrawDeck($);
+    }
+    return next(e);
+  });
+
+  // a router's own status and log lines: Deck reads them as the route; while quiet is on, they stay off the screen
+  on("ui.status", async ($, e, next) => {
+    const now = await $.clock.now();
+    if (typeof e.text === "string" && readRouteStatus(deckOf(now), e.text, now)) {
+      redrawDeck($);
+      const cfg = await read($, deckSettings);
+      if (cfg.quiet && cfg.show.route) return { value: undefined };
+    }
+    return next(e);
+  }).catch((_$, e, next) => next(e));
+
+  on("ui.log", async ($, e, next) => {
+    const text = String(e.text ?? "");
+    if (text.startsWith("[jev-model-router]")) {
+      const now = await $.clock.now();
+      if (readRouteLog(deckOf(now), text, now)) redrawDeck($);
+      const cfg = await read($, deckSettings);
+      if (cfg.quiet && cfg.show.route) return next({ ...e, to: "debug" });
+    }
+    return next(e);
+  }).catch((_$, e, next) => next(e));
+
+  // the session's own measure: the context, the limits and the cost it reports
+  on("session.measure", async ($, e, next) => {
+    const now = await $.clock.now();
+    const cfg = await read($, deckSettings);
+    const added = takeUsage(deckOf(now), { context: contextOf(e.context), rateLimits: e.rateLimits, cost: e.cost ?? null }, now, cfg.cost, true);
+    await noteUsage($, now);
+    if (added > 0) await saveDeckSpend($, now);
+    redrawDeck($);
+    return next(e);
+  }).catch((_$, e, next) => next(e));
+
+  // a reply that ends in a question: the live bar waits for the person
+  on("classic.Stop", async ($, e, next) => {
+    const result = await next(e);
+    try {
+      if (/\?\s*$/.test(e.last_assistant_message ?? "") && askedQuestion(deckOf(await $.clock.now()))) redrawDeck($);
+    } catch {}
+    return result;
+  }).catch((_$, e, next) => next(e));
+
+  // a subagent the runtime reports as stopped
+  on("classic.SubagentStop", async ($, e, next) => {
+    const now = await $.clock.now();
+    const s = deckOf(now);
+    if (s.agents.has(e.agent_id)) {
+      finishAgent(s, e.agent_id, "done", now, (await getSettings($)).locale);
+      redrawDeck($);
+    }
+    return next(e);
+  }).catch((_$, e, next) => next(e));
+
+  on("classic.TaskCreated", async ($, e, next) => {
+    const now = await $.clock.now();
+    taskCreated(deckOf(now), String(e.task_id), e.task_subject, now, (await getSettings($)).locale);
+    redrawDeck($);
+    return next(e);
+  }).catch((_$, e, next) => next(e));
+
+  on("classic.TaskCompleted", async ($, e, next) => {
+    const now = await $.clock.now();
+    taskCompleted(deckOf(now), String(e.task_id), now, (await getSettings($)).locale);
+    redrawDeck($);
+    return next(e);
+  }).catch((_$, e, next) => next(e));
+
+  // a permission prompt held past its delay: the bar turns to a question, and the pet alerts
+  on("tool.check", async ($, e, next) => {
+    const verdict = await next(e);
+    try {
+      if (verdict && verdict.decision === "ask") {
+        const now = await $.clock.now();
+        const useId = e.tool_use_id;
+        const key = e.agentId ?? (useId ? deckOf(now).inFlight.get(useId) : undefined) ?? "main";
+        $.clock.after(ASK_DELAY_MS, () => {
+          const later = deckOf(now);
+          if (useId && !later.inFlight.has(useId)) return;
+          markWaiting(later, key);
+          redrawDeck($);
+        });
+      }
+    } catch {}
+    return verdict;
+  }).catch((_$, e, next) => next(e));
+
+  // the footer's Deck button: the count of live bars, and a click opens or shuts the band
+  on("ui.render", { component: "SessionMode" }, async ($, e, next) => {
+    await read($, deckRevision);
+    const { Box, Button } = $.ui.resolve(e);
+    const below = await next(e);
+    const now = await $.clock.now();
+    const locale = (await getSettings($)).locale;
+    const count = collectRows(deckOf(now), (await read($, deckSettings)).show, now, locale).filter((r) => r.kind === "bar").length;
+    const open = await isDeckOpen($);
+    return (
+      <Box flexDirection="row" alignItems="center" gap={1}>
+        <Button key="deck-footer" label={count ? `Deck ${count}` : "Deck"} dimColor={!open} onPress={() => void toggleDeck($)} />
+        {below}
+      </Box>
+    );
+  });
+
+  // the style picker (/deck style): every style drawn with the live row, one key each
+  on("ui.render", { component: "Pane", requestId: "deck-style" }, async ($, e) => {
+    await read($, deckRevision);
+    const now = await $.clock.now();
+    const locale = (await getSettings($)).locale;
+    const cfg = await read($, deckSettings);
+    const row = collectRows(deckOf(now), cfg.show, now, locale).find((r) => r.kind === "bar") ?? sampleRow(locale);
+    return stylePicker($, $.ui.resolve(e), deckSurface(e.surface), cfg, row, locale, Math.max(40, e.props.bodyColumns ?? 80), now);
+  });
+
+  // the band as a pane of its own (/deck panel): expanded, every row at once
+  on("ui.render", { component: "Pane", requestId: "deck-panel" }, async ($, e) => {
+    const surface = deckSurface(e.surface);
+    const band = await deckBandOf($, Math.max(40, e.props.bodyColumns ?? 100), surface, undefined, false);
+    noteLane(e.requestId, band, surface);
+    return renderDeck($.ui.resolve(e), { ...band, expanded: true }, surface);
+  });
+
   on("ui.render", { component: "AbovePrompt" }, async ($, e, next) => {
     if (e.props.hasSurvey) return next(e);
     const els = $.ui.resolve(e);
-    return renderBand(els, await view($, e.props.bodyColumns ?? 80, 2, e.surface));
+    const cols = e.props.bodyColumns ?? 80;
+    const surface = deckSurface(e.surface);
+    const band = await deckBandOf($, cols, surface, e.props.maxRows);
+    noteLane(e.requestId, band, surface);
+    return renderAbove(els, await view($, cols, 2, e.surface), band, surface);
   });
 };

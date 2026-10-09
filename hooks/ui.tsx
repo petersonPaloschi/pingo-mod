@@ -30,11 +30,16 @@ import { formatAge, formatClock, formatCompact, formatDecimal, formatDuration, f
 import { displayWidth, rowsOf } from "./layout.ts";
 import { brailleFrame, MOODS, pingoSvg, type Mood } from "./mascots/pingo.ts";
 import { AGENT_MASCOTS, isMascot, MASCOT_ORDER } from "./mascots/agents.ts";
+import { renderDeck, type DeckBand, type Surface } from "./deck/band.tsx";
+import { COLLAPSED, SECTIONS, SIZES, type DeckSettings } from "./deck/settings.ts";
+import { DESKTOP_STYLE_NAMES, DESKTOP_STYLES } from "./deck/styles-desktop.ts";
+import { TERMINAL_STYLE_NAMES, TERMINAL_STYLES } from "./deck/styles-terminal.ts";
+import { deckHelp } from "./deck/wire.ts";
 
 /** The pane needs Select and Input, which the terminal and the desktop app draw. */
 export type Els = ElementTable<"terminal" | "desktop">;
 
-/** The six destinations kept visible in the header, split across two rows. */
+/** The seven destinations kept visible in the header, split across two rows. */
 export const TABS: readonly (readonly (readonly [JevTab, string, string])[])[] = [
   [
     ["overview", "ui.tab.overview", "1"],
@@ -45,6 +50,7 @@ export const TABS: readonly (readonly (readonly [JevTab, string, string])[])[] =
     ["agents", "ui.tab.agents", "4"],
     ["logs", "ui.tab.logs", "5"],
     ["configuration", "ui.tab.configuration", "6"],
+    ["deck", "ui.tab.deck", "7"],
   ],
 ];
 
@@ -72,6 +78,20 @@ const CATEGORY_DOT: Record<Category, [glyph: string, color: number]> = {
   passthrough: ["○", DOT.dim],
   failed: ["×", DOT.fail],
 };
+
+/** What the Deck tab shows: Deck's settings as saved, how its band stands, and the last reply to a control. */
+export interface DeckPanel {
+  settings: DeckSettings;
+  /** The band is expanded, or opening. */
+  open: boolean;
+  /** The words `/deck status` prints, and the version `/deck version` names. */
+  status: string;
+  version: string;
+  /** The last reply to a control, with the command word that earned it. */
+  note: { verb: string; text: string } | null;
+  /** The city being typed. */
+  draft: string;
+}
 
 export interface View {
   locale: Locale;
@@ -103,6 +123,8 @@ export interface View {
   fixed: boolean;
   /** Where the key in use comes from, its last four characters, and the provider in use. */
   key: { source: string; tail: string; provider: string };
+  /** The Deck tab's data, made only when that tab is open: the other tabs and the band never read Deck's state. */
+  deck: DeckPanel | null;
 }
 
 export interface Actions {
@@ -130,6 +152,13 @@ export interface Actions {
   forgetKey: () => void;
   /** How far the body can scroll as drawn, and whether it counts from the newest line up. */
   layout: (max: number, fromEnd: boolean) => void;
+  /** Runs one `/deck` command line, as it is typed after `/deck`; the reply shows in the Deck tab. */
+  deck: (args: string) => void;
+  /** Sets one surface's bar style, as the style picker does. */
+  deckStyle: (surface: "terminal" | "desktop", name: string) => void;
+  /** The city field: each change, and Enter. */
+  deckType: (value: string) => void;
+  deckCity: (value: string) => void;
 }
 
 const fit = (text: string, width: number) => (text.length > width ? text.slice(0, Math.max(0, width - 1)) + "…" : text.padEnd(width));
@@ -279,7 +308,8 @@ function pingoArt(els: Els, view: View, mood: Mood) {
   }
   if (view.surface === "desktop" && "Svg" in els) {
     const { Svg } = els as ElementTable<"desktop">;
-    return <Svg source={pingoSvg(mood, view.now / 1000)} alt={`Pingo, ${text(`mascot.mood.${mood}` as LocaleKey, view.locale)}`} />;
+    // one frame a second: the pane is drawn about that often, and a frame is kept for as long as its second lasts
+    return <Svg source={pingoSvg(mood, Math.floor(view.now / 1000))} alt={`Pingo, ${text(`mascot.mood.${mood}` as LocaleKey, view.locale)}`} />;
   }
   return null;
 }
@@ -722,6 +752,150 @@ function configurationView(els: Els, view: View, act: Actions) {
   );
 }
 
+/**
+ * The Deck tab: every /deck command as a control, each with the command it runs beneath it. A control
+ * sends its command line through act.deck, so the tab and the slash command are one code path.
+ */
+function deckView(els: Els, view: View, act: Actions) {
+  const { Box, Text, Button, Select, Input } = els;
+  const { locale, deck } = view;
+  if (!deck) return <Text color={INK.faint} wrap="wrap">{text("ui.deck.intro", locale)}</Text>;
+  const { settings } = deck;
+  // a command's help line, its alignment padding folded into a dash
+  const tip = (key: LocaleKey) => <Text color={INK.faint} wrap="wrap">{deckHelp(key, settings, locale).replace(/ {2,}/, " — ")}</Text>;
+  // the reply a control got, under the section that owns the command
+  const reply = (...verbs: string[]) =>
+    deck.note && verbs.includes(deck.note.verb) ? (
+      <Text bold color={INK.ink} wrap="wrap">{`● ${deck.note.text}`}</Text>
+    ) : null;
+  // an on/off setting as a toggle: ● when on, a dim ○ when off; pressing it sends the opposite
+  const toggle = (key: string, on: boolean, label: string, command: string) => (
+    <Button key={key} label={`${on ? "●" : "○"} ${label}`} plain {...(on ? {} : { dimColor: true })} onPress={() => act.deck(`${command} ${on ? "off" : "on"}`)} />
+  );
+  const choices = (names: Record<string, string>, list: readonly string[]) => list.map((value) => ({ value, label: names[value] ?? value }));
+  return (
+    <Box flexDirection="column" rowGap={1}>
+      <Text color={INK.dim} wrap="wrap">{text("ui.deck.intro", locale)}</Text>
+      <Box flexDirection="column">
+        {section(els, text("ui.deck.band", locale))}
+        <Box flexDirection="row">
+          <Button
+            key="deck-band"
+            label={`${deck.open ? "●" : "○"} ${text(deck.open ? "ui.deck.bandOpen" : "ui.deck.bandShut", locale, { hotkey: "e" })}`}
+            hotkey="e"
+            onPress={() => act.deck(deck.open ? "collapse" : "expand")}
+          />
+        </Box>
+        {tip("deck.help.toggle")}
+        {tip("deck.help.expand")}
+        <Select
+          key="deck-look"
+          label={text("ui.deck.look", locale)}
+          value={settings.collapsed}
+          options={COLLAPSED.map((value) => ({ value, label: text(`ui.deck.look.${value}`, locale) }))}
+          onSelect={(value) => act.deck(`collapsed ${value}`)}
+        />
+        {tip("deck.help.collapsed")}
+        <Select
+          key="deck-size"
+          label={text("ui.deck.size", locale)}
+          value={settings.size}
+          options={SIZES.map((value) => ({ value, label: text(`ui.deck.size.${value}`, locale) }))}
+          onSelect={(value) => act.deck(`size ${value}`)}
+        />
+        {tip("deck.help.size")}
+        {reply("", "expand", "collapse", "collapsed", "size")}
+      </Box>
+      <Box flexDirection="column">
+        {section(els, text("ui.deck.style", locale))}
+        <Select
+          key="deck-style-cli"
+          label={text("ui.deck.styleCli", locale)}
+          value={settings.style.terminal}
+          options={choices(TERMINAL_STYLE_NAMES, TERMINAL_STYLES)}
+          onSelect={(value) => act.deckStyle("terminal", value)}
+        />
+        <Select
+          key="deck-style-desktop"
+          label={text("ui.deck.styleDesktop", locale)}
+          value={settings.style.desktop}
+          options={choices(DESKTOP_STYLE_NAMES, DESKTOP_STYLES)}
+          onSelect={(value) => act.deckStyle("desktop", value)}
+        />
+        <Text color={INK.faint} wrap="wrap">{text("ui.deck.styleNote", locale)}</Text>
+        <Box flexDirection="row">
+          <Button key="deck-style-pick" label={text("ui.deck.stylePick", locale, { hotkey: "s" })} hotkey="s" onPress={() => act.deck("style")} />
+        </Box>
+        {tip("deck.help.style")}
+        {tip("deck.help.styleName")}
+        {reply("style")}
+      </Box>
+      <Box flexDirection="column">
+        {section(els, text("ui.deck.show", locale))}
+        <Box flexDirection="row" flexWrap="wrap" columnGap={2}>
+          {SECTIONS.map((id) => toggle(`deck-show-${id}`, settings.show[id], text(`deck.section.${id}`, locale), id))}
+        </Box>
+        <Box flexDirection="row" flexWrap="wrap" columnGap={2}>
+          <Button key="deck-all-on" label={text("ui.deck.showAll", locale)} plain onPress={() => act.deck("all on")} />
+          <Button key="deck-all-off" label={text("ui.deck.hideAll", locale)} plain dimColor onPress={() => act.deck("all off")} />
+        </Box>
+        {tip("deck.help.section")}
+        {reply("all", ...SECTIONS)}
+      </Box>
+      <Box flexDirection="column">
+        {section(els, text("ui.deck.extras", locale))}
+        <Box flexDirection="row" flexWrap="wrap" columnGap={2}>
+          {toggle("deck-auto", settings.auto, text("ui.deck.auto", locale), "auto")}
+          {toggle("deck-sound", settings.sound, text("ui.deck.sound", locale), "sound")}
+          {toggle("deck-quiet", settings.quiet, text("ui.deck.quiet", locale), "quiet")}
+          {toggle("deck-cost", settings.cost, text("ui.deck.cost", locale), "cost")}
+        </Box>
+        {tip("deck.help.auto")}
+        {tip("deck.help.sound")}
+        {tip("deck.help.quiet")}
+        {tip("deck.help.cost")}
+        {reply("auto", "sound", "quiet", "cost")}
+      </Box>
+      <Box flexDirection="column">
+        {section(els, text("ui.deck.city", locale))}
+        <Text color={settings.city ? INK.ink : INK.dim} wrap="wrap">
+          {settings.city ? text("ui.deck.cityNow", locale, { city: settings.city.name }) : text("ui.deck.cityNone", locale)}
+        </Text>
+        <Input
+          key="deck-city"
+          value={deck.draft}
+          placeholder={text("ui.deck.cityPlaceholder", locale)}
+          submitLabel={text("ui.deck.citySet", locale)}
+          onInput={(value) => act.deckType(value)}
+          onSubmit={(value) => act.deckCity(value)}
+        />
+        {tip("deck.help.city")}
+        {reply("city")}
+      </Box>
+      <Box flexDirection="column">
+        {section(els, text("ui.deck.tools", locale))}
+        <Box flexDirection="row" flexWrap="wrap" columnGap={2}>
+          <Button key="deck-panel-open" label={text("ui.deck.panelOpen", locale, { hotkey: "p" })} hotkey="p" onPress={() => act.deck("panel")} />
+          <Button key="deck-panel-close" label={text("ui.deck.panelClose", locale)} onPress={() => act.deck("panel off")} />
+          <Button key="deck-demo" label={text("ui.deck.demo", locale)} onPress={() => act.deck("demo")} />
+          <Button key="deck-clear" label={text("ui.deck.clear", locale)} onPress={() => act.deck("clear")} />
+        </Box>
+        {tip("deck.help.panel")}
+        {tip("deck.help.demo")}
+        {tip("deck.help.clear")}
+        {reply("panel", "demo", "clear")}
+      </Box>
+      <Box flexDirection="column">
+        {section(els, text("ui.deck.status", locale))}
+        <Text color={INK.ink} wrap="wrap">{deck.status}</Text>
+        {tip("deck.help.status")}
+        <Text color={INK.faint} wrap="wrap">{text("deck.reply.version", locale, { version: deck.version })}</Text>
+        {tip("deck.help.version")}
+      </Box>
+    </Box>
+  );
+}
+
 const TONE_INK: Record<FeedTone, string> = {
   info: INK.ink,
   good: INK.route,
@@ -941,7 +1115,7 @@ function liveView(els: Els, view: View, act: Actions, rows: number) {
 }
 
 /** Jev calls observed in this session; token counts stay unknown when a response did not report them. */
-function jevTally(trace: TraceState, events: readonly RouteEvent[], now: number) {
+function jevTally(trace: TraceState, events: readonly RouteEvent[]) {
   const consults = traceConsults(trace);
   if (consults.length) {
     const reportedTokens = consults.flatMap((consult) => consult.usage?.input === undefined ? [] : [consult.usage.input]);
@@ -974,7 +1148,7 @@ function liveTop(els: Els, view: View, act: Actions) {
   const running = view.agents.filter((run) => run.state === "running").length;
   const mood = MOODS[moodOf(view)];
   const now = view.live;
-  const tally = jevTally(view.trace, view.events, view.now);
+  const tally = jevTally(view.trace, view.events);
   return (
     <Box flexDirection="column" flexShrink={0}>
       <Box flexDirection="column" flexShrink={1}>
@@ -1413,7 +1587,24 @@ function tabBody(els: Els, view: View, act: Actions, rows: number) {
               ? logView(els, view)
               : view.tab === "configuration"
                 ? configurationView(els, view, act)
-                : overview(els, view, act);
+                : view.tab === "deck"
+                  ? deckView(els, view, act)
+                  : overview(els, view, act);
+}
+
+/**
+ * Above the prompt: the Jev band, then the Deck band beneath it. A surface Deck does not draw
+ * (neither the terminal nor the desktop) gets the Jev band alone.
+ */
+export function renderAbove(els: ElementTable, view: View, deck: DeckBand | null, surface: string) {
+  const { Box } = els;
+  if (!deck || (surface !== "terminal" && surface !== "desktop")) return renderBand(els, view);
+  return (
+    <Box flexDirection="column">
+      {renderBand(els, view)}
+      {renderDeck(els, deck, surface as Surface)}
+    </Box>
+  );
 }
 
 /** Above the prompt: current status, observed Jev metrics, model, activity, and running agents. */

@@ -25,7 +25,7 @@ export type RouteEvent = {
   jevRaw?: string[];
 };
 
-export type JevTab = "overview" | "live" | "models" | "agents" | "logs" | "configuration";
+export type JevTab = "overview" | "live" | "models" | "agents" | "logs" | "configuration" | "deck";
 
 /**
  * A message as the Live run view records it. Its run is tied only when the engine confirms it: the turn
@@ -316,6 +316,23 @@ declare module "claude-code" {
       agentCount: number;
       flowV2: TraceState;
       scroll: PaneScroll;
+      /** Deck's preferences as shown (hooks/deck/settings.ts DeckSettings); the store keeps the same value across sessions. */
+      deckSettings: {
+        show: Record<"plans" | "agents" | "context" | "limits" | "route" | "pet" | "clock" | "weather", boolean>;
+        style: { terminal: string; desktop: string };
+        open: boolean;
+        auto: boolean;
+        sound: boolean;
+        quiet: boolean;
+        size: "compact" | "roomy";
+        collapsed: "chips" | "text" | "rings";
+        cost: boolean;
+        city: { name: string; lat: number; lon: number } | null;
+      };
+      /** Whether Deck's band is expanded now. */
+      deckExpanded: boolean;
+      /** Counts Deck's changes: the band and its panes read it, so a change redraws them. */
+      deckRevision: number;
     };
   }
 }

@@ -126,47 +126,7 @@ bpy.ops.object.light_add(type='POINT',location=(2,-7,2))
 fill=bpy.context.object;fill.name='LGT_fill';fill.data.energy=90;fill.data.shadow_soft_size=4
 assert len(pts)==700 and scene.camera.name=='CAM_main'
 
-import bpy, bmesh, math
 scene=bpy.context.scene
-bm=bmesh.new()
-bmesh.ops.create_icosphere(bm, subdivisions=1, radius=1)
-unit_v=[tuple(v.co) for v in bm.verts]
-bm.verts.index_update()
-unit_f=[tuple(v.index for v in f.verts) for f in bm.faces]
-bm.free()
-
-def dots(name, points, mats, indexes=None, parent=None):
-    vertices=[]; faces=[]; slots=[]
-    for i,(x,y,z,r) in enumerate(points):
-        offset=len(vertices)
-        vertices.extend([(x+vx*r,y+vy*r,z+vz*r) for vx,vy,vz in unit_v])
-        faces.extend([tuple(offset+j for j in f) for f in unit_f])
-        slots.extend([indexes[i] if indexes else 0]*len(unit_f))
-    mesh=bpy.data.meshes.new(name+'_mesh')
-    mesh.from_pydata(vertices,[],faces)
-    mesh.update()
-    obj=bpy.data.objects.new(name,mesh)
-    scene.collection.objects.link(obj)
-    for mat in mats: mesh.materials.append(mat)
-    for poly,slot in zip(mesh.polygons,slots):
-        poly.material_index=slot
-        poly.use_smooth=True
-    if parent: obj.parent=parent
-    return obj
-
-
-def text(name, body, x, z, size, mat, align='LEFT'):
-    curve=bpy.data.curves.new(name+'_text','FONT')
-    curve.body=body;curve.size=size;curve.align_x=align
-    curve.extrude=.002;curve.bevel_depth=.0005
-    obj=bpy.data.objects.new(name,curve)
-    scene.collection.objects.link(obj)
-    obj.location=(x,-1.55,z)
-    obj.rotation_euler=(math.pi/2,0,0)
-    curve.materials.append(mat)
-    return obj
-
-
 rig=bpy.data.objects['RIG_pingo']
 mats=bpy.data.materials
 moods=['routing','thinking','passthrough','failing','idle','baseline']

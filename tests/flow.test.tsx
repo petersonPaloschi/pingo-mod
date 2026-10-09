@@ -1,12 +1,12 @@
 // The Flow tab: the run record (trace.ts) built from the SDK's events in the orders they come, and
 // the drawing of it (flow.ts), pure and in the pane.
-import type { On, RenderPropsOf } from "claude-code";
+import type { On } from "claude-code";
 import { describe, expect, mock, test, type Engine } from "claude-code/testing";
 
 import type { TraceState } from "../types";
 import { flowLines, flowScene, flowSummary, prettyModel } from "../hooks/flow.ts";
 import { displayWidth } from "../hooks/layout.ts";
-import { step } from "./helpers.ts";
+import { PANE_PROPS as basePaneProps, step } from "./helpers.ts";
 import {
   advisorBlocker,
   agentStart,
@@ -468,12 +468,10 @@ describe("the drawing", () => {
 // --- In the pane ---
 
 const PANE_PROPS = {
-  title: "Jev",
-  isFocused: true,
+  ...basePaneProps,
   bodyColumns: 100,
-  placement: "dock",
-  scroll: { offset: 0, bodyRows: 120, contentRows: 120 },
-} as unknown as RenderPropsOf["Pane"];
+  scroll: { ...basePaneProps.scroll, bodyRows: 120 },
+};
 const ORIGIN = { kind: "composer" } as const;
 const DONE = { input_tokens: 10, output_tokens: 5, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 };
 

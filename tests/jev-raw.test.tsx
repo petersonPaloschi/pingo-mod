@@ -1,15 +1,13 @@
-import type { RenderPropsOf } from "claude-code";
 import { describe, expect, mock, test } from "claude-code/testing";
 
 import { DEFAULT_FEATURES } from "../hooks/core/plan.ts";
+import { PANE_PROPS as basePaneProps } from "./helpers.ts";
 
 const PANE_PROPS = {
-  title: "Jev",
-  isFocused: true,
+  ...basePaneProps,
   bodyColumns: 100,
-  placement: "dock",
-  scroll: { offset: 0, bodyRows: 120, contentRows: 120 },
-} as unknown as RenderPropsOf["Pane"];
+  scroll: { ...basePaneProps.scroll, bodyRows: 120 },
+};
 
 describe("Jev's raw reply", () => {
   test("an unusable agent answer is kept in the Live request log", async ($, on) => {

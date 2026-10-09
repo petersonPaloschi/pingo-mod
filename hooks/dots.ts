@@ -47,21 +47,6 @@ const BITS = [
 export const brailleBit = (x: number, y: number) => BITS[y & 3]![x & 1]!;
 export const brailleChar = (bits: number) => (bits ? String.fromCharCode(0x2800 + bits) : " ");
 
-export const FULL = "⣿";
-export const EMPTY = "⣀";
-
-/** Ten dots of confidence, 0.1 each: "⣿⣿⣿⣿⣿⣿⣿⣿⣀⣀". */
-export function meter(value: number | undefined, count = 10): [string, string] {
-  const full = value === undefined ? 0 : Math.max(0, Math.min(count, Math.round(value * count)));
-  return [FULL.repeat(full), EMPTY.repeat(count - full)];
-}
-
-/** A rail of dots for a share: "●●●●●●●○○○". */
-export function rail(part: number, whole: number, count = 10): [string, string] {
-  const full = whole ? Math.max(0, Math.min(count, Math.round((count * part) / whole))) : 0;
-  return ["●".repeat(full), "○".repeat(count - full)];
-}
-
 /** A run of text in one color: a row is a list of runs. */
 export type Run = [text: string, color: number];
 

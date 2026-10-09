@@ -1,8 +1,8 @@
-// Braille cells, dot meters, the constellation, the Pingo, and lightweight agent identities.
+// Braille cells, the constellation, the Pingo, and lightweight agent identities.
 import { describe, expect, test } from "claude-code/testing";
 
-import { brailleBit, brailleChar, constellation, DOT, meter, rail } from "../hooks/dots.ts";
-import { brailleFrame, brailleText, eyeAt, MOODS, pingoSvg, scene, type Mood } from "../hooks/mascots/pingo.ts";
+import { brailleBit, brailleChar, constellation, DOT } from "../hooks/dots.ts";
+import { brailleFrame, brailleText, eyeAt, MOODS, pingoSvg, type Mood } from "../hooks/mascots/pingo.ts";
 import { AGENT_MASCOTS, MASCOT_ORDER, pickMascot } from "../hooks/mascots/agents.ts";
 
 const ALL_MOODS = Object.keys(MOODS) as Mood[];
@@ -15,13 +15,6 @@ describe("dots", () => {
     for (let y = 0; y < 4; y++) for (let x = 0; x < 2; x++) all |= brailleBit(x, y);
     expect(brailleChar(all)).toBe("⣿");
     expect(brailleChar(0)).toBe(" ");
-  });
-
-  test("the meter gives one full dot per 0.1, the rail one per tenth of the share", () => {
-    expect(meter(0.86)).toEqual(["⣿".repeat(9), "⣀"]);
-    expect(meter(undefined, 5)).toEqual(["", "⣀".repeat(5)]);
-    expect(rail(7, 10)).toEqual(["●".repeat(7), "○".repeat(3)]);
-    expect(rail(0, 0)).toEqual(["", "○".repeat(10)]);
   });
 
   test("the constellation keeps the higher-priority color and draws a ground line", () => {

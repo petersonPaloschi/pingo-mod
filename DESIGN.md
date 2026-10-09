@@ -55,3 +55,11 @@ Speaker names and colors identify authors; no rotating faces are needed. Dense v
 ## Terminal and desktop
 
 The terminal uses braille for Pingo and dot meters; desktop uses SVG when appropriate. Both expose the same controls and readable states. English and Brazilian Portuguese strings live in `hooks/strings/en.ts` and `hooks/strings/pt.ts`. Graphs and shared layout utilities remain independent of removed mascot renderers.
+
+## Deck
+
+The Deck band above the prompt keeps its own visual language: its own state and tier colors, six bar styles, three collapsed looks, a pet, and a progress row for each plan, task, agent, context and limit. The palette, one-visual-unit and tab rules above describe the Jev dashboard; they do not apply inside the band.
+
+Motion is the one deliberate exception to the animation rule. The pet, the open and close fold, and the demo move on purpose. Desktop motion is CSS and SVG animation only, with no script timers. Terminal frames are a pure function of act, time and facing, so a repaint needs no stored animation state. The terminal pet is one Raster as wide as the band, repainted in place by a 150 ms loop that runs only while a band is on screen and asks for no redraw. The terminal rows' own motion redraws the UI every other frame, every fourth while the dashboard is open; desktop rows and pet move by CSS and ask for a redraw only when a scene changes. A hidden or idle Deck requests no frames. The dashboard's own Pingo keeps one frame a second and no timer.
+
+The Pingo mascot is the pet's body. The Deck draws the scene around it: the desk, the alert badge, confetti, sleep marks and dust.

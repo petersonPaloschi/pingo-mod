@@ -1,8 +1,32 @@
-import type { On } from "claude-code";
+import type { On, RenderPropsOf } from "claude-code";
 import { mock } from "claude-code/testing";
 
 import { DEFAULT_FEATURES, type Features } from "../hooks/core/plan.ts";
 import type { Answer, ChoiceAnswer, NoulAnswer, SystemOneRequest } from "../hooks/core/types.ts";
+
+export const PANE_PROPS = {
+  title: "Jev",
+  isFocused: true,
+  bodyColumns: 80,
+  placement: "dock",
+  scroll: { offset: 0, bodyRows: 40 },
+  view: {},
+} satisfies RenderPropsOf["Pane"];
+
+const ASK = { origin: { kind: "composer" }, presentation: { isFullscreen: true, columns: 160 } } as const;
+
+export async function status($: { command: { run: (input: never) => Promise<{ text?: string }> } }) {
+  return (await $.command.run({ command: "jev", args: "status", ...ASK } as never)).text ?? "";
+}
+
+export function successfulFetches(on: On) {
+  const authorization: (string | undefined)[] = [];
+  on("http.fetch", async (_$, e) => {
+    authorization.push(e.init?.headers?.authorization);
+    return { value: { status: 200, ok: true, headers: {}, text: "{}" } };
+  });
+  return authorization;
+}
 
 export const pick = (choice: string, confidence: number): ChoiceAnswer => ({
   type: "choice",
@@ -37,6 +61,20 @@ type SentStep = { model: string; effort?: unknown; agentId?: string };
 type WorldOptions = { empty?: (index: number) => boolean };
 type MutableStore = Record<string, unknown> & { provider: string; features: Features };
 
+export function mockStore(on: On, store: Record<string, unknown>): void {
+  const clone = <T>(value: T): T => value === undefined ? value : JSON.parse(JSON.stringify(value));
+  on("store.get", async (_$, e) => ({ value: clone(store[e.key]) }));
+  on("store.set", async (_$, e) => {
+    store[e.key] = clone(e.value);
+    return { value: undefined };
+  });
+  on("store.delete", async (_$, e) => {
+    delete store[e.key];
+    return { value: undefined };
+  });
+  on("store.keys", async () => ({ value: Object.keys(store) }));
+}
+
 /** Shared native-agent session fixture. The answer table stays live between requests. */
 export function world(
   on: On,
@@ -50,17 +88,7 @@ export function world(
     provider: "typesafe",
     features: { ...DEFAULT_FEATURES, ...flags },
   };
-  const clone = <T>(value: T): T => value === undefined ? value : JSON.parse(JSON.stringify(value));
-  on("store.get", async (_$, e) => ({ value: clone(store[e.key]) }));
-  on("store.set", async (_$, e) => {
-    store[e.key] = clone(e.value);
-    return { value: undefined };
-  });
-  on("store.delete", async (_$, e) => {
-    delete store[e.key];
-    return { value: undefined };
-  });
-  on("store.keys", async () => ({ value: Object.keys(store) }));
+  mockStore(on, store);
 
   mock.env(on, { TYPESAFE_API_KEY: "test-key" });
   on("command.register", async () => ({ value: { command: "jev" } }));

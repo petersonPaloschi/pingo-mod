@@ -7,17 +7,15 @@ import type { Answer, Json, ModelContext, Questions } from "./types.ts";
 import { text, type Locale, type LocaleKey } from "../i18n.ts";
 import type {
   AgentPlan,
-  Chosen,
   Effort,
   Features,
-  HeldChoice,
   HeldModelPick,
   ModelPick,
   ModelReason,
   Tier,
 } from "./contracts.ts";
 
-export { DEFAULT_FEATURES, FEATURE_IDS } from "./contracts.ts";
+export { DEFAULT_FEATURES } from "./contracts.ts";
 export { readChoice } from "./selection.ts";
 export type {
   AgentPlan,

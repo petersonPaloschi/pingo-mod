@@ -44,6 +44,19 @@ function sphere(count: number) {
 const EYE_GRID: [number, number][] = [];
 for (let fy = -0.3; fy <= 0.42; fy += 0.02) for (let fx = -0.52; fx <= 0.52; fx += 0.02) EYE_GRID.push([fx, fy]);
 
+const coarseGrids = new Map<number, [number, number][]>();
+/** The points of the face an eye can cover, `step` apart; the default step is the fine grid the large Pingo uses. */
+function eyeGrid(step: number): [number, number][] {
+  if (step === 0.02) return EYE_GRID;
+  let grid = coarseGrids.get(step);
+  if (!grid) {
+    grid = [];
+    for (let j = 0; -0.3 + j * step <= 0.42; j++) for (let i = 0; -0.52 + i * step <= 0.52; i++) grid.push([-0.52 + i * step, -0.3 + j * step]);
+    coarseGrids.set(step, grid);
+  }
+  return grid;
+}
+
 /** Whether a point of the face (fx, fy on the front of the sphere) is part of an eye. */
 export function eyeAt(eyes: Eyes, fx: number, fy: number, t: number, lookX = 0, open = 1): boolean {
   for (const side of [-1, 1]) {
@@ -89,8 +102,9 @@ export function eyeAt(eyes: Eyes, fx: number, fy: number, t: number, lookX = 0, 
 /**
  * Pingo at time `t` (seconds), facing `yaw` radians to the side: every dot projected, far ones first.
  * Deterministic in its inputs, so a still frame (a test, the desktop SVG) always looks the same.
+ * `eyeStep` is how far apart the dots of an eye are, in sphere radii: a small Pingo wants fewer, bolder ones.
  */
-export function scene(mood: Mood, t: number, count = 700, yaw?: number): Dot[] {
+export function scene(mood: Mood, t: number, count = 700, yaw?: number, eyeStep = 0.02): Dot[] {
   const { eyes } = MOODS[mood];
   const sleepy = mood === "idle" || mood === "baseline";
   const speed = sleepy ? 0.35 : mood === "thinking" ? 1.6 : 1;
@@ -128,7 +142,7 @@ export function scene(mood: Mood, t: number, count = 700, yaw?: number): Dot[] {
     if (z > 0.5 && eyeAt(eyes, x, p.y, t, lookX, open)) continue;
     push(x, p.y, z, "body", p.phase);
   }
-  for (const [fx, fy] of EYE_GRID) {
+  for (const [fx, fy] of eyeGrid(eyeStep)) {
     if (!eyeAt(eyes, fx, fy, t, lookX, open)) continue;
     push(fx, fy, Math.sqrt(Math.max(0, 1 - fx * fx - fy * fy)) * 1.035, "eye", 0);
   }
@@ -190,16 +204,35 @@ export function brailleFrame(mood: Mood, t: number, columns: number, rows: numbe
 /** The braille frame as plain lines, for logs and tests. */
 export const brailleText = (frame: BrailleCell[][]) => frame.map((row) => row.map(([char]) => char).join("")).join("\n");
 
-/** Pingo for the desktop app: one still frame as SVG circles, on a transparent ground. */
-export function pingoSvg(mood: Mood, t: number, size = 96): string {
-  const dots = scene(mood, t, 900)
+/** A still frame is a pure function of its inputs, so the last few are kept: a redraw inside the same frame costs nothing. */
+const svgFrames = new Map<string, string>();
+const SVG_FRAMES = 48;
+
+/**
+ * Pingo for the desktop app: one still frame as SVG circles, on a transparent ground.
+ * `small` is for a sphere a few dozen pixels wide, where hundreds of sub-pixel dots blur into a smudge: it
+ * draws a few score of larger dots, none from the far side, and bolder eyes.
+ */
+export function pingoSvg(mood: Mood, t: number, size = 96, small = false): string {
+  const key = `${mood}|${t}|${size}|${small ? 1 : 0}`;
+  const kept = svgFrames.get(key);
+  if (kept !== undefined) return kept;
+  const dots = (small ? scene(mood, t, SMALL.dots, undefined, SMALL.eyeStep).filter((dot) => dot.kind !== "body" || dot.z > -0.05) : scene(mood, t, 900))
     .map((dot) => {
       const depth = (dot.z + 1) / 2;
-      const r = dot.kind === "eye" ? 1.9 : dot.kind === "ring" ? 1.3 : 0.5 + depth * 1.0;
+      const r = small
+        ? dot.kind === "eye" ? SMALL.eye : dot.kind === "ring" ? 1.9 : SMALL.body + depth * 0.9
+        : dot.kind === "eye" ? 1.9 : dot.kind === "ring" ? 1.3 : 0.5 + depth * 1.0;
       const fill = dot.kind === "body" ? bodyColor(mood, dot, t) : MOODS[mood].color;
-      const opacity = dot.kind === "body" ? 0.15 + depth * depth * 0.85 : 1;
+      const opacity = dot.kind === "body" ? (small ? 0.3 + depth * depth * 0.7 : 0.15 + depth * depth * 0.85) : 1;
       return `<circle cx="${(50 + dot.x * 34).toFixed(1)}" cy="${(50 - dot.y * 34).toFixed(1)}" r="${r.toFixed(2)}" fill="${hex(fill)}" fill-opacity="${opacity.toFixed(2)}"/>`;
     })
     .join("");
-  return `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" viewBox="0 0 100 100">${dots}</svg>`;
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" viewBox="0 0 100 100">${dots}</svg>`;
+  if (svgFrames.size >= SVG_FRAMES) svgFrames.delete(svgFrames.keys().next().value!);
+  svgFrames.set(key, svg);
+  return svg;
 }
+
+/** The small sphere's dots: how many on the whole sphere, how far apart an eye's dots are, and the radii (viewBox units). */
+const SMALL = { dots: 330, eyeStep: 0.065, body: 1.9, eye: 3.3 } as const;

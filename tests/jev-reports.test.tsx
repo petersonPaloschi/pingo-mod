@@ -1,22 +1,19 @@
 // Every Jev call takes one path, whoever asks: observeAskJev reports it, and the mod's reporter puts it
 // in the live log and the Flow tab. Sift's calls, made in a shell the Bash tool starts, come back
 // through the session's channel and land there the same way.
-import type { RenderPropsOf } from "claude-code";
 import { describe, expect, test, type Engine } from "claude-code/testing";
 
 import { channelFile, channelLine, channelReader, toJevEvent } from "../hooks/core/channel.ts";
 import { jevSent, observeAskJev, type JevEvent } from "../hooks/core/jev.ts";
 import type { SystemOneRequest, SystemOneResult } from "../hooks/core/types.ts";
 import { uniqueSiftAgent } from "../hooks/register.tsx";
-import { world } from "./helpers.ts";
+import { PANE_PROPS as basePaneProps, world } from "./helpers.ts";
 
 const PANE_PROPS = {
-  title: "Jev",
-  isFocused: true,
+  ...basePaneProps,
   bodyColumns: 100,
-  placement: "dock",
-  scroll: { offset: 0, bodyRows: 60, contentRows: 60 },
-} as unknown as RenderPropsOf["Pane"];
+  scroll: { ...basePaneProps.scroll, bodyRows: 60 },
+};
 
 const REQUEST = {
   model: "jev-1",

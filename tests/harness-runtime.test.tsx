@@ -3,16 +3,14 @@ import { describe, expect, mock, test, type Engine } from "claude-code/testing";
 
 import { DEFAULT_FEATURES, type Features } from "../hooks/core/plan.ts";
 import type { Answer, SystemOneRequest } from "../hooks/core/types.ts";
-import { answerJev, pick, step } from "./helpers.ts";
+import { PANE_PROPS as basePaneProps, answerJev, mockStore, pick, step } from "./helpers.ts";
 
 const ORIGIN = { kind: "composer" } as const;
 const PANE_PROPS = {
-  title: "Jev",
-  isFocused: true,
+  ...basePaneProps,
   bodyColumns: 120,
-  placement: "dock",
-  scroll: { offset: 0, bodyRows: 120, contentRows: 120 },
-} as never;
+  scroll: { ...basePaneProps.scroll, bodyRows: 120 },
+};
 const SPAWN = {
   prompt: "Check the build.",
   description: "check the build",
@@ -38,17 +36,7 @@ function world(on: On, opts: WorldOptions = {}) {
     features: opts.storedFeatures ?? { ...DEFAULT_FEATURES, ...opts.features },
     ...(opts.routing === false ? { routing: false } : {}),
   };
-  const clone = <T,>(value: T): T => value === undefined ? value : JSON.parse(JSON.stringify(value));
-  on("store.get", async (_$, e) => ({ value: clone(store[e.key]) }));
-  on("store.set", async (_$, e) => {
-    store[e.key] = clone(e.value);
-    return { value: undefined };
-  });
-  on("store.delete", async (_$, e) => {
-    delete store[e.key];
-    return { value: undefined };
-  });
-  on("store.keys", async () => ({ value: Object.keys(store) }));
+  mockStore(on, store);
   mock.env(on, { ...(opts.key === false ? {} : { TYPESAFE_API_KEY: "test-key" }) });
   on("command.register", async () => ({ value: { command: "jev" } }));
   on("tool.list", async () => ({ value: ["Read", "Bash", "Edit"].map((name) => ({ name, description: `${name} tool`, mcp: false })) }));

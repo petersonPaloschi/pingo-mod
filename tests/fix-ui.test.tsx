@@ -11,16 +11,10 @@ import { displayWidth, rowsOf } from "../hooks/layout.ts";
 import { clip, clockWidth, oneLine, renderPane, shares, type Actions, type Els, type View } from "../hooks/ui.tsx";
 import { normalizeTab } from "../hooks/register.tsx";
 import { en } from "../hooks/strings/en.ts";
+import { PANE_PROPS } from "./helpers.ts";
 
 const NOW = Date.parse("2026-10-07T12:00:00Z");
 const ASK = { origin: { kind: "composer" }, presentation: { isFullscreen: true, columns: 160 } } as const;
-const PANE_PROPS = {
-  title: "Jev",
-  isFocused: true,
-  bodyColumns: 80,
-  placement: "dock",
-  scroll: { offset: 0, bodyRows: 40, contentRows: 40 },
-} as unknown as RenderPropsOf["Pane"];
 const BAND_PROPS = { hasSurvey: false, isWorking: false, maxRows: 3, bodyColumns: 120 } as unknown as RenderPropsOf["AbovePrompt"];
 
 /** A session with no key: Jev is never asked, so every prompt passes it by. */
@@ -144,6 +138,7 @@ function harness() {
     scroll: 0,
     fixed: true,
     key: { source: "none", tail: "", provider: "typesafe" },
+    deck: null,
     ...over,
   });
   return { els, act, layouts, feedLine, event, view };
@@ -158,6 +153,7 @@ test("persisted legacy tabs resolve to valid screens on both surfaces", () => {
     ["reasons", "logs", "Request log"],
     ["setup", "configuration", "Provider and language"],
     ["log", "logs", "Request log"],
+    ["deck", "deck", "Every /deck command as a control"],
     ["unknown", "overview", "No Claude requests or Jev calls in this range"],
   ] as const;
   for (const surface of ["terminal", "desktop"] as const) {

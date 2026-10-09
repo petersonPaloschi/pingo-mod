@@ -1,20 +1,18 @@
 // Robustness: concurrent request logging, stable subagent numbers, teammates across turns, and scroll fallback.
-import type { On, RenderPropsOf } from "claude-code";
+import type { On } from "claude-code";
 import { describe, expect, mock, test } from "claude-code/testing";
 
 import { DEFAULT_FEATURES, type Features } from "../hooks/core/plan.ts";
 import type { Answer, SystemOneRequest } from "../hooks/core/types.ts";
 import type { RouteEvent } from "../types";
-import { pick, step } from "./helpers.ts";
+import { PANE_PROPS as basePaneProps, pick, step } from "./helpers.ts";
 
 const ASK = { origin: { kind: "composer" }, presentation: { isFullscreen: true, columns: 160 } } as const;
 const PANE_PROPS = {
-  title: "Jev",
-  isFocused: true,
+  ...basePaneProps,
   bodyColumns: 100,
-  placement: "dock",
-  scroll: { offset: 0, bodyRows: 20, contentRows: 20 },
-} as unknown as RenderPropsOf["Pane"];
+  scroll: { ...basePaneProps.scroll, bodyRows: 20 },
+};
 const SPAWN = {
   tool_use_id: "toolu-agent",
   prompt: "Find every caller of decide().",

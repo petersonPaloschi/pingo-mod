@@ -2,24 +2,14 @@ import type { On } from "claude-code";
 import { describe, expect, mock, test } from "claude-code/testing";
 
 import { DEFAULT_FEATURES } from "../hooks/core/plan.ts";
-import { step } from "./helpers.ts";
+import { mockStore, step } from "./helpers.ts";
 
 const ORIGIN = { kind: "composer" } as const;
 
 function world(on: On) {
   mock.clock(on, { now: Date.parse("2026-10-06T12:00:00Z") });
   const store: Record<string, unknown> = { provider: "typesafe", features: { ...DEFAULT_FEATURES }, routing: true };
-  const clone = <T,>(value: T): T => value === undefined ? value : JSON.parse(JSON.stringify(value));
-  on("store.get", async (_$, e) => ({ value: clone(store[e.key]) }));
-  on("store.set", async (_$, e) => {
-    store[e.key] = clone(e.value);
-    return { value: undefined };
-  });
-  on("store.delete", async (_$, e) => {
-    delete store[e.key];
-    return { value: undefined };
-  });
-  on("store.keys", async () => ({ value: Object.keys(store) }));
+  mockStore(on, store);
   mock.env(on, { TYPESAFE_API_KEY: "test-key" });
   on("command.register", async () => ({ value: { command: "jev" } }));
   on("session.model", async () => ({ value: "claude-sonnet-5-5" }));
