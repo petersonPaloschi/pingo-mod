@@ -1243,7 +1243,7 @@ const TONE_INK: Record<FeedTone, string> = {
 export function speaker(entry: Pick<FeedEntry, "who" | "name" | "tone" | "mascot">, locale: Locale = localeFor()): { face: string; name: string; color: string } {
   switch (entry.who) {
     case "you":
-      return { face: "●", name: text("ui.live.you", locale), color: INK.you };
+      return { face: GLYPH.on, name: text("ui.live.you", locale), color: INK.you };
     case "jev": {
       const mood: Mood = entry.tone === "bad" ? "failing" : entry.tone === "muted" ? "passthrough" : "routing";
       return { face: MOODS[mood].face, name: text("ui.live.jev", locale), color: hex(MOODS[mood].color) };

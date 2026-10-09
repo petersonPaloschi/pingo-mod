@@ -200,7 +200,7 @@ function messageNode(run: TraceRun, locale: Locale): FlowNode {
     details.push({ text: run.text ? text("flow.message.unlinked", locale, { text: run.text }) : text("flow.message.noText", locale), color: C.dim });
   }
   for (const message of run.received.slice(-MAX_RECEIVED_LINES)) details.push({ text: text("flow.message.received", locale, { text: message.text }), color: C.pass });
-  return { id: "message", glyph: "●", color: C.you, label: text("flow.node.message", locale), details };
+  return { id: "message", glyph: GLYPH.on, color: C.you, label: text("flow.node.message", locale), details };
 }
 
 function jevNode(run: TraceRun, locale: Locale): FlowNode {
@@ -251,7 +251,7 @@ function mainNode(run: TraceRun, now: number, locale: Locale): FlowNode {
         text: [
           text("flow.main.requests", locale, { count: formatNumber(requests, locale), unit: unit(requests, "unit.request", "unit.requests", locale) }),
           effort ? text("flow.main.effort", locale, { effort }) : "",
-          responding ? `${Math.floor(now / 1000) % 2 ? "◉" : "●"} ${text("flow.main.responding", locale)}` : "",
+          responding ? `${Math.floor(now / 1000) % 2 ? "◉" : GLYPH.on} ${text("flow.main.responding", locale)}` : "",
         ]
           .filter(Boolean)
           .join(" · "),
@@ -366,9 +366,9 @@ function advisorNode(run: TraceRun, trace: TraceState, locale: Locale): FlowNode
 function answerNode(run: TraceRun, now: number, locale: Locale): FlowNode {
   const details: Detail[] = [];
   let color = C.green;
-  let glyph = "●";
+  let glyph: string = GLYPH.on;
   if (run.endedAt === undefined) {
-    glyph = Math.floor(now / 1000) % 2 ? "◉" : "●";
+    glyph = Math.floor(now / 1000) % 2 ? "◉" : GLYPH.on;
     details.push({ text: text("flow.answer.running", locale, { duration: duration(run.startedAt, now, locale) }), color: C.green });
   } else {
     const reason = run.reason ?? "answer";
@@ -610,7 +610,7 @@ function drawTimeline(g: Canvas, x: number, y: number, width: number, run: Trace
     if (endAt > startAt) {
       g.put(x + labelWidth + 1 + startAt, y, "━".repeat(endAt - startAt + 1), { color: event.color });
     }
-    g.put(x + labelWidth + 1 + endAt, y, running ? "●" : "◆", { color: event.color, bold: true });
+    g.put(x + labelWidth + 1 + endAt, y, running ? GLYPH.on : "◆", { color: event.color, bold: true });
     g.put(x + labelWidth + 1 + barWidth + 1, y, fit(duration(event.startedAt, finish, locale), durationWidth), { color: C.dim });
     y++;
   }
