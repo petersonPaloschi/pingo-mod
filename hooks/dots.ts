@@ -17,9 +17,6 @@ export const DOT = {
   fail: HUE.fail,
   idle: HUE.neutral,
   base: HUE.info,
-  /** Who speaks in the live log, the one place color names a speaker and not a state. */
-  you: HUE.violet,
-  claude: HUE.claude,
   /** Pingo's own accent: the open screen, a call to Jev in flight. */
   brand: HUE.brand,
 } as const;
