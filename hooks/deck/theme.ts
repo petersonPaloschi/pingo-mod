@@ -1,6 +1,6 @@
 // Colors and small helpers shared by the Deck drawings. Pure, no I/O.
 // Every color comes from hooks/theme.ts: the state and tier hues, the track and tick tones, and the text tones.
-import { css, HUE, PAINT, SVG_PAINT } from "../theme.ts";
+import { css, DECK_ACCENT, HUE, PAINT, SVG_PAINT } from "../theme.ts";
 export type RGB = [number, number, number];
 export type StyleName = "run" | "ask" | "hot" | "done" | "ok" | "warn";
 export type TierName = "haiku" | "sonnet" | "opus";
@@ -99,10 +99,10 @@ export const BODY = PAINT.text;
 /** Text on a terminal pill (a route tier, an agent's model); the desktop pills use white. */
 export const PILL_INK = PAINT.onFill;
 /** A running bar's head between frames, and the shine that sweeps a solid bar: the brand hue lighter and darker. */
-export const HEAD_DIM = "#127985";
-export const SHINE = "#7cc9d3";
+export const HEAD_DIM = css(DECK_ACCENT.headDim);
+export const SHINE = css(DECK_ACCENT.shine);
 /** The text tones inside the desktop SVG rows. */
-export const SVG_TEXT = { text: SVG_PAINT.text, body: "#c9ccd4", muted: SVG_PAINT.muted, dim: SVG_PAINT.muted } as const;
+export const SVG_TEXT = { body: SVG_PAINT.muted, muted: SVG_PAINT.muted, dim: SVG_PAINT.muted } as const;
 
 export function hash(a: number, b: number, k: number): number {
   const x = Math.sin(a * 127.1 + b * 311.7 + k * 74.7) * 43758.5453;

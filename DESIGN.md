@@ -13,7 +13,7 @@ Pingo has one visual identity across every surface it draws: the `/jev` dashboar
 
 ## Tokens
 
-Every color, glyph and bar comes from `hooks/theme.ts`; `hooks/dots.ts` (`DOT`, numbers for Raster cells) and `hooks/deck/theme.ts` (the Deck's state and tier styles) derive from it.
+Shared colors, glyphs and bars come from `hooks/theme.ts`; `hooks/dots.ts` (`DOT`, numbers for Raster cells) and `hooks/deck/theme.ts` (the Deck's state and tier styles) derive from it. The Deck's animated head and shine use the dedicated `DECK_ACCENT` fills, and the pet keeps its cosmetic hat and prop palette local.
 
 | Role | Token | Value | Use |
 | --- | --- | --- | --- |

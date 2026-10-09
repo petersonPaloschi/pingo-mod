@@ -3,6 +3,7 @@
 import { expect, mock, test } from "claude-code/testing";
 
 import { rowGlyph } from "../hooks/deck/rows.ts";
+import { SVG_TEXT } from "../hooks/deck/theme.ts";
 import type { DeckRow } from "../hooks/deck/model.ts";
 import { blockBar, css, HUE, PAINT } from "../hooks/theme.ts";
 import { PANE_PROPS } from "./helpers.ts";
@@ -23,6 +24,11 @@ test("every hue keeps 3:1 on a dark and a light terminal, and the ink on it keep
     expect({ name, light: contrast(css(hue), "#ffffff") >= 3 }).toEqual({ name, light: true });
     expect({ name, ink: contrast(PAINT.onFill, css(hue)) >= 4.5 }).toEqual({ name, ink: true });
   }
+});
+
+test("SVG body text stays readable on light and dark backgrounds", () => {
+  expect(contrast(SVG_TEXT.body, "#1e1e1e") >= 3).toBe(true);
+  expect(contrast(SVG_TEXT.body, "#ffffff") >= 3).toBe(true);
 });
 
 test("a block bar fills by eighths, so near shares still differ", () => {

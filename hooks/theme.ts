@@ -26,6 +26,12 @@ export const HUE = {
   claude: 0xd97757,
 } as const;
 
+/** Animated Deck fills: a darker moving head and a light sweep, never used for text. */
+export const DECK_ACCENT = {
+  headDim: 0x127985,
+  shine: 0x7cc9d3,
+} as const;
+
 /** A number color as the "#rrggbb" a Text, Box or SVG paints with. */
 export const css = (color: number) => "#" + (color & 0xffffff).toString(16).padStart(6, "0");
 
@@ -49,10 +55,7 @@ export const PAINT = {
 
 /** The same roles for an SVG source, which cannot name a theme key: mid-tones that hold on both grounds. */
 export const SVG_PAINT = {
-  text: "#e8eaee",
   muted: css(HUE.neutral),
-  rule: "#808080",
-  onFill: "#ffffff",
 } as const;
 
 /** Glyphs that say a state without color. */
