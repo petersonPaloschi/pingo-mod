@@ -1,14 +1,14 @@
 ---
 name: sift
-description: Hand bulk judgment calls to Jev through Pingo so Claude doesn't read, and pay for, content it only needs a verdict on. Use this BEFORE reading many files, long logs, or big lists just to decide which parts matter. That covers finding which files relate to a feature or bug, filtering log lines for errors, triaging or labelling many items (tickets, test failures, commits, TODOs, search hits), ranking candidates by relevance, locating the right lines in a huge file, or a yes/no check on a large document. Also use when the user says sift, "save tokens", "delegate to Jev", or "cheaper/faster". Skip it for generation, editing, multi-step reasoning, math, counting, or date comparison, and when the input is small enough to just read.
+description: Use Jev through Pingo for bounded semantic filtering, classification, ranking, and search after local tools narrow the candidates. Use it for many files, log lines, or items that need a meaning-based judgment. Also use when the user says sift or delegate to Jev. Skip exact matches, numeric rules, generation, editing, multi-step reasoning, math, counting, date comparison, and small inputs.
 ---
 
 # Sift: Jev narrows, Claude reads what survives
 
-Jev returns **typed judgments** (a yes/no probability or a one-of-N label with confidence)
-in about a second. It cannot write text or reason in steps. So the split is simple:
-**Jev narrows, Claude reads only what survives.** Every item Jev rules out is content that
-never enters Claude's context, and Jev scans hundreds of items in parallel.
+Jev returns **typed judgments** (a yes/no probability or a one-of-N label with confidence).
+It cannot write text or reason in steps. Use it to narrow a bounded candidate set; Claude
+must inspect survivors and uncertain cases. Sift's context figure is only an estimate of
+potential reduction, not measured Claude usage or total task savings.
 
 In the commands below, `sift` stands for:
 
@@ -22,7 +22,7 @@ It needs Node 22.18 or newer (it loads Pingo's TypeScript directly) and no other
 
 Run `sift status` first.
 
-- `ready` means go straight to the task.
+- `ready` means the provider check passed; it says nothing about whether Sift improves the task.
 - Exit code 3 (`not configured`, or a refused key) means the user must run `/jev setup` in
   Claude Code. Sift uses the same provider, key and model as Pingo: Setup's saved key, the
   plugin options, then `TYPESAFE_API_KEY`, `OPENROUTER_API_KEY`, `AI_GATEWAY_API_KEY` or
@@ -36,7 +36,7 @@ If yes, and each decision fits yes/no or pick-a-label, delegate.
 
 | Situation | Command |
 | --- | --- |
-| "Which files deal with X?" across a repo | `sift filter "Does this file implement or handle X?" src` |
+| "Which files deal with X?" across a repo | Narrow paths first, then `sift filter "Does this file implement or handle X?" <candidates>` |
 | Errors or anomalies in a big log | `sift filter "Does this line indicate a failure?" app.log --lines` |
 | Where in a 5k-line file is Y? | `sift find "Y" big_file.py --top 5` |
 | Sort 200 tickets, test failures, or TODOs into buckets | `sift classify --labels "bug,feature,question" --items items.jsonl` |
@@ -44,10 +44,19 @@ If yes, and each decision fits yes/no or pick-a-label, delegate.
 | One yes/no over a large document | `sift ask "Does this contract allow termination without notice?" --state @contract.txt` |
 | Several questions over the same content | `sift ask spec.json` (raw request, see below) |
 
-It is strongest on needle-in-haystack log search, finding files across a repo, "where is X?"
-ranking, search inside huge files, and bulk routing with clear labels. It is weaker on
-subjective or expert-defined labels and on look-alike code (safe vs vulnerable twins): there,
-treat the output as a shortlist and check the `?` items yourself.
+It is strongest when a bounded set needs a meaning-based judgment, such as finding files by
+their role or routing items with clear labels. It is weaker on subjective labels, numeric
+thresholds, and look-alike code (safe vs vulnerable twins): there, treat the output as a
+shortlist and check uncertain items yourself.
+
+## Narrow locally first
+
+Use `rg`, `grep`, filename globs, or a small script for exact strings, file names, counts,
+and numeric comparisons. For example, use `rg -l "auth" src/` to find literal candidates,
+or `awk`/a short local script for `latency > 250ms`; these are exact and cost no Jev call.
+Then send only the plausible candidate files or lines to Sift for the semantic question.
+Prefer `--ext` and explicit paths or globs over a whole-repository scan. Do not send a
+repository-wide corpus when a local literal search can reduce it first.
 
 **Don't delegate:**
 - Tiny inputs (a few files, or under ~2k tokens). Just read them.
@@ -74,14 +83,15 @@ sift rank "<query>" <inputs> [--top 10 | --all]
 sift find "<what you're looking for>" <files> [--top 5]
 sift ask "<question>" --state @file|"text"|- [--choice "a,b,c"]
 sift ask spec.json      # {"state": {...}, "questions": {"id": {"type": "noul|choice", ...}}}
-sift status             # provider, key source and model checked with one real call, plus lifetime savings
+sift status             # provider, key source and model checked with one real call, plus lifetime usage estimates
 ```
 
 Add `--json` to any command for machine-readable output; the summary line goes to stderr.
 `--save FILE` writes every per-item result to FILE while stdout stays compact. Requests run
-16 at a time (`--concurrency`), one item each. `--fast` packs small items into shared
-requests: much faster on big logs, but less accurate on subtle judgments. Use it for obvious
-needles (crashes, OOMs) in very large logs, not for classification.
+16 at a time by default; set `--concurrency` explicitly when the provider or workload needs
+a lower bound. Bound input with `--limit` (default 5,000 items) and `--max-chars` (default
+60,000 characters per item; files over 2 MB are skipped). Use `--top` to bound displayed
+results and `--save` when the full result set is needed.
 
 ## Reading the output
 
@@ -96,7 +106,7 @@ pattern, followed by the other matching line numbers:
         also lines 115,121-130,…
 ? borderline (0.35–0.65) — check these yourself:
 0.55  app/api/convert_safe.ts
-— 340 scanned · 3 matched · 1 borderline · 4.1s · jev 90.0k tok ($0.0038) · ~88.0k Claude tokens not read
+— 340 scanned · 3 matched · 1 borderline · 4.1s · jev 90.0k tok (TypeSafe input estimate ~$0.0038) · ~88.0k potential context reduction (estimate)
 ```
 
 **classify** prints the count per label, then the ids in each label, then each
@@ -115,8 +125,12 @@ bug 41 · feature 12 · question 7
   the start.
 - `! N not judged (...)` lists items whose request failed. They are in neither list: read
   them yourself or re-run. Exit code 5 means every request failed.
-- The footer shows Jev's tokens (with a cost on TypeSafe) and the estimated Claude tokens
-  avoided. Mention the savings to the user when they're meaningful.
+- The footer reports Jev's tokens separately from an estimated potential context reduction.
+  The estimate is based on input and displayed-output character counts; it excludes Sift's
+  skill and command overhead, later Claude work, retries, and cache behavior. Never present
+  it as measured savings or a net task benefit.
+- A TypeSafe dollar figure uses the configured input-token rate assumption. It is an
+  input-only estimate, not an invoice; missing usage counters make usage or cost unknown.
 - Jev's verdicts make a **shortlist, not proof**. Open the survivors before you edit code,
   draw conclusions, or tell the user something is definitely absent. If a filter returns
   nothing you expected to find, rephrase the question or lower `--threshold` first.
@@ -139,9 +153,16 @@ Jev reads questions **literally**. Its accuracy comes from how precise the quest
 
 ## Patterns that pay off
 
-- **Funnel:** `sift filter` over the whole repo, then read the 5 survivors instead of 300 files.
+- **Funnel:** use a literal search or path filter to create candidates, then ask `sift filter`
+  a semantic question about those candidates.
 - **Log triage:** `sift filter ... --lines` over a 50k-line log, then investigate only the failures.
 - **Two-pass precision:** a cheap broad `filter`, then `rank` the survivors against the
   specific question.
 - **Batch triage:** dump items to JSONL (issues, test output, grep hits), `sift classify`,
   then act per bucket.
+
+The current normal Sift run scored 22.8% F1 on the 2,000-line BGL fixture and 74% accuracy
+on commit classification. Treat those log and label results as exploratory shortlists and
+verify them directly; one fixture score is not a general accuracy guarantee. For numeric
+thresholds, use a local rule: the benchmark's `latency > 250ms` check found all 107 expected
+lines without a Jev call.

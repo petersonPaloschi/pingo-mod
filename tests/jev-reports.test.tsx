@@ -113,6 +113,10 @@ async function shown($: Engine, tab: string, texts: RegExp[]): Promise<void> {
         found = await ui.find({ type: "Text", text });
         if (!found) await Promise.resolve();
       }
+      if (!found) {
+        const rendered = (await ui.findAll({ type: "Text" })).map((line) => line.text ?? "").join("\n");
+        expect(rendered).toMatch(text);
+      }
       expect(found).toBeDefined();
     }
   } finally {
@@ -121,9 +125,8 @@ async function shown($: Engine, tab: string, texts: RegExp[]): Promise<void> {
 }
 
 describe("sift's calls in the mod", () => {
-  test("a sift command names the channel for its shell, and each of its Jev calls shows in the Live log and the Flow tab", async ($, on) => {
-    // Tool routing off: the only Jev calls are sift's.
-    world(on, { tools: false });
+  test("a sift command names the channel for its shell, and each of its Jev calls shows in Live", async ($, on) => {
+    world(on, { agents: false });
     const set: [string, string | undefined][] = [];
     on("env.set", async (_$, e) => {
       set.push([e.name, e.value]);
@@ -149,18 +152,18 @@ describe("sift's calls in the mod", () => {
     expect(spawned[0]![0]).toBe("node");
     expect(spawned[0]!.at(-1)).toBe(channelFile(set[0]![1]));
 
-    await shown($, "tab-live", [/✓ sift · sift command — match/, /120 tokens in · 0 out · jev-1 · read 0 turns/, /^\? match · score 0–100%: “Does it retry\?”/, /^→ 95\.0%/]);
-    await shown($, "tab-flow", [/1 Jev call in this run/]);
+    await shown($, "tab-live", [/✓ sift · sift command — match/, /Usage: 120 input tokens · 0 output tokens/, /jev-1 · read 0 turns/, /^\? match · score 0–100%: “Does it retry\?”/, /^→ 95\.0%/]);
+    await shown($, "tab-live", [/recorded Jev calls: 1/]);
 
     // A second sift command keeps the channel; its follower (this one ended) reads the file again from
     // its start, and a call already reported is not reported twice.
     await $.tool.call({ tool: "Bash", command: 'node "/plugins/pingo/scripts/sift.ts" status', tool_use_id: "toolu-sift-2" } as never);
     expect(set.length).toBe(1);
-    await shown($, "tab-flow", [/1 Jev call in this run/]);
+    await shown($, "tab-live", [/recorded Jev calls: 1/]);
   });
 
   test("concurrent sift commands share one channel export and follower", async ($, on) => {
-    world(on, { tools: false });
+    world(on, { agents: false });
     const set: [string, string | undefined][] = [];
     let releaseSet: () => void = () => {};
     let markSet: () => void = () => {};

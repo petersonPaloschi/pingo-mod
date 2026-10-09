@@ -2,7 +2,7 @@ import { expect, test } from "claude-code/testing";
 
 import { formatDecimal, formatNumber, formatPercent, localeFor, text, type LocaleKey } from "../hooks/i18n.ts";
 import { resolveSettings } from "../hooks/config.ts";
-import { buildQuestions } from "../hooks/core/questions.ts";
+import { agentQuestions } from "../hooks/core/plan.ts";
 import { status, tiles } from "../hooks/events.ts";
 import { flowLines } from "../hooks/flow.ts";
 import { emptyTrace, startTurn } from "../hooks/trace.ts";
@@ -22,18 +22,18 @@ test("locale selection accepts explicit plugin choices and language tags", () =>
 });
 
 test("messages and formatters use the selected locale", () => {
-  expect(text("ui.header.confidence", "pt", { value: "0,75" })).toBe("confiança 0,75");
+  expect(text("ui.overview.scope", "pt", { count: "2", requests: "solicitações" })).toBe("2 solicitações neste período");
   expect(formatNumber(1234.5, "pt", 1)).toBe("1.234,5");
   expect(formatDecimal(0.75, "pt")).toBe("0,75");
   expect(formatPercent(1, 4, "pt")).toBe("25%");
   expect(text("missing.runtime.key" as LocaleKey, "pt")).toBe("missing.runtime.key");
 });
 
-test("routing prompts and dashboard summaries are Portuguese", () => {
-  const question = buildQuestions([{ kind: "function", name: "Read" }], "pt");
-  expect(question.tool?.instructions).toContain("Considerando a conversa");
-  expect(question.needs_tool?.instructions).toContain("responder à pessoa em texto");
-  expect(status([], false, 0, "pt").title).toBe("Referência — roteamento desligado");
+test("agent questions and dashboard summaries use Portuguese", () => {
+  const question = agentQuestions({ agents: true }, "pt");
+  expect(question.model?.instructions).toContain("Selecione");
+  expect(question.effort?.instructions).toContain("Escolha");
+  expect(status([], false, 0, "pt").title).toBe(text("status.baseline.title", "pt"));
   expect(tiles([], "pt")[0]?.label).toBe("Solicitações");
 });
 

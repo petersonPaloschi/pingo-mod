@@ -24,24 +24,24 @@ test("on the terminal the pane is exactly its room tall, header on top, body scr
   mock.store(on);
   mock.env(on, {});
   const ui = await $.ui.mount({ plugin: "jev", surface: "terminal", component: "Pane", requestId: "jev", props: props(14) });
-  await ui.press({ key: "tab-setup" });
+  await ui.press({ key: "tab-configuration" });
   const root = (await ui.drawn()) as { props?: Record<string, unknown> };
   expect(root.props?.height).toBe(14);
   expect(root.props?.overflow).toBe("hidden");
   // The header and the tabs are drawn, and the body too long for the room says there is more below.
   expect(await ui.find({ type: "Text", text: /⠿ jev/ })).toBeDefined();
-  expect(await ui.find({ type: "Button", key: "tab-setup" } as never)).toBeDefined();
+  expect(await ui.find({ type: "Button", key: "tab-configuration" } as never)).toBeDefined();
   expect(await ui.find({ type: "Text", text: /▼ 0% · scroll for more/ })).toBeDefined();
   await ui.unmount();
 });
 
-test("the live tab keeps Dice and the legend on top and its log at the bottom", async ($, on) => {
+test("the live tab keeps Pingo and the run sequence above its log", async ($, on) => {
   mock.clock(on, { now: NOW });
   mock.store(on);
   mock.env(on, {});
   const ui = await $.ui.mount({ plugin: "jev", surface: "terminal", component: "Pane", requestId: "jev", props: props(30) });
   await ui.press({ key: "tab-live" });
-  expect(await ui.find({ type: "Text", text: /your dotted die/ })).toBeDefined();
+  expect(await ui.find({ type: "Raster", key: "pingo" } as never)).toBeDefined();
   expect(await ui.find({ type: "Text", text: /Nothing yet/ })).toBeDefined();
   await ui.unmount();
 });

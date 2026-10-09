@@ -6,7 +6,7 @@
 // the engine confirms it: the turn that starts while its idle submission is still entering. A
 // message typed into a running turn names that turn and stays queued. A subagent's turns raise no
 // turn.start: its steps, tools and advisor calls join the run that spawned it.
-import type { AdvisorInfo, AgentState, TraceAdvisor, TraceAgent, TraceCheckpoint, TraceConsult, TraceMessage, TracePlan, TraceRun, TraceState, TraceStep, TraceTool } from "../types";
+import type { AdvisorInfo, AgentState, TraceAdvisor, TraceAgent, TraceConsult, TraceMessage, TracePlan, TraceRun, TraceState, TraceStep, TraceTool } from "../types";
 
 export const TRACE_SCHEMA = 2;
 /** Finished runs kept; runs still active (or with a subagent still running) are always kept. */
@@ -42,6 +42,55 @@ export function toolSource(name: string): string {
 
 /** A run is done once its main turn ended and none of its subagents still runs. */
 export const isDone = (run: TraceRun) => run.endedAt !== undefined && !run.agents.some((agent) => agent.state === "running");
+
+export function traceConsults(trace: TraceState): TraceConsult[] {
+  const messages = [
+    ...trace.inbox,
+    ...trace.runs.flatMap((run) => [...(run.message ? [run.message] : []), ...run.received]),
+  ];
+  const byId = new Map<string, TraceConsult>();
+  for (const consult of [...trace.runs.flatMap((run) => run.consults), ...messages.flatMap((message) => message.consults)]) {
+    const prior = byId.get(consult.id);
+    if (!prior) {
+      byId.set(consult.id, consult);
+      continue;
+    }
+    byId.set(consult.id, {
+      ...prior,
+      ...consult,
+      ...(consult.endedAt === undefined && prior.endedAt !== undefined ? { endedAt: prior.endedAt } : {}),
+      ...(consult.error === undefined && prior.error ? { error: prior.error } : {}),
+      ...(consult.observed === undefined && prior.observed ? { observed: prior.observed } : {}),
+      ...(prior.usage || consult.usage ? { usage: { ...prior.usage, ...consult.usage } } : {}),
+    });
+  }
+  return [...byId.values()].sort((a, b) => a.startedAt - b.startedAt);
+}
+
+export interface RunTiming {
+  /** The submitted prompt time, before Jev planning when the message is linked. */
+  promptAt: number;
+  /** Prompt-to-main-turn completion; absent until the main turn ends. */
+  mainResponseMs?: number;
+  /** Prompt-to-last relevant completion, using the latest parallel branch end. */
+  totalMs: number;
+  complete: boolean;
+}
+
+export function runTiming(run: TraceRun, now: number): RunTiming {
+  const promptAt = run.message?.at ?? run.startedAt;
+  const mainResponseMs = run.endedAt === undefined ? undefined : Math.max(0, run.endedAt - promptAt);
+  const complete = isDone(run);
+  const completedAt = complete
+    ? Math.max(run.endedAt!, ...run.agents.map((agent) => agent.endedAt ?? run.endedAt!))
+    : now;
+  return {
+    promptAt,
+    ...(mainResponseMs !== undefined ? { mainResponseMs } : {}),
+    totalMs: Math.max(0, completedAt - promptAt),
+    complete,
+  };
+}
 
 /** The models responses named in a run: the main loop's and every subagent's, each once. */
 export const confirmedModels = (run: TraceRun) => [...new Set([...run.main.observed, ...run.agents.flatMap((agent) => agent.observed)])];
@@ -192,11 +241,6 @@ export function planMessage(s: TraceState, id: string, plan: TracePlan): TraceSt
   };
 }
 
-/** Record a requested review on its exact run; no error text or tool arguments are retained. */
-export function requestCheckpoint(s: TraceState, checkpoint: TraceCheckpoint, turnId = s.active): TraceState {
-  return turnId ? withRun(s, turnId, (run) => ({ ...run, checkpoints: [...(run.checkpoints ?? []), checkpoint].slice(-KEPT_ADVISOR) })) : s;
-}
-
 /** prompt.submit's `next` resolved: the message entered (its run started meanwhile, or it waits), or was refused. */
 export function promptEntered(s: TraceState, id: string, dropped?: string): TraceState {
   const next = s.entering === id ? omit(s, "entering") : s;
@@ -229,8 +273,20 @@ export function consultStart(s: TraceState, where: ConsultWhere, consult: Omit<T
 }
 
 /** A Jev call ends, answered or not. */
-export function consultEnd(s: TraceState, id: string, at: number, error?: string): TraceState {
-  const end = (list: readonly TraceConsult[]) => list.map((one) => (one.id === id ? { ...one, endedAt: at, ...(error ? { error: clip(error, 160) } : {}) } : one));
+export function consultEnd(
+  s: TraceState,
+  id: string,
+  at: number,
+  error?: string,
+  result?: { observed?: string; usage?: TraceConsult["usage"] },
+): TraceState {
+  const end = (list: readonly TraceConsult[]) => list.map((one) => (one.id === id ? {
+    ...one,
+    endedAt: at,
+    ...(error ? { error: clip(error, 160) } : {}),
+    ...(result?.observed ? { observed: result.observed } : {}),
+    ...(result?.usage ? { usage: { ...result.usage } } : {}),
+  } : one));
   const owns = (list: readonly TraceConsult[]) => list.some((one) => one.id === id);
   const message = (one: TraceMessage) => (owns(one.consults) ? { ...one, consults: end(one.consults) } : one);
   return {
@@ -322,6 +378,8 @@ export interface StepEnd {
   observed?: string;
   stop: string | null;
   serverToolUses?: readonly ServerToolUse[];
+  /** Raw counters the response provided; absent fields stay unknown. */
+  usage?: TraceStep["usage"];
   /** The tokens the response reported: input with cache reads and writes, and output. */
   tokens?: { input: number; output: number };
 }
@@ -335,7 +393,13 @@ export function stepEnd(s: TraceState, step: StepEnd): TraceState {
   if (!run) return s;
   let next = withRun(s, run.id, (one) => {
     const at = one.steps.findLastIndex((rec) => rec.turnId === step.turnId && rec.index === step.index && rec.agentId === step.agentId && rec.endedAt === undefined);
-    const steps = at < 0 ? one.steps : one.steps.map((rec, i) => (i === at ? { ...rec, endedAt: step.at, stop: step.stop, ...(step.observed ? { observed: step.observed } : {}) } : rec));
+    const steps = at < 0 ? one.steps : one.steps.map((rec, i) => (i === at ? {
+      ...rec,
+      endedAt: step.at,
+      stop: step.stop,
+      ...(step.observed ? { observed: step.observed } : {}),
+      ...(step.usage ? { usage: { ...step.usage } } : {}),
+    } : rec));
     const main = !step.agentId && step.observed ? { ...one.main, observed: add(one.main.observed, step.observed) } : one.main;
     let advisor = one.advisor;
     let tools = one.tools;
@@ -480,45 +544,6 @@ export function agentStart(s: TraceState, start: AgentStart): TraceState {
       ? { ...run, agents: run.agents.map((one) => (one.id === start.id ? { ...one, ...omit(agent, "observed"), tools: one.tools, requests: one.requests } : one)) }
       : { ...run, agents: [...run.agents, agent] },
   );
-}
-
-// --- Measuring the advisor hint ---
-
-/** Finished runs of one kind, summed: how often the advisor was called, how long they took, what they cost. */
-export interface HintGroup {
-  runs: number;
-  /** Runs with at least one advisor call observed, and the calls in all. */
-  withCall: number;
-  calls: number;
-  durationMs: number;
-  /** Tokens the responses reported (the advisor's own are not exposed). */
-  tokens: number;
-  /** Runs that ended with an answer: not a measure of quality, which needs a person's review. */
-  completed: number;
-}
-
-const emptyGroup = (): HintGroup => ({ runs: 0, withCall: 0, calls: 0, durationMs: 0, tokens: 0, completed: 0 });
-
-/**
- * Finished runs started by a message, split by whether the advisor hint was attached, over the
- * runs kept. "Without" counts only runs whose routing point asked the advisor question, so the
- * two differ in the hint alone and not in whether the feature was on.
- */
-export function advisorStats(trace: TraceState): { hinted: HintGroup; plain: HintGroup } {
-  const hinted = emptyGroup();
-  const plain = emptyGroup();
-  for (const run of trace.runs) {
-    const plan = run.message?.plan;
-    if (run.endedAt === undefined || !plan?.advisorAsked) continue;
-    const group = plan.advisor ? hinted : plain;
-    group.runs++;
-    if (run.advisor.length) group.withCall++;
-    group.calls += run.advisor.length;
-    group.durationMs += run.endedAt - run.startedAt;
-    group.tokens += (run.tokens?.input ?? 0) + (run.tokens?.output ?? 0);
-    if (run.reason === "answer") group.completed++;
-  }
-  return { hinted, plain };
 }
 
 // --- Settings and housekeeping ---

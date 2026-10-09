@@ -1,319 +1,158 @@
 # Pingo
 
-**A Claude Code mod powered by Jev.**
+**Execution diagnostics and semantic search for Claude Code, powered by Jev.**
 
-Pingo adds tool suggestions, optional model and subagent planning, and a live dashboard to Claude Code. It asks [TypeSafe's Jev](https://typesafe.ai/) for structured decisions, checks the answers, and feeds accepted tool suggestions back to Claude.
+Pingo shows observable activity, task durations, models and effort actually used, tools, workers, errors, and reported token usage. The `sift` skill asks [TypeSafe's Jev](https://typesafe.ai/) structured semantic questions over bounded candidates. Optional native-subagent planning chooses model and effort when Claude starts an eligible agent.
 
-**Jev suggests. Claude decides.** Claude still writes the answer, chooses tool arguments, and executes tools through Claude Code.
-
-![Pingo, a dotted 3D sphere whose eyes change with routing, thinking, passthrough, failure, idle, and baseline states.](docs/media/pingo-states.gif)
-
-The project is called **Pingo**. The current plugin identifier is **`jev`**, its commands start with **`/jev`**, and its configuration uses **`JEV_*`** environment variables. Use those names with this version.
-
-[Quick start](#quick-start) · [How it works](#how-it-works) · [Features](#features) · [Commands](#commands) · [Data handling](#data-handling)
-
-## What Pingo adds
-
-| Component | Role |
-| --- | --- |
-| **Claude Code** | Runs the coding session, manages tools and permissions, and produces responses. |
-| **Jev** | Answers structured decision questions with choices, confidence, and numerical scores. |
-| **Pingo** | Connects Jev to Claude Code, validates decisions, applies enabled planning features, and shows observable activity. |
-
-With ordinary Claude Code, Claude selects its next action from the conversation and available tools. With Pingo's default settings, Jev also evaluates the next tool and Claude receives a suggestion when the answer passes the routing checks. The dashboard, activity feed, and subagent views show those decisions and the session's work.
-
-Optional features can change the model or effort used for a turn or a subagent. They are **off by default**. Tool and delegation suggestions are advisory; model and effort selections, when enabled and applicable, are applied to requests.
-
-Routing adds provider calls, latency, and any charges from that provider. This repository does not establish a guaranteed improvement in speed, cost, or task quality. The Baseline tab compares recorded request counts, token usage, cache share, and request duration with routing on and off; it is not a controlled benchmark.
+The plugin identifier remains **`jev`**, commands start with **`/jev`**, and configuration uses **`JEV_*`** environment variables. Claude Code owns the main model, effort, tools, delegation, permissions, and completion. Main prompts and successful tool batches add no automatic Jev consultation.
 
 ## Quick start
 
-Requires **Claude Code 2.1.292 or newer** with mod support and a Jev credential from a supported provider.
+Requires **Claude Code 2.1.292 or newer** with mod support. Sift requires **Node 22.18 or newer**. Diagnostics work without a key; semantic judgments and optional agent planning require a provider credential.
 
 ```sh
-git clone https://github.com/petersonPaloschi/jev-claude-code.git pingo
+git clone https://github.com/petersonPaloschi/pingo-claude-code.git pingo
 cd pingo
 claude --plugin-dir .
 ```
 
-Inside Claude Code:
+1. Run `/jev config` to configure and test your provider. Enter its key in the masked field; a refused key is not saved or used.
+2. Run `/jev status` to inspect the provider, credential source, and observed execution.
+3. Run `/jev` to open the dashboard. Enable `agents` in Configuration only when its planning overhead is appropriate.
 
-1. Run `/jev setup` and choose your provider.
-2. Paste its key into the masked **API key** field, then press Enter or **Test and save**. A refused key is neither saved nor used.
-3. Run `/jev status` to check the provider, credential source, and enabled features. Run `/jev` to open the dashboard.
-
-Read [Data handling](#data-handling) before enabling routing on private work: Jev receives recent conversation and tool data.
-
-For future sessions, use the same `--plugin-dir` argument, or add an absolute directory to `~/.claude/settings.json`:
+For later sessions, keep `--plugin-dir` or add an absolute directory to `~/.claude/settings.json`:
 
 ```json
-{
-  "env": {
-    "CLAUDE_CODE_PLUGIN_DIRS": "/absolute/path/to/pingo"
-  }
-}
+{ "env": { "CLAUDE_CODE_PLUGIN_DIRS": "/absolute/path/to/pingo" } }
 ```
 
-On Windows, use a path such as `C:/Projects/pingo`; separate multiple plugin directories with semicolons.
+On Windows, use a path such as `C:/Projects/pingo`; separate multiple directories with semicolons.
 
-## How it works
+## Execution and decisions
 
-![A 3D dotted diagram: Claude sends context to Jev, Jev returns a hint to Claude, and Claude makes the tool call.](docs/media/pingo-routing.gif)
+Pingo records a submitted message before planning. Main tasks retain Claude Code's model and effort, including manual choices, provider-specific IDs, and extended-context models. Per-prompt tool suggestions, the participation classifier, suggested delegation types, generic advisor queries, and edit-only completion gates have been removed.
 
-*The README animations were created with Higgsfield 3D Jutsu. They illustrate the mascot and an accepted hint, rather than recording the dashboard or measuring performance.*
+Native subagent creation and tracking remain available. The optional `agents` feature sizes eligible agents from their type and task. Explicit model choices, forks, and workflow-managed agents remain under native control. Choices and confidence are validated, effort follows the actual model, and failure leaves the native request available. Planning is off by default; its benefit still requires [paired evaluation](bench/protocol.md).
 
-1. **Collect context.** At the start of a new turn, Pingo reads the composed system instructions, recent conversation, and available tool roster. The current request and latest tool result are also named explicitly. Observed model, context-token and cache-token counts accompany configured model candidates. A message submitted during a running turn keeps that turn's existing plan.
-2. **Ask Jev.** The tool questions ask which tool fits next and whether a tool is needed. Enabled turn-planning questions travel in the same request. A roster over 120 tools adds a shortlisting call before the final choice.
-3. **Check the answer.** A tool hint must meet the confidence threshold, pass the tool-needed consistency check, name an offered tool, and target a tool the router can hint. Choice answers need explicit confidence and a valid probability distribution; the router never substitutes winning probability for confidence. Unknown choices, unsupported hosted-tool selections, and malformed answers fall through. Large rosters keep top candidates within each group, without comparing probabilities from different groups as if they shared a distribution.
-4. **Give Claude a hint.** An accepted tool choice is added to Claude's context. Enabled delegation and advisor recommendations can join the same note. Claude supplies tool arguments and decides whether to follow the suggestions.
-5. **Repeat after tools.** With Tool hints enabled, Pingo consults Jev after the last result in a main-session tool batch. It does not route another plugin's own tool calls or each tool call inside a subagent.
-6. **Record activity.** The dashboard shows routing reasons, confidence, latency, token usage, visible replies, tools, and subagent activity. Flow records each run from its submitted message to its answer, including activity observed while Jev routing is off, suggested model and effort, and checkpoint requests.
+`/jev routing off` stops plugin agent-planning calls and applying planned effort. The dashboard and raw records remain available. Explicit Sift commands operate independently.
 
-Low confidence, disagreement, an unavailable provider, a timeout, or an unreadable reply leaves Claude to continue without a tool hint. This is the mod's **fail-open** behavior.
+Malformed or unknown choices, low confidence, network failure, and timeouts fail open. The shared transport permits at most one retry for retryable HTTP/network errors within the same budget; timeouts and unreadable responses receive no second attempt.
 
-`/jev routing off` disables every Jev consultation and switches to baseline mode. It also stops applying an existing plan to subsequent requests, including subagent effort. The dashboard remains available. With every feature disabled, Jev is not called and model requests retain Claude Code's original model and effort.
+## Dashboard
 
-## Features
+The six tabs are **Overview, Live, Models, Agents, Logs, Configuration**, in terminal and desktop, with English and Brazilian Portuguese text.
 
-Change features in `/jev features` or with `/jev feature <id> on|off`.
+- **Overview:** selected time range, state, failures, request timing, and observed consumption. Empty ranges show one empty state. Figures identify their scope.
+- **Live:** visible activity and the execution graph, including tools, worker branches, observable advisor calls, and results. Terminal defaults to a compact sequence; **Full run details (f)** opens the scrollable diagram, and **Back to Live log (b)** returns to the feed. It does not expose private reasoning.
+- **Models:** the main model and effort actually observed, changes, and agent decisions. Confidence and activity are not quality scores.
+- **Agents:** name, color, state, actual model/effort, request/tool counts, and individual live panes.
+- **Logs:** persisted metadata, reasons, latency, usage, and error causes. Routing-disabled requests remain usable for external paired evaluation.
+- **Configuration:** provider, masked credentials, language, routing, and optional agent planning.
 
-| ID | Default | Behavior |
-| --- | --- | --- |
-| `tools` | On | Suggest the next tool when routing checks pass. |
-| `participation` | Off | Let Jev decline tool, delegation, and advisor hints for a turn. A missing participation answer also withholds hints. Model and effort planning can still apply. |
-| `model` | Off | Select Haiku, Sonnet, or Opus for the main turn, subject to the model safeguards below. |
-| `effort` | Off | Select an effort level for the model actually sent, even when the request did not already specify effort. |
-| `delegation` | Off | Suggest an offered subagent type. Claude decides whether to start it. |
-| `agents` | Off | Plan model and effort for eligible subagents when Claude starts them. |
-| `advisor` | Off | Ask Jev for planning guidance, request recovery after a repeated failure, and request one post-edit review pass before completion. Pingo records review requests separately from observed advisor calls. |
+Pingo remains a simple state indicator. The user and agents have readable names and colors. Retired dice, solid mascots, and graph pulses do not schedule frames. See [DESIGN.md](DESIGN.md).
 
-For coordinated model, effort, delegation and advisor guidance, enable the existing features (they remain off by default):
-
-```text
-/jev feature model on
-/jev feature effort on
-/jev feature delegation on
-/jev feature agents on
-/jev feature advisor on
-```
-
-To request advisor recommendations and inspect their observed results:
-
-```text
-/jev feature advisor on
-/jev models
-/jev flow
-```
-
-The advisor question joins the prompt's existing Jev routing request. If every other feature is off, enabling it adds one Jev request per new prompt. A `consult` recommendation must meet the configured minimum confidence; a missing answer, low confidence, or a failed Jev call adds no advisor hint. When participation is enabled, Jev must also answer that question and choose to take part. Messages submitted during a running turn keep that turn's plan.
-
-When the advisor feature, routing and credentials are available and there is no known environment blocker, Pingo adds a single completion stop gate after edits. It asks Claude to compare the full diff with scope, acceptance, auth and schema requirements, run relevant checks, seek independent advisor review when available, and report results and gaps honestly. Pingo does not configure or call the advisor, or verify that the requested review succeeded. The gate is one-shot; Flow shows that the checkpoint was requested, never that it passed. Recovery guidance applies after the same task sees the same tool fail on the same target with the same error twice, even when the tools feature is off; it asks Claude to stop repeating the approach and investigate the cause. Recovery follows the advisor feature, routing, credentials and environment gates. If participation is enabled and Jev declines, Pingo withholds the checkpoint. The native `/advisor` command selects the advisor model when needed.
-
-A model explicitly selected by the user is preserved until they return to the default. Provider-specific model IDs and extended-context models are also preserved. Subagent planning skips workflow-managed agents, forks, and agents with an explicitly requested model. Effort is checked against the model actually sent, so a rejected Haiku switch cannot discard effort intended for an eligible Opus or Sonnet request. Haiku 5.5 supports selected effort; older Haiku versions and unresolved Haiku aliases omit effort when Jev sizes the request. Requests outside that feature retain their original settings.
-
-Model criteria describe both appropriate work and tasks to avoid. The main-turn question offers exact configured model IDs plus a choice to keep the current model. A rejected, missing or failed recommendation leaves Claude Code's original request model in place, instead of reapplying a selection from a previous turn. With minimum confidence `c`, upgrades require `c`, downgrades require `c + (1-c)/2`, and downgrades with observed warm cache halve the remaining tolerated uncertainty again. At the default `0.7`, those thresholds are `0.7`, `0.85`, and `0.925`. This is a conservative policy, not a measured estimate of cache savings or task accuracy.
-The main session owns edits, tests and final verification; choose the least costly supplied model that can do them reliably. Sonnet can suit implementation when offered, but the role does not pin a model. Subagents are useful for bounded independent code or documentation lookup; choose the least costly capable option, with Haiku often sufficient for targeted searches and medium effort for multi-step investigation.
-
-Two consecutive empty responses from a switched model exclude that candidate for the session; other candidates remain eligible. Interrupts do not count. The live feed records why a recommendation was retained or rejected. Subagents continue to use the native tier aliases and omit tiers with no remaining configured candidates.
-
-The implementation shares its policies across these features:
-
-- `types/index.d.ts` defines the canonical feature schema in the self-contained public contract required by Claude Code. `hooks/core/contracts.ts` reuses it and defines the accepted, held and unavailable decision DTOs used by planning and the dashboard.
-- `hooks/core/request.ts` provides the timed, fail-open Jev call used by tool routing, shortlisting, turn planning and subagent planning. Provider retries and the timeout budget remain in the shared provider transport.
-- `hooks/core/reasons.ts` provides reason codes, failure classification and the routing/key gate used by every layer.
-- `hooks/core/selection.ts` validates offered choices and confidence once. A shared model parser in `hooks/core/plan.ts` determines family and effort support.
-- `hooks/core/runtime.ts` gates features and resolves the model and effort from the actual request. It also provides the shared hint wrapper and input-token calculation.
-- `hooks/watch.ts` presents normalized decisions and settles them against the request sent; it does not reinterpret raw Jev answers.
-
-Only choice answers use `min_confidence`. Participation is a separate numerical score with a fixed `0.5` cutoff. Delegation requires an eligible type announced by Claude Code; an empty roster is recorded explicitly. Test fixtures in `tests/helpers.ts` share answer mapping and request execution across integration tests.
-
-### Sift: bulk judgments
-
-The plugin also ships the **`sift`** skill. When Claude needs to decide which files, log lines, or list entries matter, it can delegate those judgments to Jev and read back a compact shortlist. Use it for semantic filtering, classification, ranking, and finding relevant lines. Use `rg` for exact matches and read the shortlisted content before editing or drawing conclusions.
-
-Sift requires **Node 22.18 or newer** and no additional dependencies. In the table below, `sift` means `node scripts/sift.ts` from the plugin checkout; it is not a separately installed executable. Claude's skill uses the script under `CLAUDE_PLUGIN_ROOT`.
-
-| Command | Use |
-| --- | --- |
-| `sift filter "<yes/no question>" <inputs>` | Keep the files, lines (`--lines`), or JSONL items (`--items`) where the answer is yes. Repeated lines within one log file are folded into one pattern. |
-| `sift classify --labels "a,b,c" <inputs>` | Put each item in one bucket, listing low-confidence items with their runner-up label. |
-| `sift rank "<query>" <inputs>` | Order items by relevance to a query. |
-| `sift find "<what>" <files>` | Locate the matching lines inside large files. |
-| `sift ask "<question>" --state @file` | One yes/no or `--choice` answer over a document, or a raw `{state, questions}` spec. |
-| `sift status` | Check the provider, key source, and model with one real call, and show lifetime totals for runs, judged items, Jev tokens and estimated Claude tokens not read. |
-
-For example:
-
-```sh
-node scripts/sift.ts --help
-node scripts/sift.ts filter "Does this file handle authentication?" hooks --ext ts,tsx
-node scripts/sift.ts classify --labels "bug,feature,question" --items tickets.jsonl
-node scripts/sift.ts rank "model switching" hooks --top 5 --save ranked.json
-```
-
-Inputs can be files, directories, glob patterns, `-` for stdin, or `--items FILE.jsonl` with one `{ "id": "T1", "text": "..." }` entry per line. Directory and glob inputs respect Git ignores. Requests run 16 at a time by default (`--concurrency`), with one item per request; `--fast` packs small items together. Filter, classify, and rank clip each item at 60,000 characters by default (`--max-chars`). Find judges chunks of 150 non-empty lines (`--chunk`), with each line clipped at 400 characters.
-
-`?` marks uncertain judgments that need direct review; `~` marks clipped content in scored or verbose output. `--json` writes machine-readable results to stdout and the summary to stderr. `--save FILE` writes full filter/classify/rank results, all find hits above `--min-score`, or the raw ask response. Failed items or chunks are reported separately. Exit codes are `0` for a completed command (possibly with partial failures), `1` for invalid or blocked input, `3` for a missing/refused key, and `5` when no usable judgment was returned or the command failed unexpectedly.
-
-Sift reads exported plugin options, Setup's saved key/provider pair when no option key is present, and the provider environment variables. The model defaults to that provider's configured/default Jev model; `--model` overrides it for the command. `/jev setup` remains the credential configuration path. `sift status` makes one real validation call. Sift runs independently of routing and feature switches. In an active Pingo session, its Jev consultations are recorded in the dashboard alongside its Bash invocation; standalone CLI runs have no session log channel. It adapts [Quicksilver](https://github.com/UditAkhourii/quicksilver)'s approach to Pingo's providers and credentials.
-
-## Dashboard and visual language
-
-Pingo is a dotted sphere with six expressions. The same projected geometry is rendered as **braille cells in the terminal** and **SVG circles on the desktop**. Color indicates state; exact confidence, latency, and usage remain readable as text.
-
-| State | Meaning |
-| --- | --- |
-| Routing | Jev's tool suggestion passed the routing checks. |
-| Thinking | A Jev request is in flight; the eyes spin and an orbit ring appears. |
-| Passthrough | No tool hint was applied; Claude continues on its own. |
-| Failing | A routing request failed or returned an unusable response. |
-| Idle | No recent routing activity. |
-| Baseline | Routing is switched off. |
-
-**Overview** shows usage and routing totals. **Live** shows visible session events. **Models** shows model switches, decisions for each enabled function, and the confidence the next model change needs. It also compares runs with and without an advisor hint: observed consultations, average duration, reported tokens, and completion. These observations do not measure answer quality or establish that the hint caused an improvement.
-
-**Agents** lists subagent state, model, effort, and activity. Each agent has a numbered live pane and a distinct dotted mascot. **Features**, **Reasons**, **Baseline**, **Logs**, and **Setup** expose controls and recorded metadata.
-
-**Flow** draws the submitted message, Jev consultations, the main loop's original, sent and answering models, tools grouped by source (built-in, MCP, API-run), subagents, advisor calls, and the answer with its edits. Earlier runs appear below. A message typed into a running turn appears with its association pending. An empty record shows an empty state instead of a sample diagram.
-
-Flow keeps the last 40 completed runs and every run with a main turn or subagent still active. Its text diagram adapts to the pane width. While Flow is visible and work is active, a pulse refreshes at up to 10 frames per second, with one redraw pending at a time. `/jev status` reports the latest run and measured redraw cost.
-
-### Observation limits
-
-Advisor calls become observable only when the model request's response arrives. The SDK exposes neither the advisor's model nor its token usage. A received result does not indicate whether the consultation succeeded. The advisor comparison includes only runs whose prompt asked the advisor question; duration covers the main turn, and token counts include reported main-loop and subagent usage, including cache reads and writes.
-
-The current implementation has three known limitations:
-
-- Remote workflow agents emit no local completion event, so their Flow entries can remain active after the main turn ends. Those runs remain outside the completed-run limit and survive `/jev clear`.
-- The advisor comparison includes a run as soon as its main turn ends, even if background subagents are still working. Its observed calls and token totals can therefore change afterward.
-- Branch ordering uses the retained call details. Once a run exceeds 30 tool calls or 24 advisor calls, discarded early timestamps can change the displayed order of branches.
-
-The dashboard, commands, activity feed, and hints support English and Brazilian Portuguese. Set **Language** to `en`, `pt`, or `auto` in `/jev setup`. `auto` follows the system locale. Jev's decision questions and criteria default to English independently; set the `routing_locale` plugin option to `pt` for Portuguese. Conversation content is never translated.
-
-See [DESIGN.md](DESIGN.md) for the visual system and [media notes](docs/media/README.md) for the README animations.
-
-## Providers and configuration
-
-These are the adapters and default model IDs configured in the code:
-
-| Provider ID | Provider | Key environment variable | Default Jev model |
-| --- | --- | --- | --- |
-| `typesafe` | [TypeSafe](https://typesafe.ai/) | `TYPESAFE_API_KEY` | `jev-latest` |
-| `openrouter` | [OpenRouter](https://openrouter.ai/blog/tutorials/how-to-use-jev/) | `OPENROUTER_API_KEY` | `typesafe/jev-1.13` |
-| `vercel` | [Vercel AI Gateway](https://vercel.com/ai-gateway/models/jev) | `AI_GATEWAY_API_KEY` | `typesafe-ai/jev` |
-| `opencode` | [OpenCode Zen](https://opencode.ai/docs/en/zen/) | `OPENCODE_API_KEY` | `jev-1.13-free` |
-
-Model availability is controlled by the provider. The OpenCode adapter also accepts `jev-1.13`; its setup check suggests that paid model if the free endpoint becomes unavailable.
-
-Configure options through Setup or `/plugin configure jev@inline` when loaded with `--plugin-dir`:
-
-| Option | Default | Purpose |
-| --- | --- | --- |
-| `provider` | `auto` | Choose `typesafe`, `openrouter`, `vercel`, or `opencode`. |
-| `api_key` | Empty | Sensitive credential. Setup also retains a local key/provider pair; otherwise use the chosen provider's environment variable. |
-| `model` | Provider default | The **Jev** model ID, separate from the Claude model selected by turn planning. |
-| `min_confidence` | `0.7` | Minimum confidence for choice answers; accepts 0–1. Falls back to `JEV_MIN_CONFIDENCE` when unset or invalid. |
-| `timeout_ms` | `4000` | Budget for one Jev call, including its retry. Falls back to `JEV_TIMEOUT_MS` when unset; clamped to 500–30000 ms. |
-| `locale` | `auto` | Interface, commands and hint language: `auto`, `en`, or `pt`. |
-| `routing_locale` | `en` | Language of Jev decision questions and criteria: `en` or `pt`. |
-| `claude_models` | Haiku 5.5, Sonnet 5.5 and Opus 5.5 | Comma-separated first-party model IDs supported by your account. Versions are separate choices. Empty uses built-ins; invalid IDs are ignored, duplicates removed, and at most 40 candidates retained. |
-
-`claude_models` is an explicit candidate list, not automatic account discovery. Configure it through `/plugin configure jev@inline`, for example `claude-sonnet-4-6,claude-sonnet-5-5,claude-opus-5-5`. The existing safeguards preserve provider-specific and extended-context model selections.
-
-A retryable HTTP status or network failure gets one retry inside the call's time budget. A timeout or unreadable response does not get another attempt. Large tool rosters can require two separate calls, each with its own budget.
-
-<details>
-<summary>Credential selection and storage</summary>
-
-When no Setup credential overrides the session, the explicit `provider` option takes precedence over `JEV_PROVIDER`. Under `auto`, Pingo uses the first provider with a key in the environment, in the table's order, or TypeSafe if none is set. A credential restored from the local store stays paired with its saved provider.
-
-Set the provider to match the issuer of `api_key`. Pingo cannot infer the issuer from the key. With neither an explicit provider nor `JEV_PROVIDER`, the sensitive option is treated as a TypeSafe key. A provider auto-detected from its environment variable gets that variable's key, never a key saved for a different provider.
-
-Setup tests a pasted key, saves the accepted key/provider pair in the local plugin store under `~/.claude/plugins/store`, and also attempts to save Claude Code's sensitive `api_key` option using `claude plugin configure --values-stdin`. The local copy restores the key in future sessions when the sensitive option is absent. Treat plugin-store files as sensitive credential files. The setup field is masked and shows only the last four characters after saving; `/jev status` reports the source without revealing the key. **Remove key** clears the local copy and attempts to clear the saved option; a refusal from the configuration runtime is reported.
-
-If the runtime cannot save the sensitive option, the local plugin-store copy still persists the credential and its provider. If both saving paths fail, Setup reports the failure and restores the previous provider configuration. A separate provider fallback is retained when the provider option cannot be saved.
-
-**Test connection** sends a saved key only to its configured provider. Testing another provider uses that provider's environment key or asks for a new pasted key.
-
-Older versions stored a plain-text key in plugin state. Current startup removes that legacy value; configure a replacement through the sensitive option or an environment variable.
-
-Do not put keys in slash-command arguments, repository files, screenshots, or issue reports.
-
-</details>
+Task timing starts at prompt submission. Main-response and background-completion timing are distinct; parallel work contributes elapsed wall time rather than summed overlaps. Main, worker, cache, and Jev usage have separate scope. Unreported usage/prices remain unknown; known provider subtotals are partial or estimated. Review requested, advisor call observed, and result verified are separate facts.
 
 ## Commands
 
 | Command | Action |
 | --- | --- |
 | `/jev`, `/jev dashboard`, `/jev overview` | Open Overview. |
-| `/jev live` | Open the live activity feed. |
-| `/jev models` | Open the Models tab: model switches, why they did or did not happen, and what the next one needs. |
-| `/jev agents` | List subagents and their activity. |
-| `/jev agent` | Open the newest running subagent, or the latest retained run. |
-| `/jev agent <number, type, or mascot>` | Open a particular subagent's live pane, e.g. `/jev agent 3`. |
-| `/jev agent <number, type, or mascot> remove` | Remove a finished run and close its pane. |
-| `/jev agents clear` | Remove all finished runs; running agents stay. |
-| `/jev flow` | Open the run flow: main session, observed agent models, tools, dispatcher branches, configured advisor, return to main, answer and checkpoint requests. |
-| `/jev features` | View and toggle the seven routing features. |
-| `/jev reasons` | Show why hints were not applied. |
-| `/jev baseline` | Compare recorded request metrics with routing on and off. |
-| `/jev logs`, `/jev log` | Browse request metadata. |
-| `/jev setup [provider]` | Configure and test a provider; enter the key in the masked field. |
-| `/jev status` | Show routing settings, features, credential source, the latest Flow run, and measured Flow redraw cost. |
-| `/jev routing on`, `/jev routing off` | Enable Jev consultations or switch to baseline. |
-| `/jev feature <id> on`, `/jev feature <id> off` | Toggle a feature independently. |
-| `/jev clear` | Clear request history, the live log, model decision history, finished subagents, and completed Flow runs; active runs stay. |
+| `/jev live`, `/jev flow` | Open Live and its execution graph. |
+| `/jev models` | Show observed model and effort. |
+| `/jev agents` | List workers and activity. |
+| `/jev agent [number, type, or name]` | Open a worker's live pane. |
+| `/jev agent <selector> remove` | Remove a finished run and close its pane. |
+| `/jev agents clear` | Remove finished runs; active workers stay. |
+| `/jev logs`, `/jev log`, `/jev reasons` | Open Logs. |
+| `/jev config`, `/jev setup [provider]`, `/jev features` | Open Configuration. |
+| `/jev status` | Show settings and observed execution. |
+| `/jev routing on|off` | Enable/disable optional agent planning. |
+| `/jev feature agents on|off` | Toggle native-subagent planning. |
+| `/jev clear` | Clear completed history and retain active work. |
 
-Arguments are case-insensitive. Agent numbers are not reused within a session. The dashboard routing button and `r` shortcut also switch routing on and off.
+Arguments are case-insensitive; worker numbers are not reused during a session. Useful former commands redirect to consolidated screens. Obsolete features cannot be enabled. Old persisted tabs fall back to a valid screen, and old feature configuration is normalized.
+
+## Sift
+
+Use `rg` for literal matches and local code for numeric rules. Select bounded candidate files/items first, then ask semantic questions. Read selected content before editing or drawing conclusions.
+
+Here, `sift` means `node scripts/sift.ts` from the checkout. The installed skill uses `CLAUDE_PLUGIN_ROOT`.
+
+| Command | Use |
+| --- | --- |
+| `sift filter "<yes/no question>" <inputs>` | Keep semantic matches from files, `--lines`, or `--items` JSONL. |
+| `sift classify --labels "a,b,c" <inputs>` | Assign labels and expose uncertain judgments. |
+| `sift rank "<query>" <inputs>` | Rank bounded candidates by relevance. |
+| `sift find "<what>" <files>` | Find relevant lines in clipped chunks. |
+| `sift ask "<question>" --state @file` | Ask yes/no or `--choice` questions, or supply a raw spec. |
+| `sift status` | Test provider/model and show scoped lifetime counters. |
+
+```sh
+node scripts/sift.ts --help
+node scripts/sift.ts filter "Does this file handle authentication?" hooks --ext ts,tsx
+node scripts/sift.ts classify --labels "bug,feature,question" --items tickets.jsonl
+node scripts/sift.ts rank "agent model selection" hooks --top 5 --save ranked.json
+```
+
+Inputs accept files, directories, globs, stdin (`-`), and JSONL `{ "id": "T1", "text": "..." }` items. Discovery respects Git ignores. Item, concurrency, character, and chunk limits are explicit options. `--json` sends machine-readable stdout and diagnostics to stderr; `--save FILE` persists results. Uncertain judgments and failed items remain visible. The unvalidated packed `--fast` mode has been removed.
+
+The footer's content-minus-output figure estimates **potential context avoided**. It does not measure actual Claude input, later work, cache reuse, or net monetary savings. Jev tokens are separate. Total-benefit claims need a controlled whole-task comparison; see [benchmark reproduction](bench/README.md).
+
+For example, an estimated 10,000 tokens of candidates and 1,000 tokens of output imply 9,000 tokens of potential context avoided. A separately reported 2,000 Jev input tokens do not turn that estimate into a measured net gain: skill/commands, cache, later Claude work, output tokens, and provider prices still need measurement.
+
+## Providers and configuration
+
+These adapters/default IDs are configured in the code; availability is controlled by the provider.
+
+| Provider ID | Key environment variable | Default Jev model |
+| --- | --- | --- |
+| `typesafe` | `TYPESAFE_API_KEY` | `jev-latest` |
+| `openrouter` | `OPENROUTER_API_KEY` | `typesafe/jev-1.13` |
+| `vercel` | `AI_GATEWAY_API_KEY` | `typesafe-ai/jev` |
+| `opencode` | `OPENCODE_API_KEY` | `jev-1.13-free` |
+
+Configure in Configuration or `/plugin configure jev@inline`:
+
+| Option | Default | Purpose |
+| --- | --- | --- |
+| `provider` | `auto` | Select a supported adapter. |
+| `api_key` | Empty | Sensitive credential, else the selected provider's environment key. |
+| `model` | Provider default | Jev model ID, separate from Claude's main model. |
+| `min_confidence` | `0.7` | Choice confidence, 0–1; falls back to `JEV_MIN_CONFIDENCE`. |
+| `timeout_ms` | `4000` | Single-call budget including retry; environment fallback, clamped to 500–30000 ms. |
+| `locale` | `auto` | Interface language: `auto`, `en`, or `pt`. |
+| `routing_locale` | `en` | Jev question language; conversation content is preserved. |
+| `claude_models` | Built-in candidates | Explicit first-party IDs for agent planning, not account discovery. |
+
+Explicit `provider` precedes `JEV_PROVIDER`. With `auto`, environment detection follows the table order, else TypeSafe. A sensitive option without an issuer is treated as a TypeSafe key. A provider detected from its environment receives that key, never one paired with another provider.
+
+Configuration validates a pasted key before saving its provider/key pair in `~/.claude/plugins/store`, and attempts to save Claude Code's sensitive `api_key` option through `claude plugin configure --values-stdin`. If the runtime refuses the option, the paired local copy still restores it; if both saves fail, the previous configuration is restored. Treat plugin-store credentials as sensitive.
+
+The field is masked; saved-key display reveals only the last four characters. Status reports the source. **Remove key** clears the local copy and attempts to clear the sensitive option, reporting refusal. Testing another provider uses its own key. Startup discards legacy state credentials. Keep keys out of command arguments, repository files, and screenshots.
 
 ## Data handling
 
-When routing is enabled, a key is configured, and an applicable feature is on, Pingo sends requests over HTTPS to the **selected Jev provider**. That provider receives:
+Optional agent planning sends the selected provider the agent type, bounded description/prompt, and model/effort questions. Explicit Sift commands send judged content and criteria. Limits do not redact secrets inside normal content or stdin. Use these features only for content you may share.
 
-- Composed Claude Code system instructions, truncated to 4,000 characters.
-- Recent prompts, visible replies, tool-call arguments, and tool results. Results can include source files, command output, web pages, and MCP responses. Each text or argument/result entry is truncated to 4,000 characters, retaining its head and tail; recent turns are kept within an approximate 60,000-character state budget.
-- Available tool names and bounded descriptions, or parameter names when descriptions are absent. Large rosters are shortlisted before the final question.
-- Enabled planning questions. Eligible subagent-planning calls instead contain the agent type, a task description capped at 400 characters, and a task prompt capped at 4,000 characters.
-- Configured model IDs and observed execution metadata: current model, context tokens and cache-read tokens. These counts describe the latest observed request, not the exact size of the next one.
+Sift rejects credential-like filenames, binaries, files over 2 MB, lockfiles, and common build/dependency directories. Credential/size guards cover explicit items, state, spec, and labels files. Explicit filenames and stdin are deliberate inputs. Judgments are persisted only with `--save`.
 
-Truncation limits request size; it **does not redact secrets** from conversation or tool content. Only use routing for information you are allowed to share with that provider. `/jev routing off` stops every routing request.
+The latest **500 request records** persist timestamps, session/model identifiers, reasons, latency, choices, and reported usage. Prompt and tool argument/result bodies are not record fields. A failure cause can retain a bounded provider excerpt; the transport redacts the configured key. Session feed/trace can include shortened visible prompts, responses, paths, tool details, and errors. Histories are bounded except active work retained for later completion. Clearing history and removing a credential are separate actions.
 
-When Claude runs the `sift` skill, the selected provider receives the judged content together with Claude's question, labels, or query. Filter, classify, and rank use the per-item character limit described above; find sends clipped line chunks. Ask sends the supplied state/spec without that per-item clipping. `/jev routing off` does not affect sift.
+Some remote workflow agents have no local completion event, so completion and usage can remain unknown. Advisor model/token usage is not supplied by every runtime event. An observed response or tool call does not prove successful verification.
 
-File collection skips credential-like filenames (`.env*`, keys, certificates, `credentials`/`secrets` files), binaries, files over 2 MB, lockfiles, and common build/dependency directories. Credential and binary/size checks also apply to `--items`, `--state @file`, raw ask specs, and `--labels-json @file`. Directory and glob discovery respect Git ignores; explicitly named files and stdin are explicit inputs. These checks do not redact secrets inside ordinary content or inspect credentials pasted through stdin/literal state. Sift does not persist judgments unless `--save FILE` is supplied.
-
-Pingo's views show observable activity and visible response text. They do not expose the models' private internal reasoning. The live feed stays in session memory; it may contain shortened prompts, tool details, response text, and provider errors.
-
-The latest **500 request records** are persisted in the plugin store under the Claude Code configuration directory. Records contain timestamps, a short session ID, model names, routing reason codes, tool counts, Jev choices and confidence, applied changes, latency, and token usage. Conversation prompts and tool arguments/results are not stored as record fields. Failed or unusable Jev replies also retain an observed cause capped at 240 characters; this can include a provider-error excerpt or discarded-answer details. The provider layer redacts the configured API key from error messages. The Models tab keeps up to 40 routing points in session memory, including failed consultation attempts and the accepted results of independent questions.
-
-Flow keeps a separate session-state record under `flowV2`, which survives plugin reloads in that session. It includes message excerpts capped at 200 characters, model IDs, tool names and sources, subagent summaries, configured advisor model, advisor-call timestamps, checkpoint request statuses, edit paths, and reported token totals. Detailed call lists are bounded separately from aggregate tool and Jev counts. A checkpoint marked requested is not evidence that a review or verification passed. The previous Flow schema is not migrated into this record. Clearing completed Flow runs leaves active work available for later events.
-
-The store also retains the routing and feature switches, a fallback provider selection when needed, and the validated key/provider pair saved in Setup. The credential entry is separate from request records. `/jev clear` empties the request history and session feed; use Setup's **Remove key** action to remove the credential copy.
-
-## Development
+## Validation and evaluation
 
 ```sh
 claude plugin validate .
 claude plugin test .
+npx --yes --package typescript tsc --noEmit
 node --test tests/sift-cli.test.mjs
 ```
 
-The plugin tests use Claude Code's test runtime. The additional Node suite exercises the actual sift CLI with isolated configuration and a stubbed provider, including Git ignores, credential guards, saved output, and unusable answers. Both suites run without a real API key or provider request.
+The suites use stubbed providers and isolated configuration. They verify behavior, migrations, credential isolation, failures, task timing, and CLI formats. They do not establish live Claude/Jev quality, speed, or cost gains. The [evaluation protocol](bench/protocol.md) and [bounded pilot summary](docs/evaluation/results/matched-pilot-summary.md) describe the acceptance criteria and evidence limits.
 
-| Source | Responsibility |
-| --- | --- |
-| [`hooks/register.tsx`](hooks/register.tsx) | Session hooks, commands, model application, state, and UI integration. |
-| [`hooks/core/decide.ts`](hooks/core/decide.ts) | Routing checks, shortlisting, and fail-open decisions. |
-| [`hooks/core/plan.ts`](hooks/core/plan.ts) | Feature defaults and turn/subagent planning. |
-| [`hooks/core/jev.ts`](hooks/core/jev.ts) | Provider adapters, response normalization, retries, and key validation. |
-| [`hooks/config.ts`](hooks/config.ts) | Settings, credential selection, thresholds, and request limits. |
-| [`hooks/input.ts`](hooks/input.ts), [`hooks/core/state.ts`](hooks/core/state.ts) | Transcript conversion and bounded provider context. |
-| [`hooks/ui.tsx`](hooks/ui.tsx), [`hooks/flow.ts`](hooks/flow.ts) | Dashboard and Flow rendering. |
-| [`hooks/trace.ts`](hooks/trace.ts) | The Flow tab's run record: pure reducers over the SDK's events. |
-| [`hooks/mascots/`](hooks/mascots/) | Pingo, user, and subagent geometry. |
-| [`hooks/core/sift.ts`](hooks/core/sift.ts), [`scripts/sift.ts`](scripts/sift.ts), [`skills/sift/`](skills/sift/) | The sift skill: bulk-judgment questions and output (pure), the Node CLI that collects inputs and calls Jev, and Claude's instructions. |
-
-See [CONTRIBUTING.md](CONTRIBUTING.md) for the development workflow and [SECURITY.md](SECURITY.md) for vulnerability reports.
+See [CONTRIBUTING.md](CONTRIBUTING.md) and [SECURITY.md](SECURITY.md).
 
 ## License
 

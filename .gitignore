@@ -6,6 +6,13 @@ coverage/
 # Sift benchmark inputs (rebuilt by bench/build.mjs) and its scratch file.
 bench/data/
 bench/results/.last-save.json
+# Raw local task runs may contain session data. Keep only the reviewed aggregate.
+/docs/evaluation/results/*
+!/docs/evaluation/results/matched-pilot-summary.md
+# Local task plans and execution diary, not product documentation.
+/TASKS.md
+/tasks.md
+/docs/tasks-execution.md
 .env
 .env.*
 .envrc
@@ -37,6 +44,9 @@ id_ed25519
 
 # graft's local graph cache — regenerable, not committed (run `graft build`).
 /graft/
+# Local Graft caches created in scratch paths by tool invocations.
+/env.get/
+/tool/graft/
 
 # Local agent/editor configuration and external Graft integration.
 # AGENTS.md currently contains only Graft-specific instructions; keep it local

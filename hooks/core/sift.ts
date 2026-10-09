@@ -13,7 +13,7 @@ export interface Item {
 export type Flags = Record<string, string | true>;
 
 /** Flags that never take a value, so `--lines src` keeps `src` as an input. */
-const BOOLEAN_FLAGS = new Set(["lines", "json", "all", "help", "fast", "verbose", "no-collapse", "no-secrets-guard"]);
+const BOOLEAN_FLAGS = new Set(["lines", "json", "all", "help", "verbose", "no-collapse", "no-secrets-guard"]);
 
 export function parseArgs(argv: string[]): { pos: string[]; flags: Flags } {
   const pos: string[] = [];
@@ -51,53 +51,24 @@ export function parseLabels(spec: string): Record<string, Json> {
   }));
 }
 
-/**
- * One item per request by default: packing items into a shared state measurably hurts accuracy
- * (Quicksilver's bench: CI triage 76% packed vs 100% unpacked). --fast packs small items for throughput.
- */
-export function batches(items: Item[], flags: Flags): Item[][] {
-  const budget = num(flags["pack-tokens"], 3000);
-  const maxItems = num(flags["pack-items"], flags.fast ? 40 : 1);
-  const out: Item[][] = [];
-  let current: Item[] = [];
-  let tokens = 0;
-  for (const item of items) {
-    const cost = estTokens(item.text) + 20;
-    if (current.length && (tokens + cost > budget || current.length >= maxItems)) {
-      out.push(current);
-      current = [];
-      tokens = 0;
-    }
-    current.push(item);
-    tokens += cost;
-  }
-  if (current.length) out.push(current);
-  return out;
+/** Build one independent question about the one item sent in the request. */
+export type MakeQuestion = (ref: string) => ChoiceQuestion | NoulQuestion;
+
+export function groupRequest(item: Item, make: MakeQuestion, extra: { [key: string]: Json } = {}): { state: { [key: string]: Json }; questions: Questions } {
+  return {
+    state: { ...extra, source: item.id, content: item.text },
+    questions: { q0: make("`content`") },
+  };
 }
 
-/** Builds the question for one item; `ref` is how the instructions point at it in the state. */
-export type MakeQuestion = (ref: string, packed: boolean) => ChoiceQuestion | NoulQuestion;
-
-/** The state and questions of one request over a group of items: answer `q<j>` is about item j. */
-export function groupRequest(group: Item[], make: MakeQuestion, extra: { [key: string]: Json } = {}): { state: { [key: string]: Json }; questions: Questions } {
-  const packed = group.length > 1;
-  const state: { [key: string]: Json } = packed
-    ? { ...extra, items: Object.fromEntries(group.map((item, j) => [`i${j}`, { source: item.id, content: item.text }])) }
-    : { ...extra, source: group[0]!.id, content: group[0]!.text };
-  const questions: Questions = Object.fromEntries(group.map((_, j) => [`q${j}`, make(packed ? `\`items.i${j}\`` : "`content`", packed)]));
-  return { state, questions };
-}
-
-const aboutOnly = (ref: string, packed: boolean) => (packed ? ` Answer only about ${ref}; ignore the other items.` : "");
-
-export const filterQuestion = (question: string): MakeQuestion => (ref, packed) => ({
+export const filterQuestion = (question: string): MakeQuestion => (_ref) => ({
   type: "noul",
-  instructions: `${question}${aboutOnly(ref, packed)}`,
+  instructions: question,
 });
 
-export const classifyQuestion = (question: string, criteria: Record<string, Json>): MakeQuestion => (ref, packed) => ({
+export const classifyQuestion = (question: string, criteria: Record<string, Json>): MakeQuestion => (_ref) => ({
   type: "choice",
-  instructions: `${question}${aboutOnly(ref, packed)}`,
+  instructions: question,
   criteria,
 });
 
@@ -110,9 +81,9 @@ export const RANK_LEVELS: Record<string, string> = {
   exact: "Directly and specifically answers or matches the query",
 };
 
-export const rankQuestion: MakeQuestion = (ref, packed) => ({
+export const rankQuestion: MakeQuestion = (ref) => ({
   type: "choice",
-  instructions: `How relevant is ${ref} to \`query\`?${packed ? " Ignore the other items." : ""}`,
+  instructions: `How relevant is ${ref} to \`query\`?`,
   criteria: RANK_LEVELS,
 });
 
@@ -253,34 +224,52 @@ export function renderAnswer(id: string, answer: Answer): string {
   return `${id}  choice ${answer.choice} (conf ${f2(answer.confidence)})`;
 }
 
-/** TypeSafe's list price per input token; other providers bill differently, so only it gets a cost. */
+/** Configured TypeSafe input list-rate assumption; this is not a provider invoice. */
 export const TYPESAFE_PRICE_PER_TOKEN = 0.042 / 1e6;
 
 export interface RunStats {
   scanned: number;
   contentTokens: number;
-  jevTokens: number;
+  /** Input tokens reported by Jev; undefined when no request reported a usable counter. */
+  jevTokens?: number;
+  jevUsageReportedCalls: number;
+  jevUsageMissingCalls: number;
   seconds: number;
   provider: string;
   failed: { id: string; error: string }[];
   skipped: string[];
 }
 
-/** Roughly the tokens Claude would have read without sift: the content judged minus the shortlist printed. */
-export const savedTokens = (stats: RunStats, output: string) => Math.max(0, stats.contentTokens - estTokens(output));
+/** A character-count estimate of potential context reduction, not observed Claude usage or task savings. */
+export const potentialContextReductionTokens = (stats: RunStats, output: string) => Math.max(0, stats.contentTokens - estTokens(output));
 
-const price = (tokens: number) => `$${(tokens * TYPESAFE_PRICE_PER_TOKEN).toFixed(4)}`;
+const priceEstimate = (tokens: number) => `~$${(tokens * TYPESAFE_PRICE_PER_TOKEN).toFixed(4)}`;
 
-/** The summary line: what was judged, what it cost, and roughly what Claude did not have to read. */
+/** The summary line keeps Jev usage separate from estimated potential context reduction. */
 export function footer(stats: RunStats, extra: string[], output: string, scanned = true): string {
-  const saved = savedTokens(stats, output);
-  const cost = stats.provider === "typesafe" ? ` (${price(stats.jevTokens)})` : "";
+  const potential = potentialContextReductionTokens(stats, output);
+  const missingUsage = stats.jevUsageMissingCalls;
+  const usageGap = `${missingUsage} ${missingUsage === 1 ? "call" : "calls"} without usage`;
+  const jev = missingUsage
+    ? stats.jevUsageReportedCalls
+      ? `jev ≥${fmtK(stats.jevTokens ?? 0)} tok reported (${usageGap})`
+      : `jev usage unavailable (${usageGap})`
+    : stats.jevTokens === undefined
+      ? "jev usage unavailable"
+      : `jev ${fmtK(stats.jevTokens)} tok`;
+  const cost = stats.provider === "typesafe"
+    ? missingUsage
+      ? stats.jevTokens === undefined
+        ? " · TypeSafe cost unavailable"
+        : ` · TypeSafe known input estimate ${priceEstimate(stats.jevTokens)}`
+      : stats.jevTokens === undefined ? " · TypeSafe cost unavailable" : ` (TypeSafe input estimate ${priceEstimate(stats.jevTokens)})`
+    : "";
   const parts = [
     ...(scanned ? [`${stats.scanned} scanned`] : []),
     ...extra,
     `${stats.seconds.toFixed(1)}s`,
-    `jev ${fmtK(stats.jevTokens)} tok${cost}`,
-    `~${fmtK(saved)} Claude tokens not read`,
+    jev + cost,
+    `~${fmtK(potential)} potential context reduction (estimate)`,
   ];
   let text = `— ${parts.join(" · ")}`;
   if (stats.failed.length) {
@@ -298,10 +287,15 @@ export interface Tally {
   since: string;
   runs: number;
   items: number;
+  /** Sum of counters Jev actually reported, including zero. */
   jevTokens: number;
-  /** The share of jevTokens billed by TypeSafe, the only provider with a known price. */
+  jevUsageReportedCalls: number;
+  jevUsageMissingCalls: number;
+  /** TypeSafe's reported input-token subtotal at the configured list-rate assumption. */
   typesafeTokens: number;
-  saved: number;
+  typesafeUsageReportedRuns: number;
+  typesafeUsageMissingCalls: number;
+  potentialContextReductionTokens: number;
 }
 
 const count = (value: unknown) => (typeof value === "number" && Number.isFinite(value) && value > 0 ? value : 0);
@@ -309,34 +303,60 @@ const count = (value: unknown) => (typeof value === "number" && Number.isFinite(
 /** A tally read from disk, or undefined when it is missing or not one. */
 export function toTally(raw: unknown): Tally | undefined {
   if (!raw || typeof raw !== "object") return undefined;
-  const old = raw as Partial<Record<keyof Tally, unknown>>;
+  const old = raw as Partial<Record<keyof Tally, unknown>> & { saved?: unknown };
   if (typeof old.since !== "string" || !old.since) return undefined;
+  const jevTokens = count(old.jevTokens);
+  const typesafeTokens = count(old.typesafeTokens);
   return {
     since: old.since,
     runs: count(old.runs),
     items: count(old.items),
-    jevTokens: count(old.jevTokens),
-    typesafeTokens: count(old.typesafeTokens),
-    saved: count(old.saved),
+    jevTokens,
+    // Old tallies only stored reported counters; preserve them as known totals.
+    jevUsageReportedCalls: count(old.jevUsageReportedCalls) || (jevTokens > 0 ? 1 : 0),
+    jevUsageMissingCalls: count(old.jevUsageMissingCalls),
+    typesafeTokens,
+    typesafeUsageReportedRuns: count(old.typesafeUsageReportedRuns) || (typesafeTokens > 0 ? 1 : 0),
+    typesafeUsageMissingCalls: count(old.typesafeUsageMissingCalls),
+    potentialContextReductionTokens: count(old.potentialContextReductionTokens ?? old.saved),
   };
 }
 
 /** The tally with one more run; a missing or damaged tally starts over at `now`. */
-export function addRun(previous: unknown, stats: RunStats, output: string, now: string): Tally {
-  const old = toTally(previous) ?? { since: now, runs: 0, items: 0, jevTokens: 0, typesafeTokens: 0, saved: 0 };
+export function addRun(previous: unknown, stats: RunStats, output: string, now: string, allFailed = false): Tally {
+  const old = toTally(previous) ?? { since: now, runs: 0, items: 0, jevTokens: 0, jevUsageReportedCalls: 0, jevUsageMissingCalls: 0, typesafeTokens: 0, typesafeUsageReportedRuns: 0, typesafeUsageMissingCalls: 0, potentialContextReductionTokens: 0 };
+  const reported = stats.jevUsageReportedCalls;
+  const missing = stats.jevUsageMissingCalls;
   return {
     since: old.since,
     runs: old.runs + 1,
-    items: old.items + Math.max(0, stats.scanned - stats.failed.length),
-    jevTokens: old.jevTokens + stats.jevTokens,
-    typesafeTokens: old.typesafeTokens + (stats.provider === "typesafe" ? stats.jevTokens : 0),
-    saved: old.saved + savedTokens(stats, output),
+    items: old.items + (allFailed ? 0 : Math.max(0, stats.scanned - stats.failed.length)),
+    jevTokens: old.jevTokens + (stats.jevTokens ?? 0),
+    jevUsageReportedCalls: old.jevUsageReportedCalls + reported,
+    jevUsageMissingCalls: old.jevUsageMissingCalls + missing,
+    typesafeTokens: old.typesafeTokens + (stats.provider === "typesafe" ? stats.jevTokens ?? 0 : 0),
+    typesafeUsageReportedRuns: old.typesafeUsageReportedRuns + (stats.provider === "typesafe" && reported > 0 ? 1 : 0),
+    typesafeUsageMissingCalls: old.typesafeUsageMissingCalls + (stats.provider === "typesafe" ? missing : 0),
+    potentialContextReductionTokens: old.potentialContextReductionTokens + (allFailed ? 0 : potentialContextReductionTokens(stats, output)),
   };
 }
 
-/** One line of lifetime savings; the cost names TypeSafe when other providers ran too. */
+/** One line of accumulated estimates; the cost names TypeSafe when other providers ran too. */
 export function renderTally(tally: Tally): string {
-  const cost = !tally.typesafeTokens ? "" : tally.typesafeTokens === tally.jevTokens ? ` (${price(tally.typesafeTokens)})` : ` (${price(tally.typesafeTokens)} on TypeSafe)`;
+  const missingUsage = tally.jevUsageMissingCalls;
+  const usageGap = `${missingUsage} ${missingUsage === 1 ? "call" : "calls"} without usage`;
+  const jev = missingUsage
+    ? tally.jevUsageReportedCalls
+      ? `jev ≥${fmtK(tally.jevTokens)} tok reported (${usageGap})`
+      : `jev usage unavailable (${usageGap})`
+    : `jev ${fmtK(tally.jevTokens)} tok`;
+  const cost = tally.typesafeUsageMissingCalls
+    ? tally.typesafeUsageReportedRuns
+      ? ` · TypeSafe known input estimate ${priceEstimate(tally.typesafeTokens)} (${tally.typesafeUsageMissingCalls} ${tally.typesafeUsageMissingCalls === 1 ? "call" : "calls"} without usage)`
+      : ` · TypeSafe cost unavailable (${tally.typesafeUsageMissingCalls} ${tally.typesafeUsageMissingCalls === 1 ? "call" : "calls"} without usage)`
+    : tally.typesafeUsageReportedRuns
+      ? ` (TypeSafe input estimate ${priceEstimate(tally.typesafeTokens)})`
+      : "";
   const runs = `${tally.runs} ${tally.runs === 1 ? "run" : "runs"}`;
-  return `since ${tally.since.slice(0, 10)}: ${runs} · ${fmtK(tally.items)} items judged · jev ${fmtK(tally.jevTokens)} tok${cost} · ~${fmtK(tally.saved)} Claude tokens not read`;
+  return `since ${tally.since.slice(0, 10)}: ${runs} · ${fmtK(tally.items)} items judged · ${jev}${cost} · ~${fmtK(tally.potentialContextReductionTokens)} potential context reduction (estimate)`;
 }

@@ -1,5 +1,4 @@
-// Robustness: the request log under concurrent writes, subagent numbers that are never reused,
-// a mascot timer that survives a failing blit, teammates across turns, a failing scroll hook.
+// Robustness: concurrent request logging, stable subagent numbers, teammates across turns, and scroll fallback.
 import type { On, RenderPropsOf } from "claude-code";
 import { describe, expect, mock, test } from "claude-code/testing";
 
@@ -20,7 +19,7 @@ const SPAWN = {
   tool_use_id: "toolu-agent",
   prompt: "Find every caller of decide().",
   description: "find callers",
-  subagentType: "Explore",
+  subagentType: "Custom",
   provider: { plugin: "engine", tier: "core" },
   parentModel: "claude-opus-5-5",
   background: false,
@@ -137,39 +136,15 @@ describe("subagent numbers", () => {
   });
 });
 
-describe("the mascot timer", () => {
-  test("a blit that throws stops that mascot instead of failing ten times a second", async ($, on) => {
+describe("static mascot rendering", () => {
+  test("does not schedule frames for the removed animated art", async ($, on) => {
     const { clock } = world(on);
     let blits = 0;
-    on("ui.blit", async () => {
-      blits++;
-      throw new Error("surface gone");
-    });
+    on("ui.blit", async () => { blits++; return { value: {} }; });
     await $.session.start({ cwd: "/workspace" } as never).catch(() => undefined);
-    const ui = await $.ui.mount({ plugin: "jev", surface: "terminal", component: "Pane", requestId: "jev", props: PANE_PROPS });
     for (let i = 0; i < 5; i++) await clock.advance(100);
-    // Pingo's one failed frame, then nothing until the pane draws again.
-    expect(blits).toBe(1);
-    await ui.unmount();
-  });
-
-  test("a frame still out is not overlapped by the next tick", async ($, on) => {
-    const { clock } = world(on);
-    let blits = 0;
-    let release!: () => void;
-    const held = new Promise<void>((resolve) => (release = resolve));
-    on("ui.blit", async () => {
-      blits++;
-      await held;
-      return { value: {} };
-    });
-    await $.session.start({ cwd: "/workspace" } as never).catch(() => undefined);
-    const ui = await $.ui.mount({ plugin: "jev", surface: "terminal", component: "Pane", requestId: "jev", props: PANE_PROPS });
-    for (let i = 0; i < 5; i++) await clock.advance(100);
-    expect(blits).toBe(1);
-    release();
+    expect(blits).toBe(0);
     await clock.settle();
-    await ui.unmount();
   });
 });
 
@@ -184,7 +159,7 @@ describe("teammates", () => {
     // A message wakes it: its next turn still runs on the effort Jev chose.
     await step($ as never, { turnId: "w2", index: 0, model: "claude-opus-5-5", effort: "medium", messageCount: 3, agentId: "mate-1" });
     expect(sent.map((one) => one.effort)).toEqual(["max", "max"]);
-    expect((store.events as RouteEvent[]).map((event) => event.agent)).toEqual(["Explore", "Explore"]);
+    expect((store.events as RouteEvent[]).map((event) => event.agent)).toEqual(["Custom", "Custom"]);
   });
 
   test("a teammate that wakes up shows as running again", async ($, on) => {

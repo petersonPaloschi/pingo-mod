@@ -12,7 +12,7 @@ import { resolveSettings, storedApplies, type ModOptions, type StoredSettings } 
 import { CHANNEL_ENV, channelFile, channelLine } from "../hooks/core/channel.ts";
 import { createAskJev, observeAskJev, PROVIDERS, resolveModel, validateKey, type JevEvent, type Transport } from "../hooks/core/jev.ts";
 import {
-  addRun, batches, classifyQuestion, clip, f2, filterQuestion, findHits, findRequest, footer, groupRequest, label, num, parseArgs,
+  addRun, classifyQuestion, clip, f2, filterQuestion, findHits, findRequest, footer, groupRequest, label, num, parseArgs,
   parseLabels, rankQuestion, relevance, renderAnswer, renderClassify, renderFilter, renderTally, estTokens, toTally,
   type Flags, type Item, type Labeled, type MakeQuestion, type RunStats, type Scored,
 } from "../hooks/core/sift.ts";
@@ -117,6 +117,19 @@ const transport: Transport = {
 
 type Ask = (request: Omit<SystemOneRequest, "model">) => Promise<SystemOneResult>;
 
+interface UsageStats {
+  jevTokens?: number;
+  jevUsageReportedCalls: number;
+  jevUsageMissingCalls: number;
+}
+
+const newUsageStats = (): UsageStats => ({ jevUsageReportedCalls: 0, jevUsageMissingCalls: 0 });
+const usageFields = (stats: UsageStats) => ({
+  ...(stats.jevTokens === undefined ? {} : { jevTokens: stats.jevTokens }),
+  jevUsageReportedCalls: stats.jevUsageReportedCalls,
+  jevUsageMissingCalls: stats.jevUsageMissingCalls,
+});
+
 /**
  * Where each Jev call is reported: the channel file the mod named for this session, which it
  * follows into the live log and the Flow tab. From a plain shell there is none, and nothing is written.
@@ -142,15 +155,27 @@ function channel(): (event: JevEvent) => void {
   };
 }
 
-function asker(flags: Flags, stats: { jevTokens: number }) {
+function asker(flags: Flags, stats: UsageStats) {
   const config = settings(flags);
   if (!config.apiKey) {
     fail(`no Jev key. Run /jev setup in Claude Code, or set ${PROVIDERS[config.provider].keyEnv}.`, 3);
   }
   const ask = observeAskJev(createAskJev({ ...config, timeoutMs: 180_000 }, transport), channel(), Date.now, `sift-${process.pid}-`);
   const run: Ask = async (request) => {
-    const result = await ask({ ...request, model: config.jevModel });
-    stats.jevTokens += result.usage.input_tokens;
+    let result: SystemOneResult;
+    try {
+      result = await ask({ ...request, model: config.jevModel });
+    } catch (error) {
+      stats.jevUsageMissingCalls++;
+      throw error;
+    }
+    const inputTokens = result.usage?.input_tokens;
+    if (typeof inputTokens === "number" && Number.isFinite(inputTokens) && inputTokens >= 0) {
+      stats.jevTokens = (stats.jevTokens ?? 0) + inputTokens;
+      stats.jevUsageReportedCalls++;
+    } else {
+      stats.jevUsageMissingCalls++;
+    }
     return result;
   };
   return { ask: run, provider: config.provider };
@@ -303,30 +328,30 @@ function requireInputs(items: Item[], command: string) {
 // --- Running and printing ---
 
 function newStats(provider: string, items: Item[], skipped: string[]): RunStats {
-  return { scanned: items.length, contentTokens: items.reduce((sum, item) => sum + estTokens(item.text), 0), jevTokens: 0, seconds: 0, provider, failed: [], skipped };
+  return { scanned: items.length, contentTokens: items.reduce((sum, item) => sum + estTokens(item.text), 0), ...usageFields(newUsageStats()), seconds: 0, provider, failed: [], skipped };
 }
 
-/** One question per item (packed only with --fast); a failed request marks its items as not judged. */
+/** One independent question per item; a failed request marks its item as not judged. */
 async function runPerItem(items: Item[], flags: Flags, make: MakeQuestion, extra: { [key: string]: Json } = {}) {
-  const stats = { jevTokens: 0 };
+  const stats = newUsageStats();
   const { ask, provider } = asker(flags, stats);
   const failed: RunStats["failed"] = [];
-  const groups = batches(items, flags);
-  const rows = await pool(groups.map((group) => async () => {
+  const rows = await pool(items.map((item) => async () => {
     try {
-      const result = await ask(groupRequest(group, make, extra));
-      return group.map((item, j) => {
-        const answer = result.answers[`q${j}`];
-        if (!answer) failed.push({ id: item.id, error: result.dropped?.find((drop) => drop.name === `q${j}`)?.why ?? "no answer" });
-        return { item, answer };
-      });
+      const result = await ask(groupRequest(item, make, extra));
+      const answer = result.answers.q0;
+      if (!answer) {
+        failed.push({ id: item.id, error: result.dropped?.find((drop) => drop.name === "q0")?.why ?? "no answer" });
+        return undefined;
+      }
+      return { item, answer };
     } catch (error) {
       if (isAuthError(error)) authFail(error);
-      for (const item of group) failed.push({ id: item.id, error: message(error) });
-      return [];
+      failed.push({ id: item.id, error: message(error) });
+      return undefined;
     }
   }), num(flags.concurrency, 16));
-  return { rows: rows.flat().filter((row): row is { item: Item; answer: Answer } => Boolean(row.answer)), failed, jevTokens: stats.jevTokens, provider };
+  return { rows: rows.filter((row): row is { item: Item; answer: Answer } => Boolean(row)), failed, ...usageFields(stats), provider };
 }
 
 function emit(flags: Flags, json: unknown, lines: string[], foot: string) {
@@ -355,16 +380,13 @@ function readTally(): unknown {
   try { return JSON.parse(fs.readFileSync(tallyFile(), "utf8")); } catch { return undefined; }
 }
 
-/** Every request failed: nothing above is a verdict, so the exit code says so. Otherwise the run joins the tally. */
+/** Failed runs still record reported usage, but add no judged items or potential context reduction. */
 function finish(stats: RunStats, output: string, allFailed = stats.scanned > 0 && stats.failed.length >= stats.scanned) {
-  if (allFailed) {
-    process.exitCode = 5;
-    return;
-  }
+  if (allFailed) process.exitCode = 5;
   try {
     const file = tallyFile();
     fs.mkdirSync(path.dirname(file), { recursive: true });
-    fs.writeFileSync(file, `${JSON.stringify(addRun(readTally(), stats, output, new Date().toISOString()), null, 2)}\n`);
+    fs.writeFileSync(file, `${JSON.stringify(addRun(readTally(), stats, output, new Date().toISOString(), allFailed), null, 2)}\n`);
   } catch {}
 }
 
@@ -379,7 +401,7 @@ async function cmdFilter(pos: string[], flags: Flags) {
   const run = await runPerItem(items, flags, filterQuestion(question!));
   const scored: Scored[] = run.rows.flatMap((row) => (row.answer.type === "noul" ? [{ item: row.item, score: row.answer.noul }] : []));
   const { lines, matched, borderline } = renderFilter(scored, flags);
-  const stats = { ...newStats(run.provider, items, skipped), jevTokens: run.jevTokens, failed: run.failed, seconds: (Date.now() - started) / 1000 };
+  const stats = { ...newStats(run.provider, items, skipped), ...usageFields(run), failed: run.failed, seconds: (Date.now() - started) / 1000 };
   const saved = save(flags, scored.map((row) => ({ id: row.item.id, p: row.score })));
   const foot = footer(stats, [`${matched.length} matched`, `${borderline.length} borderline`], lines.join("\n")) + saved;
   const shown = (rows: Scored[]) => rows.map((row) => ({ id: row.item.id, p: row.score }));
@@ -407,7 +429,7 @@ async function cmdClassify(pos: string[], flags: Flags) {
   const run = await runPerItem(items, flags, classifyQuestion(question, criteria));
   const labeled: Labeled[] = run.rows.flatMap((row) => (row.answer.type === "choice" ? [{ item: row.item, answer: row.answer }] : []));
   const { lines, low } = renderClassify(labeled, labels, flags);
-  const stats = { ...newStats(run.provider, items, skipped), jevTokens: run.jevTokens, failed: run.failed, seconds: (Date.now() - started) / 1000 };
+  const stats = { ...newStats(run.provider, items, skipped), ...usageFields(run), failed: run.failed, seconds: (Date.now() - started) / 1000 };
   const saved = save(flags, labeled.map((row) => ({ id: row.item.id, label: row.answer.choice, confidence: row.answer.confidence })));
   const foot = footer(stats, [`${low.length} low-confidence (?)`], lines.join("\n")) + saved;
   emit(flags, labeled.map((row) => ({ id: row.item.id, label: row.answer.choice, confidence: row.answer.confidence, probabilities: row.answer.probabilities })), lines, foot);
@@ -425,7 +447,7 @@ async function cmdRank(pos: string[], flags: Flags) {
   scored.sort((a, b) => b.score - a.score);
   const shown = flags.all ? scored : scored.slice(0, num(flags.top, 10));
   const lines = shown.map((row) => `${f2(row.score)}  ${label(row.item, flags)}`);
-  const stats = { ...newStats(run.provider, items, skipped), jevTokens: run.jevTokens, failed: run.failed, seconds: (Date.now() - started) / 1000 };
+  const stats = { ...newStats(run.provider, items, skipped), ...usageFields(run), failed: run.failed, seconds: (Date.now() - started) / 1000 };
   const saved = save(flags, scored.map((row) => ({ id: row.item.id, relevance: row.score, confidence: row.confidence })));
   const foot = footer(stats, [`top ${shown.length}`], lines.join("\n")) + saved;
   emit(flags, shown.map((row) => ({ id: row.item.id, relevance: row.score, confidence: row.confidence })), lines, foot);
@@ -444,7 +466,7 @@ async function cmdFind(pos: string[], flags: Flags) {
     const all = file.text.split(/\r?\n/).map((text, i): [string, string] => [String(i + 1), text]).filter(([, text]) => text.trim());
     for (let i = 0; i < all.length; i += chunkLines) chunks.push({ file: file.id, lines: all.slice(i, i + chunkLines) });
   }
-  const counter = { jevTokens: 0 };
+  const counter = newUsageStats();
   const { ask, provider } = asker(flags, counter);
   const failed: RunStats["failed"] = [];
   const perChunk = await pool(chunks.map((chunk) => async () => {
@@ -463,7 +485,7 @@ async function cmdFind(pos: string[], flags: Flags) {
   const hits = allHits.slice(0, num(flags.top, 5));
   const lines = hits.map((hit) => `${f2(hit.score)}  ${hit.file}:${hit.line}  ${clip(hit.text.trim(), num(flags.width, 160))}`);
   if (!lines.length) lines.push("(no matching lines)");
-  const stats = { ...newStats(provider, files, skipped), jevTokens: counter.jevTokens, failed, seconds: (Date.now() - started) / 1000 };
+  const stats = { ...newStats(provider, files, skipped), ...usageFields(counter), failed, seconds: (Date.now() - started) / 1000 };
   const foot = footer(stats, [`${chunks.length} chunks`], lines.join("\n")) + save(flags, allHits);
   emit(flags, hits, lines, foot);
   finish(stats, lines.join("\n"), chunks.length > 0 && failed.length >= chunks.length);
@@ -494,7 +516,7 @@ async function cmdAsk(pos: string[], flags: Flags) {
       questions: { answer: typeof flags.choice === "string" ? { type: "choice", instructions, criteria: parseLabels(flags.choice) } : { type: "noul", instructions } },
     };
   }
-  const counter = { jevTokens: 0 };
+  const counter = newUsageStats();
   const { ask, provider } = asker(flags, counter);
   let result: SystemOneResult;
   try {
@@ -506,7 +528,7 @@ async function cmdAsk(pos: string[], flags: Flags) {
   for (const id of Object.keys(request.questions)) if (!Object.hasOwn(result.answers, id)) lines.push(`${id}  no usable answer`);
   for (const drop of result.dropped ?? []) lines.push(`${drop.name}  unusable (${drop.why})`);
   const stateText = JSON.stringify(request.state);
-  const stats: RunStats = { scanned: 1, contentTokens: estTokens(stateText), jevTokens: counter.jevTokens, seconds: (Date.now() - started) / 1000, provider, failed: [], skipped: [] };
+  const stats: RunStats = { scanned: 1, contentTokens: estTokens(stateText), ...usageFields(counter), seconds: (Date.now() - started) / 1000, provider, failed: [], skipped: [] };
   emit(flags, result, lines, footer(stats, [], lines.join("\n"), false) + save(flags, result));
   finish(stats, lines.join("\n"), !Object.keys(result.answers).length);
 }
@@ -524,7 +546,7 @@ async function cmdStatus(flags: Flags) {
 
 const HELP = `sift — hand bulk judgment calls to Jev, read back a shortlist
 
-  status                               check the provider, key and model; show lifetime savings
+  status                               check the provider, key and model; show lifetime usage estimates
   filter "<yes/no question>" <inputs>  keep only items where the answer is yes
   classify --labels "a,b,c" <inputs>   put each item in one bucket
   rank "<query>" <inputs> [--top N]    order items by relevance
@@ -534,7 +556,7 @@ const HELP = `sift — hand bulk judgment calls to Jev, read back a shortlist
 
 inputs: files, directories (respects .gitignore), globs, - (stdin), --items FILE.jsonl
 common: --lines --ext ts,tsx --json --save FILE --model M --concurrency 16
-        --max-chars 60000 --limit 5000 --fast (pack small items: faster, less accurate)
+        --max-chars 60000 --limit 5000
 filter: --threshold 0.5 --band 0.15 --no-collapse     classify: --question --only a,b
         --min-confidence 0.6 --verbose --labels-json '{...}'|@file
 find:   --chunk 150 --min-score 0.05                  rank: --all
@@ -545,6 +567,8 @@ async function main(argv: string[]) {
   const [command, ...rest] = argv;
   if (!command || command === "help" || command === "--help" || command === "-h") return console.log(HELP);
   const { pos, flags } = parseArgs(rest);
+  const removedBatchFlag = ["fast", "pack-items", "pack-tokens"].find((name) => Object.hasOwn(flags, name));
+  if (removedBatchFlag) fail(`--${removedBatchFlag} has been removed; Sift judges each item independently`);
   if (command === "status") return cmdStatus(flags);
   if (command === "filter") return cmdFilter(pos, flags);
   if (command === "classify") return cmdClassify(pos, flags);

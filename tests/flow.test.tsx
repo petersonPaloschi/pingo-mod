@@ -4,12 +4,11 @@ import type { On, RenderPropsOf } from "claude-code";
 import { describe, expect, mock, test, type Engine } from "claude-code/testing";
 
 import type { TraceState } from "../types";
-import { FLOW_FPS, flowLines, flowScene, flowSummary, prettyModel } from "../hooks/flow.ts";
+import { flowLines, flowScene, flowSummary, prettyModel } from "../hooks/flow.ts";
 import { displayWidth } from "../hooks/layout.ts";
 import { step } from "./helpers.ts";
 import {
   advisorBlocker,
-  advisorStats,
   agentStart,
   clearTrace,
   completeTurn,
@@ -29,6 +28,8 @@ import {
   toolEnd,
   toolStart,
   traceOf,
+  traceConsults,
+  runTiming,
 } from "../hooks/trace.ts";
 
 const NOW = Date.parse("2026-10-07T12:00:00Z");
@@ -43,7 +44,7 @@ function submitIdle(s: TraceState, text: string, turnId: string, at: number): Tr
   let consult: string;
   [s, consult] = consultStart(s, { messageId: id }, { origin: "prompt", model: "jev-1", questions: ["tool", "needs_tool"], startedAt: at });
   s = consultEnd(s, consult, at + 300);
-  s = planMessage(s, id, { outcome: "consulted", reason: "hint", summary: "tool Read (0.90)", tool: "Read" });
+  s = planMessage(s, id, { outcome: "consulted", reason: "hint", summary: "historical route hint" });
   s = startTurn(s, turnId, text, at + 400);
   return promptEntered(s, id);
 }
@@ -51,7 +52,7 @@ function submitIdle(s: TraceState, text: string, turnId: string, at: number): Tr
 /** A run with a bit of everything: Jev, a switched model, tools, an MCP tool, subagents, advisor calls, edits. */
 function busyRun(): TraceState {
   let s = submitIdle(emptyTrace(), "check the site before launch", "t1", NOW - 90e3);
-  s = planMessage(s, runOf(s, "t1").message!.id, { outcome: "consulted", reason: "hint", summary: "tool Read (0.90) · advisor consultation requested", tool: "Read", advisor: true });
+  s = planMessage(s, runOf(s, "t1").message!.id, { outcome: "consulted", reason: "hint", summary: "historical route hint" });
   s = stepStart(s, { turnId: "t1", index: 0, original: "claude-opus-5-5", sent: "claude-sonnet-5-5", effort: "high", at: NOW - 89e3 });
   s = stepEnd(s, { turnId: "t1", index: 0, at: NOW - 80e3, observed: "claude-sonnet-5-5", stop: "tool_use", serverToolUses: [{ id: "adv-1", name: "advisor", startedAt: NOW - 85e3, endedAt: NOW - 82e3 }] });
   s = toolStart(s, { id: "tu-read", name: "Read", at: NOW - 79e3 });
@@ -89,6 +90,63 @@ describe("the run record", () => {
     expect(s.active).toBeUndefined();
     expect(runOf(s, "t1")).toMatchObject({ endedAt: NOW - 7e3, reason: "answer", main: { original: "claude-opus-5-5", observed: ["claude-opus-5-5"], requests: 1 } });
     expect(isDone(runOf(s, "t1"))).toBe(true);
+  });
+
+  test("task timing includes Jev planning and waits for parallel background work without adding durations", () => {
+    const promptAt = NOW - 30e3;
+    let s = submitIdle(emptyTrace(), "do the work", "t1", promptAt);
+    s = agentStart(s, { id: "a1", type: "Explore", description: "parallel task", at: promptAt + 5e3 });
+    s = agentStart(s, { id: "a2", type: "Plan", description: "another task", at: promptAt + 6e3 });
+    s = completeTurn(s, "t1", promptAt + 15e3, "answer");
+    s = completeTurn(s, "ta1", promptAt + 12e3, "answer", "a1");
+
+    const whileBackgroundRuns = runTiming(runOf(s, "t1"), promptAt + 22e3);
+    expect(whileBackgroundRuns).toEqual({ promptAt, mainResponseMs: 15e3, totalMs: 22e3, complete: false });
+
+    s = completeTurn(s, "ta2", promptAt + 22e3, "answer", "a2");
+    expect(runTiming(runOf(s, "t1"), promptAt + 25e3)).toEqual({
+      promptAt,
+      mainResponseMs: 15e3,
+      totalMs: 22e3,
+      complete: true,
+    });
+  });
+
+  test("Jev consultation usage keeps explicit zero, observed model, and one row per call id", () => {
+    let s = emptyTrace();
+    let messageId: string;
+    [s, messageId] = submitPrompt(s, { text: "plan this", at: NOW - 2e3, origin: "composer" });
+    let consultId: string;
+    [s, consultId] = consultStart(s, { messageId }, { origin: "prompt", model: "jev-requested", questions: ["plan"], startedAt: NOW - 1e3 });
+    s = consultEnd(s, consultId, NOW, undefined, { observed: "jev-observed", usage: { input: 0, output: 17 } });
+    const message = s.inbox[0]!;
+    s = { ...s, inbox: [...s.inbox, { ...message, consults: [...message.consults] }] };
+
+    expect(traceConsults(s)).toMatchObject([{
+      id: consultId,
+      model: "jev-requested",
+      observed: "jev-observed",
+      usage: { input: 0, output: 17 },
+      endedAt: NOW,
+    }]);
+  });
+
+  test("a response's raw per-model cache usage stays partial when counters are missing", () => {
+    let s = submitIdle(emptyTrace(), "use cache if available", "t1", NOW - 10e3);
+    s = stepStart(s, { turnId: "t1", index: 0, original: "claude-opus-5-5", sent: "claude-opus-5-5", at: NOW - 9e3 });
+    s = stepEnd(s, {
+      turnId: "t1",
+      index: 0,
+      at: NOW - 8e3,
+      observed: "claude-opus-5-5",
+      stop: "end_turn",
+      usage: { input: 0, output: 40, cacheRead: 12 },
+    });
+    expect(runOf(s, "t1").steps[0]).toMatchObject({
+      observed: "claude-opus-5-5",
+      usage: { input: 0, output: 40, cacheRead: 12 },
+    });
+    expect(runOf(s, "t1").steps[0]?.usage).not.toHaveProperty("cacheWrite");
   });
 
   test("two messages typed into a running turn show at once in it, their run left pending", () => {
@@ -248,14 +306,29 @@ describe("the drawing", () => {
     expect(flowSummary(emptyTrace(), "en")).toBe("Flow: no runs recorded yet");
   });
 
+  test("a subagent consultation is distinct from a main-turn Jev plan", () => {
+    const promptAt = NOW - 10e3;
+    let s = emptyTrace();
+    [s] = submitPrompt(s, { text: "coordinate the work", at: promptAt, origin: "composer" });
+    s = startTurn(s, "t1", "coordinate the work", promptAt + 100);
+    s = agentStart(s, { id: "a1", type: "Explore", description: "inspect the code", at: promptAt + 200 });
+    let consult: string;
+    [s, consult] = consultStart(s, { agentId: "a1" }, { origin: "agent", model: "jev-model", questions: ["model"], startedAt: promptAt + 300 });
+    s = consultEnd(s, consult, promptAt + 400);
+
+    const picture = draw(s);
+    expect(picture).toContain("No Jev call for this prompt");
+    expect(picture).toContain("1 Jev call in this run");
+    expect(picture).not.toContain("No Jev calls observed");
+  });
+
   test("a run from its message to its answer: Jev, models, tools by source, subagents, advisor", () => {
     const s = setAdvisorInfo(busyRun(), { configured: "claude-opus-5-5" });
     const picture = draw(s, 100);
-    for (const line of [
+    const expected = [
       "FLOW · RUN 1 · RUNNING",
       "“check the site before launch”",
-      "tool Read (0.90)",
-      "hint attached: tool Read · advisor",
+      "historical route hint",
       "1 Jev call in this run",
       "Opus 5.5 → sent Sonnet 5.5",
       "answered Sonnet 5.5",
@@ -282,9 +355,9 @@ describe("the drawing", () => {
       "1 edit · 1 file",
       "confirmed models: Sonnet 5.5",
       "Haiku 4.5",
-    ]) {
-      expect(picture).toContain(line);
-    }
+    ];
+    const missing = expected.filter((line) => !picture.includes(line));
+    if (missing.length) throw new Error(`Missing Flow output: ${missing.join(" | ")}`);
   });
 
   test("wide tree orders the lead, Jev, dispatcher and return while keeping advisor separate", () => {
@@ -294,7 +367,7 @@ describe("the drawing", () => {
     expect(at("Jev")).toBeLessThan(at("tools"));
     expect(at("tools")).toBeLessThan(at("Subagent dispatcher"));
     expect(at("Subagent dispatcher")).toBeLessThan(at("Return to main"));
-    expect(picture).toContain("CHECKPOINTS");
+    expect(picture).not.toContain("RECORDED REVIEWS");
     expect(picture).toContain("advisor");
     expect(picture).toContain("group 1");
     expect(picture).toContain("group 2");
@@ -310,23 +383,27 @@ describe("the drawing", () => {
     expect(renderAt(NOW + 5e3)).toContain("Explore · running 15s");
   });
 
-  test("a legacy advisor hint records the plan request, but not recovery or completion", () => {
-    const picture = draw(busyRun(), 100);
-    const panel = picture.split("\n").map((line) => line.slice(68)).join(" ").replace(/[│]/g, " ").replace(/\s+/g, " ");
-    expect(panel).toContain("Before plan · requested at");
-    expect(panel).toContain("Repeated tool failure · not requested");
-    expect(panel).toContain("Before done · not requested");
+  test("Flow shows recorded checkpoint history without empty policy rows", () => {
+    let s = busyRun();
+    s = {
+      ...s,
+      runs: s.runs.map((run) => run.id === "t1"
+        ? { ...run, checkpoints: [{ kind: "plan", at: NOW - 89e3 }] }
+        : run),
+    };
+    const picture = draw(s, 100);
+    expect(picture).toContain("RECORDED REVIEWS");
+    expect(picture).toContain("requested at");
+    expect(picture).not.toContain("not requested");
   });
 
-  test("wide view shows requested checkpoints and separates model suggestions from actual models", () => {
+  test("wide view shows historical checkpoints and observed models", () => {
     let s = busyRun();
     const messageId = runOf(s, "t1").message!.id;
     s = planMessage(s, messageId, {
       outcome: "consulted",
       reason: "hint",
-      summary: "tool Read (0.90)",
-      model: "claude-haiku-5-5",
-      effort: "medium",
+      summary: "historical route hint",
       checkpoints: [{ kind: "plan", at: NOW - 89e3 }],
     });
     s = {
@@ -337,14 +414,9 @@ describe("the drawing", () => {
     };
     const picture = draw(s, 100);
     for (const line of [
-      "Before plan",
       "requested at",
-      "Repeated tool failure",
       "mcp__github__get_issue",
       "×2",
-      "Before done",
-      "not requested",
-      "model Haiku 5.5 suggested",
       "Lead · Sonnet 5.5",
       "Session timeline",
       "Recent run activity",
@@ -380,7 +452,10 @@ describe("the drawing", () => {
     s = agentStart(s, { id: "mate", type: "teammate", description: "reviewer", at: NOW - 2000 });
     expect(runOf(s, "t1").agents).toHaveLength(1);
     expect(runOf(s, "t1").agents[0]?.state).toBe("running");
-    expect(flowSummary(s, "en")).toBe("Flow: run 1 · running · 0 requests · 0 tool calls · 1 subagent · 0 advisor calls");
+    const summary = flowSummary(s, "en", NOW);
+    expect(summary).toContain("main completion in progress");
+    expect(summary).toContain("all work");
+    expect(summary).toContain("1 subagent");
   });
 
   test("model names: old ids and date suffixes", () => {
@@ -459,10 +534,13 @@ describe("the Flow tab in the pane", () => {
     await $.turn.complete({ turnId: "t1", answer: "Done.", durationMs: 10, isAborted: false, reason: "answer" });
     for (const surface of ["terminal", "desktop"] as const) {
       const ui = await $.ui.mount({ plugin: "jev", surface, component: "Pane", requestId: "jev", props: PANE_PROPS });
-      await ui.press({ key: "tab-flow" });
-      for (const line of [/FLOW · RUN 1$/, /“ship the login fix”/, /not consulted · No API key/, /Opus 5\.5 → answered Opus 5\.5/, /Claude Code 2/, /1 denied/, /look around/, /✓ 0s/, /Sonnet 5\.5/, /1 call observed/, /configured in settings/, /completed · 0s/, /1 edit · 1 file/]) {
-        expect(await ui.find({ type: "Text", text: line })).toBeDefined();
-      }
+      await ui.press({ key: "tab-live" });
+      const expected = surface === "desktop"
+        ? [/FLOW · RUN 1/, /“ship the login fix”/, /No Jev calls observed/, /Opus 5\.5 → answered Opus 5\.5/, /Claude Code 2/, /1 denied/, /look around/, /✓ 0s/, /Sonnet 5\.5/, /1 call observed/, /configured in settings/, /completed · 0s/, /1 edit · 1 file/]
+        : [/Latest run sequence/, /message/, /Jev/, /main/, /tools/, /subagents/, /advisor/, /answer/, /“ship the login fix”/, /look around/, /completed · 0s/, /1 edit · 1 file/, /Prompt to main completion:/, /Prompt to last background completion:/];
+      const missing: string[] = [];
+      for (const line of expected) if (!(await ui.find({ type: "Text", text: line }))) missing.push(String(line));
+      if (missing.length) throw new Error(`Missing ${surface} Flow content: ${missing.join(" | ")}`);
       await ui.unmount();
     }
   });
@@ -472,22 +550,25 @@ describe("the Flow tab in the pane", () => {
     await $.session.start({ cwd: "/workspace" } as never).catch(() => undefined);
     await enter($, "rename a variable", "t1");
     const ui = await $.ui.mount({ plugin: "jev", surface: "vscode", component: "Pane", requestId: "jev", props: PANE_PROPS });
-    expect(await ui.find({ type: "Text", text: /Flow: run 1 · running · 0 requests/ })).toBeDefined();
+    expect(await ui.find({ type: "Text", text: /Flow: run 1 · running · main completion/ })).toBeDefined();
     await ui.unmount();
   });
 
-  test("messages typed into the running turn show in it, association pending", async ($, on) => {
+  test("queued messages stay visible with pending association in compact and full views", async ($, on) => {
     const enter = world(on);
     await $.session.start({ cwd: "/workspace" } as never).catch(() => undefined);
     await enter($, "refactor the router", "t1");
     await $.prompt.submit({ text: "also the tests", wait: false, origin: ORIGIN, turnId: "t1" } as never);
     await $.prompt.submit({ text: "and the docs", wait: false, origin: ORIGIN, turnId: "t1" } as never);
-    const ui = await $.ui.mount({ plugin: "jev", surface: "terminal", component: "Pane", requestId: "jev", props: PANE_PROPS });
-    await ui.press({ key: "tab-flow" });
-    expect(await ui.find({ type: "Text", text: /also the tests/ })).toBeDefined();
-    expect(await ui.find({ type: "Text", text: /pending/ })).toBeDefined();
-    expect(await ui.find({ type: "Text", text: /and the docs/ })).toBeDefined();
-    await ui.unmount();
+    for (const surface of ["terminal", "desktop"] as const) {
+      const ui = await $.ui.mount({ plugin: "jev", surface, component: "Pane", requestId: "jev", props: PANE_PROPS });
+      await ui.press({ key: "tab-live" });
+      const expected = [/also the tests/, /association/, /pending/, /and the docs/];
+      const missing: string[] = [];
+      for (const line of expected) if (!(await ui.find({ type: "Text", text: line }))) missing.push(String(line));
+      if (missing.length) throw new Error(`Missing ${surface} queued-message detail: ${missing.join(" | ")}`);
+      await ui.unmount();
+    }
   });
 
   test("removing a subagent from the Agents tab keeps it in the Flow's history; a reload's session.start keeps the record", async ($, on) => {
@@ -499,28 +580,47 @@ describe("the Flow tab in the pane", () => {
     await $.command.run({ command: "jev", args: "agents clear", origin: ORIGIN, presentation: { isFullscreen: true, columns: 160 } } as never);
     // A reload runs register and session.start again; the state the host keeps stays.
     await $.session.start({ cwd: "/workspace" } as never).catch(() => undefined);
-    const ui = await $.ui.mount({ plugin: "jev", surface: "terminal", component: "Pane", requestId: "jev", props: PANE_PROPS });
-    await ui.press({ key: "tab-agents" });
-    expect(await ui.find({ type: "Text", text: "  Explore #1" })).toBeUndefined();
-    await ui.press({ key: "tab-flow" });
-    expect(await ui.find({ type: "Text", text: /look around/ })).toBeDefined();
-    expect(await ui.find({ type: "Text", text: /✓/ })).toBeDefined();
-    await ui.unmount();
+    for (const surface of ["terminal", "desktop"] as const) {
+      const ui = await $.ui.mount({ plugin: "jev", surface, component: "Pane", requestId: "jev", props: PANE_PROPS });
+      await ui.press({ key: "tab-agents" });
+      expect(await ui.find({ type: "Text", text: "  Explore #1" })).toBeUndefined();
+      await ui.press({ key: "tab-live" });
+      expect(await ui.find({ type: "Text", text: /look around/ })).toBeDefined();
+      expect(await ui.find({ type: "Text", text: /✓/ })).toBeDefined();
+      await ui.unmount();
+    }
   });
 
-  test("the pane draws at 20 columns: its width is no longer held at 30", async ($, on) => {
+  test("the compact Live sequence keeps timing at 20 columns", async ($, on) => {
     const enter = world(on);
     await $.session.start({ cwd: "/workspace" } as never).catch(() => undefined);
     await enter($, "a long message that must wrap in a narrow pane", "t1");
     const ui = await $.ui.mount({ plugin: "jev", surface: "terminal", component: "Pane", requestId: "jev", props: { ...PANE_PROPS, bodyColumns: 20 } as never });
-    await ui.press({ key: "tab-flow" });
-    // At 18 columns (the pane less its margin) the title is cut to fit: proof the drawing got 18, not 28.
-    expect(await ui.find({ type: "Text", text: "FLOW · RUN 1 · RU…" })).toBeDefined();
-    expect(await ui.find({ type: "Text", text: "==================" })).toBeDefined();
+    await ui.press({ key: "tab-live" });
+    expect(await ui.find({ type: "Text", text: /Latest run sequence/ })).toBeDefined();
+    expect(await ui.find({ type: "Text", text: /Prompt to main completion/ })).toBeDefined();
+    expect(await ui.find({ type: "Text", text: /Prompt to last background completion/ })).toBeDefined();
+    expect(await ui.find({ type: "Text", text: /FLOW · RUN/ })).toBeUndefined();
     await ui.unmount();
   });
 
-  test("/jev flow opens the pane on the Flow tab", async ($, on) => {
+  test("terminal Live can expand the compact sequence to full Flow details", async ($, on) => {
+    const enter = world(on);
+    await $.session.start({ cwd: "/workspace" } as never).catch(() => undefined);
+    await enter($, "inspect the cache", "t1");
+    await step($ as never, { turnId: "t1", index: 0, model: "claude-opus-5-5", messageCount: 1 });
+    const ui = await $.ui.mount({ plugin: "jev", surface: "terminal", component: "Pane", requestId: "jev", props: PANE_PROPS });
+    await ui.press({ key: "tab-live" });
+    expect(await ui.find({ type: "Text", text: /Latest run sequence/ })).toBeDefined();
+    await ui.press({ key: "flow-details" });
+    expect(await ui.find({ type: "Text", text: /FLOW · RUN 1/ })).toBeDefined();
+    expect(await ui.find({ type: "Text", text: /Session timeline/ })).toBeDefined();
+    await ui.press({ key: "flow-details" });
+    expect(await ui.find({ type: "Text", text: /Latest run sequence/ })).toBeDefined();
+    await ui.unmount();
+  });
+
+  test("/jev flow opens the Live run view", async ($, on) => {
     world(on);
     const opened: string[] = [];
     on("ui.open", async (_$, e) => {
@@ -538,10 +638,7 @@ describe("the Flow tab in the pane", () => {
 // --- Phase D: the motion ---
 
 describe("the scene", () => {
-  const pulseRow = (trace: TraceState, now: number) =>
-    flowLines({ trace, now, width: 100, locale: "en" }).findIndex((parts) => parts.some((part) => part.text.includes("•")));
-
-  test("the node at work follows what was observed, and a finished run does not move", () => {
+  test("the node at work follows what was observed and a finished run has no active node", () => {
     let s = submitIdle(emptyTrace(), "fix it", "t1", NOW - 10e3);
     const at = (state: TraceState) => {
       const scene = flowScene(state, NOW, "en");
@@ -560,97 +657,38 @@ describe("the scene", () => {
     s = consultEnd(toolEnd(s, { id: "tu", at: NOW - 5e3, result: "ok" }), consult, NOW - 5e3);
     s = agentStart(s, { id: "bg", type: "Explore", description: "keep looking", background: true, at: NOW - 4e3 });
     s = completeTurn(s, "t1", NOW - 3e3, "answer");
-    // The main turn ended, the background subagent still runs: still moving.
+    // The main turn ended, the background subagent still runs.
     expect(at(s)).toBe("agents");
     s = completeTurn(s, "x", NOW - 2e3, "answer", "bg");
     expect(at(s)).toBe("none");
-    expect(flowScene(s, NOW, "en").moving).toBe(false);
-    expect(pulseRow(s, NOW)).toBe(-1);
+    expect(flowScene(s, NOW, "en").active).toBeUndefined();
   });
 
-  test("the pulse blinks in the gap above the node at work, the same at the same time", () => {
+  test("the active branch is marked in place with no frame state", () => {
     let s = submitIdle(emptyTrace(), "fix it", "t1", NOW - 10e3);
     s = stepStart(s, { turnId: "t1", index: 0, original: "claude-opus-5-5", sent: "claude-opus-5-5", at: NOW - 9e3 });
-    const frame = 1000 / FLOW_FPS;
-    const rows = [0, 1, 2, 3].map((i) => pulseRow(s, NOW + i * frame));
-    const lit = rows.filter((row) => row > 0);
-    expect(lit.length).toBeGreaterThan(0);
-    expect(lit.length).toBeLessThan(rows.length);
-    expect(new Set(lit).size).toBe(1);
-    expect(pulseRow(s, NOW)).toBe(rows[0]);
-    expect(flowScene(s, NOW + frame, "en").frame - flowScene(s, NOW, "en").frame).toBe(1);
-    // The pulse sits in the row between the node before and the one at work.
-    const picture = drawn(flowLines({ trace: s, now: NOW, width: 100, locale: "en" })).split("\n");
-    const message = picture.findIndex((line) => line.startsWith("┌● message"));
-    const lead = picture.findIndex((line) => line.includes("Lead · Opus 5.5"));
-    expect(rows[0]!).toBeGreaterThan(message);
-    expect(rows[0]!).toBe(lead - 1);
+    const scene = flowScene(s, NOW, "en");
+    expect(scene.nodes[scene.active!]?.id).toBe("main");
+    expect(scene).not.toHaveProperty("frame");
+    expect(scene).not.toHaveProperty("moving");
+    expect(drawn(flowLines({ trace: s, now: NOW, width: 100, locale: "en" }))).toContain("Lead · Opus 5.5 •");
   });
 });
 
-describe("the motion in the pane", () => {
-  test("frames only while the Flow tab shows a run at work, one at a time", async ($, on) => {
+describe("the Flow redraw schedule", () => {
+  test("an active run does not trigger timer-driven redraws", async ($, on) => {
     const enter = world(on);
-    let frames = 0;
+    let invalidations = 0;
     on("ui.invalidate", async () => {
-      frames++;
+      invalidations++;
       return { value: undefined } as never;
     });
     await $.session.start({ cwd: "/workspace" } as never).catch(() => undefined);
     await enter($, "fix it", "t1");
-    const ui = await $.ui.mount({ plugin: "jev", surface: "terminal", component: "Pane", requestId: "jev", props: PANE_PROPS });
-    // Another tab: nothing to animate.
+    const ui = await $.ui.mount({ plugin: "jev", surface: "desktop", component: "Pane", requestId: "jev", props: PANE_PROPS });
     await ui.press({ key: "tab-live" });
-    await enter.clock.advance(100);
-    expect(frames).toBe(0);
-    await ui.press({ key: "tab-flow" });
-    await enter.clock.advance(100);
-    expect(frames).toBe(1);
-    // The frame asked for has not been drawn (this test's invalidate draws nothing): no second one.
-    await enter.clock.advance(100);
-    expect(frames).toBe(1);
-    // A draw lets the next frame through.
-    await ui.press({ key: "tab-flow" });
-    await enter.clock.advance(100);
-    expect(frames).toBe(2);
-    // The run ends: drawn still, nothing moves.
-    await $.turn.complete({ turnId: "t1", answer: "Done.", durationMs: 10, isAborted: false, reason: "answer" });
-    await ui.press({ key: "tab-flow" });
-    await enter.clock.advance(100);
-    expect(frames).toBe(2);
+    await enter.clock.advance(500);
+    expect(invalidations).toBe(0);
     await ui.unmount();
-    const status = await $.command.run({ command: "jev", args: "status", origin: ORIGIN, presentation: { isFullscreen: true, columns: 160 } } as never);
-    expect(status.text).toMatch(/Flow redraws: \d+ · [\d.]+ ms on average · slowest \d+ ms/);
-  });
-});
-
-describe("measuring the advisor hint", () => {
-  test("finished runs that asked the question, split by whether the hint was attached", () => {
-    let s = emptyTrace();
-    const run = (n: number, hint: boolean, calls: number, tokens: number) => {
-      let id: string;
-      [s, id] = submitPrompt(s, { text: `task ${n}`, at: NOW - 100e3 + n * 1000, origin: "composer" });
-      s = planMessage(s, id, { outcome: "consulted", reason: "hint", summary: "", advisorAsked: true, ...(hint ? { advisor: true } : {}) });
-      s = startTurn(s, `t${n}`, `task ${n}`, NOW - 100e3 + n * 1000);
-      s = promptEntered(s, id);
-      s = stepStart(s, { turnId: `t${n}`, index: 0, original: "claude-opus-5-5", sent: "claude-opus-5-5", at: NOW - 100e3 + n * 1000 });
-      s = stepEnd(s, {
-        turnId: `t${n}`,
-        index: 0,
-        at: NOW - 100e3 + n * 1000 + 400,
-        stop: "end_turn",
-        tokens: { input: tokens, output: 0 },
-        serverToolUses: Array.from({ length: calls }, (_, i) => ({ id: `adv-${n}-${i}`, name: "advisor", startedAt: NOW, endedAt: NOW })),
-      });
-      s = completeTurn(s, `t${n}`, NOW - 100e3 + n * 1000 + 500, "answer");
-    };
-    run(1, true, 2, 1000);
-    run(2, true, 0, 3000);
-    run(3, false, 0, 500);
-    // A run whose prompt never asked the question is in neither group.
-    s = completeTurn(startTurn(s, "t4", "", NOW - 1000), "t4", NOW - 500, "answer");
-    const { hinted, plain } = advisorStats(s);
-    expect(hinted).toEqual({ runs: 2, withCall: 1, calls: 2, durationMs: 1000, tokens: 4000, completed: 2 });
-    expect(plain).toEqual({ runs: 1, withCall: 0, calls: 0, durationMs: 500, tokens: 500, completed: 1 });
   });
 });

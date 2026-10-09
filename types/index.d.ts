@@ -4,14 +4,15 @@ export type RouteEvent = {
   time: string;
   session: string;
   model: string | null;
-  tools: number;
+  tools?: number;
   mode: "hint" | "passthrough";
   reason?: string;
   tool?: string;
   confidence?: number;
   durationMs: number;
-  usage?: { input: number; output: number; cached: number; cacheWrite: number };
-  jev?: { choice?: string; confidence?: number; latencyMs: number; inputTokens: number; shortlist?: number };
+  /** Raw counters; input excludes cache, cached is cache read, cacheWrite is cache creation. */
+  usage?: { input?: number; output?: number; cached?: number; cacheWrite?: number };
+  jev?: { choice?: string; confidence?: number; latencyMs: number; inputTokens?: number; shortlist?: number };
   /** Main loop or a subagent's request. */
   agent?: string;
   /** Effort the request was sent with. */
@@ -24,52 +25,10 @@ export type RouteEvent = {
   jevRaw?: string[];
 };
 
-export type JevTab = "overview" | "live" | "models" | "agents" | "flow" | "reasons" | "baseline" | "log" | "features" | "setup";
-
-/** The functions Jev can decide a turn's plan with, in the order the Models tab lists them. */
-export type FnId = Exclude<FeatureId, "agents">;
+export type JevTab = "overview" | "live" | "models" | "agents" | "logs" | "configuration";
 
 /**
- * What one function did for one turn. `why` is a code the pane words in the person's language
- * (a ModelReason, "user_model", "model_id", "blocked", "same_model", "feature_off", "routing_disabled",
- * "no_api_key", "jev_error", "low_confidence", "haiku_no_effort", "no_delegation", ...).
- */
-export type FnResult = {
-  id: FnId;
-  /** applied: changed something; kept: Jev wanted a change that was held back; none: Jev had nothing to change; off: not asked; failed: Jev could not answer. */
-  result: "applied" | "kept" | "none" | "off" | "failed";
-  why?: string;
-  /** What Jev chose: a tool, a model id, an effort, a subagent type, or the participation share. */
-  value?: string;
-  /** What was in place before: the model or effort the turn would have run on. */
-  from?: string;
-  /** Jev's confidence in `value`, and the confidence it needed to count. */
-  confidence?: number;
-  needed?: number;
-};
-
-/** One routing point: what Jev was asked at a prompt and what each function came to. */
-export type TurnDecision = {
-  seq: number;
-  time: number;
-  /** Main-loop turns seen this session, as TraceState.turns counts them. */
-  turn: number;
-  consulted: boolean;
-  latencyMs?: number;
-  fns: FnResult[];
-  /** The turn's first model request has been sent, so the model result is final. */
-  settled: boolean;
-};
-
-/** The Models tab: the latest routing points, newest last. */
-export type WatchState = {
-  turns: TurnDecision[];
-  /** The highest TurnDecision.seq handed out. */
-  count: number;
-};
-
-/**
- * A message as the Flow tab records it. Its run is tied only when the engine confirms it: the turn
+ * A message as the Live run view records it. Its run is tied only when the engine confirms it: the turn
  * that starts while its idle submission is still entering. A message typed into a running turn
  * names that turn (`during`) and stays "queued": the engine may deliver it into that turn or run
  * it later, and nothing observable says which.
@@ -89,7 +48,7 @@ export type TraceMessage = {
   consults: TraceConsult[];
 };
 
-/** What Jev's routing point came to for a message. */
+/** Legacy plan summary kept so older run records can still show their reason and outcome. */
 export type TracePlan = {
   outcome: "consulted" | "declined" | "failed" | "skipped";
   /** A reason code ("jev_declined", "routing_disabled", "mid_turn", ...). */
@@ -97,16 +56,7 @@ export type TracePlan = {
   /** The same one-line summary the live log shows. */
   summary: string;
   latencyMs?: number;
-  /** Accepted recommendations; the main requests separately record what was actually sent. */
-  model?: string;
-  effort?: string;
   checkpoints?: TraceCheckpoint[];
-  /** What the context Claude reads carried: the tool hint, the delegation hint, the advisor hint. */
-  tool?: string;
-  delegate?: string;
-  advisor?: boolean;
-  /** The advisor question was part of the routing point (the feature was on). */
-  advisorAsked?: boolean;
 };
 
 /** A review requested by the harness, never proof that validation or advice succeeded. */
@@ -123,6 +73,9 @@ export type TraceConsult = {
   id: string;
   origin: "prompt" | "tool" | "agent" | "sift" | "setup";
   model: string;
+  /** Response model and raw provider counters, when supplied; input excludes cache. */
+  observed?: string;
+  usage?: { input?: number; output?: number; cacheRead?: number; cacheWrite?: number };
   questions: string[];
   startedAt: number;
   endedAt?: number;
@@ -142,6 +95,8 @@ export type TraceStep = {
   startedAt: number;
   endedAt?: number;
   stop?: string | null;
+  /** Raw counters; input excludes cache, cacheRead/cacheWrite are separate. Missing values stay unknown. */
+  usage?: { input?: number; output?: number; cacheRead?: number; cacheWrite?: number };
 };
 
 /** One tool call Claude or a subagent made. `source` is "builtin" or "mcp:<server>". */
@@ -264,17 +219,8 @@ export type SetupDraft = {
   busy?: boolean;
 };
 
-/** The features the person switches on and off, by id (see hooks/core/plan.ts). */
-/** Canonical feature schema; the public plugin contract must be self-contained. */
-export type FeatureFlags = {
-  tools: boolean;
-  participation: boolean;
-  model: boolean;
-  effort: boolean;
-  delegation: boolean;
-  agents: boolean;
-  advisor: boolean;
-};
+/** The one remaining feature toggle: model and effort planning for native agent spawns. */
+export type FeatureFlags = { agents: boolean };
 export type FeatureId = keyof FeatureFlags;
 
 export type FeedKind = "turn" | "step" | "jev" | "tool" | "agent" | "message" | "feature" | "error";
@@ -313,11 +259,6 @@ export type LiveNow = {
   /** The model and effort of the latest main-loop request. */
   model?: string;
   effort?: string;
-  /** What Jev changed for this turn, if anything. */
-  changed?: string;
-  /** Jev's latest decision, in a few words, and whether it was consulted at all. */
-  decision?: string;
-  jevUsed?: boolean;
   /** What runs now: "thinking", a tool, an agent; absent when idle. */
   activity?: string;
   /** True while a Jev call is in flight. */
@@ -332,7 +273,7 @@ export type AgentRun = {
   id: string;
   /** A short number for the person: `/jev agent 3`, pane `jev-agent-3`. */
   n: number;
-  /** Its mascot, one of five (hooks/mascots/agents.ts): the face and name it goes by. */
+  /** Its lightweight identifier in hooks/mascots/agents.ts, used for a readable name and color. */
   mascot: string;
   type: string;
   description: string;
@@ -347,8 +288,11 @@ export type AgentRun = {
   state: AgentState;
   tools: number;
   requests: number;
-  tokensIn: number;
-  tokensOut: number;
+  tokensIn?: number;
+  tokensOut?: number;
+  /** Agent requests with reported input/output counters, for marking partial totals. */
+  inputUsageRequests?: number;
+  outputUsageRequests?: number;
   /** What it runs now: a tool, or waiting on the model. */
   activity?: string;
   /** Its latest visible text, then its final answer. */
@@ -364,13 +308,13 @@ declare module "claude-code" {
       range: number;
       setup: SetupDraft;
       features: FeatureFlags;
+      flowDetails: boolean;
       feed: FeedEntry[];
       now: LiveNow;
       agents: AgentRun[];
       /** The highest AgentRun.n handed out this session: numbers are never reused. */
       agentCount: number;
       flowV2: TraceState;
-      watch: WatchState;
       scroll: PaneScroll;
     };
   }

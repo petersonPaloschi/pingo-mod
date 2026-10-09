@@ -2,15 +2,13 @@
 // and subagents. DESIGN.md describes the visual system; dots.ts draws the shared primitives.
 import type { ElementTable, RenderChildren } from "claude-code";
 
-import type { AgentRun, AgentState, FeatureFlags, FeedEntry, FeedTone, FnResult, JevTab, LiveNow, RouteEvent, SetupDraft, TraceState, TurnDecision, WatchState } from "../types";
-import type { FeatureId } from "./core/plan.ts";
+import type { AgentRun, AgentState, FeatureFlags, FeatureId, FeedEntry, FeedTone, JevTab, LiveNow, RouteEvent, SetupDraft, TraceState, TraceStep } from "../types";
 import { features, modelName } from "./feed.ts";
 import { PROVIDER_IDS, PROVIDERS } from "./core/jev.ts";
 import {
   at,
   categories,
   category,
-  compare,
   int,
   pct,
   RANGES,
@@ -21,36 +19,32 @@ import {
   tiles,
   type Category,
   type StatusKind,
+  type Tile,
+  type TileGroup,
 } from "./events.ts";
-import { cellsOf, constellation, DOT, hex, meter, rail } from "./dots.ts";
+import { cellsOf, constellation, DOT, hex } from "./dots.ts";
 import { failureHint, failureKind } from "./errors.ts";
-import { flowLines } from "./flow.ts";
-import { advisorStats, type HintGroup } from "./trace.ts";
-import { modelOf, type Forecast } from "./watch.ts";
-import { formatAge, formatClock, formatCompact, formatDecimal, formatDuration, formatNumber, formatPercent, localeFor, reasonTitle, text, type Locale, type LocaleKey, type LocaleOption } from "./i18n.ts";
+import { flowLines, flowScene } from "./flow.ts";
+import { runTiming, traceConsults } from "./trace.ts";
+import { formatAge, formatClock, formatCompact, formatDecimal, formatDuration, formatNumber, localeFor, reasonTitle, text, type Locale, type LocaleKey, type LocaleOption } from "./i18n.ts";
 import { displayWidth, rowsOf } from "./layout.ts";
-import { DICE, diceFrame, diceSize, diceSvg } from "./mascots/dice.ts";
 import { brailleFrame, MOODS, pingoSvg, type Mood } from "./mascots/pingo.ts";
-import { AGENT_MASCOTS, isMascot, MASCOT_ORDER, mascotFrame, mascotSvg, type AgentMascot } from "./mascots/agents.ts";
+import { AGENT_MASCOTS, isMascot, MASCOT_ORDER } from "./mascots/agents.ts";
 
 /** The pane needs Select and Input, which the terminal and the desktop app draw. */
 export type Els = ElementTable<"terminal" | "desktop">;
 
-/** Two groups: activity first, then controls and records. The header flattens them into clickable labels. */
+/** The six destinations kept visible in the header, split across two rows. */
 export const TABS: readonly (readonly (readonly [JevTab, string, string])[])[] = [
   [
     ["overview", "ui.tab.overview", "1"],
     ["live", "ui.tab.live", "2"],
     ["models", "ui.tab.models", "3"],
-    ["agents", "ui.tab.agents", "4"],
-    ["flow", "ui.tab.flow", "5"],
   ],
   [
-    ["features", "ui.tab.features", "6"],
-    ["reasons", "ui.tab.reasons", "7"],
-    ["baseline", "ui.tab.baseline", "8"],
-    ["log", "ui.tab.log", "9"],
-    ["setup", "ui.tab.setup", "0"],
+    ["agents", "ui.tab.agents", "4"],
+    ["logs", "ui.tab.logs", "5"],
+    ["configuration", "ui.tab.configuration", "6"],
   ],
 ];
 
@@ -96,11 +90,10 @@ export interface View {
   surface: string;
   meta: string;
   agents: readonly AgentRun[];
-  /** The Flow tab's record of each run. */
+  /** The observed record of each run, shown with Live and used by Models. */
   trace: TraceState;
-  /** The Models tab: each routing point's decisions, and what it takes for the model to change next. */
-  watch: WatchState;
-  forecast: Forecast;
+  /** Shows the full run diagram in Live instead of the compact sequence. */
+  flowDetails: boolean;
   /**
    * The body's own scroll position: rows from the top on most tabs, log lines back from the newest
    * on a live log. Only read when `fixed`: the pane is drawn exactly as tall as its room, the header
@@ -126,6 +119,8 @@ export interface Actions {
   closeAgent: (n: number) => void;
   /** Back to the Jev pane, on its Live tab. */
   jevLive: () => void;
+  /** Expands or collapses the full run details in Live. */
+  flowDetails: (open: boolean) => void;
   /** Takes a finished subagent off the Agents tab, or every finished one. */
   removeAgent: (n: number) => void;
   clearAgents: () => void;
@@ -219,40 +214,49 @@ export function shares(counts: readonly number[], room: number): number[] {
 
 const inRange = (view: View) => view.events.filter((event) => view.range <= 0 || view.now - at(event) < view.range);
 
+const consultsInRange = (view: View) => {
+  const start = view.range > 0 ? view.now - view.range : Number.NEGATIVE_INFINITY;
+  return traceConsults(view.trace).filter((consult) => consult.startedAt >= start && consult.startedAt <= view.now);
+};
+
 export { cellsOf };
 
-/** The last five minutes: average confidence and latency, routed count, the window's requests. */
+/** The last five minutes: observed Jev calls, elapsed latency, usage coverage, and failures. */
 function recentStats(view: View) {
-  const recent = view.events.filter((event) => view.now - at(event) < 5 * 60e3);
-  const asked = recent.filter((event) => event.jev);
-  const confidences = asked.flatMap(({ jev }) => jev?.confidence === undefined ? [] : [jev.confidence]);
-  const confidence = confidences.length ? confidences.reduce((s, value) => s + value, 0) / confidences.length : undefined;
-  const latency = asked.length ? Math.round(asked.reduce((s, event) => s + event.jev!.latencyMs, 0) / asked.length) : undefined;
-  return { recent, confidence, latency, routedCount: recent.filter(routed).length };
+  const since = view.now - 5 * 60e3;
+  const events = view.events.filter((event) => view.now - at(event) < 5 * 60e3);
+  const consults = traceConsults(view.trace).filter((consult) => consult.startedAt >= since && consult.startedAt <= view.now);
+  const legacy = consults.length ? [] : events.filter((event) => event.jev);
+  const calls = consults.length ? consults : legacy;
+  const reportedTokens = consults.length
+    ? consults.flatMap((consult) => consult.usage?.input === undefined ? [] : [consult.usage.input])
+    : legacy.flatMap((event) => event.jev?.inputTokens === undefined ? [] : [event.jev.inputTokens]);
+  const latencies = consults.length
+    ? consults.flatMap((consult) => consult.endedAt === undefined ? [] : [Math.max(0, consult.endedAt - consult.startedAt)])
+    : legacy.flatMap((event) => event.jev ? [event.jev.latencyMs] : []);
+  const failures = consults.length ? consults.filter((consult) => consult.error).length : events.filter((event) => category(event) === "failed").length;
+  return {
+    calls: calls.length,
+    latency: latencies.length ? Math.round(latencies.reduce((sum, value) => sum + value, 0) / latencies.length) : undefined,
+    tokens: reportedTokens.length ? reportedTokens.reduce((sum, value) => sum + value, 0) : undefined,
+    reported: reportedTokens.length,
+    failures,
+  };
 }
 
-/** Dots of Jev's average confidence, 0.1 each in the full ten. */
-function confidenceMeter(els: Els | ElementTable, confidence: number | undefined, color: string, count = 10) {
-  const { Text } = els;
-  const [full, empty] = meter(confidence, count);
-  return (
-    <Text>
-      <Text color={color}>{full}</Text>
-      <Text color={INK.faint}>{empty}</Text>
-    </Text>
-  );
+function statsLine(stats: ReturnType<typeof recentStats>, locale: Locale): string {
+  return [
+    text("ui.stats.calls", locale, { count: formatNumber(stats.calls, locale) }),
+    stats.latency === undefined ? "" : text("ui.stats.latency", locale, { value: formatNumber(stats.latency, locale) }),
+    text("ui.stats.tokens", locale, { value: stats.tokens === undefined ? "–" : formatCompact(stats.tokens, locale) }),
+    text("ui.stats.failures", locale, { count: formatNumber(stats.failures, locale) }),
+  ].filter(Boolean).join(" · ");
 }
 
-/** A rail of dots: the share of requests Jev routed. */
-function routedRail(els: Els | ElementTable, part: number, whole: number, color: string, count = 10) {
-  const { Text } = els;
-  const [full, empty] = rail(part, whole, count);
-  return (
-    <Text>
-      <Text color={color}>{full}</Text>
-      <Text color={INK.faint}>{empty}</Text>
-    </Text>
-  );
+function statsPartial(stats: ReturnType<typeof recentStats>, locale: Locale): string | undefined {
+  return stats.reported < stats.calls
+    ? text("ui.stats.tokensPartial", locale, { reported: formatNumber(stats.reported, locale), total: formatNumber(stats.calls, locale) })
+    : undefined;
 }
 
 /** Pingo's mood: thinking while Jev is being asked, otherwise the routing status. */
@@ -285,7 +289,7 @@ function header(els: Els, view: View, act: Actions) {
   const state = status(view.events, view.routing, view.now, view.locale);
   const mood = moodOf(view);
   const moodInk = hex(MOODS[mood].color);
-  const { recent, confidence, latency, routedCount } = recentStats(view);
+  const stats = recentStats(view);
   return (
     <Box flexDirection="column">
       <Box flexDirection="row" columnGap={2} flexWrap="wrap">
@@ -296,14 +300,8 @@ function header(els: Els, view: View, act: Actions) {
             <Text color={INK.faint}>{`  · ${text(mood === "thinking" ? "ui.header.asking" : "ui.header.mascot", view.locale)}`}</Text>
           </Text>
           <Text bold color={moodInk} wrap="truncate">{`${MOODS[mood].face} ${state.icon} ${state.title}`}</Text>
-          <Text wrap="truncate">
-            {confidenceMeter(els, confidence, moodInk)}
-            <Text color={INK.dim}>{`  ${text("ui.header.confidence", view.locale, { value: confidence === undefined ? "–" : formatDecimal(confidence, view.locale) })}`}</Text>
-          </Text>
-          <Text wrap="truncate">
-            {routedRail(els, routedCount, recent.length, moodInk)}
-            <Text color={INK.dim}>{`  ${text("ui.header.routed", view.locale, { routed: formatNumber(routedCount, view.locale), total: formatNumber(recent.length, view.locale), requests: text(recent.length === 1 ? "unit.request" : "unit.requests", view.locale), latency: latency === undefined ? "" : text("ui.header.latency", view.locale, { value: formatNumber(latency, view.locale) }) })}`}</Text>
-          </Text>
+          <Text color={INK.dim} wrap="truncate">{statsLine(stats, view.locale)}</Text>
+          {statsPartial(stats, view.locale) ? <Text color={INK.faint} wrap="truncate">{statsPartial(stats, view.locale)}</Text> : null}
         </Box>
         <Button
           key="routing"
@@ -313,11 +311,11 @@ function header(els: Els, view: View, act: Actions) {
         />
       </Box>
       <Box flexDirection="row" flexWrap="wrap" columnGap={1} marginTop={1}>
-        {TABS.flat().map(([id, label]) => {
+        {TABS.flat().map(([id, label, hotkey]) => {
           const name = text(label as LocaleKey, view.locale);
           // The open tab is bracketed and bright; the others are dim labels you press.
           const open = view.tab === id;
-          return <Button key={"tab-" + id} label={open ? `❮ ${name} ❯` : ` ${name} `} plain {...(open ? {} : { dimColor: true })} onPress={() => act.tab(id)} />;
+          return <Button key={"tab-" + id} label={open ? `❮ ${name} ❯` : ` ${name} `} hotkey={hotkey} plain {...(open ? {} : { dimColor: true })} onPress={() => act.tab(id)} />;
         })}
       </Box>
       <Text color={INK.faint} wrap="truncate">{"─".repeat(Math.max(1, view.width))}</Text>
@@ -348,53 +346,47 @@ function section(els: Els, title: string) {
   );
 }
 
-/** The figures, as label / value / note columns with no boxes around them. */
-function figures(els: Els, view: View, events: readonly RouteEvent[]) {
+/** One group of figures, as label / value / note columns with no boxes around them; a narrow pane wraps them. */
+function figures(els: Els, view: View, group: readonly Tile[]) {
   const { Box, Text } = els;
   const perRow = view.width >= 75 ? 3 : 2;
   const cellWidth = Math.max(14, Math.floor(view.width / perRow) - 2);
-  const all = tiles(events, view.locale);
-  const rows = Array.from({ length: Math.ceil(all.length / perRow) }, (_, i) => all.slice(i * perRow, i * perRow + perRow));
   return (
-    <Box flexDirection="column" rowGap={1}>
-      {rows.map((row) => (
-        <Box flexDirection="row" columnGap={2}>
-          {row.map((tile) => (
-            <Box flexDirection="column" width={cellWidth}>
-              <Text color={INK.dim}>{fit(tile.label, cellWidth)}</Text>
-              <Text bold color={INK.ink}>{fit(tile.value, cellWidth)}</Text>
-              <Text color={INK.faint}>{fit(tile.sub, cellWidth)}</Text>
-            </Box>
-          ))}
+    <Box flexDirection="row" flexWrap="wrap" columnGap={2} rowGap={1}>
+      {group.map((tile) => (
+        <Box flexDirection="column" width={cellWidth}>
+          <Text color={INK.dim}>{fit(tile.label, cellWidth)}</Text>
+          <Text bold color={INK.ink}>{fit(tile.value, cellWidth)}</Text>
+          <Text color={tile.alert ? INK.fail : INK.faint}>{fit(tile.sub, cellWidth)}</Text>
         </Box>
       ))}
     </Box>
   );
 }
 
-/** What happened to each request, as a strip of dots per category and a legend. */
+/** What happened to each request, as a strip of dots per category and a one-row legend. */
 function dotsBar(els: Els, events: readonly RouteEvent[], width: number, locale: Locale) {
   const { Box, Text } = els;
   const counts = new Map(tally(events.map(category)));
-  const allCategories = categories(locale);
-  const present = allCategories.filter(([name]) => counts.get(name));
+  const present = categories(locale).filter(([name]) => counts.get(name));
   const room = Math.max(10, width);
   const dots = shares(present.map(([name]) => counts.get(name) ?? 0), room);
   return (
     <Box flexDirection="column">
       <Text>
-        {present.length === 0 ? <Text color={INK.faint}>{"⣀".repeat(room)}</Text> : null}
         {present.map(([name], i) => (
           <Text color={hex(CATEGORY_DOT[name][1])}>{"⣿".repeat(dots[i]!)}</Text>
         ))}
       </Text>
-      {(present.length ? present : allCategories).map(([name, label]) => (
-        <Text>
-          <Text color={hex(CATEGORY_DOT[name][1])}>{`${CATEGORY_DOT[name][0]} `}</Text>
-          <Text color={INK.dim}>{label} </Text>
-          <Text bold color={INK.ink}>{`${int(counts.get(name) ?? 0, locale)} · ${pct(counts.get(name) ?? 0, events.length, locale)}`}</Text>
-        </Text>
-      ))}
+      <Box flexDirection="row" flexWrap="wrap" columnGap={3}>
+        {present.map(([name, label]) => (
+          <Text>
+            <Text color={hex(CATEGORY_DOT[name][1])}>{`${CATEGORY_DOT[name][0]} `}</Text>
+            <Text color={INK.dim}>{label} </Text>
+            <Text bold color={INK.ink}>{`${int(counts.get(name) ?? 0, locale)} · ${pct(counts.get(name) ?? 0, events.length, locale)}`}</Text>
+          </Text>
+        ))}
+      </Box>
     </Box>
   );
 }
@@ -403,110 +395,94 @@ function dotsBar(els: Els, events: readonly RouteEvent[], width: number, locale:
 function sky(els: Els, view: View, events: readonly RouteEvent[]) {
   const { Box, Text } = els;
   const columns = Math.max(20, Math.min(72, view.width - 2));
-  const rows = 6;
+  const rows = 4;
   const end = view.now;
   const start = view.range > 0 ? end - view.range : Math.min(end - 60e3, ...events.map(at));
-  const tokens = (event: RouteEvent) => (event.usage ? event.usage.input + event.usage.output : 0);
-  const peak = Math.max(1, ...events.map(tokens));
+  const tokens = (event: RouteEvent) => event.usage && Object.values(event.usage).some((value) => value !== undefined)
+    ? (event.usage.input ?? 0) + (event.usage.cached ?? 0) + (event.usage.cacheWrite ?? 0) + (event.usage.output ?? 0)
+    : undefined;
+  const values = events.map(tokens).filter((value): value is number => value !== undefined);
+  const complete = events.filter((event) => event.usage?.input !== undefined && event.usage.cached !== undefined && event.usage.cacheWrite !== undefined && event.usage.output !== undefined).length;
+  const peak = Math.max(1, ...values);
   const priority: Record<Category, number> = { passthrough: 0, hint: 1, failed: 2 };
-  const points = events.map((event) => ({
-    x: (at(event) - start) / Math.max(1, end - start),
-    // Square root, so a few huge requests do not flatten the rest onto the ground.
-    y: Math.sqrt(tokens(event) / peak),
-    color: CATEGORY_DOT[category(event)][1],
-    priority: priority[category(event)],
-  }));
+  const points = events.flatMap((event) => {
+    const value = tokens(event);
+    return value === undefined ? [] : [{
+      x: (at(event) - start) / Math.max(1, end - start),
+      // Square root, so a few huge requests do not flatten the rest onto the ground.
+      y: Math.sqrt(value / peak),
+      color: CATEGORY_DOT[category(event)][1],
+      priority: priority[category(event)],
+    }];
+  });
   return (
     <Box flexDirection="column">
-      {constellation(points, columns, rows).map((row) => (
-        <Text>
-          {row.map(([text, color]) => (
-            <Text color={hex(color)}>{text}</Text>
+      {points.length ? (
+        <Box flexDirection="column">
+          {constellation(points, columns, rows).map((row) => (
+            <Text>
+              {row.map(([text, color]) => (
+                <Text color={hex(color)}>{text}</Text>
+              ))}
+            </Text>
           ))}
-        </Text>
-      ))}
-      <Text color={INK.faint}>{text("ui.timeline.caption", view.locale, {
-        start: view.range > 0 ? text("ui.timeline.ago", view.locale, { age: formatAge(view.range, view.locale) }) : text("ui.timeline.start", view.locale),
-        peak: int(peak, view.locale),
-      })}</Text>
+          <Text color={INK.faint}>{text("ui.timeline.caption", view.locale, {
+            start: view.range > 0 ? text("ui.timeline.ago", view.locale, { age: formatAge(view.range, view.locale) }) : text("ui.timeline.start", view.locale),
+            peak: int(peak, view.locale),
+          })}</Text>
+          {complete < events.length ? <Text color={INK.faint} wrap="wrap">{text("ui.timeline.partial", view.locale, { reported: int(complete, view.locale), total: int(events.length, view.locale) })}</Text> : null}
+        </Box>
+      ) : <Text color={INK.faint}>{text("ui.timeline.usageUnavailable", view.locale)}</Text>}
     </Box>
   );
 }
 
+/**
+ * The selected range at a glance. The range picker leads, since it scopes every figure below; the
+ * header's meters keep their own last-five-minutes window. The status sentence shows only when it
+ * says more than the header does: why Jev is failing or passing, when it last ran, that it is off.
+ */
 function overview(els: Els, view: View, act: Actions) {
   const { Box, Text } = els;
   const events = inRange(view);
+  const consults = consultsInRange(view);
   const state = status(view.events, view.routing, view.now, view.locale);
+  const all = consults.length ? tiles(events, view.locale, consults) : tiles(events, view.locale);
+  const group = (id: TileGroup) => all.filter((tile) => tile.group === id);
+  // A heading sits on its content; the blank rows fall between groups.
+  const part = (title: LocaleKey, ...body: RenderChildren[]) => (
+    <Box flexDirection="column">
+      {section(els, text(title, view.locale))}
+      {body}
+    </Box>
+  );
+  // With nothing ever recorded, "no requests in the last 5 minutes" only repeats the empty line.
+  const note = state.kind === "routing" || (state.kind === "idle" && view.events.length === 0) ? null : state.text;
   return (
     <Box flexDirection="column" rowGap={1}>
       <Box flexDirection="column">
-        <Text color={INK.ink} wrap="wrap">{state.text}</Text>
+        <Box flexDirection="row" flexWrap="wrap" columnGap={2}>
+          {rangePicker(els, view, act)}
+          {events.length === 0 ? null : (
+            <Text color={INK.dim} wrap="truncate">
+              {text("ui.overview.scope", view.locale, { count: int(events.length, view.locale), requests: text(events.length === 1 ? "unit.request" : "unit.requests", view.locale) })}
+            </Text>
+          )}
+          {consults.length ? <Text color={INK.dim} wrap="truncate">{text(view.range <= 0 && view.trace.turns > view.trace.runs.length ? "ui.overview.consultScopeRetained" : "ui.overview.consultScope", view.locale, { count: int(consults.length, view.locale) })}</Text> : null}
+        </Box>
+        {note === null ? null : <Text color={INK.ink} wrap="wrap">{note}</Text>}
         <Text color={INK.faint} wrap="wrap">{view.meta}</Text>
       </Box>
-      {figures(els, view, events)}
-      {section(els, text("ui.overview.outcome", view.locale))}
-      {dotsBar(els, events, view.width - 2, view.locale)}
-      {sky(els, view, events)}
-      {rangePicker(els, view, act)}
-    </Box>
-  );
-}
-
-function reasonsView(els: Els, view: View, act: Actions) {
-  const { Box, Text } = els;
-  const events = inRange(view);
-  const list = reasons(events, view.locale);
-  const top = list[0]?.count ?? 1;
-  const passed = events.filter((event) => !routed(event)).length;
-  const colorFor = (who: string) => (who === text("reason.who.failed", view.locale) ? INK.fail : who === text("reason.who.asked", view.locale) ? INK.pass : INK.dim);
-  return (
-    <Box flexDirection="column">
-      {section(els, text("ui.reasons.title", view.locale))}
-      {list.length === 0 ? (
-        <Text color={INK.dim}>{events.length ? text("ui.reasons.allRouted", view.locale) : text("ui.reasons.empty", view.locale)}</Text>
-      ) : null}
-      {list.map((reason) => (
-        <Box flexDirection="column" marginTop={1}>
-          <Text>
-            <Text bold color={colorFor(reason.who)}>{reasonTitle(reason.name, view.locale)}</Text>
-            <Text color={INK.faint}>{reason.who ? `  · ${reason.who}` : ""}</Text>
-            <Text color={INK.ink}>{`  ${int(reason.count, view.locale)} · ${pct(reason.count, passed, view.locale)}`}</Text>
-          </Text>
-          <Text color={colorFor(reason.who)}>{"⣿".repeat(Math.max(1, Math.round(((view.width - 4) * reason.count) / top)))}</Text>
-          <Text color={INK.dim} wrap="wrap">{reason.meaning}</Text>
+      {events.length === 0 && consults.length === 0 ? (
+        <Text color={INK.dim} wrap="wrap">{text("ui.overview.empty", view.locale)}</Text>
+      ) : (
+        <Box flexDirection="column" rowGap={1}>
+          {events.length ? part("ui.overview.routing", figures(els, view, group("routing")), dotsBar(els, events, view.width - 2, view.locale)) : null}
+          {group("jev").length ? part("ui.overview.jev", figures(els, view, group("jev"))) : null}
+          {group("tokens").length ? part("ui.overview.tokens", figures(els, view, group("tokens"))) : null}
+          {events.length ? part("ui.overview.timeline", sky(els, view, events)) : null}
         </Box>
-      ))}
-      <Text> </Text>
-      {rangePicker(els, view, act)}
-    </Box>
-  );
-}
-
-function baselineView(els: Els, view: View, act: Actions) {
-  const { Box, Text } = els;
-  const table = compare(inRange(view), view.locale);
-  const label = Math.max(12, Math.min(20, view.width - 36));
-  const deltaInk = (delta: string) => (delta.startsWith("-") ? INK.route : delta.startsWith("+") ? INK.fail : INK.dim);
-  return (
-    <Box flexDirection="column" rowGap={1}>
-      {section(els, text("ui.baseline.title", view.locale))}
-      <Box flexDirection="column">
-        <Text bold color={INK.ink}>{fit("", label) + fit(text("ui.baseline.withJev", view.locale), 11) + fit(text("ui.baseline.withoutJev", view.locale), 11) + text("ui.baseline.diff", view.locale)}</Text>
-        <Text color={INK.faint}>{"⠤".repeat(Math.min(view.width - 2, label + 30))}</Text>
-        {table.rows.map((row) => (
-          <Text>
-            <Text color={INK.dim}>{fit(row.label, label)}</Text>
-            <Text color={INK.ink}>{fit(row.withJev, 11) + fit(row.without, 11)}</Text>
-            <Text bold color={deltaInk(row.delta)}>{row.delta}</Text>
-          </Text>
-        ))}
-      </Box>
-      <Text color={INK.dim} wrap="wrap">
-        {table.hasBaseline
-          ? text("ui.baseline.comparable", view.locale)
-          : text("ui.baseline.noData", view.locale)}
-      </Text>
-      {rangePicker(els, view, act)}
+      )}
     </Box>
   );
 }
@@ -516,9 +492,23 @@ function logView(els: Els, view: View) {
   const { Box, Text } = els;
   const room = view.fixed ? 200 : Math.max(3, view.rows - 18);
   const rows = view.events.slice(-room).reverse();
+  const grouped = reasons(view.events, view.locale);
+  const unhandled = view.events.filter((event) => !routed(event)).length;
+  const colorFor = (who: string) => (who === text("reason.who.failed", view.locale) ? INK.fail : who === text("reason.who.asked", view.locale) ? INK.pass : INK.dim);
   return (
     <Box flexDirection="column" rowGap={1}>
       {section(els, text("ui.log.title", view.locale))}
+      <Box flexDirection="column">
+        {section(els, text("ui.log.reasons", view.locale))}
+        {grouped.length === 0 ? <Text color={INK.faint}>{text("ui.log.noReasons", view.locale)}</Text> : null}
+        {grouped.map((reason) => (
+          <Text wrap="wrap">
+            <Text bold color={colorFor(reason.who)}>{reasonTitle(reason.name, view.locale)}</Text>
+            <Text color={INK.ink}>{` · ${int(reason.count, view.locale)} · ${pct(reason.count, unhandled, view.locale)}`}</Text>
+            <Text color={INK.dim}>{` — ${reason.meaning}`}</Text>
+          </Text>
+        ))}
+      </Box>
       <Box flexDirection="column">
         {rows.length === 0 ? <Text color={INK.dim}>{text("ui.log.empty", view.locale)}</Text> : null}
         {rows.map((event) => logEntry(els, view, event))}
@@ -538,8 +528,16 @@ function logEntry(els: Els, view: View, event: RouteEvent) {
       ? text("ui.log.suggested", view.locale, { tool: event.tool ?? "" })
       : event.jev?.choice
         ? text("ui.log.picked", view.locale, { choice: event.jev.choice })
-        : text("ui.log.stayedOut", view.locale);
+      : text("ui.log.stayedOut", view.locale);
   const confidence = event.confidence ?? event.jev?.confidence;
+  const reason = event.reason ? reasonTitle(event.reason, view.locale) : "";
+  const reasonDetail = event.reason && reason !== event.reason ? `${reason} (${event.reason})` : reason;
+  const usage = event.usage ? [
+    event.usage.input === undefined ? "" : text("ui.log.inputTokens", view.locale, { value: int(event.usage.input, view.locale) }),
+    event.usage.cached === undefined ? "" : text("ui.log.cachedTokens", view.locale, { value: int(event.usage.cached, view.locale) }),
+    event.usage.cacheWrite === undefined ? "" : text("ui.log.cacheWriteTokens", view.locale, { value: int(event.usage.cacheWrite, view.locale) }),
+    event.usage.output === undefined ? "" : text("ui.log.outputTokens", view.locale, { value: int(event.usage.output, view.locale) }),
+  ].filter(Boolean).join(" · ") : "";
   return (
     <Box flexDirection="column">
       <Text wrap="wrap">
@@ -550,12 +548,12 @@ function logEntry(els: Els, view: View, event: RouteEvent) {
           {[
             confidence === undefined ? "" : ` · ${formatDecimal(confidence, view.locale)}`,
             event.jev ? ` · ${int(event.jev.latencyMs, view.locale)} ms` : "",
-            event.usage ? text("ui.log.inputOutput", view.locale, { input: int(event.usage.input, view.locale), output: int(event.usage.output, view.locale) }) : "",
+            usage ? ` · ${usage}` : "",
             text("ui.log.duration", view.locale, { value: formatDecimal(event.durationMs / 1000, view.locale, 1) + text("format.seconds", view.locale, { value: "" }) }),
           ].join("")}
         </Text>
       </Text>
-      {event.reason ? <Text color={kind === "failed" ? INK.fail : INK.faint}>{fit(text("ui.log.reason", view.locale, { reason: reasonTitle(event.reason, view.locale) }), view.width - 2)}</Text> : null}
+      {event.reason ? <Text color={kind === "failed" ? INK.fail : INK.faint} wrap="wrap">{text("ui.log.reason", view.locale, { reason: reasonDetail })}</Text> : null}
       {kind === "failed" && event.error ? <Text color={INK.fail} wrap="wrap">{text("ui.log.cause", view.locale, { cause: event.error })}</Text> : null}
       {kind === "failed" ? <Text color={INK.pass} wrap="wrap">{text("ui.log.hint", view.locale, { hint: failureHint(failureKind(event.error ?? "", event.reason), view.locale) })}</Text> : null}
       {kind === "failed"
@@ -607,7 +605,7 @@ function step(els: Els, n: number, label: string, done: boolean, body: RenderChi
   );
 }
 
-function setupView(els: Els, view: View, act: Actions) {
+function configurationView(els: Els, view: View, act: Actions) {
   const { Box, Text, Button, Select, Input } = els;
   const chosen = PROVIDER_IDS.includes(view.setup.provider as never) ? view.setup.provider : PROVIDER_IDS.includes(view.key.provider as never) ? view.key.provider : "typesafe";
   const info = PROVIDERS[chosen as keyof typeof PROVIDERS];
@@ -617,8 +615,28 @@ function setupView(els: Els, view: View, act: Actions) {
   return (
     <Box flexDirection="column" rowGap={1}>
       <Box flexDirection="column">
-        {section(els, text("ui.setup.title", view.locale))}
         <Text color={INK.dim} wrap="wrap">{text("ui.setup.intro", view.locale)}</Text>
+        {!view.routing ? <Text color={INK.pass} wrap="wrap">{text("ui.configuration.routingOff", view.locale)}</Text> : null}
+      </Box>
+      <Box flexDirection="column" rowGap={1}>
+        {section(els, text("ui.configuration.agents", view.locale))}
+        {features(view.locale).map((feature) => {
+          const on = view.features[feature.id];
+          return (
+            <Box flexDirection="column">
+              <Button
+                key={"feature-" + feature.id}
+                label={on ? `● ${text("ui.configuration.enabled", view.locale, { hotkey: feature.hotkey })}` : `○ ${text("ui.configuration.disabled", view.locale, { hotkey: feature.hotkey })}`}
+                hotkey={feature.hotkey}
+                onPress={() => act.feature(feature.id, !on)}
+              />
+              <Text color={INK.dim} wrap="wrap">{feature.description}</Text>
+            </Box>
+          );
+        })}
+      </Box>
+      <Box flexDirection="column">
+        {section(els, text("ui.configuration.provider", view.locale))}
         <Select
           key="language"
           label={text("ui.setup.language", view.locale)}
@@ -712,25 +730,11 @@ const TONE_INK: Record<FeedTone, string> = {
   muted: INK.dim,
 };
 
-/** Dice, your mascot: braille in a terminal raster and SVG circles on the desktop. */
-function diceArt(els: Els, view: View) {
-  if (view.surface === "terminal" && "Raster" in els) {
-    const { Raster } = els as ElementTable<"terminal">;
-    const { columns, rows } = diceSize(view.width);
-    return <Raster key="dice" columns={columns} rows={rows} cells={cellsOf(diceFrame(view.now / 1000, columns, rows))} />;
-  }
-  if (view.surface === "desktop" && "Svg" in els) {
-    const { Svg } = els as ElementTable<"desktop">;
-    return <Svg source={diceSvg(view.now / 1000)} alt={text("mascot.dice.alt", view.locale)} />;
-  }
-  return null;
-}
-
 /** Who speaks on a line of the live log: a face, a name and a color, so Jev and you never blur. */
 export function speaker(entry: Pick<FeedEntry, "who" | "name" | "tone" | "mascot">, locale: Locale = localeFor()): { face: string; name: string; color: string } {
   switch (entry.who) {
     case "you":
-      return { face: DICE.face, name: text("ui.live.you", locale), color: INK.you };
+      return { face: "●", name: text("ui.live.you", locale), color: INK.you };
     case "jev": {
       const mood: Mood = entry.tone === "bad" ? "failing" : entry.tone === "muted" ? "passthrough" : "routing";
       return { face: MOODS[mood].face, name: text("ui.live.jev", locale), color: hex(MOODS[mood].color) };
@@ -740,7 +744,7 @@ export function speaker(entry: Pick<FeedEntry, "who" | "name" | "tone" | "mascot
     case "agent":
       if (isMascot(entry.mascot)) {
         const mascot = AGENT_MASCOTS[entry.mascot];
-        return { face: mascot.face, name: mascot.name, color: hex(mascot.color) };
+        return { face: "◆", name: mascot.name, color: hex(mascot.color) };
       }
       return { face: "◆", name: entry.name ?? text("ui.live.subagent", locale), color: INK.ink };
     default:
@@ -894,86 +898,118 @@ function stuckLog(els: Els, view: View, lines: readonly FeedEntry[], rows: numbe
 /** The live log: who speaks, then every observable event, newest last. */
 function liveView(els: Els, view: View, act: Actions, rows: number) {
   const { Box, Text } = els;
-  const top = liveTop(els, view);
+  const top = liveTop(els, view, act);
+  const flow = runFlow(els, view);
   const empty = text("ui.live.emptyFeed", view.locale);
   if (!view.fixed) {
     return (
       <Box flexDirection="column" rowGap={1}>
         {top}
+        {flow}
         {conversation(els, view, view.feed.slice(-Math.max(5, view.rows - 20)), empty)}
       </Box>
     );
   }
-  // The top (Dice and who is who) stays; the log under it scrolls by lines, newest at the bottom.
-  const logRows = Math.max(3, rows - rowsOf(top, view.width) - 1);
+  if (view.flowDetails) {
+    const bodyRows = Math.max(4, rows - rowsOf(top, view.width));
+    const total = rowsOf(flow, view.width);
+    const max = Math.max(0, total - bodyRows + 1);
+    const offset = Math.min(view.scroll, max);
+    act.layout(max, false);
+    return (
+      <Box flexDirection="column" height={rows} overflow="hidden">
+        {top}
+        <Box flexDirection="column" height={bodyRows - (max ? 1 : 0)} overflow="hidden" flexShrink={0}>
+          <Box flexDirection="column" flexShrink={0} marginTop={-offset}>{flow}</Box>
+        </Box>
+        {max ? <Text color={INK.faint} wrap="truncate">{text("ui.scroll.footer", view.locale, { up: offset > 0 ? "▲" : " ", down: total - offset > bodyRows - 1 ? "▼" : " ", percent: formatNumber((100 * offset) / max, view.locale) })}</Text> : null}
+      </Box>
+    );
+  }
+  // Pingo and the run sequence stay visible; the live log below scrolls newest-last.
+  const logRows = Math.max(3, rows - rowsOf(top, view.width) - rowsOf(flow, view.width) - 1);
   const { back, max } = feedBack("live", view, view.feed);
   act.layout(max, true);
   return (
     <Box flexDirection="column" height={rows} overflow="hidden">
       {top}
+      {flow}
       <Text color={INK.faint} wrap="truncate">{"┄".repeat(Math.max(1, view.width))}</Text>
       {stuckLog(els, view, view.feed, logRows, empty, back)}
     </Box>
   );
 }
 
-/** Jev's record over the kept requests: its decisions, the hints they gave, tokens and latency. */
-function jevTally(events: readonly RouteEvent[]) {
+/** Jev calls observed in this session; token counts stay unknown when a response did not report them. */
+function jevTally(trace: TraceState, events: readonly RouteEvent[], now: number) {
+  const consults = traceConsults(trace);
+  if (consults.length) {
+    const reportedTokens = consults.flatMap((consult) => consult.usage?.input === undefined ? [] : [consult.usage.input]);
+    const durations = consults.flatMap((consult) => consult.endedAt === undefined ? [] : [Math.max(0, consult.endedAt - consult.startedAt)]);
+    return {
+      calls: consults.length,
+      tokens: reportedTokens.length ? reportedTokens.reduce((sum, count) => sum + count, 0) : undefined,
+      reported: reportedTokens.length,
+      latency: durations.length ? Math.round(durations.reduce((sum, duration) => sum + duration, 0) / durations.length) : undefined,
+      retained: trace.turns > trace.runs.length,
+    };
+  }
   const asked = events.filter((event) => event.jev);
+  const reportedTokens = asked.flatMap((event) => event.jev?.inputTokens === undefined ? [] : [event.jev.inputTokens]);
   return {
     calls: asked.length,
-    hints: events.filter(routed).length,
-    tokens: asked.reduce((s, event) => s + event.jev!.inputTokens, 0),
-    latency: asked.length ? Math.round(asked.reduce((s, event) => s + event.jev!.latencyMs, 0) / asked.length) : undefined,
+    tokens: reportedTokens.length ? reportedTokens.reduce((sum, count) => sum + count, 0) : undefined,
+    reported: reportedTokens.length,
+    latency: asked.length ? Math.round(asked.reduce((sum, event) => sum + event.jev!.latencyMs, 0) / asked.length) : undefined,
+    retained: false,
   };
 }
 
 /**
- * The Live tab's fixed top: Dice, then what happens now (Jev's state, the model and effort, what
- * runs), Jev's last decision and its record, and one line saying who is who in the log.
+ * The Live tab's fixed top: current model and activity, and a compact Jev usage tally.
  */
-function liveTop(els: Els, view: View) {
-  const { Box, Text } = els;
+function liveTop(els: Els, view: View, act: Actions) {
+  const { Box, Text, Button } = els;
   const state = status(view.events, view.routing, view.now, view.locale);
   const running = view.agents.filter((run) => run.state === "running").length;
   const mood = MOODS[moodOf(view)];
   const now = view.live;
-  const tally = jevTally(view.events);
+  const tally = jevTally(view.trace, view.events, view.now);
   return (
     <Box flexDirection="column" flexShrink={0}>
-      <Box flexDirection="row" columnGap={2}>
-        {diceArt(els, view)}
-        <Box flexDirection="column" flexShrink={1}>
+      <Box flexDirection="column" flexShrink={1}>
           {section(els, text("ui.live.title", view.locale))}
           <Text wrap="truncate">
             <Text bold color={hex(mood.color)}>{`${mood.face} Jev`}</Text>
             <Text color={now.asking ? INK.route : INK.dim}>{` · ${now.asking ? text("ui.live.asking", view.locale) : state.title}`}</Text>
             <Text color={INK.faint}>{` · ${text("ui.live.nowModel", view.locale, { model: modelName(now.model), effort: now.effort ? ` · ${now.effort}` : "" })}`}</Text>
-            {now.changed ? <Text color={INK.pass}>{` · ${text("ui.band.changed", view.locale, { change: now.changed })}`}</Text> : null}
           </Text>
           <Text wrap="truncate" color={now.activity ? INK.ink : INK.faint}>{now.activity ? `▶ ${now.activity}` : text("ui.live.nowIdle", view.locale)}</Text>
-          <Text wrap="truncate" color={now.jevUsed ? INK.route : INK.dim}>
-            {now.decision ? text("ui.live.lastDecision", view.locale, { summary: now.decision }) : text("ui.live.noDecision", view.locale)}
-          </Text>
           <Text wrap="truncate" color={INK.dim}>
             {text("ui.live.session", view.locale, {
               calls: formatNumber(tally.calls, view.locale),
-              hints: formatNumber(tally.hints, view.locale),
-              tokens: formatCompact(tally.tokens, view.locale),
+              tokens: tally.tokens === undefined ? "–" : formatCompact(tally.tokens, view.locale),
               latency: tally.latency === undefined ? "" : text("ui.live.sessionLatency", view.locale, { value: formatNumber(tally.latency, view.locale) }),
             })}
           </Text>
+          {tally.reported < tally.calls ? <Text color={INK.faint} wrap="truncate">{text("ui.live.sessionTokensPartial", view.locale, { reported: formatNumber(tally.reported, view.locale), total: formatNumber(tally.calls, view.locale) })}</Text> : null}
+          {tally.retained ? <Text color={INK.faint} wrap="truncate">{text("ui.live.sessionRetained", view.locale)}</Text> : null}
           <Text wrap="truncate">
-            <Text bold color={INK.you}>{`${DICE.face} ${text("ui.live.you", view.locale)}`}</Text>
-            <Text color={INK.faint}>{` ${text("ui.live.dice", view.locale)} · `}</Text>
+            <Text bold color={INK.you}>{`● ${text("ui.live.you", view.locale)}`}</Text>
+            <Text color={INK.faint}>{" · "}</Text>
             <Text bold color={INK.claude}>Claude</Text>
             <Text color={INK.faint}>{` · ⠿ ${text("ui.live.mod", view.locale)} ·`}</Text>
             {MASCOT_ORDER.map((id) => (
-              <Text bold color={hex(AGENT_MASCOTS[id].color)}>{` ${AGENT_MASCOTS[id].face} ${AGENT_MASCOTS[id].name}`}</Text>
+              <Text bold color={hex(AGENT_MASCOTS[id].color)}>{` ◆ ${AGENT_MASCOTS[id].name}`}</Text>
             ))}
           </Text>
           {running ? <Text color={INK.route} wrap="wrap">{text("ui.live.runningAgents", view.locale, { count: formatNumber(running, view.locale), unit: text(running === 1 ? "unit.agent" : "unit.agents", view.locale) })}</Text> : null}
-        </Box>
+          <Button
+            key="flow-details"
+            label={text(view.flowDetails ? "ui.flow.backToLive" : "ui.flow.details", view.locale)}
+            hotkey={view.flowDetails ? "b" : "f"}
+            onPress={() => act.flowDetails(!view.flowDetails)}
+          />
       </Box>
     </Box>
   );
@@ -988,14 +1024,21 @@ const AGENT_STATE: Record<AgentState, [label: LocaleKey, glyph: string, color: s
 
 /** A subagent's figures in one line: tools, requests, tokens. */
 function agentNumbers(run: AgentRun, locale: Locale): string {
-  return text("ui.agent.numbers", locale, {
+  const input = run.inputUsageRequests === undefined || run.tokensIn === undefined ? "–" : formatCompact(run.tokensIn, locale);
+  const output = run.outputUsageRequests === undefined || run.tokensOut === undefined ? "–" : formatCompact(run.tokensOut, locale);
+  const counts = text("ui.agent.numbers", locale, {
     tools: formatNumber(run.tools, locale),
     toolUnit: text(run.tools === 1 ? "unit.toolCall" : "unit.toolCalls", locale),
     requests: formatNumber(run.requests, locale),
     requestUnit: text(run.requests === 1 ? "unit.request" : "unit.requests", locale),
-    input: formatCompact(run.tokensIn, locale),
-    output: formatCompact(run.tokensOut, locale),
+    input,
+    output,
   });
+  const partial = [
+    run.inputUsageRequests !== undefined && run.inputUsageRequests < run.requests ? text("ui.agent.inputPartial", locale, { reported: formatNumber(run.inputUsageRequests, locale), total: formatNumber(run.requests, locale) }) : "",
+    run.outputUsageRequests !== undefined && run.outputUsageRequests < run.requests ? text("ui.agent.outputPartial", locale, { reported: formatNumber(run.outputUsageRequests, locale), total: formatNumber(run.requests, locale) }) : "",
+  ].filter(Boolean).join(" · ");
+  return partial ? `${counts} · ${partial}` : counts;
 }
 
 /** The model a subagent runs on, its effort, and what Jev chose for it. */
@@ -1003,8 +1046,8 @@ function agentModel(run: AgentRun, locale: Locale): string {
   return [modelName(run.model), run.effort ? text("ui.agent.model", locale, { effort: run.effort }) : "", run.jev ? text("ui.agent.jev", locale, { choice: run.jev }) : ""].filter(Boolean).join(" · ");
 }
 
-/** A subagent's mascot, when it has one. */
-const mascotOf = (run: AgentRun): AgentMascot | undefined => (isMascot(run.mascot) ? AGENT_MASCOTS[run.mascot] : undefined);
+/** A subagent's name and color, when its identifier is known. */
+const mascotOf = (run: AgentRun) => (isMascot(run.mascot) ? AGENT_MASCOTS[run.mascot] : undefined);
 
 /** "/•ᴗ•\ Tetra  Explore #3": the mascot's face and name in its color, then the type and number. */
 function agentName(els: Els, run: AgentRun, locale: Locale) {
@@ -1012,26 +1055,10 @@ function agentName(els: Els, run: AgentRun, locale: Locale) {
   const mascot = mascotOf(run);
   return (
     <Text>
-      {mascot ? <Text bold color={hex(mascot.color)}>{`${mascot.face} ${mascot.name}`}</Text> : <Text bold color={INK.ink}>◆</Text>}
+      {mascot ? <Text bold color={hex(mascot.color)}>{`◆ ${mascot.name}`}</Text> : <Text bold color={INK.ink}>◆</Text>}
       <Text color={INK.ink}>{`  ${text("ui.agent.number", locale, { type: run.type, number: formatNumber(run.n, locale) })}`}</Text>
     </Text>
   );
-}
-
-/** A subagent's mascot, drawn: braille in a Raster in the terminal (the mod animates it), SVG on the desktop. */
-function mascotArt(els: Els, view: View, run: AgentRun) {
-  const mascot = mascotOf(run);
-  if (!mascot) return null;
-  if (view.surface === "terminal" && "Raster" in els) {
-    const { Raster } = els as ElementTable<"terminal">;
-    const { columns, rows } = diceSize(view.width);
-    return <Raster key="mascot" columns={columns} rows={rows} cells={cellsOf(mascotFrame(mascot.id, view.now / 1000, columns, rows))} />;
-  }
-  if (view.surface === "desktop" && "Svg" in els) {
-    const { Svg } = els as ElementTable<"desktop">;
-    return <Svg source={mascotSvg(mascot.id, view.now / 1000)} alt={`${mascot.name}, ${text(`mascot.agentShape.${mascot.id}` as LocaleKey, view.locale)}`} />;
-  }
-  return null;
 }
 
 /** The Agents tab: every subagent Claude started, running ones first, each with its own live. */
@@ -1094,32 +1121,28 @@ export function renderAgentPane(els: Els, view: View, run: AgentRun | undefined,
   }
   const [stateKey, glyph, color] = AGENT_STATE[run.state];
   const lines: FeedEntry[] = view.feed.filter((entry) => entry.agent === run.id);
+  const modelSteps = view.trace.runs.flatMap((entry) => entry.steps).filter((step) => step.agentId === run.id).slice(-6);
   // Its answer closes the log, in full, once it has ended.
   if (run.state !== "running" && run.text) {
     lines.push({ seq: -1, time: run.endedAt ?? view.now, who: "agent", agent: run.id, mascot: run.mascot, kind: "agent", tone: "info", text: text("ui.agent.result", view.locale, { text: run.text }) });
   }
   const top = (
     <Box flexDirection="column" flexShrink={0}>
-      <Box flexDirection="row" columnGap={2}>
-        {mascotArt(els, view, run)}
-        <Box flexDirection="column" flexShrink={1}>
-          <Text wrap="wrap">
-            {agentName(els, run, view.locale)}
-            <Text bold color={color}>{`  ${glyph} ${text(stateKey, view.locale)}`}</Text>
-            <Text color={INK.dim}>{` · ${formatDuration((run.endedAt ?? view.now) - run.startedAt, view.locale)}`}</Text>
-          </Text>
-          <Text color={INK.ink} wrap="truncate-end">{run.description}</Text>
-          <Text color={INK.dim} wrap="truncate-end">{agentModel(run, view.locale)}</Text>
-          <Text color={INK.faint} wrap="truncate-end">{agentNumbers(run, view.locale)}</Text>
-          {run.state === "running" ? (
-            <Text wrap="truncate-end">
-              <Text color={INK.faint}>{text("ui.agent.now", view.locale)} </Text>
-              <Text bold color={INK.ink}>{run.activity ?? text("ui.agent.running", view.locale)}</Text>
-            </Text>
-          ) : null}
-          {buttons}
-        </Box>
-      </Box>
+      <Text wrap="wrap">
+        {agentName(els, run, view.locale)}
+        <Text bold color={color}>{`  ${glyph} ${text(stateKey, view.locale)}`}</Text>
+        <Text color={INK.dim}>{` · ${formatDuration((run.endedAt ?? view.now) - run.startedAt, view.locale)}`}</Text>
+      </Text>
+      <Text color={INK.ink} wrap="truncate-end">{run.description}</Text>
+      <Text color={INK.dim} wrap="truncate-end">{agentModel(run, view.locale)}</Text>
+      <Text color={INK.faint} wrap="truncate-end">{agentNumbers(run, view.locale)}</Text>
+      {run.state === "running" ? (
+        <Text wrap="truncate-end">
+          <Text color={INK.faint}>{text("ui.agent.now", view.locale)} </Text>
+          <Text bold color={INK.ink}>{run.activity ?? text("ui.agent.running", view.locale)}</Text>
+        </Text>
+      ) : null}
+      {buttons}
     </Box>
   );
   // The task Claude gave it opens the log: shown once scrolled back to the start.
@@ -1127,6 +1150,24 @@ export function renderAgentPane(els: Els, view: View, run: AgentRun | undefined,
     <Box flexDirection="column" flexShrink={0} marginBottom={1}>
       <Text color={INK.faint} wrap="truncate">{text("ui.agent.task", view.locale)}</Text>
       <Text color={INK.dim} wrap="wrap">{clip(run.prompt, 480)}</Text>
+      {modelSteps.length ? (
+        <Box flexDirection="column" marginTop={1}>
+          {section(els, text("ui.agent.requests", view.locale))}
+          {modelSteps.map((step) => (
+            <Box flexDirection="column">
+              <Text color={INK.dim} wrap="wrap">
+                {text("ui.models.request", view.locale, { number: formatNumber(step.index + 1, view.locale) })}
+                {" · "}
+                {step.observed
+                  ? text("ui.models.responseModel", view.locale, { model: modelName(step.observed) })
+                  : text("ui.models.requestedModel", view.locale, { model: modelName(step.sent) })}
+                {step.effort ? ` · ${text("ui.models.effort", view.locale, { effort: step.effort })}` : ""}
+              </Text>
+              <Text color={INK.faint} wrap="wrap">{stepUsage(step.usage, view.locale)}</Text>
+            </Box>
+          ))}
+        </Box>
+      ) : null}
     </Box>
   );
   const empty = text("ui.agent.emptyPane", view.locale);
@@ -1151,16 +1192,32 @@ export function renderAgentPane(els: Els, view: View, run: AgentRun | undefined,
   );
 }
 
-/**
- * The Flow tab: the latest run as observed, from the message through Jev and the main loop to its
- * tools, subagents, advisor calls and answer, with the earlier runs under it.
- */
-function flowView(els: Els, view: View) {
+/** The latest run's observed sequence and earlier runs, embedded in Live. */
+function runFlow(els: Els, view: View) {
   const { Box, Text } = els;
+  const run = view.trace.runs.find((candidate) => candidate.id === view.trace.active) ?? view.trace.runs.at(-1);
+  const timing = run ? runTiming(run, view.now) : undefined;
+  const scene = flowScene(view.trace, view.now, view.locale);
+  const compact = view.fixed && !view.flowDetails && scene.nodes.length > 0;
+  const compactDetails = compact ? [
+    ...(scene.nodes.find((node) => node.id === "message")?.details.slice(-2) ?? []),
+    ...(scene.nodes.find((node) => node.id === "agents")?.details.slice(-2) ?? []),
+    ...(scene.nodes.find((node) => node.id === "answer")?.details.slice(0, 2) ?? []),
+  ] : [];
   const lines = flowLines({ trace: view.trace, now: view.now, width: Math.max(1, view.width - 2), locale: view.locale });
   return (
     <Box flexDirection="column">
-      {lines.map((parts) => (
+      {compact ? (
+        <Box flexDirection="column">
+          <Text bold color={INK.ink}>{text("ui.flow.sequence", view.locale)}</Text>
+          <Text wrap="wrap">
+            {scene.nodes.map((node, index) => (
+              <Text color={node.color} bold>{`${index ? " → " : ""}${node.glyph} ${node.label}`}</Text>
+            ))}
+          </Text>
+          {compactDetails.map((detail) => <Text color={detail.color} wrap="wrap">{detail.text}</Text>)}
+        </Box>
+      ) : lines.map((parts) => (
         <Text wrap="truncate">
           {parts.length === 0 ? " " : null}
           {parts.map((part) => (
@@ -1170,244 +1227,126 @@ function flowView(els: Els, view: View) {
           ))}
         </Text>
       ))}
+      {timing ? (
+        <Box flexDirection="column" marginTop={1}>
+          <Text color={INK.ink}>{text("ui.flow.timing.main", view.locale, { duration: timing.mainResponseMs === undefined ? text("ui.flow.timing.pending", view.locale) : formatDuration(timing.mainResponseMs, view.locale) })}</Text>
+          <Text color={INK.dim}>{text("ui.flow.timing.total", view.locale, { duration: formatDuration(timing.totalMs, view.locale), state: text(timing.complete ? "ui.flow.timing.complete" : "ui.flow.timing.active", view.locale) })}</Text>
+          <Text color={INK.faint} wrap="wrap">{text("ui.flow.timing.note", view.locale)}</Text>
+        </Box>
+      ) : null}
       <Box marginTop={1}>
         <Text color={INK.faint} wrap="wrap">{text("ui.flow.help", view.locale)}</Text>
       </Box>
-      <Text color={INK.faint} wrap="wrap">{text("ui.flow.running", view.locale)}</Text>
     </Box>
   );
 }
 
 // --- Models tab ---
 
-const FN_MARK: Record<FnResult["result"], [glyph: string, color: string]> = {
-  applied: ["●", INK.route],
-  kept: ["◐", INK.pass],
-  none: ["○", INK.dim],
-  off: ["–", INK.faint],
-  failed: ["×", INK.fail],
-};
-const HELD_WHY = new Set(["user_model", "model_id", "blocked"]);
-const FN_NAME_WIDTH = 14;
+function stepUsage(usage: TraceStep["usage"], locale: Locale): string {
+  if (!usage) return text("ui.models.usageUnavailable", locale);
+  const parts = [
+    usage.input === undefined ? "" : text("ui.models.inputTokens", locale, { value: formatCompact(usage.input, locale) }),
+    usage.output === undefined ? "" : text("ui.models.outputTokens", locale, { value: formatCompact(usage.output, locale) }),
+    usage.cacheRead === undefined ? "" : text("ui.models.cacheReadTokens", locale, { value: formatCompact(usage.cacheRead, locale) }),
+    usage.cacheWrite === undefined ? "" : text("ui.models.cacheWriteTokens", locale, { value: formatCompact(usage.cacheWrite, locale) }),
+  ].filter(Boolean);
+  return parts.length ? `${parts.join(" · ")}${parts.length < 4 ? ` · ${text("ui.models.usagePartial", locale)}` : ""}` : text("ui.models.usageUnavailable", locale);
+}
 
-/** What one function did, in a sentence: the model's says what changed, what held it back, or what it takes. */
-export function describeFn(fn: FnResult, settled: boolean, locale: Locale): string {
-  const key = (id: string) => id as LocaleKey;
-  const conf = formatDecimal(fn.confidence ?? 0, locale, 2);
-  const needed = formatDecimal(fn.needed ?? 0, locale, 2);
-  if (fn.result === "off") return text(key(`ui.models.off.${fn.why}`), locale);
-  if (fn.result === "failed") return text("ui.models.failed", locale);
-  const why = fn.why ?? "";
-  if (fn.id === "model") {
-    const values = { from: modelName(fn.from), to: modelName(fn.value), model: modelName(fn.value ?? fn.from), confidence: conf, needed };
-    if (fn.result === "applied") return text(settled ? "ui.models.model.switched" : "ui.models.model.pending", locale, values);
-    if (fn.result === "kept") {
-      return HELD_WHY.has(why)
-        ? text("ui.models.model.heldWhy", locale, { ...values, reason: text(key(`ui.models.heldReason.${why}`), locale) })
-        : text("ui.models.model.keptConfidence", locale, { ...values, reason: text(key(`planning.modelReason.${why}`), locale) });
+function jevUsageGroups(trace: TraceState) {
+  type Counter = "input" | "output" | "cacheRead" | "cacheWrite";
+  type Group = { model: string; observed: boolean; calls: number; sums: Partial<Record<Counter, number>>; reported: Partial<Record<Counter, number>> };
+  const counters: readonly Counter[] = ["input", "output", "cacheRead", "cacheWrite"];
+  const groups = new Map<string, Group>();
+  for (const consult of traceConsults(trace)) {
+    const observed = consult.observed !== undefined;
+    const model = consult.observed ?? consult.model;
+    const key = `${observed ? "observed" : "requested"}:${model}`;
+    const group = groups.get(key) ?? { model, observed, calls: 0, sums: {}, reported: {} };
+    group.calls++;
+    for (const counter of counters) {
+      const value = consult.usage?.[counter];
+      if (value !== undefined) {
+        group.sums[counter] = (group.sums[counter] ?? 0) + value;
+        group.reported[counter] = (group.reported[counter] ?? 0) + 1;
+      }
     }
-    return text(key(`ui.models.model.${why}`), locale, values);
+    groups.set(key, group);
   }
-  if (fn.id === "tools") {
-    return fn.result === "applied" ? text("ui.models.tools.applied", locale, { tool: fn.value ?? "", confidence: conf }) : reasonTitle(why, locale);
-  }
-  if (fn.id === "effort") {
-    if (fn.result === "applied") return text("ui.models.effort.applied", locale, { value: fn.value ?? "", confidence: conf });
-    return text(key(fn.result === "kept" ? `ui.models.effort.${why}` : "ui.models.effort.none"), locale, { value: fn.value ?? "", confidence: conf, needed });
-  }
-  if (fn.id === "delegation") {
-    if (fn.result === "applied") return text("ui.models.delegation.applied", locale, { agent: fn.value ?? "", confidence: conf });
-    if (fn.result === "kept") return text("ui.models.delegation.low_confidence", locale, { agent: fn.value ?? "", confidence: conf, needed });
-    return text(why === "no_delegation" || why === "jev_declined" ? key(`ui.models.delegation.${why}`) : "ui.models.delegation.none", locale);
-  }
-  if (fn.id === "advisor") {
-    // Applied means the hint was attached, never that the advisor ran.
-    if (fn.result === "applied") return text("ui.models.advisor.applied", locale, { confidence: conf });
-    if (fn.result === "kept") return text("ui.models.advisor.low_confidence", locale, { confidence: conf, needed });
-    return text(key(`ui.models.advisor.${why || "unavailable"}`), locale);
-  }
-  return fn.result === "applied" ? text(fn.value === "out" ? "ui.models.participation.out" : "ui.models.participation.in", locale, { confidence: conf }) : text("ui.models.participation.none", locale);
+  return [...groups.values()];
 }
 
-function fnRow(els: Els, view: View, fn: FnResult, settled: boolean) {
-  const { Box, Text } = els;
-  const [glyph, color] = FN_MARK[fn.result];
-  return (
-    <Box flexDirection="row" columnGap={1}>
-      <Text bold color={color}>{glyph}</Text>
-      <Box width={FN_NAME_WIDTH} flexShrink={0}>
-        <Text color={INK.ink} wrap="truncate">{text(`ui.models.fn.${fn.id}` as LocaleKey, view.locale)}</Text>
-      </Box>
-      <Box flexShrink={1} flexGrow={1}>
-        <Text color={fn.result === "off" ? INK.faint : INK.dim} wrap="wrap">{describeFn(fn, settled, view.locale)}</Text>
-      </Box>
-    </Box>
-  );
+function jevCounterText(group: ReturnType<typeof jevUsageGroups>[number], counter: "input" | "output" | "cacheRead" | "cacheWrite", locale: Locale): string {
+  const labels = {
+    input: "ui.models.inputTokens",
+    output: "ui.models.outputTokens",
+    cacheRead: "ui.models.cacheReadTokens",
+    cacheWrite: "ui.models.cacheWriteTokens",
+  } as const;
+  const label = text(labels[counter], locale, { value: "" }).trim();
+  const sum = group.sums[counter];
+  if (sum === undefined) return text("ui.models.counterUnknown", locale, { name: label });
+  const value = text(labels[counter], locale, { value: formatCompact(sum, locale) });
+  const reported = group.reported[counter] ?? 0;
+  return reported < group.calls ? `${value} ${text("ui.models.counterPartial", locale, { reported: formatNumber(reported, locale), total: formatNumber(group.calls, locale) })}` : value;
 }
 
-/** One routing point: its time, whether Jev was asked, and what each function came to. */
-function turnBlock(els: Els, view: View, turn: TurnDecision) {
-  const { Box, Text } = els;
-  return (
-    <Box flexDirection="column">
-      <Text color={INK.dim} wrap="truncate">
-        <Text bold color={INK.ink}>{text("ui.models.turn", view.locale, { turn: formatNumber(turn.turn, view.locale) })}</Text>
-        {`  ${clock(turn.time, view.locale)}  ·  `}
-        {turn.consulted
-          ? text("ui.models.asked", view.locale, { latency: `${formatNumber(turn.latencyMs ?? 0, view.locale)} ms` })
-          : text("ui.models.skipped", view.locale)}
-      </Text>
-      {turn.fns.map((fn) => fnRow(els, view, fn, turn.settled))}
-    </Box>
-  );
-}
-
-/** An earlier routing point in one line: what the model did. */
-function turnLine(els: Els, view: View, turn: TurnDecision) {
-  const { Box, Text } = els;
-  const fn = modelOf(turn);
-  const [glyph, color] = fn ? FN_MARK[fn.result] : FN_MARK.off;
-  return (
-    <Box flexDirection="row" columnGap={1}>
-      <Text bold color={color}>{glyph}</Text>
-      <Text color={INK.faint}>{clock(turn.time, view.locale)}</Text>
-      <Text color={INK.dim} wrap="truncate">{fn ? describeFn(fn, turn.settled, view.locale) : ""}</Text>
-    </Box>
-  );
-}
-
-const ARROW = { up: "↑", same: "→", down: "↓" } as const;
-
-/** The forecast: what blocks a model change now, and the confidence each model needs. */
-function forecastView(els: Els, view: View) {
-  const { Box, Text } = els;
-  const { blockers, targets, cacheWarm } = view.forecast;
-  const blocked = blockers.length > 0;
-  return (
-    <Box flexDirection="column">
-      <Text color={INK.dim} wrap="wrap">{text(view.trace.active ? "ui.models.nextWorking" : "ui.models.nextTurn", view.locale)}</Text>
-      <Text color={blocked ? INK.pass : INK.route} wrap="wrap">{text(blocked ? "ui.models.blocked" : "ui.models.canChange", view.locale)}</Text>
-      {blockers.map((id) => (
-        <Text color={INK.pass} wrap="wrap">{`  ✕ ${text(`ui.models.blocker.${id}` as LocaleKey, view.locale)}`}</Text>
-      ))}
-      {targets.map((target) => {
-        const values = { arrow: ARROW[target.direction], model: modelName(target.id), needed: formatDecimal(target.needed, view.locale, 2), reason: text(`ui.models.targetReason.${target.why}` as LocaleKey, view.locale) };
-        return (
-          <Box flexDirection="row" columnGap={1}>
-            {target.blocked ? <Text color={INK.faint}>{"  ··········"}</Text> : <Text>{"  "}{confidenceMeter(els, target.needed, blocked ? INK.faint : INK.route, 10)}</Text>}
-            <Text color={target.blocked || blocked ? INK.faint : INK.ink} wrap="truncate">{text(target.blocked ? "ui.models.targetExcluded" : "ui.models.target", view.locale, values)}</Text>
-          </Box>
-        );
-      })}
-      {cacheWarm && targets.some((target) => target.direction === "down") ? <Text color={INK.faint} wrap="wrap">{text("ui.models.cache", view.locale)}</Text> : null}
-    </Box>
-  );
-}
-
-/** One group of runs, measured: how often the advisor was called, how long the runs took, what they cost. */
-function hintLine(group: HintGroup, label: LocaleKey, locale: Locale): string {
-  const runs = group.runs;
-  return text("ui.models.hint.line", locale, {
-    label: text(label, locale),
-    runs: formatNumber(runs, locale),
-    runUnit: text(runs === 1 ? "unit.run" : "unit.runs", locale),
-    called: formatPercent(group.withCall, runs, locale),
-    calls: formatDecimal(runs ? group.calls / runs : 0, locale, 1),
-    duration: formatDuration(runs ? group.durationMs / runs : 0, locale),
-    tokens: formatCompact(runs ? group.tokens / runs : 0, locale),
-    completed: formatPercent(group.completed, runs, locale),
-  });
-}
-
-/** The advisor hint, measured over the runs kept: with it against without it, where the question was asked. */
-function hintView(els: Els, view: View) {
-  const { Box, Text } = els;
-  const { hinted, plain } = advisorStats(view.trace);
-  if (!view.features.advisor && !hinted.runs && !plain.runs) return null;
-  return (
-    <Box flexDirection="column">
-      {section(els, text("ui.models.hint.title", view.locale))}
-      {hinted.runs || plain.runs ? (
-        <Box flexDirection="column">
-          <Text color={INK.ink} wrap="wrap">{hintLine(hinted, "ui.models.hint.with", view.locale)}</Text>
-          <Text color={INK.dim} wrap="wrap">{hintLine(plain, "ui.models.hint.without", view.locale)}</Text>
-        </Box>
-      ) : (
-        <Text color={INK.faint} wrap="wrap">{text("ui.models.hint.empty", view.locale)}</Text>
-      )}
-      <Text color={INK.faint} wrap="wrap">{text("ui.models.hint.note", view.locale)}</Text>
-    </Box>
-  );
-}
-
-/** The Models tab: the model running, what it takes to change it, and what Jev decided at each prompt. */
+/** The Models tab reports recorded requests and responses, without predicting later choices. */
 function modelsView(els: Els, view: View) {
   const { Box, Text } = els;
-  const turns = [...view.watch.turns].reverse();
-  const [latest, ...earlier] = turns;
-  const agents = [...view.agents].sort((a, b) => b.n - a.n).slice(0, 5);
+  const run = view.trace.runs.find((candidate) => candidate.id === view.trace.active) ?? view.trace.runs.at(-1);
+  const steps = run?.steps.filter((step) => !step.agentId) ?? [];
+  const jevGroups = jevUsageGroups(view.trace);
   return (
     <Box flexDirection="column" rowGap={1}>
       <Box flexDirection="column">
         {section(els, text("ui.models.now", view.locale))}
         <Text bold color={INK.ink}>{`◆ ${modelName(view.live.model)}${view.live.effort ? ` · ${view.live.effort}` : ""}`}</Text>
       </Box>
-      <Box flexDirection="column">
-        {section(els, text("ui.models.next", view.locale))}
-        {forecastView(els, view)}
+      <Box flexDirection="column" rowGap={1}>
+        {section(els, text("ui.models.requests", view.locale))}
+        {steps.length ? steps.slice(-12).map((step, index, shown) => {
+          const actual = step.observed ?? step.sent;
+          const previous = shown[index - 1];
+          const priorModel = previous ? previous.observed ?? previous.sent : undefined;
+          return (
+            <Box flexDirection="column">
+              <Text color={INK.faint} wrap="truncate">
+                {text("ui.models.request", view.locale, { number: formatNumber(step.index + 1, view.locale) })}
+                {` · ${clock(step.startedAt, view.locale)} · ${step.endedAt === undefined ? text("ui.models.inProgress", view.locale) : formatDuration(step.endedAt - step.startedAt, view.locale)}`}
+              </Text>
+              <Text wrap="wrap">
+                {step.observed
+                  ? text("ui.models.responseModel", view.locale, { model: modelName(step.observed) })
+                  : text("ui.models.requestedModel", view.locale, { model: modelName(step.sent) })}
+                {step.effort ? ` · ${text("ui.models.effort", view.locale, { effort: step.effort })}` : ""}
+              </Text>
+              {step.observed && step.observed !== step.sent ? (
+                <Text color={INK.pass} wrap="wrap">{text("ui.models.requestResponseDiff", view.locale, { requested: modelName(step.sent), observed: modelName(step.observed) })}</Text>
+              ) : null}
+              {step.original !== step.sent ? (
+                <Text color={INK.dim} wrap="wrap">{text("ui.models.engineModelDiff", view.locale, { original: modelName(step.original), sent: modelName(step.sent) })}</Text>
+              ) : null}
+              {priorModel && actual !== priorModel ? (
+                <Text color={INK.dim} wrap="wrap">{text("ui.models.modelChanged", view.locale, { from: modelName(priorModel), to: modelName(actual) })}</Text>
+              ) : null}
+              <Text color={INK.faint} wrap="wrap">{stepUsage(step.usage, view.locale)}</Text>
+            </Box>
+          );
+        }) : <Text color={INK.faint} wrap="wrap">{text("ui.models.empty", view.locale)}</Text>}
+        <Text color={INK.faint} wrap="wrap">{text("ui.models.observedNote", view.locale)}</Text>
+        <Text color={INK.faint} wrap="wrap">{text("ui.models.costUnavailable", view.locale)}</Text>
       </Box>
       <Box flexDirection="column" rowGap={1}>
-        {section(els, text("ui.models.last", view.locale))}
-        {latest ? turnBlock(els, view, latest) : <Text color={INK.faint} wrap="wrap">{text("ui.models.empty", view.locale)}</Text>}
-        {earlier.length ? <Box flexDirection="column">{earlier.slice(0, 12).map((turn) => turnLine(els, view, turn))}</Box> : null}
-        <Text color={INK.faint} wrap="wrap">{text("ui.models.legend", view.locale)}</Text>
-      </Box>
-      {hintView(els, view)}
-      <Box flexDirection="column">
-        {section(els, text("ui.models.subagents", view.locale))}
-        {agents.length === 0 ? <Text color={INK.faint}>{text("ui.models.noSubagents", view.locale)}</Text> : null}
-        {agents.map((run) => (
-          <Box flexDirection="row" columnGap={1}>
-            {agentName(els, run, view.locale)}
-            <Text color={INK.dim} wrap="truncate">{agentModel(run, view.locale)}</Text>
-          </Box>
-        ))}
-      </Box>
-    </Box>
-  );
-}
-
-/** One-click switches, each with what it does. */
-function featuresView(els: Els, view: View, act: Actions) {
-  const { Box, Text, Button } = els;
-  return (
-    <Box flexDirection="column" rowGap={1}>
-      {section(els, text("ui.tab.features", view.locale))}
-      {!view.routing ? <Text color={INK.pass} wrap="wrap">{text("ui.features.off", view.locale)}</Text> : null}
-      {features(view.locale).map((feature) => {
-        const on = view.features[feature.id];
-        return (
+        {section(els, text("ui.models.jevUsage", view.locale))}
+        {jevGroups.length ? jevGroups.map((group) => (
           <Box flexDirection="column">
-            <Box flexDirection="row" columnGap={1}>
-              <Button
-                key={"feature-" + feature.id}
-                label={on ? `● ${text("ui.features.enabled", view.locale, { hotkey: feature.hotkey })}` : `○ ${text("ui.features.disabled", view.locale, { hotkey: feature.hotkey })}`}
-                hotkey={feature.hotkey}
-                onPress={() => act.feature(feature.id, !on)}
-              />
-              <Text bold color={on ? INK.route : INK.ink}>{feature.name}</Text>
-            </Box>
-            <Text color={INK.dim} wrap="wrap">{feature.description}</Text>
+            <Text bold color={INK.ink} wrap="wrap">{text(group.observed ? "ui.models.jevObserved" : "ui.models.jevRequested", view.locale, { model: modelName(group.model), calls: formatNumber(group.calls, view.locale) })}</Text>
+            <Text color={INK.faint} wrap="wrap">{jevCounterText(group, "input", view.locale)} · {jevCounterText(group, "output", view.locale)} · {jevCounterText(group, "cacheRead", view.locale)} · {jevCounterText(group, "cacheWrite", view.locale)}</Text>
           </Box>
-        );
-      })}
-      <Box flexDirection="row" columnGap={2}>
-        <Button
-          key="routing-features"
-          label={text(view.routing ? "ui.features.routingOn" : "ui.features.routingOff", view.locale)}
-          hotkey="r"
-          onPress={() => act.routing(!view.routing)}
-        />
+        )) : <Text color={INK.faint} wrap="wrap">{text("ui.models.jevNoUsage", view.locale)}</Text>}
+        {view.trace.turns > view.trace.runs.length ? <Text color={INK.faint} wrap="wrap">{text("ui.models.jevRetained", view.locale)}</Text> : null}
       </Box>
     </Box>
   );
@@ -1437,13 +1376,13 @@ export function renderPane(els: Els, view: View, act: Actions) {
   const body = <Box flexDirection="column" flexShrink={0}>{tabBody(els, view, act, rows)}</Box>;
   const total = rowsOf(body, view.width);
   const max = Math.max(0, total - rows + 1);
-  // The request log has its newest on top: scrolled down, it keeps to the requests it showed.
+  // Logs has its newest on top: scrolled down, it keeps to the requests it showed.
   const newest = view.events.at(-1)?.seq ?? 0;
   const offset =
-    view.tab === "log"
+    view.tab === "logs"
       ? anchored("log", view.scroll, newest, (since) => view.events.filter((event) => event.seq > since).reduce((s, event) => s + rowsOf(logEntry(els, view, event), view.width), 0), max)
       : Math.min(view.scroll, max);
-  act.layout(view.tab === "log" ? view.scroll + max - offset : max, false);
+  act.layout(view.tab === "logs" ? view.scroll + max - offset : max, false);
   const more = total - offset > rows - 1;
   return (
     <Box flexDirection="column" height={view.rows} overflow="hidden">
@@ -1470,58 +1409,31 @@ function tabBody(els: Els, view: View, act: Actions, rows: number) {
         ? agentsView(els, view, act)
       : view.tab === "models"
         ? modelsView(els, view)
-      : view.tab === "flow"
-        ? flowView(els, view)
-      : view.tab === "features"
-        ? featuresView(els, view, act)
-        : view.tab === "reasons"
-          ? reasonsView(els, view, act)
-          : view.tab === "baseline"
-            ? baselineView(els, view, act)
-            : view.tab === "log"
+      : view.tab === "logs"
               ? logView(els, view)
-              : view.tab === "setup"
-                ? setupView(els, view, act)
+              : view.tab === "configuration"
+                ? configurationView(els, view, act)
                 : overview(els, view, act);
 }
 
-/**
- * Above the prompt: the status, a dot meter for confidence and a dot rail for routed requests;
- * line 2 says what is happening now: the active model and effort, what
- * Jev decided and what is running.
- */
+/** Above the prompt: current status, observed Jev metrics, model, activity, and running agents. */
 export function renderBand(els: ElementTable, view: View) {
   const { Box, Text } = els;
   const state = status(view.events, view.routing, view.now, view.locale);
   const mood = moodOf(view);
   const moodInk = hex(MOODS[mood].color);
-  const { recent, confidence, latency, routedCount } = recentStats(view);
-  const input = recent.reduce((s, event) => s + (event.usage?.input ?? 0), 0);
-  const cached = recent.reduce((s, event) => s + (event.usage?.cached ?? 0), 0);
-  const parts = [
-    text("ui.band.routed", view.locale, { routed: formatNumber(routedCount, view.locale), total: formatNumber(recent.length, view.locale) }),
-    latency === undefined ? undefined : `${formatNumber(latency, view.locale)} ms`,
-    input ? text("ui.band.cache", view.locale, { percent: pct(cached, input, view.locale) }) : undefined,
-    "/jev",
-  ].filter(Boolean);
+  const stats = recentStats(view);
   const now = view.live;
   const running = view.agents.filter((run) => run.state === "running").length;
-  const used = now.jevUsed;
   return (
     <Box flexDirection="column">
       <Box flexDirection="row" columnGap={1} flexWrap="wrap">
         <Text bold color={moodInk}>{`${MOODS[mood].face} ${text("ui.live.jev", view.locale)}: ${view.live.asking ? text("ui.band.asking", view.locale) : state.title}`}</Text>
-        {confidenceMeter(els, confidence, moodInk, 5)}
-        {routedRail(els, routedCount, recent.length, moodInk, 10)}
-        <Text color={INK.dim}>{parts.join(" · ")}</Text>
+        <Text color={INK.dim}>{statsLine(stats, view.locale)}</Text>
+        {statsPartial(stats, view.locale) ? <Text color={INK.faint}>{statsPartial(stats, view.locale)}</Text> : null}
       </Box>
       <Box flexDirection="row" columnGap={1} flexWrap="wrap">
         <Text color={INK.ink}>{`◆ ${modelName(now.model)}${now.effort ? ` · ${now.effort}` : ""}`}</Text>
-        {now.changed ? <Text color={INK.pass}>{text("ui.band.changed", view.locale, { change: now.changed })}</Text> : null}
-        <Text color={INK.faint}>·</Text>
-        <Text color={used === undefined ? INK.faint : used ? INK.route : INK.dim}>
-          {used === undefined ? text("ui.band.decision", view.locale, { summary: "—" }) : used ? text("ui.band.decision", view.locale, { summary: now.decision ?? text("ui.band.consulted", view.locale) }) : text("ui.band.skipped", view.locale, { reason: now.decision ?? text("category.mode.passthrough", view.locale) })}
-        </Text>
         <Text color={INK.faint}>·</Text>
         <Text color={now.activity ? INK.ink : INK.faint}>{now.activity ? `▶ ${now.activity}` : text("ui.band.idle", view.locale)}</Text>
         {running ? <Text color={INK.faint}>·</Text> : null}
@@ -1530,7 +1442,7 @@ export function renderBand(els: ElementTable, view: View) {
               .filter((run) => run.state === "running")
               .map((run) => {
                 const mascot = mascotOf(run);
-                return <Text bold color={mascot ? hex(mascot.color) : INK.route}>{mascot?.face ?? "◆"}</Text>;
+                return <Text bold color={mascot ? hex(mascot.color) : INK.route}>◆</Text>;
               })
           : null}
         {running ? <Text color={INK.route}>{text("ui.band.runningCount", view.locale, { count: formatNumber(running, view.locale), agents: text(running === 1 ? "ui.band.running.agent" : "ui.band.running.agents", view.locale) })}</Text> : null}

@@ -1,7 +1,8 @@
 // The Jev client: where Jev runs, which key reaches it, and the one call the mod makes. The
 // network, the timeout and the retry pause come in as functions, since a hooks module has no
 // fetch or setTimeout of its own: the mod passes $.http.fetch and $.clock.
-import type { AskJev } from "./decide.ts";
+import type { AskJev } from "./request.ts";
+export type { AskJev } from "./request.ts";
 import type { Answer, SystemOneRequest, SystemOneResult, SystemOneWireResult } from "./types.ts";
 import { text, type Locale, type LocaleKey } from "../i18n.ts";
 
@@ -141,8 +142,12 @@ export function normalize(value: unknown, locale?: Locale): SystemOneResult {
       const values = Object.values(rawProbabilities);
       if (!values.length || !values.every(share)) { malformed("invalid probabilities"); continue; }
       const probabilities = rawProbabilities as Record<string, number>;
-      // Allow small rounding errors without rewriting the provider's probabilities.
-      if (Math.abs(values.reduce((sum, probability) => sum + probability, 0) - 1) > 0.01) { malformed("probabilities do not sum to one"); continue; }
+      // Jev rounds large distributions to hundredths; each share can lose/gain up to 0.005.
+      // Only count shares that can explain the drift (zero shares cannot explain an excess).
+      const sum = values.reduce((total, probability) => total + probability, 0);
+      const rounded = values.every((probability) => Math.abs(probability * 100 - Math.round(probability * 100)) <= 1e-10);
+      const roundingError = rounded ? values.filter((probability) => sum > 1 ? probability > 0 : probability < 1).length * 0.005 : 0;
+      if (sum === 0 || Math.abs(sum - 1) > Math.max(0.01, roundingError) + 1e-12) { malformed("probabilities do not sum to one"); continue; }
       if (!Object.hasOwn(probabilities, answer.choice)) { malformed("choice missing from probabilities"); continue; }
       if (probabilities[answer.choice]! < Math.max(...values)) { malformed("choice is not highest-probability option"); continue; }
       answers[name] = { type: "choice", choice: answer.choice, confidence, probabilities };
@@ -153,11 +158,18 @@ export function normalize(value: unknown, locale?: Locale): SystemOneResult {
     }
   }
   const usage = record(result.usage);
-  const tokens = (key: string) => (typeof usage?.[key] === "number" && Number.isFinite(usage[key]) && (usage[key] as number) >= 0 ? (usage[key] as number) : 0);
+  const tokens = (key: string) => typeof usage?.[key] === "number" && Number.isFinite(usage[key]) && (usage[key] as number) >= 0
+    ? usage[key] as number
+    : undefined;
+  const inputTokens = tokens("input_tokens");
+  const outputTokens = tokens("output_tokens");
   return {
     ...(typeof result.model === "string" ? { model: result.model } : {}),
     answers,
-    usage: { input_tokens: tokens("input_tokens"), output_tokens: tokens("output_tokens") },
+    usage: {
+      ...(inputTokens !== undefined ? { input_tokens: inputTokens } : {}),
+      ...(outputTokens !== undefined ? { output_tokens: outputTokens } : {}),
+    },
     ...(dropped.length ? { dropped } : {}),
   };
 }
@@ -378,7 +390,7 @@ export async function validateKey(
   try {
     const reply = await transport.within(15_000, transport.post(info.url, headersFor(apiKey), JSON.stringify(request)));
     if (reply.ok) {
-      let result: SystemOneResult = { answers: {}, usage: { input_tokens: 0, output_tokens: 0 } };
+      let result: SystemOneResult = { answers: {}, usage: {} };
       try {
         result = normalize(JSON.parse(reply.text), locale);
       } catch {}

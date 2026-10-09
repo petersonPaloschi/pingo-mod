@@ -38,10 +38,11 @@ test("every tab draws on the terminal and the desktop app", async ($, on) => {
     const ui = await $.ui.mount({ plugin: "jev", surface, component: "Pane", requestId: "jev", props: PANE_PROPS });
     for (const [key, text] of [
       ["tab-overview", /Idle|Routing/],
-      ["tab-reasons", /Why requests were not routed/],
-      ["tab-baseline", /with Jev routing vs. baseline/],
-      ["tab-log", /Newest first/],
-      ["tab-setup", /paste its key/],
+      ["tab-live", /Nothing yet/],
+      ["tab-models", /Current main model/],
+      ["tab-agents", /No subagents/],
+      ["tab-logs", /Newest first/],
+      ["tab-configuration", /paste its key/],
     ] as const) {
       await ui.press({ key });
       expect(await ui.find({ type: "Text", text })).toBeDefined();
@@ -55,13 +56,29 @@ test("the dashboard follows the configured Portuguese locale", { options: { loca
   mock.store(on, { events: [EVENT] });
   mock.env(on, {});
   const ui = await $.ui.mount({ plugin: "jev", surface: "terminal", component: "Pane", requestId: "jev", props: PANE_PROPS });
-  await ui.press({ key: "tab-features" });
-  expect(await ui.find({ type: "Text", text: "Sugestões de ferramentas" })).toBeDefined();
-  await ui.press({ key: "tab-setup" });
-  expect(await ui.find({ type: "Text", text: "Configuração do provedor" })).toBeDefined();
-  await ui.press({ key: "tab-flow" });
+  await ui.press({ key: "tab-configuration" });
+  expect(await ui.find({ type: "Text", text: "Modelo e esforço dos subagentes" })).toBeDefined();
+  expect(await ui.find({ type: "Text", text: "Provedor e idioma" })).toBeDefined();
+  await ui.press({ key: "tab-live" });
   expect(await ui.find({ type: "Text", text: /Nenhuma execução registrada ainda/ })).toBeDefined();
   await ui.unmount();
+});
+
+test("Live opens the full run details in place and returns to its log", async ($, on) => {
+  mock.clock(on, { now: Date.parse("2026-10-06T12:00:00Z") });
+  mock.store(on);
+  mock.env(on, {});
+  for (const surface of ["terminal", "desktop"] as const) {
+    const ui = await $.ui.mount({ plugin: "jev", surface, component: "Pane", requestId: "jev", props: PANE_PROPS });
+    await ui.press({ key: "tab-live" });
+    expect((await ui.find({ key: "flow-details" }))?.props.label).toBe("Full run details (f)");
+    await ui.press({ key: "flow-details" });
+    expect((await ui.find({ key: "flow-details" }))?.props.label).toBe("Back to Live log (b)");
+    expect(await ui.find({ type: "Text", text: /No runs recorded yet/ })).toBeDefined();
+    await ui.press({ key: "flow-details" });
+    expect((await ui.find({ key: "flow-details" }))?.props.label).toBe("Full run details (f)");
+    await ui.unmount();
+  }
 });
 
 test("the language can be changed from Jev Setup", async ($, on) => {
@@ -79,59 +96,40 @@ test("the language can be changed from Jev Setup", async ($, on) => {
   on("session.model", async () => ({ value: "claude-opus-5-5" }));
   await $.session.start({ cwd: "/workspace" } as never).catch(() => undefined);
   const ui = await $.ui.mount({ plugin: "jev", surface: "terminal", component: "Pane", requestId: "jev", props: PANE_PROPS });
-  await ui.press({ key: "tab-setup" });
+  await ui.press({ key: "tab-configuration" });
   await ui.select({ key: "language", value: "pt" });
   expect(saved).toEqual(["pt"]);
-  expect(await ui.find({ type: "Text", text: "Configuração do provedor" })).toBeDefined();
-  await ui.press({ key: "tab-reasons" });
+  expect(await ui.find({ type: "Text", text: "Provedor e idioma" })).toBeDefined();
+  await ui.press({ key: "tab-logs" });
   expect(await ui.find({ type: "Text", text: "Confiança baixa" })).toBeDefined();
-  for (const tab of ["tab-overview", "tab-live", "tab-agents", "tab-baseline", "tab-log", "tab-features", "tab-flow"]) {
+  for (const tab of ["tab-overview", "tab-live", "tab-models", "tab-agents", "tab-logs", "tab-configuration"]) {
     await ui.press({ key: tab });
   }
   await ui.unmount();
 });
 
-test("reason titles render in the Reasons tab and the request log", async ($, on) => {
+test("reason groups and titles appear in Logs", async ($, on) => {
   mock.clock(on, { now: Date.parse("2026-10-06T12:00:00Z") });
-  mock.store(on, { events: [{ ...EVENT, seq: 2, mode: "passthrough", reason: "low_confidence", tool: undefined }] });
+  mock.store(on, { events: [
+    { ...EVENT, seq: 2, mode: "passthrough", reason: "low_confidence", tool: undefined },
+    { ...EVENT, seq: 3, mode: "passthrough", reason: "participation_unavailable", tool: undefined },
+  ] });
   mock.env(on, {});
   on("command.register", async () => ({ value: { command: "jev" } }));
-  on("session.id", async () => ({ value: "session-reasons" }));
+  on("session.id", async () => ({ value: "session-logs-reasons" }));
   on("session.model", async () => ({ value: "claude-opus-5-5" }));
   await $.session.start({ cwd: "/workspace" } as never).catch(() => undefined);
   const ui = await $.ui.mount({ plugin: "jev", surface: "terminal", component: "Pane", requestId: "jev", props: PANE_PROPS });
-  await ui.press({ key: "tab-reasons" });
-  expect(await ui.find({ type: "Text", text: "Low confidence" })).toBeDefined();
-  await ui.press({ key: "tab-log" });
-  expect(await ui.find({ type: "Text", text: /Low confidence/ })).toBeDefined();
+  await ui.press({ key: "tab-logs" });
+  const rendered = (await ui.findAll({ type: "Text" })).map((line) => line.text ?? "").join("\n");
+  expect(rendered).toContain("Reason groups");
+  expect(rendered).toContain("Low confidence");
+  expect(rendered).toContain("Legacy reason: participation unavailable");
+  expect(rendered).toContain("(participation_unavailable)");
   await ui.unmount();
 });
 
-test("the Dice mascot is drawn and blitted only while the live tab shows", async ($, on) => {
-  const clock = mock.clock(on, { now: Date.parse("2026-10-06T12:00:00Z") });
-  mock.store(on);
-  mock.env(on, {});
-  on("command.register", async () => ({ value: { command: "jev" } }));
-  on("session.id", async () => ({ value: "session-live" }));
-  on("session.model", async () => ({ value: "claude-opus-5-5" }));
-  const blits: { key: string; columns: number; rows: number }[] = [];
-  on("ui.blit", async (_$, e) => {
-    blits.push({ key: e.key, columns: e.columns ?? -1, rows: e.rows ?? -1 });
-    return { value: {} };
-  });
-  await $.session.start({ cwd: "/workspace" } as never).catch(() => undefined);
-  const ui = await $.ui.mount({ plugin: "jev", surface: "terminal", component: "Pane", requestId: "jev", props: PANE_PROPS });
-  await clock.advance(100);
-  expect(blits.some((blit) => blit.key === "dice")).toBe(false);
-  await ui.press({ key: "tab-live" });
-  expect(await ui.find({ type: "Text", text: /Dice, your dotted die/ })).toBeDefined();
-  blits.length = 0;
-  await clock.advance(100);
-  expect(blits).toContainEqual({ key: "dice", columns: 14, rows: 6 });
-  await ui.unmount();
-});
-
-test("Pingo stays in the dashboard header and animates in the terminal", async ($, on) => {
+test("Pingo remains in the header without a frame timer", async ($, on) => {
   const clock = mock.clock(on, { now: Date.parse("2026-10-06T12:00:00Z") });
   mock.store(on);
   mock.env(on, {});
@@ -147,7 +145,7 @@ test("Pingo stays in the dashboard header and animates in the terminal", async (
   const ui = await $.ui.mount({ plugin: "jev", surface: "terminal", component: "Pane", requestId: "jev", props: PANE_PROPS });
   expect(await ui.find({ type: "Raster", key: "pingo" } as never)).toBeDefined();
   await clock.advance(100);
-  expect(blits).toContain("pingo");
+  expect(blits).toEqual([]);
   await ui.unmount();
 });
 
@@ -162,21 +160,63 @@ test("the band shows the status line", async ($, on) => {
   }
 });
 
-test("the routing button switches to baseline", async ($, on) => {
+test("Overview groups its figures under headings and flags failed Jev calls on both surfaces", async ($, on) => {
+  mock.clock(on, { now: Date.parse("2026-10-06T12:00:00Z") });
+  const failure = { ...EVENT, seq: 2, mode: "passthrough", reason: "jev_error: timeout", tool: undefined, jev: undefined };
+  mock.store(on, { events: [EVENT, failure] });
+  mock.env(on, {});
+  on("command.register", async () => ({ value: { command: "jev" } }));
+  on("session.id", async () => ({ value: "session-overview" }));
+  on("session.model", async () => ({ value: "claude-opus-5-5" }));
+  on("classic.SessionStart", () => ({}));
+  await $.classic.SessionStart({ source: "clear" });
+  for (const surface of ["terminal", "desktop"] as const) {
+    const ui = await $.ui.mount({ plugin: "jev", surface, component: "Pane", requestId: "jev", props: PANE_PROPS });
+    await ui.press({ key: "tab-overview" });
+    for (const heading of [/⠿ Routing$/, /⠿ Jev's answers$/, /⠿ Token usage$/, /⠿ Timeline$/]) {
+      expect(await ui.find({ type: "Text", text: heading })).toBeDefined();
+    }
+    expect(await ui.find({ type: "Text", text: "2 requests in this range" })).toBeDefined();
+    expect(await ui.find({ type: "Text", text: /^1 failed\s*$/ })).toBeDefined();
+    await ui.unmount();
+  }
+});
+
+test("an Overview range with no requests shows one line instead of empty figures", async ($, on) => {
+  mock.clock(on, { now: Date.parse("2026-10-06T12:00:00Z") });
+  mock.store(on, { events: [{ ...EVENT, time: "2026-10-06T09:00:00.000Z" }] });
+  mock.env(on, {});
+  on("command.register", async () => ({ value: { command: "jev" } }));
+  on("session.id", async () => ({ value: "session-overview-empty" }));
+  on("session.model", async () => ({ value: "claude-opus-5-5" }));
+  on("classic.SessionStart", () => ({}));
+  await $.classic.SessionStart({ source: "clear" });
+  const ui = await $.ui.mount({ plugin: "jev", surface: "terminal", component: "Pane", requestId: "jev", props: PANE_PROPS });
+  await ui.press({ key: "tab-overview" });
+  expect(await ui.find({ type: "Text", text: /No Claude requests or Jev calls in this range yet/ })).toBeDefined();
+  expect(await ui.find({ type: "Text", text: /the last one was/ })).toBeDefined();
+  expect(await ui.find({ type: "Text", text: /^LLM input tokens/ })).toBeUndefined();
+  await ui.select({ key: "range", value: "0" });
+  expect(await ui.find({ type: "Text", text: /^LLM input tokens/ })).toBeDefined();
+  expect(await ui.find({ type: "Text", text: "1 request in this range" })).toBeDefined();
+  await ui.unmount();
+});
+
+test("the routing button pauses Jev consultation without opening a comparison", async ($, on) => {
   mock.clock(on, { now: Date.parse("2026-10-06T12:00:00Z") });
   mock.store(on);
   mock.env(on, {});
   const ui = await $.ui.mount({ plugin: "jev", surface: "terminal", component: "Pane", requestId: "jev", props: PANE_PROPS });
-  await ui.press({ key: "tab-baseline" });
   await ui.press({ key: "routing" });
-  await ui.press({ key: "tab-overview" });
-  expect(await ui.find({ type: "Text", text: /Baseline — routing off/ })).toBeDefined();
+  expect((await ui.find({ key: "routing" }))?.props.label).toBe("Turn Jev on (r)");
+  await ui.press({ key: "tab-logs" });
+  expect(await ui.find({ type: "Text", text: /Request log/ })).toBeDefined();
   await ui.unmount();
 });
 
-test("saved routing and feature switches return after /clear", async ($, on) => {
+test("saved routing and agent planning switch return after /clear", async ($, on) => {
   mock.clock(on, { now: Date.parse("2026-10-06T12:00:00Z") });
-  mock.store(on, { routing: false, features: { tools: false } });
+  mock.store(on, { routing: false, features: { agents: false } });
   mock.env(on, {});
   on("classic.SessionStart", () => ({}));
 
@@ -184,9 +224,9 @@ test("saved routing and feature switches return after /clear", async ($, on) => 
   const ui = await $.ui.mount({ plugin: "jev", surface: "terminal", component: "Pane", requestId: "jev", props: PANE_PROPS });
 
   expect((await ui.find({ key: "routing" }))?.props.label).toBe("Turn Jev on (r)");
-  await ui.press({ key: "tab-features" });
-  expect(await ui.find({ type: "Text", text: /Routing is off/ })).toBeDefined();
-  expect((await ui.find({ key: "feature-tools" }))?.props.label).toBe("○ Disabled (t)");
+  await ui.press({ key: "tab-configuration" });
+  expect(await ui.find({ type: "Text", text: /Jev consultation is off/ })).toBeDefined();
+  expect((await ui.find({ key: "feature-agents" }))?.props.label).toBe("○ Disabled (g)");
   await ui.unmount();
 });
 
@@ -200,7 +240,7 @@ test("setup does not call a provider without a key", async ($, on) => {
     return { value: { status: 200, ok: true, headers: {}, text: "{}" } };
   });
   const ui = await $.ui.mount({ plugin: "jev", surface: "terminal", component: "Pane", requestId: "jev", props: PANE_PROPS });
-  await ui.press({ key: "tab-setup" });
+  await ui.press({ key: "tab-configuration" });
   expect(await ui.find({ type: "Text", text: /No key yet/ })).toBeDefined();
   await ui.press({ key: "validate" });
   expect(requests).toBe(0);
@@ -235,7 +275,7 @@ test("a pasted key is shown masked, tested, saved in secure plugin storage and u
     return { value: { status: 200, ok: true, headers: {}, text: "{}" } };
   });
   const ui = await $.ui.mount({ plugin: "jev", surface: "terminal", component: "Pane", requestId: "jev", props: PANE_PROPS });
-  await ui.press({ key: "tab-setup" });
+  await ui.press({ key: "tab-configuration" });
   await ui.input({ key: "api-key", kind: "change", text: "dummy-test-1234" });
   // The field holds only the mask; nothing in the tree carries the key.
   const drawn = JSON.stringify(await ui.drawn());
@@ -258,7 +298,7 @@ test("a refused key is neither saved nor used", async ($, on) => {
   configRows(on, written);
   on("http.fetch", async () => ({ value: { status: 401, ok: false, headers: {}, text: '{"error":"bad key"}' } }));
   const ui = await $.ui.mount({ plugin: "jev", surface: "terminal", component: "Pane", requestId: "jev", props: PANE_PROPS });
-  await ui.press({ key: "tab-setup" });
+  await ui.press({ key: "tab-configuration" });
   await ui.input({ key: "api-key", kind: "change", text: "sk-wrong-0000" });
   await ui.press({ key: "validate" });
   expect(written).toEqual([]);
@@ -275,7 +315,7 @@ test("a saved key can be replaced, and an unsupported removal keeps it in use", 
   configRows(on, written);
   on("http.fetch", async () => ({ value: { status: 200, ok: true, headers: {}, text: "{}" } }));
   const ui = await $.ui.mount({ plugin: "jev", surface: "terminal", component: "Pane", requestId: "jev", props: PANE_PROPS });
-  await ui.press({ key: "tab-setup" });
+  await ui.press({ key: "tab-configuration" });
   expect(await ui.find({ type: "Text", text: /••••aaaa/ })).toBeDefined();
   await ui.input({ key: "api-key", kind: "change", text: "new-key-bbbb" });
   await ui.press({ key: "validate" });
@@ -295,7 +335,7 @@ test("a restarted session uses the saved key without testing it again", { option
   mock.env(on, {});
   on("http.fetch", async () => { throw new Error("opening Setup must not revalidate a saved key"); });
   const ui = await $.ui.mount({ plugin: "jev", surface: "terminal", component: "Pane", requestId: "jev", props: PANE_PROPS });
-  await ui.press({ key: "tab-setup" });
+  await ui.press({ key: "tab-configuration" });
   expect(await ui.find({ type: "Text", text: /••••1234/ })).toBeDefined();
   const shown = await status($);
   expect(shown).toContain("Provider: OpenRouter");
@@ -315,7 +355,7 @@ test("a configured key is never written to plugin state", { options: { api_key: 
     return { value: { status: 200, ok: true, headers: {}, text: "{}" } };
   });
   const ui = await $.ui.mount({ plugin: "jev", surface: "terminal", component: "Pane", requestId: "jev", props: PANE_PROPS });
-  await ui.press({ key: "tab-setup" });
+  await ui.press({ key: "tab-configuration" });
   await ui.press({ key: "validate" });
   expect(posted).toEqual(["Bearer configured-test-key"]);
   expect(await status($)).toContain("Key source: plugin settings");
@@ -335,7 +375,7 @@ test("the selected provider is validated with its own key", { options: { api_key
     return { value: { status: 200, ok: true, headers: {}, text: "{}" } };
   });
   const ui = await $.ui.mount({ plugin: "jev", surface: "terminal", component: "Pane", requestId: "jev", props: PANE_PROPS });
-  await ui.press({ key: "tab-setup" });
+  await ui.press({ key: "tab-configuration" });
   await ui.select({ key: "provider", value: "opencode" });
   await ui.press({ key: "validate" });
 
@@ -357,7 +397,7 @@ test("connection checks use the configured paid OpenCode model", { options: { pr
     return { value: { status: 200, ok: true, headers: {}, text: "{}" } };
   });
   const ui = await $.ui.mount({ plugin: "jev", surface: "terminal", component: "Pane", requestId: "jev", props: PANE_PROPS });
-  await ui.press({ key: "tab-setup" });
+  await ui.press({ key: "tab-configuration" });
   await ui.select({ key: "provider", value: "opencode" });
   await ui.press({ key: "validate" });
   expect(models).toEqual(["jev-1.13"]);

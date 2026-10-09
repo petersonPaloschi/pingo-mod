@@ -1,7 +1,7 @@
 {
   "name": "jev",
   "version": "0.1.0",
-  "description": "Jev tool routing for Claude Code, with a live dashboard and optional model and subagent planning.",
+  "description": "Execution diagnostics, semantic Sift judgments, and optional native-subagent planning for Claude Code.",
   "author": { "name": "Peterson Paloschi" },
   "license": "MIT",
   "types": "./types/index.d.ts",
@@ -9,7 +9,7 @@
     "provider": {
       "type": "string",
       "title": "Jev provider",
-      "description": "Where to reach Jev: auto (JEV_PROVIDER, else the first provider key in the environment, else typesafe), typesafe, openrouter, vercel or opencode. Setup saves its choice here",
+      "description": "Where to reach Jev: auto (JEV_PROVIDER, else the first provider key in the environment, else typesafe), typesafe, openrouter, vercel or opencode. Configuration saves its choice here",
       "options": ["auto", "typesafe", "openrouter", "vercel", "opencode"],
       "default": "auto",
       "required": false
@@ -17,14 +17,14 @@
     "api_key": {
       "type": "string",
       "title": "Jev API key",
-      "description": "Optional sensitive credential. The masked Setup field can save it through Claude Code's sensitive plugin configuration; the plugin never writes it to its own state. Set provider to match the key's issuer; auto cannot infer the provider from api_key, so under auto it is sent only to TypeSafe, and a provider auto-detected from its environment variable gets that variable's key instead. Jev sends recent conversation/tool data and composed Claude instructions to the selected provider. If empty, the plugin reads the selected provider's environment variable.",
+      "description": "Optional sensitive credential. The masked Configuration field saves a validated provider/key pair to the local plugin store and attempts the sensitive option; the key is never kept in session state. Match provider to its issuer: auto treats this option as TypeSafe and an environment-detected provider uses its own environment key. Optional agent planning sends bounded task descriptions; explicit Sift commands send selected content and criteria. If empty, the selected provider's environment key is used.",
       "sensitive": true,
       "required": false
     },
     "model": {
       "type": "string",
       "title": "Jev model",
-      "description": "Jev model id; empty uses the provider's default",
+      "description": "Jev model id for semantic judgments and agent planning; empty uses the provider's default",
       "required": false
     },
     "min_confidence": {
@@ -57,8 +57,8 @@
     },
     "claude_models": {
       "type": "string",
-      "title": "Claude routing candidates",
-      "description": "Optional comma-separated first-party Haiku, Sonnet and Opus model IDs supported by your account. Empty uses the built-in IDs. Models that fail twice are excluded for the session.",
+      "title": "Claude agent candidates",
+      "description": "Optional comma-separated first-party Haiku, Sonnet and Opus model IDs supported by your account for eligible native-agent planning. Empty uses built-in IDs; unavailable choices fall back to the native request.",
       "required": false
     }
   }

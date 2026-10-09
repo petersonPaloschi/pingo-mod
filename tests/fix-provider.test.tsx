@@ -96,6 +96,12 @@ describe("one Jev call", () => {
     }
   });
 
+  test("missing token counters stay unknown without invalidating a valid answer", async () => {
+    const response = JSON.stringify({ answers: { needs_tool: { type: "noul", noul: 0.9 } }, usage: { output_tokens: 0 } });
+    const result = await createAskJev(settings, transport([{ status: 200, text: response }]))(request);
+    expect(result.usage).toEqual({ output_tokens: 0 });
+  });
+
   test("provider error bodies lose escape sequences and control characters", async () => {
     const body = "\u001b[31mboom\u001b[0m\u0007 \u001b]0;title\u0007bad\u009b2J\r\nend";
     let message = "";
@@ -214,7 +220,7 @@ describe("Setup", () => {
       return { value: { status: 200, ok: true, headers: {}, text: "{}" } };
     });
     const ui = await $.ui.mount({ plugin: "jev", surface: "terminal", component: "Pane", requestId: "jev", props: PANE_PROPS });
-    await ui.press({ key: "tab-setup" });
+    await ui.press({ key: "tab-configuration" });
     await ui.select({ key: "provider", value: "openrouter" });
     await ui.press({ key: "validate" });
     expect(requests).toBe(0);
@@ -235,7 +241,7 @@ describe("Setup", () => {
       return { value: { status: 200, ok: true, headers: {}, text: "{}" } };
     });
     const ui = await $.ui.mount({ plugin: "jev", surface: "terminal", component: "Pane", requestId: "jev", props: PANE_PROPS });
-    await ui.press({ key: "tab-setup" });
+    await ui.press({ key: "tab-configuration" });
     await ui.select({ key: "provider", value: "opencode" });
     await ui.press({ key: "validate" });
     expect(auth).toEqual(["Bearer opencode-env-key"]);
@@ -258,7 +264,7 @@ describe("Setup", () => {
     });
     expect(await status($)).toContain("Provider: OpenCode");
     const ui = await $.ui.mount({ plugin: "jev", surface: "terminal", component: "Pane", requestId: "jev", props: PANE_PROPS });
-    await ui.press({ key: "tab-setup" });
+    await ui.press({ key: "tab-configuration" });
     await ui.select({ key: "provider", value: "openrouter" });
     await ui.input({ key: "api-key", kind: "change", text: "or-test-9999" });
     await ui.press({ key: "validate" });
@@ -294,7 +300,7 @@ describe("Setup", () => {
       return { value: { status: 200, ok: true, headers: {}, text: "{}" } };
     });
     const ui = await $.ui.mount({ plugin: "jev", surface: "terminal", component: "Pane", requestId: "jev", props: PANE_PROPS });
-    await ui.press({ key: "tab-setup" });
+    await ui.press({ key: "tab-configuration" });
     await ui.select({ key: "provider", value: "openrouter" });
     await ui.input({ key: "api-key", kind: "change", text: "or-test-9999" });
     await ui.press({ key: "validate" });
@@ -328,7 +334,7 @@ describe("Setup", () => {
     on("process.run", async () => ({ value: { exitCode: 0, stdout: JSON.stringify({ saved: ["api_key"], unconfigured: ["api_key"] }), stderr: "", isStdoutTruncated: false, isStderrTruncated: false } }));
     on("http.fetch", async () => ({ value: { status: 200, ok: true, headers: {}, text: "{}" } }));
     const ui = await $.ui.mount({ plugin: "jev", surface: "terminal", component: "Pane", requestId: "jev", props: PANE_PROPS });
-    await ui.press({ key: "tab-setup" });
+    await ui.press({ key: "tab-configuration" });
     await ui.select({ key: "provider", value: "openrouter" });
     await ui.input({ key: "api-key", kind: "change", text: "unpersisted-test-0000" });
     await ui.press({ key: "validate" });
@@ -346,7 +352,7 @@ describe("Setup", () => {
     configRows(on, written, ["jevtools.provider", "jev@inline.provider", "jev@other.provider"]);
     on("http.fetch", async () => ({ value: { status: 200, ok: true, headers: {}, text: "{}" } }));
     const ui = await $.ui.mount({ plugin: "jev", surface: "terminal", component: "Pane", requestId: "jev", props: PANE_PROPS });
-    await ui.press({ key: "tab-setup" });
+    await ui.press({ key: "tab-configuration" });
     await ui.input({ key: "api-key", kind: "change", text: "ambiguous-0000" });
     await ui.press({ key: "validate" });
     // Two rows named for a plugin called jev: which is this one cannot be told, so neither is written.

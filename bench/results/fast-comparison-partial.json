@@ -1,0 +1,58 @@
+{
+  "schemaVersion": 1,
+  "protocol": "bench/protocol.md",
+  "status": "incomplete",
+  "capturedOn": "2026-10-08",
+  "provider": "TypeSafe",
+  "providerPricePerInputToken": 0.000000042,
+  "actualProviderInvoiceObserved": false,
+  "scope": "One fixed S08 classification case; four valid paired repeats. S07's first attempt had zero candidates because the generated directory was gitignored and is excluded. S10 and S12 were not sent to Jev in this live comparison.",
+  "rawPerItemPredictionsRetained": false,
+  "rawDataNote": "The S08 answer files lived in a temporary directory removed when the bounded process was interrupted. This artifact records only exact run telemetry printed by the process; it is not a complete benchmark artifact.",
+  "task": {
+    "id": "s08",
+    "title": "CI failure triage — 80 failure logs into four categories",
+    "question": "What is the root cause category of this CI failure?",
+    "labels": ["infra_flaky", "assertion", "config_env", "dependency"],
+    "input": "bench/data/s08/failures.jsonl",
+    "truth": "bench/truth/s08.json",
+    "inputSha256": "07ab731083522a8efed61039f34cbb85ffb501a6d35341f63e757c605ff71ab3",
+    "truthSha256": "629ae549300ca045b87844296063512a149f11a7195cbd547c784c52bf93ef8e"
+  },
+  "thresholds": {
+    "qualityLossMaximumAbsolute": 0.02,
+    "fastJevInputTokenReductionMinimum": 0.2,
+    "fastCliWallReductionMinimum": 0.1,
+    "uncertainOrFailedCasesMayIncrease": false
+  },
+  "runs": [
+    { "repeat": 1, "order": ["normal", "fast"], "arm": "normal", "wallMs": 6143, "jevInputTokens": 35415, "correct": 80, "total": 80, "accuracy": 1.0, "uncertain": 0, "failed": 0 },
+    { "repeat": 1, "order": ["normal", "fast"], "arm": "fast", "wallMs": 582, "jevInputTokens": 17023, "correct": 62, "total": 80, "accuracy": 0.775, "uncertain": 4, "failed": 0 },
+    { "repeat": 2, "order": ["fast", "normal"], "arm": "fast", "wallMs": 600, "jevInputTokens": 17023, "correct": 62, "total": 80, "accuracy": 0.775, "uncertain": 3, "failed": 0 },
+    { "repeat": 2, "order": ["fast", "normal"], "arm": "normal", "wallMs": 6397, "jevInputTokens": 35415, "correct": 80, "total": 80, "accuracy": 1.0, "uncertain": 0, "failed": 0 },
+    { "repeat": 3, "order": ["normal", "fast"], "arm": "normal", "wallMs": 6227, "jevInputTokens": 35415, "correct": 80, "total": 80, "accuracy": 1.0, "uncertain": 0, "failed": 0 },
+    { "repeat": 3, "order": ["normal", "fast"], "arm": "fast", "wallMs": 938, "jevInputTokens": 17023, "correct": 66, "total": 80, "accuracy": 0.825, "uncertain": 3, "failed": 0 },
+    { "repeat": 4, "order": ["fast", "normal"], "arm": "fast", "wallMs": 615, "jevInputTokens": 17023, "correct": 63, "total": 80, "accuracy": 0.7875, "uncertain": 6, "failed": 0 },
+    { "repeat": 4, "order": ["fast", "normal"], "arm": "normal", "wallMs": 6253, "jevInputTokens": 35415, "correct": 80, "total": 80, "accuracy": 1.0, "uncertain": 0, "failed": 0 }
+  ],
+  "summary": {
+    "validPairedRepeats": 4,
+    "normal": { "medianWallMs": 6240, "medianJevInputTokens": 35415, "medianAccuracy": 1.0, "medianUncertain": 0, "failedPerRun": 0 },
+    "fast": { "medianWallMs": 607.5, "medianJevInputTokens": 17023, "medianAccuracy": 0.78125, "medianUncertain": 3.5, "failedPerRun": 0 },
+    "fastAccuracyDifference": -0.21875,
+    "combinedJevInputTokens": 209752,
+    "combinedTypeSafeEstimatedCostUsd": 0.008809584,
+    "decision": "Fast fails the preregistered 2 percentage-point quality tolerance on this one case (median loss 21.875 points); its lower CLI time and Jev input usage do not establish a net task benefit. The four-repeat, single-case sample is incomplete and cannot support a broad performance estimate."
+  },
+  "numericNegativeControl": {
+    "task": "s12",
+    "run": "node bench/compare-fast.mjs --self-check",
+    "method": "local numeric rule: latency > 250ms",
+    "truePositives": 107,
+    "expectedPositives": 107,
+    "falsePositives": 0,
+    "falseNegatives": 0,
+    "f1": 1.0,
+    "jevCalls": 0
+  }
+}

@@ -1,42 +1,10 @@
-// The router's shapes, and the slice of Jev's SystemOne request/result format it uses,
-// declared here so the mod has no dependency.
+// Jev's SystemOne request/result shapes, declared here so the mod has no dependency.
 
 export type Json = string | number | boolean | null | Json[] | { [key: string]: Json };
 
-export interface JsonSchema {
-  type?: string | string[];
-  description?: string;
-  enum?: Json[];
-  const?: Json;
-  properties?: Record<string, JsonSchema>;
-  required?: string[];
-  [key: string]: unknown;
-}
-
-export type Turn = { [key: string]: Json };
-
-export interface RouterTool {
-  name: string;
-  description?: string;
-  parameters?: JsonSchema;
-  kind: "function" | "custom" | "hosted";
-}
-
-export interface RouterInput {
-  system: string;
-  turns: Turn[];
-  tools: RouterTool[];
-  session?: ModelContext;
-}
-
-/** Observed execution state, kept separate from conversation content. */
+/** Model IDs available to a native agent spawn. */
 export interface ModelContext {
-  currentModel?: string;
-  contextTokens?: number;
-  cacheReadTokens?: number;
   availableModels?: readonly string[];
-  /** Known environment blockers prevent hints for an unavailable advisor. */
-  advisorAvailable?: boolean;
 }
 
 // --- Jev wire format (SystemOne) ---
@@ -58,8 +26,8 @@ export type Answer = ChoiceAnswer | NoulAnswer;
 export interface SystemOneResult {
   model?: string;
   answers: Record<string, Answer>;
-  usage: { input_tokens: number; output_tokens: number };
-  /** Answers the reply carried that could not be used, and why: for the failure the router reports. */
+  usage: { input_tokens?: number; output_tokens?: number };
+  /** Answers the reply carried that could not be used, and why. */
   dropped?: { name: string; why: string }[];
   /** The provider's reply body as it came (control characters blanked, clipped): for debugging an unusable answer. */
   raw?: string;

@@ -14,9 +14,8 @@ export const pick = (choice: string, confidence: number): ChoiceAnswer => ({
 export const noul = (value: number): NoulAnswer => ({ type: "noul", noul: value });
 
 export const DEFAULT_ANSWERS: Record<string, Answer> = {
-  tool: pick("Read", 0.9),
-  needs_tool: noul(0.9),
   model: pick("sonnet", 0.9),
+  effort: pick("medium", 0.9),
 };
 
 export function answerJev(request: SystemOneRequest, table: Record<string, Answer>): Record<string, Answer> {
@@ -38,7 +37,7 @@ type SentStep = { model: string; effort?: unknown; agentId?: string };
 type WorldOptions = { empty?: (index: number) => boolean };
 type MutableStore = Record<string, unknown> & { provider: string; features: Features };
 
-/** Shared session fixture for model routing tests. The answer table stays live between prompts. */
+/** Shared native-agent session fixture. The answer table stays live between requests. */
 export function world(
   on: On,
   flags: Partial<Features>,

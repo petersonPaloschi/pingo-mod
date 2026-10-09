@@ -1,18 +1,12 @@
 # Sift benchmark
 
-Twelve situations a coding agent actually runs into, each solved two ways and scored against hidden ground truth:
+This benchmark runs twelve fixed semantic situations against `truth/sNN.json`. The stored Claude-alone answers and usage in `results/baseline/` are imported from Quicksilver. They were not rerun as paired Claude sessions with Sift, so their scores are quality references only; they do not establish a whole-task speed or savings claim.
 
-- **Claude alone:** a Claude Sonnet subagent in Claude Code using its normal Read, Grep, and Glob tools, without scripts. Its answers and token usage are recorded in `results/baseline/` (see [prompts.md](prompts.md)).
-- **Claude + sift:** the same task run through `scripts/sift.ts`. The score covers exactly what Claude would read back, and sift is charged for loading `skills/sift/SKILL.md` plus every command it issues.
+## Rebuild the inputs
 
-The situations, ground truth, and Claude-alone baseline come from [Quicksilver](https://github.com/UditAkhourii/quicksilver)'s benchmark, which sift adapts. The baseline does not depend on the tool, so it is reused rather than re-measured.
-
-## Reproduce
-
-Node 22.18 or newer, and a Jev key that sift can use (`node scripts/sift.ts status` checks it).
+Use Node 22.18 or newer. `build.mjs` needs the raw BGL log, Lodash source, and pinned Hono checkout in `data/raw/`; it fetches the public Hugging Face rows itself. From `bench/`, prepare the inputs and run:
 
 ```bash
-cd bench
 mkdir -p data/raw && cd data/raw
 curl -sL -o bgl.csv https://raw.githubusercontent.com/logpai/loghub/master/BGL/BGL_2k.log_structured.csv
 curl -sL -o lodash.js https://raw.githubusercontent.com/lodash/lodash/4.17.21/lodash.js
@@ -21,31 +15,40 @@ git -C hono sparse-checkout set --no-cone '/*' '!*.test.ts' '!*.test.tsx'
 git -C hono fetch -q --depth 400 https://github.com/honojs/hono.git 90d02fb1645c12a65d27f39594d2129db2065ba7
 git -C hono checkout -q FETCH_HEAD
 cd ../..
-node build.mjs            # builds data/sNN and rewrites truth/sNN.json (Hugging Face rows are fetched and cached)
-git diff --exit-code truth # unchanged truth means the data matches the recorded baseline
-node run-sift.mjs         # sift side; pass situation ids (s07 s08) to run some of them
-node score.mjs            # writes results/results.md and results/results.json
-node chart.mjs            # writes docs/media/benchmark.svg
+node build.mjs
+git diff --exit-code -- truth
 ```
 
-The sparse checkout leaves out Hono's own test files: the benchmark never uses them, and `claude plugin test` would otherwise run them as Pingo's. Hono is pinned to the commit the baseline was built from (2026-09-25). A newer clone changes the source files and commit list of S06, S10, and S11, and through the shared seeded generator the data of S12. `build.mjs` builds every situation in one pass for the same reason.
+`build.mjs` creates all twelve input sets together because they share a seeded generator. The `data/` directory is ignored by Git. The Sift runner passes its generated directory members as explicit files so the repository's `.gitignore` does not hide the benchmark fixture from Sift.
 
-Quicksilver spent about $0.45 of TypeSafe's Jev on a full run; S09 and S10 account for most of it. On another provider, `jevUsd` is left empty and the table shows only Jev tokens.
+## Run and score Sift
 
-## How tokens are counted
+The normal production path judges one item per request. Run the full suite or selected situations with a ready TypeSafe setup:
 
-- **Claude alone:** the subagent's measured token total minus the **68.5k-token fixed floor**, measured with a control agent that reads one tiny file and writes one line. What remains is what the task itself cost.
-- **Sift:** SKILL.md (charged in full on every situation, as if each were a new session), plus each command, plus its full stdout, plus 40 tokens of tool-call wrapper per call. Token counts use chars ÷ 4.
-- **Jev:** the input tokens sift's providers report, read from a scratch tally (`SIFT_STATS`), so a run never touches your lifetime totals.
-- **Time:** wall-clock time for the agent run, against wall-clock time for the sift calls.
+```bash
+node run-sift.mjs
+node run-sift.mjs s07 s10 s12
+node score.mjs
+node chart.mjs
+```
 
-## Caveats
+`run-sift.mjs` uses concurrency 4, stops on missing usage counters, caps each CLI call at a $1 configured-rate estimate and the run at $3.78, and records Sift CLI time and Jev usage separately. Its TypeSafe price assumption is $0.042 per million reported input tokens, inherited from the Quicksilver runner; the resulting amount is an input-only list-rate estimate, not an invoice. Costs and token totals remain unknown or partial when the provider omits counters.
 
-- The Claude-alone agents used Sonnet. A larger model would be more accurate and slower.
-- For the huge inputs (logs, repositories, lodash), the baseline agent often greps first instead of reading everything. That is realistic, and it makes the baseline cheaper than reading it all.
-- S12 is a **negative control**: a numeric comparison, which Jev is documented to be bad at. It shows where *not* to use sift; `awk` wins there for free.
-- The synthetic sets (S02, S07, S08, S12) were written by Quicksilver's author. The real sets (S01, S03, S04, S05, S06, S09, S10, S11) come from the public sources listed in `truth/*.json`.
-- Sift ranks with a five-level choice weighted by Jev's probabilities rather than Quicksilver's score question, so S10 is not a like-for-like rerun.
+`score.mjs` compares both answer sets against the same answer key and reports the stored-baseline quality beside Sift quality. It keeps baseline tokens/time labelled as imported measurements, reports Sift CLI wall time independently, and does not calculate a total task delta. `chart.mjs` visualizes answer quality only; see the [quality chart](../docs/media/benchmark.svg).
+
+## Current results and limits
+
+The compact benchmark results are intentional evidence: `score.mjs` consumes `sift.json` and the stored reference, and `chart.mjs` consumes `results.json`. Per-session CLI traces, canary outputs, copied configurations, and one-off credential-handling runners stay outside the repository. Task evaluation keeps only its frozen fixture, protocol and aggregate summary; its raw result directories are ignored by Git.
+
+The full normal run is saved in `results/sift.json`, with the per-case summary in `results/results.md` and `results/results.json`. It reports each quality metric separately instead of averaging unlike F1, accuracy, and hit-rate cases. Sift CLI calls took 725 seconds in total and reported 10.87 million Jev input tokens; the configured TypeSafe input list-rate estimate is ~$0.4566. These measurements omit the later Claude work, Claude cache, and model usage, so they are not whole-task results. Context estimates use the skill text length from run time; the skill's later evidence notes are not included in those figures.
+
+The benchmark's S10 ranking uses the exact ten query strings in `truth/s10.json` and scores `hit@3` against the same accepted file paths for both answer sets. Sift receives one relevance judgment per file while the stored baseline is a generated top-three answer, so the shared answer key aligns correctness scoring but does not make the runs paired.
+
+S01's normal Sift run scored 22.8% F1 on the 2,000-line BGL fixture; S07 scored 88.9% F1 on vulnerable files beside safe look-alikes; S11 scored 74% accuracy on commit labels. Those results support treating Sift output as a shortlist that needs direct review. S12's numeric threshold has an exact local rule: the offline self-check finds all 107 lines above 250ms with F1 1.00 and makes no Jev calls.
+
+The fast batching path failed the pre-registered quality gate on S08: four valid paired repeats scored 100% accuracy normally and 77.5–82.5% when packed, with more uncertain items. `results/fast-comparison-partial.json` records the observed timings, counters, input hashes, thresholds, and why the sample remains incomplete. Fast mode was removed from production. Run `node compare-fast.mjs --self-check` to audit that partial artifact and the local numeric rule without making provider calls; a live fast replay requires the pre-removal Sift code.
+
+Use [protocol.md](protocol.md) before designing another feature comparison. A gain claim requires live paired task runs with correctness checks and total task measurements; a context-character estimate cannot provide that evidence.
 
 ## License
 

@@ -1,55 +1,18 @@
 // The live log's wording: short summaries of what can be observed (requests, tools, agents,
 // visible messages, Jev's answers). Never the model's reasoning: thinking is not read here.
-import type { FeatureFlags } from "../types";
+import type { FeatureFlags, FeatureId } from "../types";
 import type { JevAsk, JevSent } from "./core/jev.ts";
-import { ADVISOR_KEY, DELEGATE_KEY, EFFORT_KEY, MODEL_KEY, PARTICIPATE_KEY, type FeatureId } from "./core/plan.ts";
-import { NEEDS_TOOL_KEY, TOOL_KEY } from "./core/questions.ts";
+import { EFFORT_KEY, MODEL_KEY } from "./core/plan.ts";
 import type { Answer, SystemOneResult } from "./core/types.ts";
 import { formatCompact, formatDecimal, formatNumber, localeFor, text, type Locale, type LocaleKey } from "./i18n.ts";
 
 /** Each feature, its one-click toggle key, and a short description. */
 const FEATURE_KEYS: readonly { id: FeatureId; name: LocaleKey; hotkey: string; description: LocaleKey }[] = [
   {
-    id: "tools",
-    name: "feature.tools.name",
-    hotkey: "t",
-    description: "feature.tools.description",
-  },
-  {
-    id: "participation",
-    name: "feature.participation.name",
-    hotkey: "p",
-    description: "feature.participation.description",
-  },
-  {
-    id: "model",
-    name: "feature.model.name",
-    hotkey: "m",
-    description: "feature.model.description",
-  },
-  {
-    id: "effort",
-    name: "feature.effort.name",
-    hotkey: "e",
-    description: "feature.effort.description",
-  },
-  {
-    id: "delegation",
-    name: "feature.delegation.name",
-    hotkey: "d",
-    description: "feature.delegation.description",
-  },
-  {
     id: "agents",
     name: "feature.agents.name",
     hotkey: "g",
     description: "feature.agents.description",
-  },
-  {
-    id: "advisor",
-    name: "feature.advisor.name",
-    hotkey: "a",
-    description: "feature.advisor.description",
   },
 ];
 
@@ -174,14 +137,12 @@ const percent = (value: number, locale: Locale) => `${formatDecimal(value * 100,
 
 /** Where a Jev call was asked from: the routing point, and what set it off (a tool, a subagent type). */
 export interface JevCaller {
-  origin: "prompt" | "tool" | "agent" | "sift" | "setup";
+  origin: "agent" | "sift" | "setup";
   trigger?: string;
 }
 
 /** The function in hooks/core that asked, so the log names exactly what ran. */
 const ASKED_BY: Record<JevCaller["origin"], string> = {
-  prompt: "planTurn()",
-  tool: "decide()",
   agent: "planAgent()",
   sift: "sift",
   setup: "validateKey()",
@@ -189,28 +150,19 @@ const ASKED_BY: Record<JevCaller["origin"], string> = {
 
 /** What each question makes Jev judge, by its name (core/questions.ts and core/plan.ts). */
 const JOBS: Record<string, LocaleKey> = {
-  [TOOL_KEY]: "feed.jev.job.tool",
-  [NEEDS_TOOL_KEY]: "feed.jev.job.needsTool",
-  [PARTICIPATE_KEY]: "feed.jev.job.participate",
   [MODEL_KEY]: "feed.jev.job.model",
   [EFFORT_KEY]: "feed.jev.job.effort",
-  [DELEGATE_KEY]: "feed.jev.job.delegate",
-  [ADVISOR_KEY]: "feed.jev.job.advisor",
 };
-const isShard = (name: string) => name.startsWith("shard:");
 
 /** The function and the routing point of one call: "decide() › shortlist" "after Bash". */
 function jevHead(caller: JevCaller, questions: readonly string[], locale: Locale): { fn: string; from: string; jobs: string } {
-  const shortlist = questions.some(isShard);
-  const fn = shortlist ? `${ASKED_BY[caller.origin]} › shortlist()` : ASKED_BY[caller.origin];
+  const fn = ASKED_BY[caller.origin];
   const trigger = caller.trigger ? short(caller.trigger, 40) : undefined;
   const from =
-    caller.origin === "tool"
-      ? trigger ? text("feed.jev.from.tool", locale, { trigger }) : text("feed.jev.from.toolAny", locale)
-      : caller.origin === "agent"
-        ? trigger ? text("feed.jev.from.agent", locale, { trigger }) : text("feed.jev.from.agentAny", locale)
-        : text(`feed.jev.from.${caller.origin}`, locale);
-  const jobs = [...new Set(questions.map((name) => (isShard(name) ? text("feed.jev.job.shortlist", locale) : JOBS[name] ? text(JOBS[name]!, locale) : name)))];
+    caller.origin === "agent"
+      ? trigger ? text("feed.jev.from.agent", locale, { trigger }) : text("feed.jev.from.agentAny", locale)
+      : text(`feed.jev.from.${caller.origin}`, locale);
+  const jobs = [...new Set(questions.map((name) => JOBS[name] ? text(JOBS[name]!, locale) : name))];
   return { fn, from, jobs: jobs.join(", ") };
 }
 
@@ -262,8 +214,13 @@ export function jevAsked(sent: JevSent, caller: JevCaller, locale: Locale = loca
 export function jevAnswered(sent: JevSent, caller: JevCaller, result: SystemOneResult, locale: Locale = localeFor()): JevCard {
   const [first, ...asked] = sentRows(sent, locale);
   const names = sent.asks?.map((ask) => ask.name) ?? sent.questions;
+  const usage = [
+    result.usage.input_tokens === undefined ? "" : text("feed.jev.usage.input", locale, { value: formatCompact(result.usage.input_tokens, locale) }),
+    result.usage.output_tokens === undefined ? "" : text("feed.jev.usage.output", locale, { value: formatCompact(result.usage.output_tokens, locale) }),
+  ].filter(Boolean).join(" · ");
   const rows = [
-    `${text("feed.jev.usage", locale, { input: formatCompact(result.usage.input_tokens, locale), output: formatCompact(result.usage.output_tokens, locale) })} · ${first}`,
+    ...(usage ? [text("feed.jev.usage", locale, { usage })] : []),
+    first,
     ...asked.flatMap((row, i) => {
       const name = names[i]!;
       const dropped = result.dropped?.find((one) => one.name === name);

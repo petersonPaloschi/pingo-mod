@@ -1,0 +1,81 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 620" width="960" height="620" font-family="ui-sans-serif, -apple-system, Segoe UI, Helvetica, Arial, sans-serif">
+  <style>
+    .lbl { font-size: 13px; fill: #d6dbe4 }
+    .dim { font-size: 11px; fill: #7d8796 }
+    .siftl { font-size: 11px; fill: #9fe8ff; font-weight: 600 }
+    .base { fill: #3a4252 }
+    .sift { fill: url(#hg) }
+  </style>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#0d1117"/><stop offset="1" stop-color="#161b26"/></linearGradient>
+    <linearGradient id="hg" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#e8edf5"/><stop offset="1" stop-color="#5fd4ff"/></linearGradient>
+  </defs>
+  <rect width="960" height="620" rx="14" fill="url(#bg)"/>
+  <text x="28" y="44" font-size="22" font-weight="700" fill="#f2f5fa">Sift answer quality against stored reference</text>
+  <text x="28" y="68" font-size="13" fill="#9aa4b2">12 situations · per-case scores against ground truth · stored reference is unpaired</text>
+  <rect x="390" y="86" width="12" height="8" rx="2" class="base"/><text x="408" y="94" class="dim">Stored Claude-alone reference</text>
+  <rect x="580" y="86" width="12" height="8" rx="2" class="sift"/><text x="598" y="94" class="dim">Sift</text>
+  <text x="570" y="108" text-anchor="middle" class="dim">score against ground truth</text>
+
+  <text x="376" y="132" text-anchor="end" class="lbl">Real log triage</text>
+  <rect x="390" y="121" width="196.1" height="9" rx="2" class="base"/>
+  <rect x="390" y="133" width="82.1" height="9" rx="2" class="sift"/>
+  <text x="760" y="129" class="dim">stored 54%</text>
+  <text x="760" y="141" class="siftl">Sift 23%</text>
+  <text x="376" y="168" text-anchor="end" class="lbl">Needles in a noisy service log</text>
+  <rect x="390" y="157" width="360.0" height="9" rx="2" class="base"/>
+  <rect x="390" y="169" width="360.0" height="9" rx="2" class="sift"/>
+  <text x="760" y="165" class="dim">stored 100%</text>
+  <text x="760" y="177" class="siftl">Sift 100%</text>
+  <text x="376" y="204" text-anchor="end" class="lbl">Support ticket routing</text>
+  <rect x="390" y="193" width="358.2" height="9" rx="2" class="base"/>
+  <rect x="390" y="205" width="354.6" height="9" rx="2" class="sift"/>
+  <text x="760" y="201" class="dim">stored 100%</text>
+  <text x="760" y="213" class="siftl">Sift 99%</text>
+  <text x="376" y="240" text-anchor="end" class="lbl">Spam filtering</text>
+  <rect x="390" y="229" width="347.9" height="9" rx="2" class="base"/>
+  <rect x="390" y="241" width="332.3" height="9" rx="2" class="sift"/>
+  <text x="760" y="237" class="dim">stored 97%</text>
+  <text x="760" y="249" class="siftl">Sift 92%</text>
+  <text x="376" y="276" text-anchor="end" class="lbl">Review sentiment</text>
+  <rect x="390" y="265" width="347.4" height="9" rx="2" class="base"/>
+  <rect x="390" y="277" width="345.6" height="9" rx="2" class="sift"/>
+  <text x="760" y="273" class="dim">stored 97%</text>
+  <text x="760" y="285" class="siftl">Sift 96%</text>
+  <text x="376" y="312" text-anchor="end" class="lbl">Codebase discovery</text>
+  <rect x="390" y="301" width="360.0" height="9" rx="2" class="base"/>
+  <rect x="390" y="313" width="360.0" height="9" rx="2" class="sift"/>
+  <text x="760" y="309" class="dim">stored 100%</text>
+  <text x="760" y="321" class="siftl">Sift 100%</text>
+  <text x="376" y="348" text-anchor="end" class="lbl">Security review shortlist</text>
+  <rect x="390" y="337" width="360.0" height="9" rx="2" class="base"/>
+  <rect x="390" y="349" width="320.0" height="9" rx="2" class="sift"/>
+  <text x="760" y="345" class="dim">stored 100%</text>
+  <text x="760" y="357" class="siftl">Sift 89%</text>
+  <text x="376" y="384" text-anchor="end" class="lbl">CI failure triage</text>
+  <rect x="390" y="373" width="360.0" height="9" rx="2" class="base"/>
+  <rect x="390" y="385" width="360.0" height="9" rx="2" class="sift"/>
+  <text x="760" y="381" class="dim">stored 100%</text>
+  <text x="760" y="393" class="siftl">Sift 100%</text>
+  <text x="376" y="420" text-anchor="end" class="lbl">Semantic search in a huge file</text>
+  <rect x="390" y="409" width="360.0" height="9" rx="2" class="base"/>
+  <rect x="390" y="421" width="360.0" height="9" rx="2" class="sift"/>
+  <text x="760" y="417" class="dim">stored 100%</text>
+  <text x="760" y="429" class="siftl">Sift 100%</text>
+  <text x="376" y="456" text-anchor="end" class="lbl">Relevance ranking</text>
+  <rect x="390" y="445" width="360.0" height="9" rx="2" class="base"/>
+  <rect x="390" y="457" width="360.0" height="9" rx="2" class="sift"/>
+  <text x="760" y="453" class="dim">stored 100%</text>
+  <text x="760" y="465" class="siftl">Sift 100%</text>
+  <text x="376" y="492" text-anchor="end" class="lbl">Commit classification</text>
+  <rect x="390" y="481" width="300.3" height="9" rx="2" class="base"/>
+  <rect x="390" y="493" width="266.5" height="9" rx="2" class="sift"/>
+  <text x="760" y="489" class="dim">stored 83%</text>
+  <text x="760" y="501" class="siftl">Sift 74%</text>
+  <text x="376" y="528" text-anchor="end" class="lbl">Numeric threshold stress test</text>
+  <rect x="390" y="517" width="360.0" height="9" rx="2" class="base"/>
+  <rect x="390" y="529" width="360.0" height="9" rx="2" class="sift"/>
+  <text x="760" y="525" class="dim">stored 100%</text>
+  <text x="760" y="537" class="siftl">Sift 100%</text>
+  <text x="28" y="594" class="dim">Stored answers and usage are Quicksilver-derived, not a live paired baseline. No total-task savings claim.</text>
+</svg>

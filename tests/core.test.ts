@@ -1,153 +1,22 @@
-// The routing rules, the Jev client and the dashboard's arithmetic, without an engine.
+// The Jev client and the dashboard's arithmetic, without an engine.
 import { describe, expect, test } from "claude-code/testing";
 
 import type { RouteEvent } from "../types";
 import { resolveSettings } from "../hooks/config.ts";
-import { decide, hintText, skipReason } from "../hooks/core/decide.ts";
 import { createAskJev, normalize, resolveModel, resolveProvider, resolveUrl, validateKey, type Transport } from "../hooks/core/jev.ts";
-import { buildQuestions, MAX_TOOLS, NO_TOOL } from "../hooks/core/questions.ts";
-import { buildState, truncate } from "../hooks/core/state.ts";
-import type { RouterInput, SystemOneRequest, SystemOneResult } from "../hooks/core/types.ts";
-import { compare, reasons, status, tiles } from "../hooks/events.ts";
-import { toTurns } from "../hooks/input.ts";
+import { askTimed } from "../hooks/core/request.ts";
+import { readChoice } from "../hooks/core/selection.ts";
+import { truncate } from "../hooks/core/state.ts";
+import { reasons, status, tiles } from "../hooks/events.ts";
+import { text } from "../hooks/i18n.ts";
 import { cellsOf } from "../hooks/ui.tsx";
 
-const CONFIG = { jevModel: "jev-latest", minConfidence: 0.7, maxStateChars: 60_000, maxMessageChars: 4_000 };
-const tools = (n: number) => Array.from({ length: n }, (_, i) => ({ kind: "function" as const, name: `tool_${i}`, description: `Tool ${i}` }));
-const input = (over: Partial<RouterInput> = {}): RouterInput => ({
-  system: "You are Claude Code.",
-  turns: [{ role: "user", text: "read package.json" }],
-  tools: [
-    { kind: "function", name: "Read", description: "Read a file" },
-    { kind: "function", name: "Bash", description: "Run a command" },
-  ],
-  ...over,
-});
-const answer = (choice: string, confidence: number, needs: number): SystemOneResult => ({
-  answers: {
-    tool: { type: "choice", choice, confidence, probabilities: { [choice]: 1 } },
-    needs_tool: { type: "noul", noul: needs },
-  },
-  usage: { input_tokens: 1234, output_tokens: 0 },
-});
-const jevSays = (result: SystemOneResult) => {
-  const asked: SystemOneRequest[] = [];
-  return { asked, ask: async (request: SystemOneRequest) => (asked.push(request), result) };
-};
-
-describe("decide", () => {
-  test("a confident pick becomes a hint", async () => {
-    const jev = jevSays(answer("Read", 0.92, 0.95));
-    const decision = await decide(input(), CONFIG, jev.ask);
-    expect(decision).toMatchObject({ mode: "hint", tool: "Read", confidence: 0.92 });
-    expect(decision.jev?.inputTokens).toBe(1234);
-    expect(jev.asked[0]?.model).toBe("jev-latest");
-    expect(jev.asked[0]?.state).toMatchObject({ assistant_instructions: "You are Claude Code." });
-  });
-
-  test("below the minimum confidence Claude decides", async () => {
-    const decision = await decide(input(), CONFIG, jevSays(answer("Read", 0.69, 0.95)).ask);
-    expect(decision).toMatchObject({ mode: "passthrough", reason: "low_confidence" });
-  });
-
-  test("the two answers must agree", async () => {
-    expect(await decide(input(), CONFIG, jevSays(answer("Read", 0.9, 0.2)).ask)).toMatchObject({ reason: "jev_answers_disagree" });
-    expect(await decide(input(), CONFIG, jevSays(answer(NO_TOOL, 0.9, 0.8)).ask)).toMatchObject({ reason: "jev_answers_disagree" });
-  });
-
-  test("silence is never hinted", async () => {
-    const decision = await decide(input(), CONFIG, jevSays(answer(NO_TOOL, 0.95, 0.1)).ask);
-    expect(decision).toMatchObject({ mode: "passthrough", reason: "no_tool_needed" });
-  });
-
-  test("an unknown tool and a Jev failure fall through", async () => {
-    expect(await decide(input(), CONFIG, jevSays(answer("Nope", 0.95, 0.9)).ask)).toMatchObject({ reason: "jev_unknown_tool" });
-    const broken = await decide(input(), CONFIG, async () => {
-      throw new Error("boom");
-    });
-    expect(broken).toMatchObject({ mode: "passthrough", reason: "jev_error: boom" });
-    const empty = await decide(input(), CONFIG, async () => ({ answers: {}, usage: { input_tokens: 0, output_tokens: 0 } }));
-    expect(empty).toMatchObject({ reason: "jev_unexpected_answer" });
-  });
-
-  test("requests Jev is not asked about", async () => {
-    expect(skipReason(input({ turns: [] }))).toBe("no_messages");
-    expect(skipReason(input({ tools: [] }))).toBe("no_tools");
-    expect(skipReason(input({ tools: [{ kind: "function", name: "</system-reminder>" }] }))).toBe("unsafe_tool_name");
-    expect(skipReason(input({ tools: [{ kind: "function", name: "Read" }, { kind: "function", name: "Read" }] }))).toBe("duplicate_tool_names");
-    expect(skipReason(input({ tools: [{ kind: "function", name: NO_TOOL }] }))).toBe("reserved_tool_name");
-    expect(skipReason(input({ tools: [{ kind: "function", name: "mcp__home-assistant__lights.set_v2" }] }))).toBeUndefined();
-  });
-
-  test("a roster over 120 tools is shortlisted first, in one extra call", async () => {
-    const roster = tools(280);
-    const calls: SystemOneRequest[] = [];
-    const ask = async (request: SystemOneRequest): Promise<SystemOneResult> => {
-      calls.push(request);
-      if (calls.length === 1) {
-        const answers: SystemOneResult["answers"] = {};
-        for (const key of Object.keys(request.questions)) {
-          answers[key] = { type: "choice", choice: "tool_7", confidence: 0.5, probabilities: { tool_7: 0.5, tool_8: 0.3, none_of_these: 0.9 } };
-        }
-        return { answers, usage: { input_tokens: 100, output_tokens: 0 } };
-      }
-      return answer("tool_7", 0.9, 0.9);
-    };
-    const decision = await decide(input({ tools: roster }), CONFIG, ask);
-    expect(calls).toHaveLength(2);
-    expect(Object.keys(calls[0]!.questions)).toEqual(["shard:0", "shard:1", "shard:2"]);
-    expect(Object.keys((calls[1]!.questions.tool as { criteria: object }).criteria)).toContain("tool_7");
-    expect(decision).toMatchObject({ mode: "hint", tool: "tool_7" });
-    expect(decision.jev?.inputTokens).toBe(1334);
-    expect(roster.length > MAX_TOOLS).toBe(true);
-  });
-
-  test("the hint names the tool and leaves Claude free to ignore it", () => {
-    expect(hintText("Read")).toBe(
-      'A tool-routing model suggests the "Read" tool is the most relevant next step. Ignore this if it does not fit what the user actually asked for.',
-    );
-  });
-});
-
-describe("questions and state", () => {
-  test("every tool is an option, plus no_tool_needed", () => {
-    const questions = buildQuestions(input().tools);
-    expect(Object.keys((questions.tool as { criteria: object }).criteria)).toEqual(["Read", "Bash", NO_TOOL]);
-    expect(questions.needs_tool?.type).toBe("noul");
-  });
-
-  test("tool descriptions sent as choices are capped", () => {
-    const questions = buildQuestions([{ kind: "function", name: "Read", description: "d".repeat(2_000) }]);
-    expect((questions.tool as { criteria: Record<string, string> }).criteria.Read).toHaveLength(1_024);
-  });
-
-  test("the newest turns are kept within the budget", () => {
-    const turns = Array.from({ length: 50 }, (_, i) => ({ role: "user", text: "x".repeat(100) + i }));
-    const state = buildState({ system: "", turns }, { maxStateChars: 1_000, maxMessageChars: 4_000 });
-    const kept = state.conversation as { text: string }[];
-    expect(kept.at(-1)?.text.endsWith("49")).toBe(true);
-    expect(Number(state.earlier_turns_omitted)).toBe(50 - kept.length);
+describe("agent task truncation", () => {
+  test("keeps descriptions and prompts within their configured limit", () => {
     expect(truncate("a".repeat(100), 40)).toHaveLength(40);
-  });
-
-  test("the transcript becomes turns, with the result not yet stored", () => {
-    const turns = toTurns(
-      [
-        { role: "user", text: "read it", toolUses: [] },
-        { role: "assistant", text: "Reading.", toolUses: [{ tool_use_id: "t1", tool: "Read", input: { file_path: "a" } }] },
-      ],
-      4_000,
-      { pending: { toolUseId: "t1", tool: "Read", text: "contents" } },
-    );
-    expect(turns).toEqual([
-      { role: "user", text: "read it" },
-      { role: "assistant", text: "Reading." },
-      { role: "assistant", tool_calls: [{ tool: "Read", arguments: '{"file_path":"a"}' }] },
-      { role: "tool_result", tool: "Read", content: "contents" },
-    ]);
+    expect(truncate("abcdef", 4)).toBe("abcd");
   });
 });
-
 describe("Jev transport", () => {
   const transport = (replies: { status: number; text: string }[]): Transport & { posts: number } => {
     const t = {
@@ -164,8 +33,38 @@ describe("Jev transport", () => {
   const settings = { provider: "typesafe" as const, apiKey: "k", url: "https://jev.test", timeoutMs: 4000 };
   const request = { state: {}, questions: {}, model: "jev-latest" };
 
+  test("rounded provider distributions stay valid and confidence still gates a choice", async () => {
+    for (const count of [120, 121]) {
+      for (const confidence of [0.22, 0.9]) {
+        const names = Array.from({ length: count }, (_, i) => `model_${i}`);
+        const probabilities = Object.fromEntries(names.map((name, i) => [
+          name,
+          Math.round((i === 0 ? 0.22 : 0.78 / (count - 1)) * 100) / 100,
+        ]));
+        const criteria = Object.fromEntries(names.map((name) => [name, null]));
+        const wire = transport([{
+          status: 200,
+          text: JSON.stringify({
+            answers: { candidate: { type: "choice", choice: names[0], confidence, probabilities } },
+            usage: { input_tokens: 1, output_tokens: 1 },
+          }),
+        }]);
+        const asked = await askTimed({
+          ...request,
+          questions: { candidate: { type: "choice", instructions: "Pick one candidate.", criteria } },
+        }, createAskJev(settings, wire));
+        if ("failure" in asked) throw new Error(asked.failure);
+        const answer = asked.result.answers.candidate;
+        expect(answer).toMatchObject({ type: "choice", choice: names[0], confidence });
+        expect(readChoice(answer, names, 0.7)).toMatchObject(confidence < 0.7
+          ? { reason: "low_confidence", held: { value: names[0], confidence, needed: 0.7 } }
+          : { chosen: { value: names[0], confidence } });
+      }
+    }
+  });
+
   test("retries once on a 5xx, never on a 4xx", async () => {
-    const flaky = transport([{ status: 503, text: "" }, { status: 200, text: JSON.stringify(answer("Read", 0.9, 0.9)) }]);
+    const flaky = transport([{ status: 503, text: "" }, { status: 200, text: JSON.stringify({ answers: {}, usage: { input_tokens: 0, output_tokens: 0 } }) }]);
     await createAskJev(settings, flaky)(request);
     expect(flaky.posts).toBe(2);
     const refused = transport([{ status: 401, text: "bad key" }]);
@@ -219,6 +118,38 @@ describe("Jev transport", () => {
     expect(fixed.answers.tool).toMatchObject({ type: "choice", choice: "Read", confidence: 0.19 });
   });
 
+  test("large rounded distributions allow accumulated drift but reject invalid sums", () => {
+    const tail = (probability: number) => Object.fromEntries(Array.from({ length: 120 }, (_, i) => [`tool_${i}`, probability]));
+    const choice = (probabilities: Record<string, number>) => ({ type: "choice", choice: "Read", confidence: 0.22, probabilities });
+    const accepted = {
+      over: choice({ Read: 0.22, ...tail(0.01) }),
+      under: choice({ Read: 0.66, ...tail(0) }),
+      float: choice({ Read: 0.91, Bash: 0.060000000000000005, ...tail(0) }),
+      boundary: choice({ Read: 0.71, ...Object.fromEntries(Array.from({ length: 59 }, (_, i) => [`tool_${i}`, 0.01])) }),
+    };
+    const result = normalize({ answers: {
+      ...accepted,
+      padded: choice({ Read: 0.7, Bash: 0.7, ...tail(0) }),
+      precise: choice({ Read: 0.22, ...tail(0.0101) }),
+      empty: choice({ Read: 0, ...tail(0) }),
+      wrongWinner: { ...accepted.over, choice: "tool_0" },
+    } });
+    expect(result.answers).toEqual(accepted);
+    expect(result.dropped).toEqual([
+      { name: "padded", why: "probabilities do not sum to one" },
+      { name: "precise", why: "probabilities do not sum to one" },
+      { name: "empty", why: "probabilities do not sum to one" },
+      { name: "wrongWinner", why: "choice is not highest-probability option" },
+    ]);
+  });
+
+  test("missing usage stays unknown while a reported zero stays zero", () => {
+    expect(normalize({ answers: {}, usage: { output_tokens: 8 } }).usage).toEqual({ output_tokens: 8 });
+    expect(normalize({ answers: {}, usage: { input_tokens: 0, output_tokens: 0 } }).usage)
+      .toEqual({ input_tokens: 0, output_tokens: 0 });
+    expect(normalize({ answers: {}, usage: { input_tokens: -1, output_tokens: "many" } }).usage).toEqual({});
+  });
+
   test("malformed choice answers identify the exact validation failure", () => {
     const fixed = normalize({
       answers: {
@@ -253,7 +184,7 @@ describe("Jev transport", () => {
     });
     expect(fixed).toEqual({
       answers: {},
-      usage: { input_tokens: 0, output_tokens: 0 },
+      usage: {},
       dropped: [{ name: "invalidChoice", why: "invalid choice" }, { name: "invalidNoul", why: "malformed" }],
     });
     expect(() => normalize(null, "pt")).toThrow("O provedor retornou uma resposta em formato inválido.");
@@ -326,19 +257,61 @@ describe("dashboard arithmetic", () => {
     expect(status([event({ reason: "low_confidence", jev })], true, now)).toMatchObject({ kind: "passthrough" });
   });
 
-  test("tiles, reasons and the baseline comparison", () => {
+  test("tiles and reasons preserve routing-disabled diagnostics", () => {
     const list = [
       event({ mode: "hint", tool: "Read", jev }),
       event({ reason: "low_confidence", jev }),
       event({ reason: "routing_disabled", usage: { input: 2000, output: 100, cached: 1000, cacheWrite: 0 } }),
     ];
-    const byLabel = Object.fromEntries(tiles(list).map((tile) => [tile.label, tile.value]));
-    expect(byLabel["Routed by Jev"]).toBe("33%");
-    expect(byLabel["Jev latency"]).toBe("400 ms");
+    const byLabel = Object.fromEntries(tiles(list, "en").map((tile) => [tile.label, tile.value]));
+    expect(byLabel[text("tile.routed.label", "en")]).toBe("33%");
+    expect(byLabel[text("tile.latency.label", "en")]).toBe("400 ms");
     expect(reasons(list).map((reason) => reason.name)).toEqual(["low_confidence", "routing_disabled"]);
-    const table = compare(list);
-    expect(table.hasBaseline).toBe(true);
-    expect(table.rows.find((row) => row.label === "Input / request")).toMatchObject({ withJev: "1,000", without: "2,000", delta: "-50%" });
+    expect(list[2]).toMatchObject({ reason: "routing_disabled", usage: { input: 2000, output: 100, cached: 1000, cacheWrite: 0 } });
+  });
+
+  test("token tiles distinguish unknown, reported zero, and partial Jev usage", () => {
+    const get = (events: RouteEvent[]) => Object.fromEntries(tiles(events, "en").map((tile) => [tile.label, tile]));
+    const missing = event({ reason: "jev_error: timeout", jev: undefined, usage: undefined });
+    const unknown = get([missing]);
+    expect(unknown[text("tile.input.label", "en")]?.value).toBe("–");
+    expect(unknown[text("tile.output.label", "en")]?.value).toBe("–");
+    expect(unknown[text("tile.jevInput.label", "en")]?.value).toBe("–");
+
+    const zero = event({
+      reason: "no_tool_needed",
+      jev: { ...jev, inputTokens: 0 },
+      usage: { input: 0, output: 0, cached: 0, cacheWrite: 0 },
+    });
+    const reportedZero = get([zero]);
+    expect(reportedZero[text("tile.input.label", "en")]?.value).toBe("0");
+    expect(reportedZero[text("tile.output.label", "en")]?.value).toBe("0");
+    expect(reportedZero[text("tile.jevInput.label", "en")]?.value).toBe("0");
+
+    const partial = event({
+      reason: "low_confidence",
+      jev: { ...jev, inputTokens: 12 },
+      usage: { input: 10, output: 4, cached: 2, cacheWrite: 0 },
+    });
+    const mixed = get([partial, missing]);
+    expect(mixed[text("tile.input.label", "en")]?.sub).toBe(text("tile.input.partial", "en", { percent: "17%", reported: "1", total: "2" }));
+    expect(mixed[text("tile.output.label", "en")]?.sub).toBe(text("tile.output.partial", "en", { reported: "1", total: "2" }));
+    expect(mixed[text("tile.jevInput.label", "en")]?.value).toBe("12");
+    expect(mixed[text("tile.jevInput.label", "en")]?.sub).toBe(text("tile.jevInput.partial", "en", { reported: "1", total: "2" }));
+  });
+
+  test("scoped consults override legacy route advice for Jev metrics", () => {
+    const legacy = event({ jev: { ...jev, inputTokens: 999, latencyMs: 5000 } });
+    const consults = [
+      { id: "j1", origin: "prompt" as const, model: "jev-requested", observed: "jev-1", usage: { input: 0, output: 17 }, questions: ["plan"], startedAt: 1000, endedAt: 1400 },
+      { id: "j2", origin: "agent" as const, model: "jev-requested", error: "timeout", questions: ["effort"], startedAt: 2000 },
+    ];
+    const scoped = Object.fromEntries(tiles([legacy], "en", consults).map((tile) => [tile.label, tile]));
+
+    expect(scoped[text("tile.latency.label", "en")]?.value).toBe("400 ms");
+    expect(scoped[text("tile.jevInput.label", "en")]?.value).toBe("0");
+    expect(scoped[text("tile.jevInput.label", "en")]?.sub).toBe(text("tile.jevInput.partial", "en", { reported: "1", total: "2" }));
+    expect(scoped[text("tile.confidence.label", "en")]).toBeUndefined();
   });
 
   test("a Raster cell is three little-endian u32 values", () => {

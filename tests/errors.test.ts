@@ -1,7 +1,6 @@
 // A failed Jev call names its cause, and the cause names the next step.
 import { expect, test } from "claude-code/testing";
 
-import { decide } from "../hooks/core/decide.ts";
 import { failureCause, failureKind, failureNote, unusableAnswer } from "../hooks/errors.ts";
 
 test("a failure is sorted by what the provider layer wrote", () => {
@@ -33,12 +32,4 @@ test("an answer the router cannot use says what it lacked and what was dropped",
   expect(unusableAnswer(["tool", "needs_tool"], ["needs_tool"], [{ name: "tool", why: 'unoffered choice "Foo"' }])).toBe(
     'missing "tool"; got needs_tool; dropped tool (unoffered choice "Foo")',
   );
-});
-
-test("decide carries the detail of an unusable answer", async () => {
-  const input = { system: "", turns: [{ role: "user", text: "hi" }], tools: [{ name: "Read", kind: "function" as const }] };
-  const config = { jevModel: "jev", minConfidence: 0.7, maxStateChars: 10000, maxMessageChars: 2000 };
-  const decision = await decide(input, config, async () => ({ answers: { needs_tool: { type: "noul", noul: 0.9 } }, usage: { input_tokens: 1, output_tokens: 1 }, dropped: [{ name: "tool", why: 'unoffered choice "Grep"' }] }));
-  expect(decision).toMatchObject({ mode: "passthrough", reason: "jev_unexpected_answer" });
-  expect((decision as { detail?: string }).detail).toBe('missing "tool"; got needs_tool; dropped tool (unoffered choice "Grep"); Jev model jev');
 });

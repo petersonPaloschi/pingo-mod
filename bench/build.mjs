@@ -4,6 +4,7 @@
 // seeded generator in order, so building them all at once is what keeps the data, and therefore the
 // recorded Claude-alone answers in results/baseline, matching truth/.
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
@@ -25,7 +26,7 @@ function out(id, files, meta) {
     fs.writeFileSync(path.join(dir, f), content);
   }
   fs.mkdirSync(path.join(ROOT, 'truth'), { recursive: true });
-  fs.writeFileSync(path.join(ROOT, 'truth', id + '.json'), JSON.stringify(meta, null, 2));
+  fs.writeFileSync(path.join(ROOT, 'truth', id + '.json'), JSON.stringify(meta, null, 2).replaceAll('\n', os.EOL));
   console.log(`${id}  ${meta.title}`);
 }
 

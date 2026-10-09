@@ -65,6 +65,21 @@ test("ignored directories and glob matches never reach the provider", (t) => {
   assert(!f.calls().includes("content excluded by git"));
 });
 
+test("removed batching flags fail before making provider requests", (t) => {
+  const f = fixture(t);
+  f.write("notes.txt", "public notes");
+  for (const args of [
+    ["filter", "Does this matter?", "notes.txt", "--fast"],
+    ["filter", "Does this matter?", "--pack-items", "40", "notes.txt"],
+    ["filter", "Does this matter?", "notes.txt", "--pack-tokens", "3000"],
+  ]) {
+    const result = f.run(args);
+    assert.equal(result.status, 1, result.stderr);
+    assert.match(result.stderr, /has been removed; Sift judges each item independently/);
+  }
+  assert.equal(f.calls(), "");
+});
+
 test("auxiliary file inputs apply the credential guard before any request", (t) => {
   const f = fixture(t);
   f.write(".env", "synthetic content");

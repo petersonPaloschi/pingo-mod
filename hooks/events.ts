@@ -1,6 +1,6 @@
 // The request log and the dashboard's arithmetic: one RouteEvent per model request, metadata
 // only (no prompts, arguments or keys).
-import type { RouteEvent } from "../types";
+import type { RouteEvent, TraceConsult } from "../types";
 import { formatAge, formatDecimal, formatNumber, formatPercent, localeFor, reasonTitle, text, type Locale, type LocaleKey } from "./i18n.ts";
 import { isJevFailure, reasonCode } from "./core/reasons.ts";
 
@@ -9,7 +9,6 @@ export const reasonKey = reasonCode;
 
 export const KEPT_EVENTS = 500;
 export const IDLE_MS = 5 * 60 * 1000;
-export const JEV_USD_PER_MILLION_INPUT_TOKENS = 0.042;
 
 export const RANGES: readonly (readonly [LocaleKey, number])[] = [
   ["range.15m", 15 * 60e3],
@@ -56,7 +55,6 @@ const REASON_KEYS: Record<string, readonly [LocaleKey, LocaleKey]> = {
 export const failed = (event: RouteEvent) => event.mode === "passthrough" && isJevFailure(event.reason ?? "");
 export const category = (event: RouteEvent): Category => (failed(event) ? "failed" : event.mode);
 export const routed = (event: RouteEvent) => event.mode !== "passthrough";
-export const baseline = (event: RouteEvent) => event.reason === "routing_disabled";
 export const at = (event: RouteEvent) => Date.parse(event.time);
 
 export const int = (n: number, locale?: Locale) => formatNumber(Math.round(n), locale ?? localeFor());
@@ -144,90 +142,81 @@ export function status(events: readonly RouteEvent[], routing: boolean, now: num
   };
 }
 
+/** Which Overview section a figure sits in: what happened to requests, Jev's own calls, tokens spent. */
+export type TileGroup = "routing" | "jev" | "tokens";
+
 export interface Tile {
   label: string;
   value: string;
   sub: string;
+  group: TileGroup;
+  /** The note reports a problem, such as failed Jev calls. */
+  alert?: boolean;
 }
 
-export function tiles(events: readonly RouteEvent[], locale: Locale = localeFor()): Tile[] {
+export function tiles(events: readonly RouteEvent[], locale: Locale = localeFor(), consults?: readonly TraceConsult[]): Tile[] {
   const asked = events.filter((event) => event.jev);
-  const failures = events.filter(failed).length;
-  const latencies = asked.map((event) => event.jev!.latencyMs).sort((a, b) => a - b);
+  const calls = consults?.length ?? asked.length + events.filter(failed).length;
+  const failures = consults ? consults.filter((consult) => consult.error).length : events.filter(failed).length;
+  const latencies = (consults
+    ? consults.flatMap((consult) => consult.endedAt === undefined ? [] : [Math.max(0, consult.endedAt - consult.startedAt)])
+    : asked.map((event) => event.jev!.latencyMs)).sort((a, b) => a - b);
   const mean = (values: number[]) => (values.length ? values.reduce((s, v) => s + v, 0) / values.length : undefined);
-  const tokens = sum(asked, (event) => event.jev?.inputTokens);
+  const tokens = consults
+    ? consults.reduce((total, consult) => total + (consult.usage?.input ?? 0), 0)
+    : sum(asked, (event) => event.jev?.inputTokens);
+  const reportedUsage = consults
+    ? consults.filter((consult) => consult.usage?.input !== undefined).length
+    : asked.filter((event) => event.jev?.inputTokens !== undefined).length;
+  const inputReports = events.filter((event) => event.usage?.input !== undefined || event.usage?.cached !== undefined || event.usage?.cacheWrite !== undefined).length;
+  const outputReports = events.filter((event) => event.usage?.output !== undefined).length;
+  const completeInputReports = events.filter((event) => event.usage?.input !== undefined && event.usage?.cached !== undefined && event.usage?.cacheWrite !== undefined);
+  const input = events.reduce((total, event) => total + (event.usage?.input ?? 0) + (event.usage?.cached ?? 0) + (event.usage?.cacheWrite ?? 0), 0);
+  const cacheInput = completeInputReports.reduce((total, event) => total + (event.usage?.input ?? 0) + (event.usage?.cached ?? 0) + (event.usage?.cacheWrite ?? 0), 0);
+  const cached = sum(completeInputReports, (event) => event.usage?.cached);
+  const cachePercent = cacheInput > 0 ? pct(cached, cacheInput, locale) : "–";
   const decided = events.filter(routed).length;
   const avgLatency = mean(latencies);
-  const confidences = asked.flatMap(({ jev }) => jev?.confidence === undefined ? [] : [jev.confidence]);
+  const confidences = consults ? [] : asked.flatMap(({ jev }) => jev?.confidence === undefined ? [] : [jev.confidence]);
   const avgConfidence = mean(confidences);
   const p95 = latencies[Math.min(latencies.length - 1, Math.floor(latencies.length * 0.95))];
   return [
-    { label: text("tile.requests.label", locale), value: int(events.length, locale), sub: text("tile.requests.sub", locale) },
-    { label: text("tile.routed.label", locale), value: pct(decided, events.length, locale), sub: text("tile.routed.sub", locale, { count: int(decided, locale), requests: text(decided === 1 ? "unit.request" : "unit.requests", locale) }) },
-    { label: text("tile.passed.label", locale), value: pct(events.length - decided, events.length, locale), sub: text("tile.passed.sub", locale, { count: int(events.length - decided, locale), requests: text(events.length - decided === 1 ? "unit.request" : "unit.requests", locale) }) },
-    { label: text("tile.calls.label", locale), value: int(asked.length + failures, locale), sub: failures ? text("tile.calls.failed", locale, { count: int(failures, locale) }) : text("tile.calls.noneFailed", locale) },
+    { label: text("tile.requests.label", locale), value: int(events.length, locale), sub: text("tile.requests.sub", locale), group: "routing" },
+    { label: text("tile.routed.label", locale), value: pct(decided, events.length, locale), sub: text("tile.routed.sub", locale, { count: int(decided, locale), requests: text(decided === 1 ? "unit.request" : "unit.requests", locale) }), group: "routing" },
+    { label: text("tile.passed.label", locale), value: pct(events.length - decided, events.length, locale), sub: text("tile.passed.sub", locale, { count: int(events.length - decided, locale), requests: text(events.length - decided === 1 ? "unit.request" : "unit.requests", locale) }), group: "routing" },
+    { label: text("tile.calls.label", locale), value: int(calls, locale), sub: failures ? text("tile.calls.failed", locale, { count: int(failures, locale) }) : text("tile.calls.noneFailed", locale), group: "jev", alert: failures > 0 },
     {
       label: text("tile.latency.label", locale),
       value: avgLatency === undefined ? "–" : int(avgLatency, locale) + " ms",
       sub: p95 === undefined ? text("tile.latency.none", locale) : text("tile.latency.p95", locale, { value: int(p95, locale) }),
+      group: "jev",
     },
-    { label: text("tile.confidence.label", locale), value: avgConfidence === undefined ? "–" : formatDecimal(avgConfidence, locale), sub: text("tile.confidence.sub", locale) },
+    ...(consults === undefined ? [{ label: text("tile.confidence.label", locale), value: avgConfidence === undefined ? "–" : formatDecimal(avgConfidence, locale), sub: text("tile.confidence.sub", locale), group: "jev" as const }] : []),
     {
       label: text("tile.input.label", locale),
-      value: int(sum(events, (event) => event.usage?.input), locale),
-      sub: text("tile.input.sub", locale, { percent: pct(sum(events, (event) => event.usage?.cached), sum(events, (event) => event.usage?.input), locale) }),
+      value: inputReports ? int(input, locale) : "–",
+      sub: completeInputReports.length < events.length
+        ? text("tile.input.partial", locale, { percent: cachePercent, reported: int(completeInputReports.length, locale), total: int(events.length, locale) })
+        : text("tile.input.sub", locale, { percent: cachePercent }),
+      group: "tokens",
     },
-    { label: text("tile.output.label", locale), value: int(sum(events, (event) => event.usage?.output), locale), sub: text("tile.output.sub", locale) },
+    {
+      label: text("tile.output.label", locale),
+      value: outputReports ? int(sum(events, (event) => event.usage?.output), locale) : "–",
+      sub: outputReports < events.length
+        ? text("tile.output.partial", locale, { reported: int(outputReports, locale), total: int(events.length, locale) })
+        : text("tile.output.sub", locale),
+      group: "tokens",
+    },
     {
       label: text("tile.jevInput.label", locale),
-      value: int(tokens, locale),
-      sub: text("tile.jevInput.sub", locale, { value: formatDecimal((tokens / 1e6) * JEV_USD_PER_MILLION_INPUT_TOKENS, locale, 4) }),
+      value: reportedUsage ? int(tokens, locale) : "–",
+      sub: reportedUsage < calls
+        ? text("tile.jevInput.partial", locale, { reported: int(reportedUsage, locale), total: int(calls, locale) })
+        : text("tile.jevInput.sub", locale),
+      group: "tokens",
     },
   ];
-}
-
-export interface CompareRow {
-  label: string;
-  withJev: string;
-  without: string;
-  delta: string;
-}
-
-/** The "Token use: with Jev routing vs. baseline" table. */
-export function compare(events: readonly RouteEvent[], locale: Locale = localeFor()): { rows: CompareRow[]; hasBaseline: boolean } {
-  const metered = events.filter((event) => event.usage);
-  const groups = [metered.filter((event) => !baseline(event)), metered.filter(baseline)] as const;
-  const per = (group: RouteEvent[], pick: (event: RouteEvent) => number | undefined) =>
-    group.length ? sum(group, pick) / group.length : undefined;
-  const cachedShare = (group: RouteEvent[]) => {
-    const input = sum(group, (event) => event.usage?.input);
-    return input ? (100 * sum(group, (event) => event.usage?.cached)) / input : undefined;
-  };
-  const number = (value: number) => int(value, locale);
-  const measures: [LocaleKey, (group: RouteEvent[]) => number | undefined, (value: number) => string][] = [
-    ["compare.metered", (group) => group.length, number],
-    ["compare.input", (group) => per(group, (event) => event.usage?.input), number],
-    ["compare.cached", cachedShare, (value) => formatPercent(value, 100, locale)],
-    ["compare.output", (group) => per(group, (event) => event.usage?.output), number],
-    ["compare.seconds", (group) => per(group, (event) => event.durationMs / 1000), (value) => formatDecimal(value, locale, 1)],
-    ["compare.totalInput", (group) => sum(group, (event) => event.usage?.input), number],
-    ["compare.totalOutput", (group) => sum(group, (event) => event.usage?.output), number],
-  ];
-  const cell = (value: number | undefined, format: (value: number) => string) =>
-    value === undefined || Number.isNaN(value) ? "–" : format(value);
-  const rows = measures.map(([label, measure, format], index) => {
-    const withJev = measure(groups[0]);
-    const without = measure(groups[1]);
-    const comparable = index > 0 && index < 5 && withJev !== undefined && without;
-    const delta = comparable ? (100 * (withJev - without)) / without : undefined;
-    return {
-      label: text(label, locale),
-      withJev: cell(withJev, format),
-      without: cell(without, format),
-      delta: delta === undefined || !Number.isFinite(delta) ? "" : (delta > 0 ? "+" : "") + formatPercent(delta, 100, locale),
-    };
-  });
-  return { rows, hasBaseline: groups[1].length > 0 };
 }
 
 /** Why requests were not routed, most common first. */

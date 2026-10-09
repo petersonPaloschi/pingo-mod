@@ -13,47 +13,25 @@ export function featureGate(ctx: FeatureContext, feature?: FeatureId): "routing_
 }
 
 export interface RequestPlan {
-  model?: string;
   effort?: Effort;
 }
-
-export type ModelOutcome =
-  | { kind: "switched"; from: string; to: string }
-  | { kind: "same"; model: string }
-  | { kind: "held"; why: "user_model" | "model_id" | "blocked"; from: string; to: string };
 
 export type EffortOutcome = { kind: "applied" | "ignored" | "held"; value?: string; from?: string; why?: string };
 
 export interface RequestPolicy {
-  model: boolean;
   effort: boolean;
-  userModel?: boolean;
-  blockedModels?: ReadonlySet<string>;
 }
 
-export const switchableModel = (id: string): boolean => /^claude-[a-z0-9.-]+$/i.test(id);
-
-/** Resolve model first; effort must follow the actual request, including fallbacks. */
+/** Size effort against the native agent's actual model, including fallbacks. */
 export function sizeRequest<T extends { model: string; effort?: Effort | number }>(original: T, plan: RequestPlan, policy: RequestPolicy): {
   request: T;
-  modelOutcome?: ModelOutcome;
   effortOutcome?: EffortOutcome;
   ignoredEffort?: Effort | number;
 } {
-  let model = original.model;
+  const model = original.model;
   let effort = original.effort;
-  let modelOutcome: ModelOutcome = { kind: "same", model: original.model };
   let effortOutcome: EffortOutcome | undefined;
   let ignoredEffort: Effort | number | undefined;
-  if (policy.model && plan.model) {
-    const why = policy.userModel ? "user_model" : policy.blockedModels?.has(plan.model) ? "blocked" : !switchableModel(model) ? "model_id" : undefined;
-    if (plan.model === model) modelOutcome = { kind: "same", model };
-    else if (why) modelOutcome = { kind: "held", why, from: model, to: plan.model };
-    else {
-      model = plan.model;
-      modelOutcome = { kind: "switched", from: original.model, to: model };
-    }
-  }
   const wanted = policy.effort ? plan.effort : undefined;
   if (wanted !== undefined) {
     if (supportsEffort(model)) {
@@ -64,18 +42,14 @@ export function sizeRequest<T extends { model: string; effort?: Effort | number 
       effortOutcome = { kind: "ignored", value: wanted, why: modelTier(model) === "haiku" ? "haiku_no_effort" : "unsupported_effort" };
     }
   }
-  // Strip inherited effort only for a request Jev is actually sizing for Haiku.
-  if (modelTier(model) === "haiku" && !supportsEffort(model) && (wanted !== undefined || modelOutcome?.kind === "switched")) {
+  // Leave native/manual requests alone; only strip an incompatible planned effort.
+  if (wanted !== undefined && !supportsEffort(model)) {
     ignoredEffort ??= effort;
     effort = undefined;
   }
-  if (model === original.model && effort === original.effort) return { request: original, modelOutcome, effortOutcome, ignoredEffort };
+  if (effort === original.effort) return { request: original, effortOutcome, ignoredEffort };
   const { effort: _effort, ...rest } = original;
-  return { request: { ...rest, model, ...(effort === undefined ? {} : { effort }) } as T, modelOutcome, effortOutcome, ignoredEffort };
-}
-
-export function withHint(context: readonly string[] | undefined, hint: string): string[] {
-  return [...(context ?? []), `<system-reminder>${hint}</system-reminder>`];
+  return { request: { ...rest, ...(effort === undefined ? {} : { effort }) } as T, effortOutcome, ignoredEffort };
 }
 
 export function totalInput(usage: { input_tokens: number; cache_read_input_tokens?: number | null; cache_creation_input_tokens?: number | null } | null | undefined): number {

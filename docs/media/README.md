@@ -1,5 +1,7 @@
 # README media
 
+These files are archived illustrations from the earlier tool-suggestion design. The current README and dashboard do not use them to describe active features or measured performance; current UI behavior is documented in [DESIGN.md](../../DESIGN.md).
+
 The animations are authored 3D illustrations made with the Higgsfield MCP's **3D Jutsu** scene tools. The Blender scene and keyframes were exported as GLB and rendered through WebGL in an existing browser, then encoded as GIFs. They are illustrations, rather than captured product screens.
 
 - `pingo-states.gif`: Pingo's six expressions, a rotating dotted body, and the routing illustration.

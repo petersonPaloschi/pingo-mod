@@ -1,67 +1,57 @@
 # Visual design
 
-The dashboard uses dots for confidence, routing share, timelines, and mascots. Text carries the exact values and status labels; color reinforces state.
+Dots reinforce state; text carries exact values, identity, duration, and observed consumption. The terminal and desktop use the same state and layout.
 
 ## Principles
 
-1. **Use one visual unit.** Braille cells, meters, timelines, and mascot models all use dots.
-2. **Use depth sparingly.** Near dots are brighter than distant dots. The same projection feeds terminal braille and desktop SVG.
-3. **Use color for state.** Color marks routing, passthrough, failures, and speaker identity.
-4. **Keep numbers readable.** Dots decorate confidence and routing share; the numeric values remain visible.
-5. **Keep rendering deterministic.** Given the same state and time, each mascot produces the same frame.
+1. Use one visual unit for meters, timelines, and the simple Pingo.
+2. Keep values and scope readable; confidence and activity are not quality or savings.
+3. Use color for state and speaker identity, alongside a readable name and status.
+4. Keep rendering deterministic and update on observable events.
+5. Avoid animation frame scheduling for the user, workers, or execution graph.
 
 ## Palette
 
-The palette is designed for a dark terminal.
-
 | Token | Color | Use |
 | --- | --- | --- |
-| `ink` | `#e9ebef` | Values, headings, and near-side dots |
-| `dim` | `#8d93a0` | Labels, notes, and passthrough text |
-| `faint` | `#4a4f5a` | Empty dots and secondary notes |
-| `route` | `#5ef0a8` | Routing and enabled features |
+| `ink` | `#e9ebef` | Values and headings |
+| `dim` | `#8d93a0` | Labels and passthrough |
+| `faint` | `#4a4f5a` | Empty dots and notes |
+| `route` | `#5ef0a8` | Enabled planning and accepted choices |
 | `pass` | `#f2c14e` | Passthrough and warnings |
-| `fail` | `#ff6b5e` | Failed requests and errors |
-| `base` | `#8fa2ff` | Baseline mode |
-| `you` | `#c9a7ff` | The user's entries in the live log |
-| `claude` | `#d97757` | Claude's entries in the live log |
+| `fail` | `#ff6b5e` | Failures and errors |
+| `base` | `#8fa2ff` | Planning disabled |
+| `you` | `#c9a7ff` | User entries |
+| `claude` | `#d97757` | Claude entries |
 
-The palette and shared drawing functions live in `hooks/dots.ts`.
+Shared drawing and layout utilities live in `hooks/dots.ts` and `hooks/layout.ts`.
 
-## Mascots
+## Identity
 
-- **Pingo** represents Jev. Its dotted sphere and eyes change with six moods: routing, thinking (spinning eyes while a Jev request is in flight), passthrough, failing, idle, and baseline; the terminal draws braille and the desktop app draws SVG circles.
-- **Dice** represents the user in the live log. Its cube of dots is drawn as braille in the terminal and as SVG circles on the desktop.
-- **Tetra**, **Gem**, **Can**, **Coil**, and **Top** represent concurrent subagents. Each uses a different solid and color so their activity is easy to follow.
-- Subagent mascots appear in the Agents tab, their live panes, and the band above the prompt.
-
-The renderers live in `hooks/mascots/pingo.ts`, `hooks/mascots/dice.ts`, and `hooks/mascots/agents.ts`. Mascot frames use `$.ui.blit` while their pane is visible, one frame at a time; a refused or failed blit stops that animation until the pane renders again.
+Pingo is a simple status indicator. The user is identified by a readable label and color. Workers have stable numbers, names, colors, and state labels in Agents, individual panes, and the band above the prompt. Dice and solid worker renderers have been removed.
 
 ## Dashboard
 
-- **Header:** Pingo, Jev's text status, confidence meter, routed-request rail, routing toggle, and the tab bar.
-- **Overview:** request totals, token usage, routing results, and a request timeline.
-- **Live:** visible events, one row per event, each with its speaker. The feed does not display internal model reasoning. See Tab bar and Live log below.
-- **Models:** the model and effort running now, what blocks or allows a model change at the next prompt and the confidence each model needs, what each function (participation, tool hint, model, effort, delegation) decided at each prompt and why, and the latest subagents.
-- **Agents:** subagent state, actual model, effort, tool and request counts, and recent activity.
-- **Flow:** the latest observed run on one trunk, with tools and MCP, subagent dispatcher and observed worker branches, advisor calls, return to main, answer and edits. Agent branches show their actual model; the advisor branch shows its configured model. A checkpoint panel shows Before plan, Repeated tool failure and Before done as requested or not requested; a request is never a success verdict. The run also shows the suggested model and effort with a recent activity panel. Earlier runs follow below. While the tab shows and a run is at work, a pulse runs down the trunk into the node at work; it stops when the run is done or the pane is not drawn. Flow stays text for low layout cost. `/jev status` reports measured redraw cost.
-- **Features:** independent switches with a short description of each feature.
-- **Reasons, baseline, and log:** routing explanations, comparison metrics, and persisted request metadata.
+- **Header:** Pingo, Jev status, observed call count, latency, reported input usage and failures, routing switch, and the tab bar. Its consultation figures use the last five minutes of retained observations.
+- **Overview:** the range picker leads, with the number of requests it covers, because it scopes every figure below. The header's meters keep their own five-minute window. The status sentence appears only when it adds something the header lacks: why Jev is failing or passing, when it last ran, or that routing is off. The provider line follows. The figures come in titled groups. **Routing** has the request totals and the outcome strip with a one-row legend. **Jev's answers** has calls, latency and confidence; failed calls show in red. **Token usage** has LLM and Jev tokens. **Timeline** has the request constellation. A range with no requests shows one line in place of a wall of zeros.
+- **Live:** visible speaker activity and the execution graph. The graph preserves sequence, tools and sources, worker branches, duration, advisor observations, edits, and results. It updates from events without a pulse loop. Terminal defaults to a compact sequence and keeps space for complete Jev question/answer cards. An expand/back control makes the full diagram scrollable in Live; desktop can show it in the normal document flow.
+- **Models:** actual main and worker model/effort observations and changes. No forecast or observational comparison is presented as a benefit.
+- **Agents:** worker identity, state, actual model/effort, request/tool counts, and live-pane actions.
+- **Logs:** request metadata, error causes, reason filtering/grouping, timing, and reported consumption.
+- **Configuration:** provider setup, credential controls, language, routing, and eligible worker planning.
+
+Request scopes and whole-task scopes are labeled separately. Main completion and background completion use elapsed wall time. Unknown values stay unknown, partial consumption stays partial, and estimates identify their basis. A checkpoint requested is not a successful verification.
 
 ## Tab bar
 
-- One row of labels, in the order Overview, Live, Models, Agents, Flow, Features, Reasons, Baseline, Log, Setup: what is happening first, controls and records after.
-- No numbers or hotkey prefixes. The terminal's plain Button draws `N: label` for any hotkey, so tabs carry none; a tab changes by click.
-- The open tab is bracketed and bright (`❮ Models ❯`); the others are dim labels. The open tab stays a Button, so pressing it is harmless and tests can address every tab by key (`tab-<id>`).
-- A thin rule closes the header. The row wraps on a narrow pane instead of clipping.
+The order is Overview, Live, Models, Agents, Logs, Configuration. Labels have no numerical hotkey prefixes. The active tab is bracketed and bright; it remains a harmless Button addressed by `tab-<id>`. The row wraps on narrow panes and a thin rule closes the header.
+
+Persisted retired tabs map to a valid consolidated screen. Useful former commands open that screen. Removed screen components and feature switches are not retained.
 
 ## Live log
 
-- Every row shows its speaker in two fixed-width boxes: face (6 columns) and name (7). Fixed boxes keep names in one column; padding spaces inside one Text is trimmed and breaks the alignment.
-- Claude has no icon. Its name sits in the icon column, at the left edge, aligned with the faces of Jev and You. Glyphs that fonts draw wider than a cell (`✻`) are not used.
-- No time column. The time is faint, on the line under the text, joined with the detail (`╰ 01:21:01 PM · detail`); a one-row bookkeeping event ends with it.
-- Dense by default: Jev's and Claude's own words take at most two rows, details at most three, and no blank rows separate speakers.
+Speaker names and colors identify authors; no rotating faces are needed. Dense visible messages and bounded details keep the feed readable. Time and details are faint secondary text. The feed does not display private model reasoning.
 
 ## Terminal and desktop
 
-The terminal uses braille rasters for dotted art and text for values. The desktop app uses SVG circles for the same mascot geometry. Other surfaces show the status text and available controls. Runtime text is available in English and Brazilian Portuguese; locale-specific strings live in `hooks/strings/en.ts` and `hooks/strings/pt.ts`.
+The terminal uses braille for Pingo and dot meters; desktop uses SVG when appropriate. Both expose the same controls and readable states. English and Brazilian Portuguese strings live in `hooks/strings/en.ts` and `hooks/strings/pt.ts`. Graphs and shared layout utilities remain independent of removed mascot renderers.

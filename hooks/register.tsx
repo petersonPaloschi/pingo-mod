@@ -1,50 +1,27 @@
-// Jev routing and a live dashboard for Claude Code.
-//
-// At the start of each turn (prompt.submit) the mod asks Jev, in one call, about every feature
-// that is switched on: whether to take part, which tool fits, which model and effort the turn
-// runs on, and whether to hand work to a subagent. After each tool batch (tool.call) it asks
-// again about the next tool. When a subagent starts (agent.spawn) it asks for that agent's model
-// and effort. turn.step applies the model and effort and meters every request; the live log
-// records what can be observed, never the model's reasoning. The Flow tab's record (trace.ts) is
-// fed from the same events, whether or not Jev is on.
+// Jev observes requests and offers optional model/effort selection for native subagent spawns.
+// Runtime records actual requests, tool results, usage, and failures even when Jev is unavailable.
 //
 // Every function that reaches `$` is declared here at the top level, so `claude plugin validate`
 // can follow each call; the other files are pure.
 import { atom, read, update } from "claude-code";
-import type { EngineInterface, Register, UiBlitArgs } from "claude-code";
+import type { EngineInterface, Register } from "claude-code";
 
-import type { AdvisorInfo, AgentRun, FeatureFlags, FeedEntry, PaneScroll, FeedKind, FeedSpeaker, FeedTone, JevTab, LiveNow, RouteEvent, SetupDraft, TraceCheckpoint, TraceConsult, TracePlan, TraceState, WatchState } from "../types";
+import type { AdvisorInfo, AgentRun, FeatureFlags, FeedEntry, PaneScroll, FeedKind, FeedSpeaker, FeedTone, JevTab, LiveNow, RouteEvent, SetupDraft, TraceState } from "../types";
 import { keyFor, keyOwner, providerBasis, resolveSettings, storedApplies, type ModOptions, type Settings, type StoredSettings } from "./config.ts";
-import { decide, hintText, SAFE_TOOL_NAME, type AskJev, type Decision } from "./core/decide.ts";
-import { repeatedFailure, type FailureState } from "./core/harness.ts";
 import { channelFile, channelReader, FOLLOW_SCRIPT } from "./core/channel.ts";
-import { createAskJev, isProvider, observeAskJev, PROVIDERS, redact, resolveModel, validateKey, type JevEvent, type JevSent, type ProviderId, type Transport } from "./core/jev.ts";
+import { createAskJev, isProvider, observeAskJev, PROVIDERS, redact, resolveModel, validateKey, type AskJev, type JevEvent, type JevSent, type ProviderId, type Transport } from "./core/jev.ts";
 import type { ModelContext } from "./core/types.ts";
-import { featureGate, sizeRequest, switchableModel, totalInput, withHint, type FeatureContext, type RequestPlan } from "./core/runtime.ts";
+import { featureGate, sizeRequest, totalInput, type FeatureContext } from "./core/runtime.ts";
 import {
   DEFAULT_FEATURES,
-  isSafeAgentName,
   planAgent,
-  planHint,
-  planSummary,
-  planTurn,
-  NO_DELEGATION,
-  TIER_MODEL,
-  type AgentType,
   type Effort,
-  type FeatureId,
-  type TurnPlan,
 } from "./core/plan.ts";
-import { KEPT_EVENTS, RANGES, reasonKey } from "./events.ts";
+import { KEPT_EVENTS, RANGES } from "./events.ts";
 import { featureFlagsText, features as featureList, jevAnswered, jevAsked, jevFailed, modelName, outputSize, short, toolDetails, toolSummary, type JevCaller } from "./feed.ts";
-import { resultText, toInput, type PendingResult } from "./input.ts";
-import { cellsOf } from "./dots.ts";
-import { failureCause, failureHint, failureKind, failureNote, isJevFailure, reasonCode } from "./errors.ts";
-import { diceFrame, diceSize } from "./mascots/dice.ts";
-import { brailleFrame, type Mood } from "./mascots/pingo.ts";
-import { AGENT_MASCOTS, isMascot, mascotFrame, pickMascot, type MascotId } from "./mascots/agents.ts";
-import { forecast, keepTurns, settleEffort, settleModel, turnFunctions } from "./watch.ts";
-import { FLOW_FPS, flowScene, flowSummary } from "./flow.ts";
+import { resultText } from "./input.ts";
+import { failureHint, failureKind } from "./errors.ts";
+import { AGENT_MASCOTS, isMascot, pickMascot, type MascotId } from "./mascots/agents.ts";
 import {
   advisorBlocker,
   agentStart,
@@ -53,9 +30,7 @@ import {
   consultEnd,
   consultStart,
   emptyTrace,
-  planMessage,
   promptEntered,
-  requestCheckpoint,
   setAdvisorInfo,
   startTurn,
   stepEnd,
@@ -66,16 +41,19 @@ import {
   traceOf,
   type ConsultWhere,
 } from "./trace.ts";
-import { moodOf, pingoSize, renderAgentPane, renderBand, renderPane, type Actions, type View } from "./ui.tsx";
-import { formatCompact, formatDecimal, formatDuration, formatNumber, formatPercent, reasonTitle, text, type Locale, type LocaleKey, type LocaleOption } from "./i18n.ts";
+import { renderAgentPane, renderBand, renderPane, type Actions, type View } from "./ui.tsx";
+import { flowSummary } from "./flow.ts";
+import { formatCompact, formatDecimal, formatDuration, formatNumber, formatPercent, text, type Locale, type LocaleKey, type LocaleOption } from "./i18n.ts";
 
 const PANE = "jev";
+type FeatureId = keyof FeatureFlags;
 const events = atom({ plugin: "jev", key: "events" } as const, [] as RouteEvent[]);
 const routing = atom({ plugin: "jev", key: "routing" } as const, true);
 const tab = atom({ plugin: "jev", key: "tab" } as const, "overview" as JevTab);
 const range = atom({ plugin: "jev", key: "range" } as const, RANGES[1]![1]);
 const setup = atom({ plugin: "jev", key: "setup" } as const, { provider: "", message: "", isOk: false } as SetupDraft);
 const features = atom({ plugin: "jev", key: "features" } as const, { ...DEFAULT_FEATURES } as FeatureFlags);
+const flowDetails = atom({ plugin: "jev", key: "flowDetails" } as const, false);
 const feed = atom({ plugin: "jev", key: "feed" } as const, [] as FeedEntry[]);
 const live = atom({ plugin: "jev", key: "now" } as const, {} as LiveNow);
 const agents = atom({ plugin: "jev", key: "agents" } as const, [] as AgentRun[]);
@@ -86,8 +64,6 @@ const scroll = atom({ plugin: "jev", key: "scroll" } as const, {} as PaneScroll)
 const scrollRoom = new Map<string, { max: number; fromEnd: boolean }>();
 /** The Flow tab's record, schema 2 under a key of its own: the old FlowState is never read as it. */
 const trace = atom({ plugin: "jev", key: "flowV2" } as const, emptyTrace() as TraceState);
-/** What Jev decided at each prompt and why, for the Models tab. */
-const watch = atom({ plugin: "jev", key: "watch" } as const, { turns: [], count: 0 } as WatchState);
 /** Tools whose call is an edit, for the Flow tab's count. */
 const EDIT_TOOLS = new Set(["Edit", "Write", "MultiEdit", "NotebookEdit"]);
 
@@ -106,24 +82,11 @@ const AGENT_PANE = "jev-agent-";
 // Module state: lost on a reload, which is fine for each of these.
 let options: ModOptions = {};
 let settings: Settings | undefined;
-let system: string | undefined;
-/** The tool decision for the main loop's next model request. */
-let pending: Decision | undefined;
-/** What Jev decided for the running turn: model and effort for its main-loop requests. */
-let turnPlan: RequestPlan & { declined?: boolean; summary?: string; modelKept?: boolean } | undefined;
-/** The routing point whose model result waits for the turn's first request. */
-let unsettled: number | undefined;
-/** Error signatures live only in this turn's memory; Flow retains the requested review alone. */
-const failures: FailureState = new Map();
-const recoveryPending = new Map<string, { checkpoint: TraceCheckpoint; runId: string }>();
-let lastToolCount = 0;
 let sessionId = "";
 let feedSeq = 0;
 /** The highest request-log number this module wrote, and the tail of its queue of writes. */
 let eventSeq = 0;
 let eventWrites: Promise<unknown> = Promise.resolve();
-/** Subagent types Claude Code offers, as agent.offer reports them. */
-const agentTypes = new Map<string, AgentType>();
 /**
  * Running subagents by id: their type, model and the effort Jev chose. A teammate stays after its
  * turn ends, since it goes idle and wakes on a message under the same id.
@@ -139,39 +102,7 @@ let draftKey = "";
 let sessionKey = "";
 /** The provider the Setup key was tested against: the two go together for the session. */
 let sessionProvider: ProviderId | undefined;
-/** A failing candidate is excluded without disabling every other model. */
-const blockedModels = new Set<string>();
-const switchedEmpty = new Map<string, number>();
 let mainModel: string | undefined;
-let contextTokens = 0;
-let cacheReadTokens = 0;
-/**
- * Set when the person picked the main loop's model this session (/model, the picker, the SDK):
- * Jev's model then stays out, as it does for a subagent Claude named a model for. turn.step
- * carries no such signal, and a model chosen before the session (--model, settings) is not seen.
- */
-let userModel = false;
-/**
- * A main-loop model Jev may replace: a plain first-party id. One with a suffix (`[1m]`) or a
- * provider's id (Bedrock, Vertex, a gateway) would lose its context window or fail the request.
- */
-/** Dice at the top of the live tab: drawn while that tab shows. */
-let dice: { columns: number; rows: number } | undefined;
-/** Pingo in the dashboard header: its terminal frame follows the latest Jev status. */
-let pingo: { mood: Mood; columns: number; rows: number } | undefined;
-/** Each open subagent pane's mascot, by pane id. */
-const agentArt = new Map<string, { mascot: MascotId; columns: number; rows: number }>();
-const MASCOT_FPS = 10;
-/** A mascot frame is being sent. */
-let animating = false;
-/** The Flow tab as last drawn (real time) and whether something in it moves. */
-let flowShown: { at: number; moving: boolean } | undefined;
-/** When the Flow's last frame was asked for, until it is drawn: one frame at a time. */
-let flowAsked = 0;
-/** A pane not drawn for this long is taken as closed or on another tab: the motion stops. */
-const FLOW_STALE_MS = 1500;
-/** What drawing the pane costs while the Flow tab shows, in ms: the measure Raster would have to beat. */
-const flowCost = { frames: 0, total: 0, max: 0 };
 
 function transport($: EngineInterface, locale?: Locale): Transport {
   return {
@@ -241,16 +172,6 @@ async function getSettings($: EngineInterface): Promise<Settings> {
   const stored = await storedSettings($, env);
   settings = resolveSettings(pluginOptions(), env, stored);
   return settings;
-}
-
-async function systemText($: EngineInterface): Promise<string> {
-  if (system !== undefined) return system;
-  try {
-    system = (await $.prompt.compose()).sections.map((section) => section.text).join("\n\n");
-  } catch {
-    system = "";
-  }
-  return system;
 }
 
 // --- The live log and the band ---
@@ -346,24 +267,6 @@ function editedFile(input: Record<string, unknown>): string | undefined {
   return typeof input.file_path === "string" ? input.file_path : typeof input.notebook_path === "string" ? input.notebook_path : undefined;
 }
 
-/** What the Flow tab keeps of a routing point: the outcome, why, and which hints the context carried. */
-function tracePlan(plan: TurnPlan, summary: string, asked: boolean, failed: boolean, at: number): TracePlan {
-  const reason = plan.decision.mode === "passthrough" ? plan.decision.reason : "hint";
-  return {
-    outcome: failed ? "failed" : reason === "jev_declined" ? "declined" : asked ? "consulted" : "skipped",
-    reason: reasonCode(reason),
-    summary,
-    ...(plan.jev ? { latencyMs: plan.jev.latencyMs } : {}),
-    ...(plan.model ? { model: plan.model.id ?? TIER_MODEL[plan.model.value] } : {}),
-    ...(plan.effort ? { effort: plan.effort.value } : {}),
-    ...(plan.decision.mode === "hint" ? { tool: plan.decision.tool } : {}),
-    ...(plan.delegate && plan.delegate.value !== NO_DELEGATION ? { delegate: plan.delegate.value } : {}),
-    ...(plan.advisor?.value === "consult" ? { advisor: true } : {}),
-    ...(plan.advisor?.value === "consult" ? { checkpoints: [{ kind: "plan" as const, at }] } : {}),
-    ...(plan.advisor || plan.advisorWhy ? { advisorAsked: true } : {}),
-  };
-}
-
 /**
  * What settings and the environment say about the advisor, for the Flow tab: informative only. A
  * --advisor flag or /advisor can override the setting unseen, so it is shown as "configured".
@@ -431,8 +334,6 @@ async function wakeRun($: EngineInterface, id: string, mate: AgentInfo, locale: 
       state: "running",
       tools: 0,
       requests: 0,
-      tokensIn: 0,
-      tokensOut: 0,
       activity: text("feed.activity.starting", locale),
     });
   }
@@ -445,10 +346,10 @@ async function openAgentPane($: EngineInterface, run: AgentRun): Promise<void> {
   await $.ui.open({ id: `${AGENT_PANE}${run.n}`, title: agentTitle(run), focus: true });
 }
 
-/** "/•ᴗ•\ Tetra · Explore #3": a subagent by its mascot, then its type and number. */
+/** A subagent by its lightweight name, type, and number. */
 function agentTitle(run: AgentRun): string {
   const mascot = isMascot(run.mascot) ? AGENT_MASCOTS[run.mascot] : undefined;
-  return mascot ? `${mascot.face} ${mascot.name} · ${run.type} #${run.n}` : `◆ ${run.type} #${run.n}`;
+  return mascot ? `${mascot.name} · ${run.type} #${run.n}` : `${run.type} #${run.n}`;
 }
 
 /** Takes finished subagents off the Agents tab and closes their panes; running ones stay. */
@@ -480,61 +381,6 @@ async function setLive($: EngineInterface, change: Partial<LiveNow>): Promise<vo
   });
 }
 
-// --- Animated artwork ---
-
-/** A blit that throws counts as refused: that mascot stops like one whose pane is gone. */
-async function blitted($: EngineInterface, args: UiBlitArgs): Promise<boolean> {
-  try {
-    return (await $.ui.blit(args)).deny === undefined;
-  } catch {
-    return false;
-  }
-}
-
-/** Repaints visible mascots in place; each stops when its pane no longer shows it. */
-async function animateMascots($: EngineInterface): Promise<void> {
-  // One frame at a time: a tick that comes while the last frame is still out is skipped.
-  if (animating) return;
-  animating = true;
-  try {
-    const t = (await $.clock.now()) / 1000;
-    if (dice) {
-      const { columns, rows } = dice;
-      if (!(await blitted($, { requestId: PANE, key: "dice", cells: cellsOf(diceFrame(t, columns, rows)), columns, rows }))) dice = undefined;
-    }
-    if (pingo) {
-      const { mood, columns, rows } = pingo;
-      if (!(await blitted($, { requestId: PANE, key: "pingo", cells: cellsOf(brailleFrame(mood, t, columns, rows)), columns, rows }))) pingo = undefined;
-    }
-    for (const [requestId, art] of agentArt) {
-      if (!(await blitted($, { requestId, key: "mascot", cells: cellsOf(mascotFrame(art.mascot, t, art.columns, art.rows)), columns: art.columns, rows: art.rows }))) agentArt.delete(requestId);
-    }
-  } finally {
-    animating = false;
-  }
-}
-
-/**
- * One frame of the Flow's motion. The text redraws through `$.ui.invalidate`, so a frame is asked
- * only while the tab shows, something in it moves, and the frame before has been drawn.
- */
-function animateFlow($: EngineInterface): void {
-  const now = Date.now();
-  if (!flowShown?.moving || now - flowShown.at > FLOW_STALE_MS) return;
-  if (flowAsked && now - flowAsked < FLOW_STALE_MS) return;
-  flowAsked = now;
-  $.ui.invalidate("ui.render");
-}
-
-/** The Flow tab was drawn: what it cost, and whether it is worth another frame. */
-function flowDrawn(ms: number, moving: boolean): void {
-  flowCost.frames++;
-  flowCost.total += ms;
-  flowCost.max = Math.max(flowCost.max, ms);
-  flowShown = { at: Date.now(), moving };
-  flowAsked = 0;
-}
-
 /** Marks the live status while a Jev request is in flight. */
 async function asking<T>($: EngineInterface, work: () => Promise<T>): Promise<T> {
   await setLive($, { asking: true });
@@ -546,7 +392,7 @@ async function asking<T>($: EngineInterface, work: () => Promise<T>): Promise<T>
 }
 
 /** Where a Jev call was asked from: the run the Flow tab counts it in, who asked, and what set it off. */
-type JevWhere = ConsultWhere & { origin: TraceConsult["origin"]; trigger?: string };
+type JevWhere = ConsultWhere & { origin: JevCaller["origin"]; trigger?: string };
 
 /**
  * Where every Jev call lands, the mod's own and sift's: one live-log line per call, naming the
@@ -589,7 +435,17 @@ function jevReporter($: EngineInterface, locale: Locale, where: () => JevWhere):
       return;
     }
     if (!call) return;
-    await updateTrace($, (s) => consultEnd(s, call.consult, event.at));
+    const usage = event.result.usage;
+    const rawUsage = usage && (
+      typeof usage.input_tokens === "number" || typeof usage.output_tokens === "number"
+    ) ? {
+      ...(typeof usage.input_tokens === "number" ? { input: usage.input_tokens } : {}),
+      ...(typeof usage.output_tokens === "number" ? { output: usage.output_tokens } : {}),
+    } : undefined;
+    await updateTrace($, (s) => consultEnd(s, call.consult, event.at, undefined, {
+      ...(typeof event.result.model === "string" ? { observed: event.result.model } : {}),
+      ...(rawUsage ? { usage: rawUsage } : {}),
+    }));
     const card = jevAnswered(call.sent, call.caller, event.result, locale);
     await patch($, call.line, { text: card.text, tone: "good", detail: card.detail, ...(meta ? { meta } : {}) });
   };
@@ -598,20 +454,6 @@ function jevReporter($: EngineInterface, locale: Locale, where: () => JevWhere):
 /** The mod's own Jev call, through the one path every caller takes (observeAskJev, then jevReporter). */
 function tracedAskJev($: EngineInterface, config: Settings, where: JevWhere): AskJev {
   return observeAskJev(createAskJev(config, transport($, config.locale)), jevReporter($, config.locale, () => where), () => $.clock.now());
-}
-
-/**
- * Runs one routing point's Jev calls and, when the decision is a failure, keeps the reply bodies
- * Jev sent on it: the request log shows them whole, for debugging an answer the router could not use.
- */
-async function withReplies(ask: AskJev, decide: (ask: AskJev) => Promise<Decision>): Promise<Decision> {
-  const replies: string[] = [];
-  const decision = await decide(async (request) => {
-    const result = await ask(request);
-    if (result.raw) replies.push(result.raw);
-    return result;
-  });
-  return decision.mode === "passthrough" && isJevFailure(decision.reason) && replies.length ? { ...decision, raw: replies } : decision;
 }
 
 // --- Sift: its Jev calls, from the shells Claude's Bash tool starts ---
@@ -699,69 +541,11 @@ async function logSiftFailure($: EngineInterface, locale: Locale, error: unknown
 // --- Routing ---
 
 function modelContext(config: Settings): ModelContext {
-  return {
-    ...(mainModel ? { currentModel: mainModel } : {}),
-    contextTokens,
-    cacheReadTokens,
-    availableModels: config.claudeModels.filter((id) => !blockedModels.has(id)),
-  };
+  return { availableModels: config.claudeModels };
 }
 
 async function activeFeatures($: EngineInterface, config: Settings): Promise<FeatureContext> {
   return { routing: await read($, routing), hasKey: Boolean(config.apiKey), features: await read($, features) };
-}
-
-/** The turn's routing point: every feature that is on, in one Jev call. */
-async function planFor($: EngineInterface, userText: string, messageId: string): Promise<TurnPlan> {
-  const config = await getSettings($);
-  const ctx = await activeFeatures($, config);
-  const gate = featureGate(ctx);
-  if (gate) return { decision: { mode: "passthrough", reason: gate } };
-  const flags = { ...ctx.features };
-  // A manual model must not indirectly suppress effort through an ignored Jev model choice.
-  if (userModel) flags.model = false;
-  if (flags.model && !mainModel) mainModel = await $.session.model();
-  const [messages, roster] = await Promise.all([$.session.messages(), $.tool.list()]);
-  lastToolCount = roster.length;
-  const input = toInput(await systemText($), messages, roster, config.maxMessageChars, { userText }, config.locale);
-  input.session = modelContext(config);
-  if (flags.advisor) input.session.advisorAvailable = !(await advisorInfo($)).blocked;
-  return asking($, async () => {
-    let plan: TurnPlan | undefined;
-    const decision = await withReplies(tracedAskJev($, config, { origin: "prompt", messageId }), async (ask) => {
-      plan = await planTurn(input, config, ask, flags, [...agentTypes.values()]);
-      return plan.decision;
-    });
-    return { ...plan!, decision };
-  });
-}
-
-/** After a tool batch: only the next tool, when that feature is on and Jev did not stay out. */
-async function routeTool($: EngineInterface, extra: { pending?: PendingResult }): Promise<Decision | undefined> {
-  const config = await getSettings($);
-  const gate = featureGate(await activeFeatures($, config), "tools");
-  if (gate) return gate === "feature_off" ? undefined : { mode: "passthrough", reason: gate };
-  if (turnPlan?.declined) return { mode: "passthrough", reason: "jev_declined" };
-  const [messages, roster] = await Promise.all([$.session.messages(), $.tool.list()]);
-  lastToolCount = roster.length;
-  const input = toInput(await systemText($), messages, roster, config.maxMessageChars, extra, config.locale);
-  input.session = modelContext(config);
-  return asking($, () => withReplies(tracedAskJev($, config, { origin: "tool", ...(extra.pending ? { trigger: extra.pending.tool } : {}) }), (ask) => decide(input, config, ask)));
-}
-
-/** One local escalation after a repeated failure; no extra Jev call and no model switch. */
-async function recoveryHint($: EngineInterface, agentId = ""): Promise<string | undefined> {
-  const pendingReview = recoveryPending.get(agentId);
-  recoveryPending.delete(agentId);
-  if (!pendingReview) return undefined;
-  const config = await getSettings($);
-  if (turnPlan?.declined || featureGate(await activeFeatures($, config), "advisor") || (await advisorInfo($)).blocked) return undefined;
-  const state = await readTrace($);
-  if (agentId
-    ? !state.runs.some((run) => run.id === pendingReview.runId && run.agents.some((agent) => agent.id === agentId && agent.state === "running"))
-    : state.active !== pendingReview.runId) return undefined;
-  await updateTrace($, (s) => requestCheckpoint(s, pendingReview.checkpoint, pendingReview.runId));
-  return text("planning.hint.recovery", config.locale, { tool: pendingReview.checkpoint.tool ?? "", attempts: pendingReview.checkpoint.attempts ?? 2 });
 }
 
 /**
@@ -795,8 +579,10 @@ async function restoreStoredState($: EngineInterface): Promise<void> {
   });
   const storedRouting = (await $.store.get(STORE_ROUTING)) as boolean | undefined;
   if (typeof storedRouting === "boolean") await update($, routing, () => storedRouting);
-  const storedFeatures = (await $.store.get(STORE_FEATURES)) as Partial<FeatureFlags> | undefined;
-  if (storedFeatures) await update($, features, () => ({ ...DEFAULT_FEATURES, ...storedFeatures }));
+  const storedFeatures = await $.store.get(STORE_FEATURES);
+  const cleaned = normalizeFeatures(storedFeatures ?? await read($, features));
+  await update($, features, () => cleaned);
+  if (storedFeatures !== undefined) await $.store.set(STORE_FEATURES, cleaned);
 }
 
 // --- Settings, features, setup ---
@@ -810,7 +596,7 @@ async function setRouting($: EngineInterface, enabled: boolean): Promise<void> {
 
 async function setFeature($: EngineInterface, id: FeatureId, enabled: boolean): Promise<void> {
   const locale = (await getSettings($)).locale;
-  const flags = await update($, features, (current) => ({ ...current, [id]: enabled }));
+  const flags = await update($, features, (current) => normalizeFeatures({ ...current, [id]: enabled }));
   await $.store.set(STORE_FEATURES, flags);
   const name = featureList(locale).find((feature) => feature.id === id)?.name ?? id;
   await log($, "you", "feature", enabled ? "good" : "muted", text("feed.feature.state", locale, { name, state: text(enabled ? "feed.feature.enabled" : "feed.feature.disabled", locale) }));
@@ -823,8 +609,39 @@ async function clearHistory($: EngineInterface): Promise<void> {
   });
   await update($, feed, () => []);
   await update($, agents, (list) => list.filter((run) => run.state === "running"));
-  await update($, watch, (w) => ({ ...w, turns: [] }));
   await updateTrace($, clearTrace);
+}
+
+function normalizeFeatures(value: unknown): FeatureFlags {
+  const stored = value && typeof value === "object" ? value as Record<string, unknown> : {};
+  const next = { ...DEFAULT_FEATURES };
+  for (const id of Object.keys(next) as FeatureId[]) {
+    if (typeof stored[id] === "boolean") next[id] = stored[id] as FeatureFlags[typeof id];
+  }
+  return next;
+}
+
+export function normalizeTab(value: unknown): JevTab {
+  switch (value) {
+    case "overview":
+    case "live":
+    case "models":
+    case "agents":
+    case "logs":
+    case "configuration":
+      return value;
+    case "flow":
+      return "live";
+    case "reasons":
+    case "baseline":
+    case "log":
+      return "logs";
+    case "features":
+    case "setup":
+      return "configuration";
+    default:
+      return "overview";
+  }
 }
 
 async function openPane($: EngineInterface, which: JevTab): Promise<void> {
@@ -845,9 +662,6 @@ async function statusText($: EngineInterface): Promise<string> {
     text("ui.status.featuresLine", locale, { features: featureFlagsText(await read($, features), locale) }),
     text("ui.status.requestsLine", locale, { count: formatNumber(list.length, locale), kept: formatNumber(KEPT_EVENTS, locale) }),
     flowSummary(await readTrace($), locale),
-    ...(flowCost.frames
-      ? [text("ui.status.flowRedraws", locale, { frames: formatNumber(flowCost.frames, locale), average: formatDecimal(flowCost.total / flowCost.frames, locale, 1), max: formatNumber(flowCost.max, locale) })]
-      : []),
   ].join("\n");
 }
 
@@ -1090,6 +904,10 @@ function actions($: EngineInterface, scrollKey = ""): Actions {
     layout: (max, fromEnd) => void scrollRoom.set(scrollKey, { max, fromEnd }),
     tab: (which) => void update($, tab, () => which),
     range: (ms) => void update($, range, () => ms),
+    flowDetails: (open) => {
+      void update($, flowDetails, () => open);
+      if (scrollKey) void update($, scroll, (all) => ({ ...all, [scrollKey]: 0 }));
+    },
     routing: (enabled) => void setRouting($, enabled),
     feature: (id, enabled) => void setFeature($, id, enabled),
     provider: (id) => void update($, setup, (draft) => ({ ...draft, provider: id, message: "" })),
@@ -1122,7 +940,9 @@ async function scrollKeyOf($: EngineInterface, requestId: string): Promise<strin
 
 async function view($: EngineInterface, width: number, rows: number, surface: string, scrollKey = ""): Promise<View> {
   const config = await getSettings($);
-  const current = mainModel ?? (await read($, live)).model;
+  const currentTab = await read($, tab);
+  const normalized = normalizeTab(currentTab);
+  if (normalized !== currentTab) await update($, tab, () => normalized);
   return {
     locale: config.locale,
     localeOption: config.localeOption,
@@ -1131,27 +951,15 @@ async function view($: EngineInterface, width: number, rows: number, surface: st
     fixed: Boolean(scrollKey) && surface === "terminal",
     events: await read($, events),
     routing: await read($, routing),
-    tab: await read($, tab),
+    tab: normalized,
     range: await read($, range),
+    flowDetails: await read($, flowDetails),
     setup: await read($, setup),
     features: await read($, features),
     feed: await read($, feed),
     live: await read($, live),
     agents: await read($, agents),
     trace: await readTrace($),
-    watch: await read($, watch),
-    forecast: forecast({
-      routing: await read($, routing),
-      hasKey: Boolean(config.apiKey),
-      features: await read($, features),
-      userModel,
-      ...(current ? { current } : {}),
-      switchable: !current || switchableModel(current),
-      cacheReadTokens,
-      minConfidence: config.minConfidence,
-      available: config.claudeModels,
-      blocked: [...blockedModels],
-    }),
     now: await $.clock.now(),
     width,
     rows,
@@ -1170,16 +978,7 @@ function actor(agentId: string | undefined): Speaker {
 
 export const register: Register = (on, given) => {
   options = given as ModOptions;
-  blockedModels.clear();
-  switchedEmpty.clear();
-  unsettled = undefined;
-  failures.clear();
-  recoveryPending.clear();
-  flowShown = undefined;
-  flowAsked = 0;
   mainModel = undefined;
-  contextTokens = 0;
-  cacheReadTokens = 0;
   settings = undefined;
   draftKey = "";
   sessionKey = "";
@@ -1201,10 +1000,6 @@ export const register: Register = (on, given) => {
     await updateTrace($, (s) => setAdvisorInfo(s, advisor));
     // "Idle" and the 5-minute windows move with the clock, not only with events.
     $.clock.every(1000, () => $.ui.invalidate("ui.render"));
-    // Visible mascot animations stop when their pane is closed.
-    $.clock.every(1000 / MASCOT_FPS, () => void animateMascots($).catch(() => undefined));
-    // The Flow's pulse: frames only while its tab shows and a run is at work.
-    $.clock.every(1000 / FLOW_FPS, () => animateFlow($));
     await $.command.register({
       name: "jev",
       description: text("ui.command.description", config.locale),
@@ -1217,33 +1012,27 @@ export const register: Register = (on, given) => {
   on("classic.SessionStart", async ($, e, next) => {
     if (e.source === "clear" || e.source === "resume" || e.source === "fork") {
       await restoreStoredState($);
-      contextTokens = 0;
-      cacheReadTokens = 0;
       mainModel = await $.session.model();
     }
     return next(e);
   }).catch((_$, e, next) => next(e));
 
-  // A model the person picks is theirs: Jev's model stays out until they go back to the default.
-  on("classic.PostModelSwitch", async (_$, e, next) => {
-    if (e.source === "command" || e.source === "picker" || e.source === "sdk") userModel = e.requested_model !== null;
+  on("classic.PostModelSwitch", async ($, e, next) => {
     mainModel = e.to_model;
-    contextTokens = e.context_tokens;
-    cacheReadTokens = e.prompt_cache_warm ? e.context_tokens : 0;
+    await setLive($, { model: e.to_model });
+    if (e.from_model !== e.to_model) {
+      const locale = (await getSettings($)).locale;
+      const requested = e.requested_model ?? text("feed.change.effortDefault", locale);
+      await log($, "mod", "feature", "muted", text("feed.change.modelSwitched", locale, { from: modelName(e.from_model), to: modelName(e.to_model) }), undefined, {
+        detail: `source=${e.source ?? "unknown"}\nrequested_model=${requested}`,
+        minor: true,
+      });
+    }
     return next(e);
   }).catch((_$, e, next) => next(e));
 
-  // Subagent types, for the delegation question. Observed only: every type stays offered.
-  // A name is written into the hint Claude reads, so only one inert token is kept.
-  on("agent.offer", async ($, e, next) => {
-    if (isSafeAgentName(e.agent)) agentTypes.set(e.agent, { name: e.agent, description: e.description });
-    return next(e);
-  }).catch((_$, e, next) => next(e));
-
-  // The turn's routing point: decide on the conversation plus the prompt being submitted.
+  // Record prompt timing and whether the engine accepted it; Jev does not plan main turns.
   on("prompt.submit", async ($, e, next) => {
-    const config = await getSettings($);
-    // The Flow tab records the message before Jev is asked, so it shows while Jev thinks.
     const submittedAt = await $.clock.now();
     let messageId = "";
     await updateTrace($, (s) => {
@@ -1258,65 +1047,10 @@ export const register: Register = (on, given) => {
       await updateTrace($, (s) => promptEntered(s, messageId, dropped)).catch(() => undefined);
       return result;
     };
-    // A prompt typed into a running turn keeps that turn's plan: its tool hint, model and effort.
-    if (e.turnId) {
-      await log($, "jev", "jev", "muted", text("feed.request.midTurn", config.locale), undefined, { minor: true });
-      await updateTrace($, (s) => planMessage(s, messageId, { outcome: "skipped", reason: "mid_turn", summary: text("flow.jev.midTurn", config.locale) }));
-      return entered(await next(e));
-    }
-    const plan = await planFor($, e.text, messageId);
-    pending = plan.decision;
-    const reason = plan.decision.mode === "passthrough" ? plan.decision.reason : "";
-    turnPlan = {
-      ...(plan.model ? { model: plan.model.id ?? TIER_MODEL[plan.model.value] } : {}),
-      ...(plan.effort ? { effort: plan.effort.value } : {}),
-      ...(["jev_declined", "participation_unavailable"].includes(reason) ? { declined: true } : {}),
-    };
-    const failed = isJevFailure(reason);
-    const asked = plan.jev !== undefined || failed;
-    const summary = asked ? planSummary(plan, config.locale) : reasonTitle(reason, config.locale);
-    if (turnPlan) turnPlan.summary = summary;
-    const fns = turnFunctions(plan, {
-      features: await read($, features),
-      routing: await read($, routing),
-      hasKey: Boolean(config.apiKey),
-      userModel,
-      minConfidence: config.minConfidence,
-      session: modelContext(config),
-    });
-    const turn = (await readTrace($)).turns + 1;
-    const at = await $.clock.now();
-    await update($, watch, (w) => {
-      const seq = w.count + 1;
-      unsettled = seq;
-      return { turns: keepTurns(w.turns, { seq, time: at, turn, consulted: asked, ...(plan.jev ? { latencyMs: plan.jev.latencyMs } : {}), fns, settled: false }), count: seq };
-    });
-    await setLive($, { decision: summary, jevUsed: asked });
-    const hint = planHint(plan, hintText, config.locale);
-    if (asked) {
-      const note = plan.decision.mode === "passthrough" && plan.decision.reason === "jev_unexpected_answer" ? failureNote(plan.decision.reason, plan.decision.detail, config.locale) : undefined;
-      const picked = plan.jev?.confidence !== undefined && plan.jev.choice !== undefined
-        ? text("feed.request.confidence", config.locale, { value: formatDecimal(plan.jev.confidence, config.locale), tokens: formatCompact(plan.jev.inputTokens, config.locale), choice: plan.jev.choice })
-        : undefined;
-      const runsOn = turnPlan.model || turnPlan.effort
-        ? text("feed.decision.model", config.locale, { model: modelName(turnPlan.model ?? mainModel), effort: turnPlan.effort ? text("feed.decision.effort", config.locale, { effort: turnPlan.effort }) : "" })
-        : undefined;
-      const rows = [picked ?? note, hint ? text("feed.decision.hint", config.locale, { hint: short(hint, 400) }) : failed ? undefined : text("feed.decision.noHint", config.locale), runsOn];
-      await log($, "jev", "jev", failed ? "bad" : "good", text("feed.decision.prompt", config.locale, { summary }), undefined, {
-        detail: rows.filter(Boolean).join("\n"),
-        ...(plan.jev ? { meta: `${formatNumber(plan.jev.latencyMs, config.locale)} ms` } : {}),
-      });
-    } else {
-      await log($, "jev", "jev", "muted", text("feed.request.notConsulted", config.locale, { summary }), undefined, { minor: true });
-    }
-    await updateTrace($, (s) => planMessage(s, messageId, tracePlan(plan, summary, asked, failed, at)));
-    if (!hint) return entered(await next(e));
-    return entered(await next({ ...e, context: withHint(e.context, hint) }));
+    return entered(await next(e));
   }).catch((_$, e, next) => next(e));
 
   on("turn.start", async ($, e, next) => {
-    failures.clear();
-    recoveryPending.clear();
     const locale = (await getSettings($)).locale;
     if (e.text.trim()) await log($, "you", "turn", "info", short(e.text, 600));
     else await log($, "you", "turn", "muted", text("feed.request.continues", locale), undefined, { minor: true });
@@ -1327,35 +1061,29 @@ export const register: Register = (on, given) => {
     return next(e);
   });
 
-  // A single pre-flight pass for edited work. Stop's continuation flag prevents a review loop;
-  // the checkpoint records a request, never proof that the advisor or a test succeeded.
-  on("classic.Stop", async ($, e, next) => {
-    if (e.stop_hook_active) return next(e);
-    const config = await getSettings($);
-    if (turnPlan?.declined || featureGate(await activeFeatures($, config), "advisor") || (await advisorInfo($)).blocked) return next(e);
-    const state = await readTrace($);
-    const run = state.runs.find((one) => one.id === state.active);
-    if (!run?.edits || run.checkpoints?.some((checkpoint) => checkpoint.kind === "completion")) return next(e);
-    const result = await next(e);
-    if (result.block || result.preventContinuation) return result;
-    const at = await $.clock.now().catch(() => Date.now());
-    await updateTrace($, (s) => requestCheckpoint(s, { kind: "completion", at }, run.id)).catch(() => undefined);
-    return { ...result, block: text("planning.hint.completion", config.locale) };
-  }).catch((_$, e, next) => next.called ? {} : next(e));
-
-  // Core fires this once after the whole batch, including denied calls, before the next request.
-  on("classic.PostToolBatch", async ($, e, next) => {
-    if (!recoveryPending.has(e.agent_id ?? "")) return next(e);
-    const result = await next(e);
-    if (result.preventContinuation) return result;
-    const recovery = await recoveryHint($, e.agent_id).catch(() => undefined);
-    return recovery ? { ...result, additionalContext: withHint(result.additionalContext, recovery) } : result;
-  }).catch((_$, e, next) => next.called ? {} : next(e));
-
   on("turn.complete", async ($, e, next) => {
     const locale = (await getSettings($)).locale;
     const seconds = formatDuration(e.durationMs, locale);
-    const tokens = e.usage ? text("feed.usage.tokens", locale, { input: formatCompact(totalInput(e.usage), locale), output: formatCompact(e.usage.output_tokens, locale), cache: "" }) : "";
+    const usage = e.usage;
+    const inputComplete = typeof usage?.input_tokens === "number"
+      && typeof usage.cache_read_input_tokens === "number"
+      && typeof usage.cache_creation_input_tokens === "number";
+    const outputKnown = typeof usage?.output_tokens === "number";
+    const cache = usage ? [
+      typeof usage.cache_read_input_tokens === "number"
+        ? text("ui.models.cacheReadTokens", locale, { value: formatCompact(usage.cache_read_input_tokens, locale) })
+        : "",
+      typeof usage.cache_creation_input_tokens === "number"
+        ? text("ui.models.cacheWriteTokens", locale, { value: formatCompact(usage.cache_creation_input_tokens, locale) })
+        : "",
+    ].filter(Boolean).join(text("feed.usage.separator", locale)) : "";
+    const tokens = usage && (inputComplete || outputKnown)
+      ? text("feed.usage.tokens", locale, {
+          input: inputComplete ? formatCompact(totalInput(usage), locale) : "–",
+          output: outputKnown ? formatCompact(usage.output_tokens, locale) : "–",
+          cache: cache ? ` · ${cache}` : "",
+        })
+      : "";
     if (e.agentId) {
       const id = e.agentId;
       const state = e.isAborted ? "aborted" : e.reason === "error" ? "error" : "done";
@@ -1390,16 +1118,15 @@ export const register: Register = (on, given) => {
       ...(tokens ? { detail: tokens } : {}),
       minor: !troubled,
     });
-    turnPlan = undefined;
-    await setLive($, { activity: undefined, changed: undefined });
+    await setLive($, { activity: undefined });
     const endedAt = await $.clock.now();
     await updateTrace($, (s) => completeTurn(s, e.turnId, endedAt, e.isAborted ? "aborted" : e.reason));
     return next(e);
   });
 
-  // Tools: log each call; after the batch's last result, route the next tool.
+  // Log every native tool call and its result; advice never interrupts the tool flow.
   on("tool.call", async ($, e, next) => {
-    // Another plugin's own call ($.tool.call) is no step of Claude's: no routing, hint or count.
+    // Another plugin's own call ($.tool.call) is no step of Claude's.
     if (!e.tool_use_id || next.origin.plugin !== "engine") return next(e);
     const locale = (await getSettings($)).locale;
     const who = actor(e.agentId);
@@ -1435,19 +1162,6 @@ export const register: Register = (on, given) => {
       await updateTrace($, (s) =>
         toolEnd(s, { id: toolUseId, ...(e.agentId ? { agentId: e.agentId } : {}), at: endedAt, result: ending, edit: EDIT_TOOLS.has(e.tool), ...(file ? { file } : {}) }),
       ).catch(() => undefined);
-      if (SAFE_TOOL_NAME.test(e.tool)) {
-        const target = String(input.command ?? input.file_path ?? input.path ?? JSON.stringify(Object.fromEntries(
-          Object.entries(input)
-            .filter(([key]) => !["tool_use_id", "tool", "context", "agentId"].includes(key))
-            .sort(([a], [b]) => a.localeCompare(b)),
-        )));
-        const attempts = repeatedFailure(failures, { tool: e.tool, target: JSON.stringify([e.agentId ?? "", target]), ...(result.deny !== undefined ? { denied: true } : result.isError ? { error: String(result.text ?? resultText(result.result)) } : {}) });
-        if (attempts) {
-          const state = await readTrace($).catch(() => emptyTrace());
-          const run = state.runs.findLast((one) => one.tools.some((tool) => tool.id === toolUseId));
-          if (run) recoveryPending.set(e.agentId ?? "", { runId: run.id, checkpoint: { kind: "recovery", at: endedAt, tool: e.tool, attempts, ...(e.agentId ? { agentId: e.agentId } : {}) } });
-        }
-      }
       if (result.deny !== undefined) {
         await patch($, line, { text: `⊘ ${summary}`, tone: "warn", meta: text("feed.tool.deniedLabel", locale), detail: [toolDetail, text("feed.tool.denied", locale, { message: short(result.deny, 160) })].filter(Boolean).join("\n") });
       } else {
@@ -1460,51 +1174,8 @@ export const register: Register = (on, given) => {
         });
       }
       if (e.agentId) await updateRun($, e.agentId, (run) => ({ ...run, activity: text("feed.activity.waiting", locale) }));
-      if (e.agentId || result.deny !== undefined) return result;
-      await setLive($, { activity: text("feed.activity.waiting", locale) });
-      const messages = await $.session.messages();
-      const batch = [...messages].reverse().find((message) => message.toolUses?.some((use) => use.tool_use_id === e.tool_use_id));
-      const stillRunning = batch?.toolUses.some((use) => use.tool_use_id !== e.tool_use_id && use.text === undefined);
-      if (stillRunning) return result;
-      const decision = await routeTool($, {
-        pending: {
-          toolUseId: e.tool_use_id,
-          tool: e.tool,
-          text: result.isError ? String(result.text ?? "") : resultText(result.result),
-        },
-      });
-      if (!decision) return result;
-      pending = decision;
-      if (decision.jev) {
-        const failed = decision.mode === "passthrough" && isJevFailure(decision.reason);
-        const what = decision.mode === "hint"
-          ? text("feed.tool.next", locale, { tool: decision.tool, confidence: formatDecimal(decision.confidence, locale) })
-          : text("feed.tool.noHint", locale, { reason: reasonTitle(decision.reason, locale) });
-        const picked = decision.jev.confidence !== undefined && decision.jev.choice !== undefined
-          ? text("feed.tool.after", locale, {
-              tool: e.tool,
-              confidence: formatDecimal(decision.jev.confidence, locale),
-              choice: decision.jev.choice,
-              shortlist: decision.jev.shortlist ? text("feed.tool.shortlist", locale, { count: formatNumber(decision.jev.shortlist.length, locale) }) : "",
-            }) + (decision.jev.needsTool !== undefined ? text("feed.decision.needsTool", locale, { value: `${formatDecimal(decision.jev.needsTool * 100, locale, 0)}%` }) : "")
-          : undefined;
-        const rows = [
-          failed && decision.mode === "passthrough" ? failureNote(decision.reason, decision.detail, locale) : picked,
-          decision.mode === "hint" ? text("feed.decision.hint", locale, { hint: hintText(decision.tool, locale) }) : failed ? undefined : text("feed.decision.noHint", locale),
-        ];
-        await log($, "jev", "jev", failed ? "bad" : "good", text("feed.decision.tool", locale, { tool: e.tool, summary: what }), undefined, {
-          meta: `${formatNumber(decision.jev.latencyMs, locale)} ms`,
-          detail: rows.filter(Boolean).join("\n"),
-        });
-        await setLive($, { decision: failed ? text("ui.band.jevFailed", locale) : what, jevUsed: true });
-      } else if (decision.mode === "passthrough" && isJevFailure(decision.reason)) {
-        // A thrown call was already printed with its cause by the traced call; an unusable answer was not.
-        if (decision.reason === "jev_unexpected_answer") {
-          await log($, "jev", "jev", "bad", text("feed.request.failed", locale, { message: reasonTitle(decision.reason, locale) }), undefined, { detail: failureNote(decision.reason, decision.detail, locale) ?? "" });
-        }
-        await setLive($, { decision: text("ui.band.jevFailed", locale), jevUsed: true });
-      }
-      return decision.mode === "hint" ? { ...result, context: withHint(result.context, hintText(decision.tool, locale)) } : result;
+      if (!e.agentId) await setLive($, { activity: text("feed.activity.waiting", locale) });
+      return result;
     } catch {
       return result;
     }
@@ -1532,10 +1203,10 @@ export const register: Register = (on, given) => {
       return result;
     }
     const id = result.agentId ?? e.tool_use_id;
-    const sized = sizeRequest({ model: result.model }, { effort: plan.effort?.value }, { model: false, effort: !featureGate(current, "agents") });
+    const sized = sizeRequest({ model: result.model }, { effort: plan.effort?.value }, { effort: !featureGate(current, "agents") });
     const appliedEffort = sized.effortOutcome?.kind === "applied" ? plan.effort : undefined;
     const ignoredEffort = sized.effortOutcome?.kind === "ignored" ? plan.effort : undefined;
-    agentRuns.set(id, { type: e.subagentType, model: result.model, ...(plan.effort ? { effort: plan.effort.value } : {}), description: e.description, ...(e.isTeammate ? { teammate: true as const, awake: true } : {}) });
+    agentRuns.set(id, { type: e.subagentType, model: result.model, ...(appliedEffort ? { effort: appliedEffort.value } : {}), description: e.description, ...(e.isTeammate ? { teammate: true as const, awake: true } : {}) });
     const chosen = [
       plan.model
         ? text("feed.subagent.jevModel", config.locale, { model: plan.model.value, confidence: formatDecimal(plan.model.confidence, config.locale) })
@@ -1555,8 +1226,6 @@ export const register: Register = (on, given) => {
       state: "running",
       tools: 0,
       requests: 0,
-      tokensIn: 0,
-      tokensOut: 0,
       activity: text("feed.activity.starting", config.locale),
     });
     if (plan.error) await log($, "jev", "jev", "bad", text("feed.subagent.failedModel", config.locale, { type: e.subagentType, message: short(plan.error, 80) }), id);
@@ -1577,39 +1246,14 @@ export const register: Register = (on, given) => {
     const config = await getSettings($);
     const locale = config.locale;
     const startedAt = await $.clock.now();
-    const ctx = await activeFeatures($, config);
     const run = e.agentId ? agentRuns.get(e.agentId) : undefined;
-    const planned = e.agentId ? { effort: run?.effort } : turnPlan ?? {};
-    const sized = sizeRequest(e, planned, {
-      model: !e.agentId && !featureGate(ctx, "model"),
-      effort: !featureGate(ctx, e.agentId ? "agents" : "effort"),
-      userModel,
-      blockedModels,
-    });
+    const current = e.agentId ? await activeFeatures($, config) : undefined;
+    const sized = sizeRequest(e, e.agentId ? { effort: run?.effort } : {}, { effort: current ? !featureGate(current, "agents") : false });
     const sent = sized.request;
     const model = sent.model;
     const effort = sent.effort;
     const changes: string[] = [];
-    let decision: Decision;
-    if (e.agentId) decision = { mode: "passthrough", reason: "subagent" };
-    else {
-      const gate = featureGate(ctx);
-      decision = gate ? { mode: "passthrough", reason: gate } : pending ?? { mode: "passthrough", reason: "not_asked" };
-      pending = undefined;
-      if (decision.mode === "hint" && featureGate(ctx, "tools")) decision = { mode: "passthrough", reason: "tools_feature_off" };
-      if (sized.modelOutcome?.kind === "held" && sized.modelOutcome.why !== "blocked" && turnPlan && !turnPlan.modelKept) {
-        turnPlan.modelKept = true;
-        await log($, "mod", "feature", "muted", text(sized.modelOutcome.why === "user_model" ? "feed.change.modelKeptChosen" : "feed.change.modelKeptId", locale, { model: modelName(e.model), target: modelName(sized.modelOutcome.to) }), undefined, { minor: true });
-      }
-      if (unsettled !== undefined) {
-        const seq = unsettled;
-        unsettled = undefined;
-        const effortOutcome = sized.effortOutcome ?? (planned.effort ? { kind: "held" as const, value: planned.effort, why: featureGate(ctx, "effort") } : undefined);
-        await update($, watch, (w) => ({ ...w, turns: w.turns.map((turn) => turn.seq === seq
-          ? settleEffort(settleModel(turn, sized.modelOutcome, ctx), effortOutcome, ctx) : turn) }));
-      }
-    }
-    if (model !== e.model) changes.push(text("feed.change.modelSwitched", locale, { from: modelName(e.model), to: modelName(model) }));
+    const reason = e.agentId ? "subagent" : await read($, routing) ? "not_asked" : "routing_disabled";
     if (sized.ignoredEffort !== undefined) changes.push(text("feed.change.ignoredEffort", locale, { effort: String(sized.ignoredEffort), model: modelName(model) }));
     else if (effort !== e.effort && effort !== undefined) changes.push(text("feed.change.effortSwitched", locale, { from: e.effort ?? text("feed.change.effortDefault", locale), to: effort }));
     const who = actor(e.agentId);
@@ -1628,7 +1272,6 @@ export const register: Register = (on, given) => {
       await setLive($, {
         model,
         effort: effort === undefined ? undefined : String(effort),
-        changed: changes.length ? changes.join(", ") : undefined,
         activity: text("feed.activity.responding", locale),
       });
     }
@@ -1644,8 +1287,25 @@ export const register: Register = (on, given) => {
       }),
     );
     const result = yield* next(sent);
-    // Advisor calls are read here, once the response is whole: the stream never shows one start.
     const answeredAt = await $.clock.now();
+    const usage = result.usage;
+    const inputComplete = typeof usage?.input_tokens === "number"
+      && typeof usage.cache_read_input_tokens === "number"
+      && typeof usage.cache_creation_input_tokens === "number";
+    const outputKnown = typeof usage?.output_tokens === "number";
+    const hasUsage = Boolean(usage && (
+      typeof usage.input_tokens === "number" || outputKnown
+      || typeof usage.cache_read_input_tokens === "number" || typeof usage.cache_creation_input_tokens === "number"
+    ));
+    const traceUsage = usage && hasUsage ? {
+      ...(typeof usage.input_tokens === "number" ? { input: usage.input_tokens } : {}),
+      ...(outputKnown ? { output: usage.output_tokens } : {}),
+      ...(typeof usage.cache_read_input_tokens === "number" ? { cacheRead: usage.cache_read_input_tokens } : {}),
+      ...(typeof usage.cache_creation_input_tokens === "number" ? { cacheWrite: usage.cache_creation_input_tokens } : {}),
+    } : undefined;
+    const tokens = usage && inputComplete && outputKnown
+      ? { input: totalInput(usage), output: usage.output_tokens }
+      : undefined;
     await updateTrace($, (s) =>
       stepEnd(s, {
         turnId: e.turnId,
@@ -1654,39 +1314,27 @@ export const register: Register = (on, given) => {
         at: answeredAt,
         ...(result.usage?.model ? { observed: result.usage.model } : {}),
         stop: result.stopReason,
-        ...(result.usage
-          ? { tokens: { input: totalInput(result.usage), output: result.usage.output_tokens } }
-          : {}),
+        ...(traceUsage ? { usage: traceUsage } : {}),
+        ...(tokens ? { tokens } : {}),
         ...(result.serverToolUses ? { serverToolUses: result.serverToolUses.map(({ id, name, startedAt: from, endedAt: to }) => ({ id, name, startedAt: from, ...(to === undefined ? {} : { endedAt: to }) })) } : {}),
       }),
     );
-    // Repeated empty answers exclude only this candidate. An interrupt never counts as a refusal.
-    // An interrupted step (Esc) comes back empty too and is not counted; a dropped connection
-    // looks the same as a refusal, so it takes two empty answers in a row.
-    if (model !== e.model && !next.signal.aborted) {
-      const empty = result.stopReason === null && !result.usage ? (switchedEmpty.get(model) ?? 0) + 1 : 0;
-      switchedEmpty.set(model, empty);
-      if (empty >= 2) {
-        blockedModels.add(model);
-        await log($, "mod", "error", "bad", text("feed.model.failed", locale, { model: modelName(model) }));
-      }
-    }
     if (result.answer.trim()) {
       await log($, who, "message", "info", `“${short(result.answer, 320)}”`, e.agentId);
     }
-    const usage = result.usage;
-    const cacheRead = usage?.cache_read_input_tokens ?? 0;
     if (!e.agentId && usage) {
-      mainModel = model;
-      contextTokens = totalInput(usage);
-      cacheReadTokens = cacheRead;
+      mainModel = usage.model ?? model;
     }
-    const inTokens = totalInput(usage);
     const asked = [...new Set(result.toolUses.map((use) => use.name))];
+    const inputText = typeof usage?.input_tokens === "number" ? formatCompact(usage.input_tokens, locale) : "–";
+    const outputText = typeof usage?.output_tokens === "number" ? formatCompact(usage.output_tokens, locale) : "–";
+    const cacheText = usage && inputComplete
+      ? text("feed.usage.cache", locale, { percent: formatPercent(usage.cache_read_input_tokens as number, totalInput(usage), locale) })
+      : "";
     await patch($, requestLine, {
       meta: formatDuration((await $.clock.now()) - startedAt, locale),
       detail: [
-        usage ? text("feed.usage.tokens", locale, { input: formatCompact(inTokens, locale), output: formatCompact(usage.output_tokens, locale), cache: inTokens ? text("feed.usage.cache", locale, { percent: formatPercent(cacheRead, inTokens, locale) }) : "" }) : text("feed.turn.noUsage", locale),
+        hasUsage ? text("feed.usage.tokens", locale, { input: inputText, output: outputText, cache: cacheText }) : text("feed.turn.noUsage", locale),
         result.toolUses.length ? text("feed.usage.tools", locale, { count: formatNumber(result.toolUses.length, locale), unit: text(result.toolUses.length === 1 ? "unit.toolCall" : "unit.toolCalls", locale), tools: asked.join(", ") }) : result.stopReason ? text("feed.usage.stop", locale, { reason: result.stopReason }) : "",
       ]
         .filter(Boolean)
@@ -1695,8 +1343,14 @@ export const register: Register = (on, given) => {
     if (e.agentId) {
       await updateRun($, e.agentId, (run) => ({
         ...run,
-        tokensIn: run.tokensIn + totalInput(usage),
-        tokensOut: run.tokensOut + (usage?.output_tokens ?? 0),
+        ...(usage && inputComplete ? {
+          tokensIn: (run.tokensIn ?? 0) + totalInput(usage),
+          inputUsageRequests: (run.inputUsageRequests ?? 0) + 1,
+        } : {}),
+        ...(usage && outputKnown ? {
+          tokensOut: (run.tokensOut ?? 0) + usage.output_tokens,
+          outputUsageRequests: (run.outputUsageRequests ?? 0) + 1,
+        } : {}),
         ...(result.answer.trim() ? { text: short(result.answer, 2000) } : {}),
         ...(run.state === "running" && result.toolUses.length === 0 ? { activity: text("feed.activity.writing", locale) } : {}),
       }));
@@ -1705,33 +1359,19 @@ export const register: Register = (on, given) => {
       time: new Date(startedAt).toISOString(),
       session: sessionId,
       model: usage?.model ?? model ?? null,
-      tools: lastToolCount,
-      mode: decision.mode,
-      ...(decision.mode === "passthrough" ? { reason: reasonKey(decision.reason) } : { tool: decision.tool, confidence: decision.confidence }),
+      mode: "passthrough",
+      reason,
       durationMs: (await $.clock.now()) - startedAt,
       ...(e.agentId ? { agent: agentRuns.get(e.agentId)?.type ?? "agent" } : {}),
       ...(effort === undefined ? {} : { effort: String(effort) }),
       ...(changes.length ? { plan: changes.join(", ") } : {}),
-      ...(decision.mode === "passthrough" && failureCause(decision.reason, decision.detail) ? { error: failureCause(decision.reason, decision.detail)! } : {}),
-      ...(decision.raw?.length ? { jevRaw: decision.raw } : {}),
-      ...(usage
+      ...(hasUsage && usage
         ? {
             usage: {
-              input: totalInput(usage),
-              output: usage.output_tokens,
-              cached: usage.cache_read_input_tokens ?? 0,
-              cacheWrite: usage.cache_creation_input_tokens ?? 0,
-            },
-          }
-        : {}),
-      ...(decision.jev
-        ? {
-            jev: {
-              choice: decision.jev.choice,
-              confidence: decision.jev.confidence,
-              latencyMs: decision.jev.latencyMs,
-              inputTokens: decision.jev.inputTokens,
-              ...(decision.jev.shortlist ? { shortlist: decision.jev.shortlist.length } : {}),
+              ...(typeof usage.input_tokens === "number" ? { input: usage.input_tokens } : {}),
+              ...(typeof usage.output_tokens === "number" ? { output: usage.output_tokens } : {}),
+              ...(typeof usage.cache_read_input_tokens === "number" ? { cached: usage.cache_read_input_tokens } : {}),
+              ...(typeof usage.cache_creation_input_tokens === "number" ? { cacheWrite: usage.cache_creation_input_tokens } : {}),
             },
           }
         : {}),
@@ -1752,20 +1392,20 @@ export const register: Register = (on, given) => {
       model: "models",
       modelos: "models",
       agents: "agents",
-      flow: "flow",
-      features: "features",
-      reasons: "reasons",
-      baseline: "baseline",
-      logs: "log",
-      log: "log",
-      setup: "setup",
+      flow: "live",
+      features: "configuration",
+      configuration: "configuration",
+      reasons: "logs",
+      logs: "logs",
+      log: "logs",
+      setup: "configuration",
     };
     if (verb === "agents" && arg === "clear") {
       const removed = await removeRuns($, () => true);
       return { text: removed.length === 1 ? text("ui.command.agentRemovedFromTab", locale) : removed.length > 1 ? text("ui.command.agentsRemoved", locale, { count: formatNumber(removed.length, locale) }) : text("ui.command.noFinished", locale) };
     }
     const which = tabFor[verb];
-    if (which === "setup") {
+    if (verb === "setup") {
       // `/jev setup openrouter` picks the provider; the key itself is never an argument,
       // since what is typed after a command is kept in the transcript and the prompt history.
       const provider = isProvider(arg) ? arg : (await getSettings($)).provider;
@@ -1814,18 +1454,12 @@ export const register: Register = (on, given) => {
       const { Text } = $.ui.resolve(e);
       return <Text>{await statusText($)}</Text>;
     }
-    const began = Date.now();
     const els = $.ui.resolve(e);
     const width = Math.max(1, e.props.bodyColumns ?? 60);
     const rows = e.props.scroll?.bodyRows ?? e.viewport?.rows ?? 30;
     const key = await scrollKeyOf($, PANE);
     const shown = await view($, width, rows, e.surface, key);
-    pingo = e.surface === "terminal" ? { mood: moodOf(shown), ...pingoSize(width) } : undefined;
-    dice = e.surface === "terminal" && shown.tab === "live" ? diceSize(width) : undefined;
-    const tree = renderPane(els, shown, actions($, key));
-    if (shown.tab === "flow") flowDrawn(Date.now() - began, flowScene(shown.trace, shown.now, shown.locale).moving);
-    else flowShown = undefined;
-    return tree;
+    return renderPane(els, shown, actions($, key));
   });
 
   // Each subagent's own live pane, `jev-agent-<n>`: its task, its numbers and its lines only.
@@ -1842,8 +1476,6 @@ export const register: Register = (on, given) => {
         ? text("ui.features.status", shown.locale, { name: agentTitle(run), state: text(`ui.agents.state.${run.state}` as LocaleKey, shown.locale), activity: run.activity ?? "" })
         : text("ui.features.agentNotKept", shown.locale, { number: formatNumber(n, shown.locale) })}</Text>;
     }
-    if (e.surface === "terminal" && run && isMascot(run.mascot)) agentArt.set(e.requestId, { mascot: run.mascot, ...diceSize(width) });
-    else agentArt.delete(e.requestId);
     return renderAgentPane($.ui.resolve(e), shown, run, n, actions($, e.requestId));
   });
 

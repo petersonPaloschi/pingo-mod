@@ -2,7 +2,7 @@
 import { expect, test } from "claude-code/testing";
 
 import {
-  addRun, batches, classifyQuestion, filterQuestion, findHits, findRequest, footer, groupRequest, parseArgs, parseLabels,
+  addRun, classifyQuestion, filterQuestion, findHits, findRequest, footer, groupRequest, parseArgs, parseLabels,
   ranges, relevance, renderClassify, renderFilter, renderTally, template, toTally, type Item, type RunStats,
 } from "../hooks/core/sift.ts";
 
@@ -19,21 +19,14 @@ test("labels keep their descriptions, including ones with a colon", () => {
   expect(parseLabels("bug:Something broken, feature ,time:Starts at 10:30")).toEqual({ bug: "Something broken", feature: null, time: "Starts at 10:30" });
 });
 
-test("items go one per request unless --fast packs them within the token budget", () => {
-  const items = [item("a", "x".repeat(400)), item("b"), item("c")];
-  expect(batches(items, {}).map((group) => group.map((it) => it.id))).toEqual([["a"], ["b"], ["c"]]);
-  expect(batches(items, { fast: true }).map((group) => group.length)).toEqual([3]);
-  expect(batches(items, { fast: true, "pack-tokens": "130" }).map((group) => group.map((it) => it.id))).toEqual([["a"], ["b", "c"]]);
-});
-
-test("a single item is the content; packed items are addressed one by one", () => {
-  const single = groupRequest([item("src/a.ts", "code")], filterQuestion("Is it auth?"));
+test("each request carries one item and its question targets that content", () => {
+  const single = groupRequest(item("src/a.ts", "code"), filterQuestion("Is it auth?"));
   expect(single.state).toEqual({ source: "src/a.ts", content: "code" });
   expect(single.questions).toEqual({ q0: { type: "noul", instructions: "Is it auth?" } });
 
-  const packed = groupRequest([item("a"), item("b")], classifyQuestion("Which?", { x: null, y: null }), { query: "q" });
-  expect(packed.state).toEqual({ query: "q", items: { i0: { source: "a", content: "a" }, i1: { source: "b", content: "b" } } });
-  expect(packed.questions.q1).toEqual({ type: "choice", instructions: "Which? Answer only about `items.i1`; ignore the other items.", criteria: { x: null, y: null } });
+  const classified = groupRequest(item("T1", "retry failed"), classifyQuestion("Which?", { bug: null, other: null }), { query: "q" });
+  expect(classified.state).toEqual({ query: "q", source: "T1", content: "retry failed" });
+  expect(classified.questions.q0).toEqual({ type: "choice", instructions: "Which?", criteria: { bug: null, other: null } });
 });
 
 test("relevance is the expected level over Jev's probabilities", () => {
@@ -110,29 +103,43 @@ test("classify counts every label and names the runner-up of an unsure item", ()
 });
 
 test("the footer prices TypeSafe only and names what was not judged", () => {
-  const stats: RunStats = { scanned: 10, contentTokens: 5000, jevTokens: 2500, seconds: 1.23, provider: "typesafe", failed: [], skipped: [".env (secret-like, never sent)"] };
+  const stats: RunStats = { scanned: 10, contentTokens: 5000, jevTokens: 2500, jevUsageReportedCalls: 1, jevUsageMissingCalls: 0, seconds: 1.23, provider: "typesafe", failed: [], skipped: [".env (secret-like, never sent)"] };
   expect(footer(stats, ["2 matched"], "")).toBe(
-    "— 10 scanned · 2 matched · 1.2s · jev 2.5k tok ($0.0001) · ~5.0k Claude tokens not read\n— skipped 1: .env (secret-like, never sent)",
+    "— 10 scanned · 2 matched · 1.2s · jev 2.5k tok (TypeSafe input estimate ~$0.0001) · ~5.0k potential context reduction (estimate)\n— skipped 1: .env (secret-like, never sent)",
   );
   const failed = footer({ ...stats, provider: "openrouter", skipped: [], failed: [{ id: "a.ts", error: "503 from OpenRouter" }] }, [], "");
   expect(failed).toContain("jev 2.5k tok ·");
   expect(failed).toContain("! 1 not judged (503 from OpenRouter): a.ts");
 });
 
+test("unknown and partial Jev usage remain explicit", () => {
+  const partial: RunStats = { scanned: 2, contentTokens: 500, jevTokens: 100, jevUsageReportedCalls: 1, jevUsageMissingCalls: 1, seconds: 1, provider: "typesafe", failed: [], skipped: [] };
+  const text = footer(partial, [], "short");
+  expect(text).toContain("jev ≥100 tok reported (1 call without usage)");
+  expect(text).toContain("TypeSafe known input estimate ~$0.0000");
+  expect(text).not.toContain("($0.0000)");
+
+  const unknown: RunStats = { scanned: 1, contentTokens: 100, jevUsageReportedCalls: 0, jevUsageMissingCalls: 1, seconds: 1, provider: "typesafe", failed: [{ id: "a.ts", error: "timeout" }], skipped: [] };
+  expect(footer(unknown, [], "")).toContain("jev usage unavailable (1 call without usage) · TypeSafe cost unavailable");
+});
+
 test("the lifetime tally adds each run, counts only judged items, and survives a damaged file", () => {
-  const run: RunStats = { scanned: 10, contentTokens: 5000, jevTokens: 2500, seconds: 1, provider: "typesafe", failed: [{ id: "a.ts", error: "503" }], skipped: [] };
+  const run: RunStats = { scanned: 10, contentTokens: 5000, jevTokens: 2500, jevUsageReportedCalls: 1, jevUsageMissingCalls: 0, seconds: 1, provider: "typesafe", failed: [{ id: "a.ts", error: "503" }], skipped: [] };
   const first = addRun(undefined, run, "x".repeat(400), "2026-10-07T12:00:00.000Z");
-  expect(first).toEqual({ since: "2026-10-07T12:00:00.000Z", runs: 1, items: 9, jevTokens: 2500, typesafeTokens: 2500, saved: 4900 });
+  expect(first).toEqual({ since: "2026-10-07T12:00:00.000Z", runs: 1, items: 9, jevTokens: 2500, jevUsageReportedCalls: 1, jevUsageMissingCalls: 0, typesafeTokens: 2500, typesafeUsageReportedRuns: 1, typesafeUsageMissingCalls: 0, potentialContextReductionTokens: 4900 });
   const second = addRun(JSON.parse(JSON.stringify(first)), { ...run, provider: "openrouter", failed: [] }, "", "2026-10-08T00:00:00.000Z");
-  expect(second).toEqual({ since: "2026-10-07T12:00:00.000Z", runs: 2, items: 19, jevTokens: 5000, typesafeTokens: 2500, saved: 9900 });
+  expect(second).toEqual({ since: "2026-10-07T12:00:00.000Z", runs: 2, items: 19, jevTokens: 5000, jevUsageReportedCalls: 2, jevUsageMissingCalls: 0, typesafeTokens: 2500, typesafeUsageReportedRuns: 1, typesafeUsageMissingCalls: 0, potentialContextReductionTokens: 9900 });
   expect(toTally({ runs: 3 })).toBeUndefined();
-  expect(toTally({ since: "2026-10-07", runs: -1, items: "9" })).toEqual({ since: "2026-10-07", runs: 0, items: 0, jevTokens: 0, typesafeTokens: 0, saved: 0 });
+  expect(toTally({ since: "2026-10-07", runs: -1, items: "9" })).toEqual({ since: "2026-10-07", runs: 0, items: 0, jevTokens: 0, jevUsageReportedCalls: 0, jevUsageMissingCalls: 0, typesafeTokens: 0, typesafeUsageReportedRuns: 0, typesafeUsageMissingCalls: 0, potentialContextReductionTokens: 0 });
+  expect(toTally({ since: "2026-10-07", runs: 1, saved: 321, jevTokens: 17, typesafeTokens: 17 })).toMatchObject({ potentialContextReductionTokens: 321, jevTokens: 17, typesafeTokens: 17 });
   expect(addRun("garbage", run, "", "2026-10-09T00:00:00.000Z").since).toBe("2026-10-09T00:00:00.000Z");
+  expect(addRun(undefined, run, "short", "2026-10-10T00:00:00.000Z", true)).toMatchObject({ runs: 1, items: 0, jevTokens: 2500, potentialContextReductionTokens: 0 });
 });
 
 test("the tally line prices TypeSafe's share and says so when other providers ran too", () => {
-  const tally = { since: "2026-10-07T12:00:00.000Z", runs: 1, items: 1200, jevTokens: 2_000_000, typesafeTokens: 2_000_000, saved: 340_000 };
-  expect(renderTally(tally)).toBe("since 2026-10-07: 1 run · 1.2k items judged · jev 2.0M tok ($0.0840) · ~340.0k Claude tokens not read");
-  expect(renderTally({ ...tally, runs: 4, typesafeTokens: 1_000_000 })).toContain("4 runs · 1.2k items judged · jev 2.0M tok ($0.0420 on TypeSafe) ·");
-  expect(renderTally({ ...tally, typesafeTokens: 0 })).toContain("jev 2.0M tok · ~340.0k");
+  const tally = { since: "2026-10-07T12:00:00.000Z", runs: 1, items: 1200, jevTokens: 2_000_000, jevUsageReportedCalls: 1, jevUsageMissingCalls: 0, typesafeTokens: 2_000_000, typesafeUsageReportedRuns: 1, typesafeUsageMissingCalls: 0, potentialContextReductionTokens: 340_000 };
+  expect(renderTally(tally)).toBe("since 2026-10-07: 1 run · 1.2k items judged · jev 2.0M tok (TypeSafe input estimate ~$0.0840) · ~340.0k potential context reduction (estimate)");
+  expect(renderTally({ ...tally, runs: 4, typesafeTokens: 1_000_000 })).toContain("4 runs · 1.2k items judged · jev 2.0M tok (TypeSafe input estimate ~$0.0420) ·");
+  expect(renderTally({ ...tally, typesafeTokens: 0, typesafeUsageReportedRuns: 0 })).toContain("jev 2.0M tok · ~340.0k");
+  expect(renderTally({ ...tally, jevTokens: 100, jevUsageMissingCalls: 1, typesafeUsageMissingCalls: 1 })).toContain("jev ≥100 tok reported (1 call without usage) · TypeSafe known input estimate");
 });

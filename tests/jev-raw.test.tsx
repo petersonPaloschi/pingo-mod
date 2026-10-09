@@ -1,36 +1,55 @@
-// An answer the router cannot use keeps Jev's reply as it came: the request log shows it whole,
-// indented, and the live log's card names what was dropped with the reply under it.
 import type { RenderPropsOf } from "claude-code";
-import { describe, expect, test } from "claude-code/testing";
+import { describe, expect, mock, test } from "claude-code/testing";
 
-import { noul, step, world } from "./helpers.ts";
+import { DEFAULT_FEATURES } from "../hooks/core/plan.ts";
 
 const PANE_PROPS = {
   title: "Jev",
   isFocused: true,
   bodyColumns: 100,
   placement: "dock",
-  scroll: { offset: 0, bodyRows: 200, contentRows: 200 },
+  scroll: { offset: 0, bodyRows: 120, contentRows: 120 },
 } as unknown as RenderPropsOf["Pane"];
 
-const ASK = { origin: { kind: "user" } } as const;
-
 describe("Jev's raw reply", () => {
-  test("a failed decision shows the reply Jev sent, in the request log and the live log", async ($, on) => {
-    // No answer for the tool question: the routing point cannot use the reply.
-    world(on, {}, { needs_tool: noul(0.9) });
+  test("an unusable agent answer is kept in the Live request log", async ($, on) => {
+    mock.clock(on, { now: Date.parse("2026-10-07T12:00:00Z") });
+    mock.store(on, { provider: "typesafe", features: { ...DEFAULT_FEATURES, agents: true } });
+    mock.env(on, { TYPESAFE_API_KEY: "test-key" });
+    on("command.register", async () => ({ value: { command: "jev" } }));
+    on("session.id", async () => ({ value: "session-raw" }));
+    on("session.model", async () => ({ value: "claude-opus-5-5" }));
+    on("settings.read", async () => ({ value: {} }) as never);
+    on("http.fetch", async () => ({
+      value: {
+        status: 200,
+        ok: true,
+        headers: {},
+        text: JSON.stringify({
+          answers: {
+            model: { type: "choice", choice: "sonnet", probabilities: { sonnet: 1 } },
+            effort: { type: "choice", choice: "high", confidence: 0.9, probabilities: { high: 1 } },
+          },
+          usage: { output_tokens: 0 },
+        }),
+      },
+    }));
+    on("agent.spawn", async (_$, e) => ({ model: e.model ?? "claude-sonnet-5-5", agentId: "agent-raw" }));
     await $.session.start({ cwd: "/workspace" } as never).catch(() => undefined);
-    await $.prompt.submit({ text: "rename a variable", wait: false, origin: ASK.origin } as never);
-    await step($ as never, { turnId: "t1", index: 0, model: "claude-opus-5-5", effort: "high", messageCount: 1 });
+    await $.agent.spawn({
+      tool_use_id: "toolu-raw",
+      prompt: "Inspect the implementation",
+      description: "inspect implementation",
+      subagentType: "Custom",
+      provider: { plugin: "engine", tier: "core" },
+      parentModel: "claude-opus-5-5",
+      background: false,
+      fork: false,
+    } as never);
 
     const ui = await $.ui.mount({ plugin: "jev", surface: "terminal", component: "Pane", requestId: "jev", props: PANE_PROPS });
-    await ui.press({ key: "tab-log" });
-    expect(await ui.find({ type: "Text", text: /Jev's raw reply · [\d,]+ chars:/ })).toBeDefined();
-    expect(await ui.find({ type: "Text", text: /"needs_tool": \{\n\s+"type": "noul"/ })).toBeDefined();
-
     await ui.press({ key: "tab-live" });
-    expect(await ui.find({ type: "Text", text: /^→ no answer$/ })).toBeDefined();
-    expect(await ui.find({ type: "Text", text: /^raw reply: \{"answers":\{"needs_tool"/ })).toBeDefined();
+    expect(await ui.find({ type: "Text", text: /raw reply: \{"answers":\{"model"/ })).toBeDefined();
     await ui.unmount();
   });
 });

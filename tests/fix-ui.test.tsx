@@ -9,6 +9,7 @@ import { emptyTrace } from "../hooks/trace.ts";
 import { formatClock, type Locale } from "../hooks/i18n.ts";
 import { displayWidth, rowsOf } from "../hooks/layout.ts";
 import { clip, clockWidth, oneLine, renderPane, shares, type Actions, type Els, type View } from "../hooks/ui.tsx";
+import { normalizeTab } from "../hooks/register.tsx";
 import { en } from "../hooks/strings/en.ts";
 
 const NOW = Date.parse("2026-10-07T12:00:00Z");
@@ -47,23 +48,19 @@ function texts(node: unknown): string[] {
   return [...own, ...texts(el.children ?? [])];
 }
 
-// A key with no message in the catalog is shown as the key itself: "ui.band.skipped".
 const PREFIXES = [...new Set(Object.keys(en).map((key) => key.split(".")[0]!))];
 const RAW_KEY = new RegExp(`(?<![\\w/.-])(?:${PREFIXES.join("|")})\\.[A-Za-z]\\w*(?:\\.\\w+)*`);
 
-for (const [locale, skipped] of [
-  ["en", /^Jev skipped: /],
-  ["pt", /^Jev não consultado: /],
-] as const) {
-  test(`the band says Jev was skipped when it was not consulted (${locale})`, { options: { locale } }, async ($, on) => {
+for (const locale of ["en", "pt"] as const) {
+  test(`the band shows observed state without a retired routing decision (${locale})`, { options: { locale } }, async ($, on) => {
     noKey(on);
     await $.session.start({ cwd: "/workspace" } as never).catch(() => undefined);
     await $.prompt.submit({ text: "rename a variable", wait: false, origin: ASK.origin });
     for (const surface of ["terminal", "desktop"] as const) {
       const band = await $.ui.mount({ plugin: "jev", surface, component: "AbovePrompt", props: BAND_PROPS });
-      expect(await band.find({ type: "Text", text: skipped })).toBeDefined();
       const shown = texts(await band.drawn()).join("\n");
       expect(shown).not.toContain("ui.band.skipped");
+      expect(shown).not.toMatch(/Jev skipped|Jev não consultado/);
       expect(shown).not.toMatch(RAW_KEY);
       await band.unmount();
     }
@@ -79,7 +76,7 @@ for (const [locale, skipped] of [
     await $.turn.complete({ turnId: "t-main", answer: "Done.", durationMs: 3000, isAborted: false, reason: "answer", usage: { input_tokens: 900, output_tokens: 40 } } as never);
     for (const surface of ["terminal", "desktop"] as const) {
       const ui = await $.ui.mount({ plugin: "jev", surface, component: "Pane", requestId: "jev", props: PANE_PROPS });
-      for (const tab of ["tab-overview", "tab-live", "tab-agents", "tab-features", "tab-reasons", "tab-baseline", "tab-log", "tab-setup", "tab-flow"]) {
+      for (const tab of ["tab-overview", "tab-live", "tab-models", "tab-agents", "tab-logs", "tab-configuration"]) {
         await ui.press({ key: tab });
         expect(texts(await ui.drawn()).join("\n")).not.toMatch(RAW_KEY);
       }
@@ -93,14 +90,15 @@ for (const [locale, skipped] of [
     }
   });
 
-  test(`the turn's end shows its tokens whole (${locale})`, { options: { locale } }, async ($, on) => {
+  test(`the turn's end shows its token counts whole (${locale})`, { options: { locale } }, async ($, on) => {
     noKey(on);
     await $.session.start({ cwd: "/workspace" } as never).catch(() => undefined);
     await $.turn.complete({ turnId: "t1", answer: "Done.", durationMs: 4000, isAborted: false, reason: "answer", usage: { input_tokens: 1000, output_tokens: 300, cache_read_input_tokens: 200, cache_creation_input_tokens: 0 } } as never);
     const ui = await $.ui.mount({ plugin: "jev", surface: "terminal", component: "Pane", requestId: "jev", props: PANE_PROPS });
     await ui.press({ key: "tab-live" });
-    const detail = locale === "en" ? / · in 1\.2K · out 300 · [\d:]+/ : / · entrada 1,2\smil · saída 300 · [\d:]+/;
-    expect(await ui.find({ type: "Text", text: detail })).toBeDefined();
+    const detail = locale === "en" ? /in 1\.2K · out 300/ : /entrada 1,2\smil · saída 300/;
+    const rendered = (await ui.findAll({ type: "Text" })).map((line) => line.text ?? "").join("\n");
+    expect(rendered).toMatch(detail);
     await ui.unmount();
   });
 }
@@ -132,10 +130,9 @@ function harness() {
     tab: "live",
     range: 0,
     setup: { provider: "typesafe", message: "", isOk: true },
-    features: { tools: true, participation: true, model: true, effort: true, delegation: true, agents: true, advisor: true },
+    features: { agents: true },
+    flowDetails: false,
     feed: [],
-    watch: { turns: [], count: 0 },
-    forecast: { blockers: [], targets: [], cacheWarm: false },
     live: {},
     now: NOW,
     width: 80,
@@ -151,6 +148,27 @@ function harness() {
   });
   return { els, act, layouts, feedLine, event, view };
 }
+
+test("persisted legacy tabs resolve to valid screens on both surfaces", () => {
+  const { els, act, view } = harness();
+  const retired = [
+    ["baseline", "logs", "Request log"],
+    ["flow", "live", "Live"],
+    ["features", "configuration", "Provider and language"],
+    ["reasons", "logs", "Request log"],
+    ["setup", "configuration", "Provider and language"],
+    ["log", "logs", "Request log"],
+    ["unknown", "overview", "No Claude requests or Jev calls in this range"],
+  ] as const;
+  for (const surface of ["terminal", "desktop"] as const) {
+    for (const [saved, expected, text] of retired) {
+      const tab = normalizeTab(saved);
+      expect(tab).toBe(expected);
+      const screen = renderPane(els, view({ tab, surface, fixed: false }), act);
+      expect(texts(screen).join("\n")).toContain(text);
+    }
+  }
+});
 
 /** Every element of a tree, outermost first. */
 function elements(node: unknown): { type?: unknown; props?: Record<string, unknown>; children?: unknown[] }[] {
@@ -194,7 +212,7 @@ test("a scrolled-back live log stays on the lines it showed as new ones arrive",
 test("a scrolled-down request log stays on the requests it showed as new ones come in on top", () => {
   const { els, act, event, view } = harness();
   const offset = (events: RouteEvent[], scroll: number) => {
-    const moved = elements(renderPane(els, view({ tab: "log", events, scroll, rows: 20 }), act)).find((el) => typeof el.props?.marginTop === "number" && (el.props.marginTop as number) < 0);
+    const moved = elements(renderPane(els, view({ tab: "logs", events, scroll, rows: 20 }), act)).find((el) => typeof el.props?.marginTop === "number" && (el.props.marginTop as number) < 0);
     return moved ? -(moved.props!.marginTop as number) : 0;
   };
   const events = Array.from({ length: 40 }, (_, i) => event(i + 1));
