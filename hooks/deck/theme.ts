@@ -1,5 +1,6 @@
 // Colors and small helpers shared by the Deck drawings. Pure, no I/O.
 // Every color comes from hooks/theme.ts: the state and tier hues, the track and tick tones, and the text tones.
+import type { AgentState as ModelAgentState } from "./model.ts";
 import { css, DECK_ACCENT, DECK_GLYPH, HUE, PAINT, SVG_PAINT } from "../theme.ts";
 export type RGB = [number, number, number];
 export type StyleName = keyof typeof DECK_GLYPH;
@@ -34,7 +35,7 @@ export interface Row {
   hist?: number[];
 }
 
-export type AgentState = "running" | "waiting" | "error" | "done";
+export type AgentState = ModelAgentState;
 
 export interface AgentRow {
   id: string;
@@ -78,6 +79,8 @@ export const STYLE: Record<StyleName, Style> = {
   ok: { fill: fill(HUE.ok), on: PAINT.onFill, glyph: DECK_GLYPH.ok, desk: fill(HUE.ok) },
   warn: { fill: fill(HUE.warn), on: PAINT.onFill, glyph: DECK_GLYPH.warn, desk: fill(HUE.warn) },
 };
+
+export const AGENT_STYLE: Record<AgentState, StyleName> = { running: "run", waiting: "ask", error: "hot", done: "done" };
 
 export const TIER: Record<TierName, { term: string; desk: string }> = {
   haiku: { term: fill(HUE.teal), desk: fill(HUE.teal) },

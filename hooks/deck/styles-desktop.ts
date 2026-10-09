@@ -1,7 +1,6 @@
 // Desktop bar styles as SVG markup (22px tall), plus agent strips. Pure, no I/O.
 // The pixel style and the strips adapt plan-progress (zycck/claude-mods, MIT, Kirill Serditov).
-import { STYLE, SVG_TEXT, hash, seedOf, esc, textWidth, hex, mix, rgb } from "./theme.ts";
-import type { AgentRow, AgentState, AgentView, Row, Style, StyleName } from "./theme.ts";
+import { AGENT_STYLE, STYLE, SVG_TEXT, hash, seedOf, esc, textWidth, hex, mix, rgb, type AgentRow, type AgentView, type Row, type Style, type StyleName } from "./theme.ts";
 import { elapsed } from "./model.ts";
 
 export const DESKTOP_STYLES = ["pixel", "segments", "line", "solid", "dots", "spark"] as const;
@@ -252,8 +251,6 @@ export function desktopTrack(style: string, row: Row, W: number, nowMs: number, 
 
 export const STRIP_H = 18;
 export const STRIP_GAP = 3;
-
-const AGENT_STYLE: Record<AgentState, StyleName> = { running: "run", waiting: "ask", error: "hot", done: "done" };
 
 export function stripsHeight(v: AgentView): number {
   const n = v.shown.length + (v.hidden.length ? 1 : 0);

@@ -26,13 +26,13 @@ import {
   type DrawCaches,
   type RingItem,
 } from "./rows.ts";
-import { BODY, DIM, MUTED, PILL_INK, STYLE, TEXT, TRACK, runs, textWidth, trunc, type AgentState, type StyleName } from "./theme.ts";
+import { AGENT_STYLE, BODY, DIM, MUTED, PILL_INK, STYLE, TEXT, TRACK, runs, textWidth, trunc } from "./theme.ts";
+import { terminalBar } from "./styles-terminal.ts";
 import { displayWidth } from "../layout.ts";
 import { GLYPH } from "../theme.ts";
 
 const RULE = GLYPH.rule;
 const BRANCH = GLYPH.branch;
-import { terminalBar } from "./styles-terminal.ts";
 
 export type Surface = "terminal" | "desktop";
 
@@ -73,8 +73,6 @@ export const FRAME_MS = 150;
 /** The pet walking the header line: its height and its scale. */
 const HEADER_PET_H = 28;
 const HEADER_PET_SCALE = 0.7;
-
-const AGENT_STYLE: Record<AgentState, StyleName> = { running: "run", waiting: "ask", error: "hot", done: "done" };
 
 /** The Deck band: the toggle, then the collapsed look, or the expanded rows and the pet. */
 export function renderDeck(els: ElementTable, band: DeckBand, surface: Surface) {
