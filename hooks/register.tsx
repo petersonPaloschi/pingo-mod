@@ -43,6 +43,8 @@ import {
 } from "./trace.ts";
 import { renderAbove, renderAgentPane, renderPane, type Actions, type DeckPanel, type View } from "./ui.tsx";
 import { flowSummary } from "./flow.ts";
+import * as orch from "./orchestrate.ts";
+import { MODEL_LABEL } from "./core/orchestration.ts";
 import { formatCompact, formatDecimal, formatDuration, formatNumber, formatPercent, text, type Locale, type LocaleKey, type LocaleOption } from "./i18n.ts";
 import { renderDeck, FRAME_MS, type DeckBand, type Surface } from "./deck/band.tsx";
 import { DEFAULT_SETTINGS, parseSettings, serializeSettings, type DeckSettings } from "./deck/settings.ts";
@@ -119,6 +121,8 @@ const farolRules = atom({ plugin: "jev", key: "farolRules" } as const, [] as Far
 const farolBusy = atom({ plugin: "jev", key: "farolBusy" } as const, false);
 const farolSeq = atom({ plugin: "jev", key: "farolSeq" } as const, 0);
 const clarezaStatus = atom({ plugin: "jev", key: "clarezaStatus" } as const, "");
+/** The last orchestration command's reply, shown on the Configuration tab. */
+const orchMessage = atom({ plugin: "jev", key: "orchMessage" } as const, null as { ok: boolean; text: string } | null);
 const clarezaGrade = atom({ plugin: "jev", key: "clarezaGrade" } as const, null as ClarezaGrade | null);
 const clarezaRewrite = atom({ plugin: "jev", key: "clarezaRewrite" } as const, false);
 const clarezaToldTerms = atom({ plugin: "jev", key: "clarezaToldTerms" } as const, 0);
@@ -187,7 +191,7 @@ let eventWrites: Promise<unknown> = Promise.resolve();
  * Running subagents by id: their type, model and the effort Jev chose. A teammate stays after its
  * turn ends, since it goes idle and wakes on a message under the same id.
  */
-type AgentInfo = { type: string; model: string; effort?: Effort; description: string; mascot?: MascotId; teammate?: true; awake?: boolean };
+type AgentInfo = { type: string; model: string; effort?: Effort; description: string; mascot?: MascotId; teammate?: true; awake?: boolean; orchestrated?: true };
 const agentRuns = new Map<string, AgentInfo>();
 const toolStarts = new Map<string, number>();
 /**
@@ -601,6 +605,73 @@ function jevReporter($: EngineInterface, locale: Locale, where: () => JevWhere):
 /** The mod's own Jev call, through the one path every caller takes (observeAskJev, then jevReporter). */
 function tracedAskJev($: EngineInterface, config: Settings, where: JevWhere): AskJev {
   return observeAskJev(createAskJev(config, transport($, config.locale)), jevReporter($, config.locale, () => where), () => $.clock.now());
+}
+
+// Orchestration borrows the engine calls it needs, the mod's settings, Jev gate and client, live
+// log and subagent bookkeeping; only this module may hold `$`, so each is lent as a function.
+function orchIo($: EngineInterface): orch.Io {
+  return {
+    storeGet: (key) => $.store.get(key),
+    storeSet: (key, value) => $.store.set(key, value as never),
+    storeDelete: (key) => $.store.delete(key),
+    now: () => $.clock.now(),
+    complete: (request) => $.model.complete(request as never) as never,
+    spawn: (args) => $.agent.spawn(args) as never,
+    agents: () => $.agent.list(),
+    run: (argv, init) => $.process.run(argv, init),
+    settings: () => getSettings($),
+    gate: async (config) => featureGate(await activeFeatures($, config)),
+    askJev: (config, where) => tracedAskJev($, config, where),
+    log: async (tone, line, detail) => {
+      await log($, "jev", "jev", tone, line, undefined, detail ? { detail } : {});
+    },
+    setAgentEffort: (agentId, effort) => {
+      const run = agentRuns.get(agentId);
+      if (run) {
+        run.effort = effort;
+        run.orchestrated = true;
+      } else agentRuns.set(agentId, { type: "general-purpose", model: "", effort, description: "", orchestrated: true });
+    },
+  };
+}
+
+/** The orchestration card's data: the policy, the active objective and recent batches. */
+async function orchestrationView($: EngineInterface): Promise<View["orchestration"]> {
+  const io = orchIo($);
+  const policy = await orch.readPolicy(io);
+  const objective = await orch.readObjective(io);
+  const batches = await orch.readBatches(io);
+  const message = await read($, orchMessage);
+  return {
+    policy,
+    ...(objective ? {
+      objective: {
+        id: objective.id,
+        workMode: objective.workMode,
+        revision: objective.policy.revision,
+        ...(objective.executor ? { requested: objective.executor } : {}),
+        ...(objective.executorWhy ? { why: objective.executorWhy } : {}),
+        ...(objective.applied ? { applied: objective.applied } : {}),
+        ...(objective.observed ? { observed: objective.observed } : {}),
+        ...(objective.applyPending ? { applyPending: true } : {}),
+      },
+    } : {}),
+    batches: batches.map((b) => ({
+      id: b.id,
+      approved: b.units.filter((u) => u.state === "approved").length,
+      total: b.units.length,
+      integration: b.integration.state,
+      verified: b.integration.state === "approved",
+      cancelled: b.cancelled === true,
+    })),
+    ...(message ? { message } : {}),
+  };
+}
+
+async function runOrchestration($: EngineInterface, line: string): Promise<string> {
+  const reply = await orch.runCommand(orchIo($), line).catch((error) => ({ ok: false, message: error instanceof Error ? error.message : String(error) }));
+  await update($, orchMessage, () => ({ ok: reply.ok, text: reply.message }));
+  return reply.message;
 }
 
 // --- Sift: its Jev calls, from the shells Claude's Bash tool starts ---
@@ -1495,6 +1566,44 @@ async function farolJudge($: EngineInterface, id: number, verdict: FarolAssumpti
     if (message) await $.prompt.submit({ text: message });
   }
 }
+/** The managed-batch entry point the /batch planning phase hands its units to, and its status. */
+async function registerOrchestration($: EngineInterface) {
+  await $.tool.register({
+    name: "managed_batch",
+    description: "Submit a /batch unit plan to Pingo's managed queue, which launches, independently reviews and repairs each unit and reviews the integrated result. Do not launch the units yourself.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        shared_contracts: { type: "string", description: "Shared interfaces, contracts and ordering requirements." },
+        units: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: {
+              id: { type: "string" },
+              description: { type: "string" },
+              prompt: { type: "string", description: "The complete, self-contained task for the worker." },
+              dependencies: { type: "array", items: { type: "string" } },
+              affected_areas: { type: "array", items: { type: "string" } },
+              acceptance_criteria: { type: "array", items: { type: "object", properties: { id: { type: "string" }, text: { type: "string" } }, required: ["text"] } },
+              verification: { type: "array", items: { type: "string" } },
+            },
+            required: ["id", "prompt", "acceptance_criteria"],
+          },
+        },
+      },
+      required: ["units"],
+    },
+    isDeferred: true,
+  });
+  await $.tool.register({
+    name: "managed_batch_status",
+    description: "Report a Pingo managed batch: each unit's state and review verdict, and whether the integrated result is verified.",
+    inputSchema: { type: "object", properties: { batch: { type: "string" } } },
+    isDeferred: true,
+  });
+}
+
 async function registerFarol($: EngineInterface) {
   await $.tool.register({ name: "farol_assumption", description: "Record an assumption the user may want to review or correct.", inputSchema: { type: "object", properties: { assumption: { type: "string" }, context: { type: "string" } }, required: ["assumption"] }, isDeferred: false });
   await $.command.register({ name: "farol", description: "Review assumptions and project corrections" });
@@ -2412,6 +2521,7 @@ function actions($: EngineInterface, requestId = PANE): Actions {
     removeAgent: (n) => void removeRuns($, (run) => run.n === n),
     clearAgents: () => void removeRuns($, () => true),
     jevLive: () => void openPane($, "live"),
+    orchestration: (line) => void runOrchestration($, line),
     deck: (args) => void runDeckFromTab($, args),
     deckStyle: (surface, name) => void setDeckStyleFromTab($, surface, name),
     deckType: (value) => {
@@ -2463,6 +2573,7 @@ async function view($: EngineInterface, width: number, rows: number, surface: st
     meta: text("ui.meta", config.locale, { provider: PROVIDERS[config.provider].label, model: config.jevModel, confidence: formatNumber(config.minConfidence, config.locale, 2), source: text(`source.${config.keySource}`, config.locale) }),
     key: { source: config.keySource, tail: config.apiKey ? config.apiKey.slice(-4) : "", provider: config.provider },
     deck: null,
+    ...(normalized === "configuration" ? { orchestration: await orchestrationView($) } : {}),
   };
 }
 
@@ -2499,6 +2610,8 @@ export const register: Register = (on, given) => {
     sessionId = deckSessionId.slice(0, 8);
     const config = await getSettings($);
     await restoreStoredState($);
+    await orch.restore(orchIo($)).catch(() => undefined);
+    await registerOrchestration($).catch(() => undefined);
     await registerFarol($);
     await clarezaStart($);
     await $.command.register({ name: "prisma-decisions", description: "List or clear remembered design choices", argumentHint: "[clear]" });
@@ -2618,6 +2731,8 @@ export const register: Register = (on, given) => {
 
   on("classic.PostModelSwitch", async ($, e, next) => {
     mainModel = e.to_model;
+    // The user's own pick (/model, the picker) is a trusted override of the objective's executor.
+    if (e.source === "command" || e.source === "picker") await orch.userSwitchedModel(orchIo($)).catch(() => undefined);
     deckOf(await $.clock.now()).sessionModel = e.to_model;
     await setLive($, { model: e.to_model });
     if (e.from_model !== e.to_model) {
@@ -2651,7 +2766,9 @@ export const register: Register = (on, given) => {
       await updateTrace($, (s) => promptEntered(s, messageId, dropped)).catch(() => undefined);
       return result;
     };
-    return entered(await next(enriched));
+    // Orchestration's objective decision and any notes ride along as context; it never blocks the prompt.
+    const orchestration = await orch.onPromptSubmit(orchIo($), enriched).catch(() => [] as string[]);
+    return entered(await next(orchestration.length ? { ...enriched, context: [...(enriched.context ?? []), ...orchestration] } : enriched));
   }).catch((_$, e, next) => next(e));
 
   on("turn.start", async ($, e, next) => {
@@ -2672,6 +2789,8 @@ export const register: Register = (on, given) => {
 
   on("turn.complete", async ($, e, next) => {
     const locale = (await getSettings($)).locale;
+    // A subagent's end starts its mandatory review (or advances its batch unit) in the background.
+    if (e.agentId) void orch.onAgentDone(orchIo($), e.agentId, e.answer, e.reason === "answer" && !e.isAborted).catch(() => undefined);
     // Deck first: a subagent's turn ends its row, and a main turn ends its activity line.
     const deckNow = await $.clock.now();
     const deckState = deckOf(deckNow);
@@ -2778,7 +2897,13 @@ export const register: Register = (on, given) => {
       if (sift) $.clock.after(1000, () => siftRuns.delete(toolUseId));
     }));
     if (trackedEdit) sementeFileEdited(trackedEdit, result.deny === undefined && !result.isError);
-    const finalResult = await farolAfterTool($, clashNote && result.deny === undefined ? { ...result, context: [...(result.context ?? []), clashNote] } : result);
+    if (trackedEdit && result.deny === undefined && !result.isError) orch.noteEdit(e.agentId, trackedEdit);
+    // A subagent's mandatory review verdict reaches its parent with the Agent tool's result.
+    const reviewNote = e.tool === "Agent" && result.deny === undefined
+      ? await orch.agentToolNote(orchIo($), e.tool_use_id, resultText(result.result)).catch(() => undefined)
+      : undefined;
+    const contextNotes = [clashNote, reviewNote].filter((note): note is string => Boolean(note));
+    const finalResult = await farolAfterTool($, result.deny === undefined && contextNotes.length ? { ...result, context: [...(result.context ?? []), ...contextNotes] } : result);
     // Reporting or routing may fail after a tool ran; return its result rather than run it again.
     try {
       const endedAt = await $.clock.now();
@@ -2840,30 +2965,36 @@ export const register: Register = (on, given) => {
     }
     const config = await getSettings($);
     const ctx = await activeFeatures($, config);
+    // Orchestration, when on, replaces the older per-subagent planner for this spawn.
+    const orchestrated = await asking($, () => orch.planSpawn(orchIo($), e)).catch(() => undefined);
     const proposed =
-      !featureGate(ctx, "agents") && !e.fork && !e.model
+      !orchestrated && !featureGate(ctx, "agents") && !e.fork && !e.model
         ? await asking($, () => planAgent(e, config, tracedAskJev($, config, { origin: "agent", trigger: e.subagentType, ...(e.parentAgentId ? { agentId: e.parentAgentId } : {}) }), ctx.features, undefined, modelContext(config)))
         : {};
     const current = await activeFeatures($, config);
-    const plan = featureGate(current, "agents") ? {} : proposed;
-    const result = await next(plan.model ? { ...e, model: plan.model.value } : e);
+    const plan = orchestrated || featureGate(current, "agents") ? {} : proposed;
+    const result = await next(orchestrated?.model ? { ...e, model: orchestrated.model } : plan.model ? { ...e, model: plan.model.value } : e);
+    orch.spawned(e.tool_use_id, result.deny === undefined ? result.agentId ?? e.tool_use_id : undefined);
     await deckSpawnStarted($, e, result, config.locale);
     if (result.deny !== undefined) {
       await log($, "claude", "agent", "warn", text("feed.subagent.denied", config.locale, { type: e.subagentType, message: short(result.deny, 80) }));
       return result;
     }
     const id = result.agentId ?? e.tool_use_id;
-    const sized = sizeRequest({ model: result.model }, { effort: plan.effort?.value }, { effort: !featureGate(current, "agents") });
-    const appliedEffort = sized.effortOutcome?.kind === "applied" ? plan.effort : undefined;
-    const ignoredEffort = sized.effortOutcome?.kind === "ignored" ? plan.effort : undefined;
-    agentRuns.set(id, { type: e.subagentType, model: result.model, ...(appliedEffort ? { effort: appliedEffort.value } : {}), description: e.description, ...(e.isTeammate ? { teammate: true as const, awake: true } : {}) });
+    const wantedEffort = orchestrated ? (orchestrated.effort ? { value: orchestrated.effort, confidence: 1 } : undefined) : plan.effort;
+    const sized = sizeRequest({ model: result.model }, { effort: wantedEffort?.value }, { effort: orchestrated ? true : !featureGate(current, "agents") });
+    const appliedEffort = sized.effortOutcome?.kind === "applied" ? wantedEffort : undefined;
+    const ignoredEffort = sized.effortOutcome?.kind === "ignored" ? wantedEffort : undefined;
+    agentRuns.set(id, { type: e.subagentType, model: result.model, ...(appliedEffort ? { effort: appliedEffort.value } : {}), description: e.description, ...(e.isTeammate ? { teammate: true as const, awake: true } : {}), ...(orchestrated ? { orchestrated: true as const } : {}) });
     const chosen = [
       plan.model
         ? text("feed.subagent.jevModel", config.locale, { model: plan.model.value, confidence: formatDecimal(plan.model.confidence, config.locale) })
-        : text("feed.subagent.model", config.locale, { model: modelName(result.model) }) + (e.model ? text("feed.subagent.requested", config.locale) : ""),
+        : text("feed.subagent.model", config.locale, { model: modelName(result.model) }) + (e.model && !orchestrated?.model ? text("feed.subagent.requested", config.locale) : ""),
       appliedEffort ? text("feed.subagent.jevEffort", config.locale, { effort: appliedEffort.value }) : undefined,
     ].filter(Boolean);
-    const jevChose = [plan.model ? text("feed.subagent.model", config.locale, { model: plan.model.value }) : "", appliedEffort ? text("feed.subagent.effort", config.locale, { effort: appliedEffort.value }) : ""].filter(Boolean).join(text("feed.usage.separator", config.locale));
+    const jevChose = orchestrated?.model
+      ? `${MODEL_LABEL[orchestrated.model as keyof typeof MODEL_LABEL] ?? orchestrated.model}${appliedEffort ? ` ${appliedEffort.value}` : ""}`
+      : [plan.model ? text("feed.subagent.model", config.locale, { model: plan.model.value }) : "", appliedEffort ? text("feed.subagent.effort", config.locale, { effort: appliedEffort.value }) : ""].filter(Boolean).join(text("feed.usage.separator", config.locale));
     const run = await addRun($, {
       id,
       type: e.subagentType,
@@ -2900,12 +3031,18 @@ export const register: Register = (on, given) => {
     const startedAt = await $.clock.now();
     const run = e.agentId ? agentRuns.get(e.agentId) : undefined;
     const current = e.agentId ? await activeFeatures($, config) : undefined;
-    const sized = sizeRequest(e, e.agentId ? { effort: run?.effort } : {}, { effort: current ? !featureGate(current, "agents") : false });
+    // The active objective's executor profile, when orchestration is on; the main loop stays native otherwise.
+    const executor = e.agentId ? undefined : await orch.mainProfile(orchIo($)).catch(() => undefined);
+    const planned = executor ? { ...e, model: executor.model, effort: executor.effort } : e;
+    const sized = executor
+      ? sizeRequest(planned, { effort: executor.effort }, { effort: true })
+      : sizeRequest(e, e.agentId ? { effort: run?.effort } : {}, { effort: run?.orchestrated ? true : current ? !featureGate(current, "agents") : false });
     const sent = sized.request;
     const model = sent.model;
     const effort = sent.effort;
     const changes: string[] = [];
-    const reason = e.agentId ? "subagent" : await read($, routing) ? "not_asked" : "routing_disabled";
+    const reason = e.agentId ? "subagent" : executor ? "orchestrated" : await read($, routing) ? "not_asked" : "routing_disabled";
+    if (model !== e.model) changes.push(text("feed.change.modelSwitched", locale, { from: modelName(e.model), to: modelName(model) }));
     if (sized.ignoredEffort !== undefined) changes.push(text("feed.change.ignoredEffort", locale, { effort: String(sized.ignoredEffort), model: modelName(model) }));
     else if (effort !== e.effort && effort !== undefined) changes.push(text("feed.change.effortSwitched", locale, { from: e.effort ?? text("feed.change.effortDefault", locale), to: effort }));
     const who = actor(e.agentId);
@@ -2977,6 +3114,7 @@ export const register: Register = (on, given) => {
     if (!e.agentId && usage) {
       mainModel = usage.model ?? model;
     }
+    if (executor) await orch.noteApplied(orchIo($), { model, ...(effort === undefined ? {} : { effort: String(effort) }) }, usage?.model).catch(() => undefined);
     const asked = [...new Set(result.toolUses.map((use) => use.name))];
     const inputText = typeof usage?.input_tokens === "number" ? formatCompact(usage.input_tokens, locale) : "–";
     const outputText = typeof usage?.output_tokens === "number" ? formatCompact(usage.output_tokens, locale) : "–";
@@ -3070,6 +3208,20 @@ export const register: Register = (on, given) => {
     await update($, farolItems, (list) => [...list, item]);
     return { result: pt ? `Farol registrou a suposição #${id}. Continue trabalhando.` : `Farol recorded assumption #${id}. Continue working.` };
   }).catch(() => ({ deny: "Farol could not record that assumption." }));
+
+  // The managed-batch tools are registered at session start; their names are not in the generated tool types yet.
+  on("tool.call", { tool: "mcp__jev__managed_batch" as never }, async ($, e) => {
+    const outcome: { result?: string; deny?: string } = await orch.submitBatch(orchIo($), e).catch(() => ({ deny: "The managed batch could not start; ordinary native fan-out does not provide its review guarantees." }));
+    return (outcome.deny !== undefined ? { deny: outcome.deny } : { result: outcome.result ?? "" }) as never;
+  }).catch(() => ({ deny: "Managed batch is unavailable." }) as never);
+  on("tool.call", { tool: "mcp__jev__managed_batch_status" as never }, async ($, e) => ({ result: await orch.batchStatus(orchIo($), e as unknown as { batch?: unknown }) }) as never)
+    .catch(() => ({ deny: "Managed batch status is unavailable." }) as never);
+
+  // /batch's planning phase hands its units to the managed queue instead of fanning out itself.
+  on("skill.prompt", { skill: "batch" }, async ($, e, next) => {
+    const result = await next(e);
+    return { text: await orch.batchSkillPrompt(orchIo($), result.text).catch(() => result.text) };
+  }).catch((_$, e, next) => next(e));
 
   on("tool.call", { tool: "mcp__jev__semente_shelve" }, async ($, e) => {
     const pt = (await getSettings($)).locale === "pt";
@@ -3216,6 +3368,15 @@ export const register: Register = (on, given) => {
       }
       await openAgentPane($, run);
       return {};
+    }
+    if (verb === "orchestration" || verb === "orch") {
+      // Raw arguments: agent type names keep their case.
+      const line = e.args.trim().split(/\s+/).slice(1).join(" ");
+      if (!line) {
+        await openPane($, "configuration");
+        return {};
+      }
+      return { text: await runOrchestration($, line) };
     }
     if (verb === "status") return { text: await statusText($) };
     if (verb === "clear") {

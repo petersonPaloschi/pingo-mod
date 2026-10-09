@@ -16,7 +16,15 @@ export const DEFAULT_FEATURES: Features = {
 };
 
 export type Tier = "haiku" | "sonnet" | "opus";
-export type Effort = "low" | "medium" | "high" | "xhigh" | "max";
+export const EFFORTS = ["low", "medium", "high", "xhigh", "max"] as const;
+export type Effort = (typeof EFFORTS)[number];
+
+/** The only Claude models the orchestration policy offers; native tier aliases stay separate. */
+export const CLAUDE_MODELS = ["claude-haiku-5-5", "claude-sonnet-5-5", "claude-opus-5-5", "claude-fable-5-1"] as const;
+export type ClaudeModelId = (typeof CLAUDE_MODELS)[number];
+/** The three configurable orchestration roles. */
+export const ROLES = ["executor", "subagent", "advisor"] as const;
+export type Role = (typeof ROLES)[number];
 export type ChoiceReason = "unavailable" | "low_confidence";
 export type ModelReason = "low_confidence" | "unavailable";
 

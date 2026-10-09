@@ -142,7 +142,7 @@ const percent = (value: number, locale: Locale) => `${formatDecimal(value * 100,
 
 /** Where a Jev call was asked from: the routing point, and what set it off (a tool, a subagent type). */
 export interface JevCaller {
-  origin: "agent" | "sift" | "setup";
+  origin: "agent" | "sift" | "setup" | "prompt" | "unit";
   trigger?: string;
 }
 
@@ -151,6 +151,8 @@ const ASKED_BY: Record<JevCaller["origin"], string> = {
   agent: "planAgent()",
   sift: "sift",
   setup: "validateKey()",
+  prompt: "decideObjective()",
+  unit: "offeredProfiles()",
 };
 
 /** What each question makes Jev judge, by its name (core/questions.ts and core/plan.ts). */

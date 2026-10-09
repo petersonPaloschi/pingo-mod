@@ -71,7 +71,7 @@ export type TraceCheckpoint = {
 /** One Jev call: where it was asked from, the model asked, and the questions it carried. */
 export type TraceConsult = {
   id: string;
-  origin: "prompt" | "tool" | "agent" | "sift" | "setup";
+  origin: "prompt" | "tool" | "agent" | "sift" | "setup" | "unit";
   model: string;
   /** Response model and raw provider counters, when supplied; input excludes cache. */
   observed?: string;
@@ -392,6 +392,8 @@ declare module "claude-code" {
       deckExpanded: boolean;
       /** Counts Deck's changes: the band and its panes read it, so a change redraws them. */
       deckRevision: number;
+      /** The last orchestration command's reply, shown on the Configuration tab. */
+      orchMessage: { ok: boolean; text: string } | null;
     };
   }
 }

@@ -33,6 +33,7 @@ import { AGENT_MASCOTS, isMascot } from "./mascots/agents.ts";
 import { renderDeck, type DeckBand, type Surface } from "./deck/band.tsx";
 import { COLLAPSED, SECTIONS, SIZES, type DeckSettings } from "./deck/settings.ts";
 import { DESKTOP_STYLE_NAMES, DESKTOP_STYLES } from "./deck/styles-desktop.ts";
+import { CLAUDE_MODELS, MODEL_LABEL, PROFILE_EFFORTS, ROLES, type OrchestrationPolicy, type Profile, type Role, type WorkMode } from "./core/orchestration.ts";
 import { TERMINAL_STYLE_NAMES, TERMINAL_STYLES } from "./deck/styles-terminal.ts";
 
 /** The pane needs Select and Input, which the terminal and the desktop app draw. */
@@ -127,6 +128,26 @@ export interface View {
   key: { source: string; tail: string; provider: string };
   /** The Deck tab's data, made only when that tab is open: the other tabs and the band never read Deck's state. */
   deck: DeckPanel | null;
+  /** The orchestration policy and what it is doing; made only on the Configuration tab. */
+  orchestration?: OrchestrationView;
+}
+
+/** Requested, applied and observed are kept apart: what the runtime did not report stays unknown. */
+export interface OrchestrationView {
+  policy: OrchestrationPolicy;
+  objective?: {
+    id: string;
+    workMode: WorkMode;
+    revision: number;
+    requested?: Profile;
+    why?: string;
+    applied?: { model?: string; effort?: string };
+    observed?: { model?: string; effort?: string };
+    applyPending?: boolean;
+  };
+  batches: { id: string; approved: number; total: number; integration: string; verified: boolean; cancelled: boolean }[];
+  /** The last command's reply. */
+  message?: { ok: boolean; text: string };
 }
 
 export interface Actions {
@@ -162,6 +183,8 @@ export interface Actions {
   /** The city field: each change, and Enter. */
   deckType: (value: string) => void;
   deckCity: (value: string) => void;
+  /** One orchestration settings command (core/orchestration.ts applyCommand, plus apply/end/cancel). */
+  orchestration: (line: string) => void;
 }
 
 const fit = (text: string, width: number) => (text.length > width ? text.slice(0, Math.max(0, width - 1)) + "…" : text.padEnd(width));
@@ -971,8 +994,137 @@ function configurationView(els: Els, view: View, act: Actions) {
           </Box>,
         ], { width: cardWidth })}
       </Box>
+      {view.orchestration ? orchestrationCard(els, view, view.orchestration, act) : null}
     </Box>
   );
+}
+
+const profileText = (profile: { model?: string; effort?: string } | undefined, locale: Locale) =>
+  profile?.model ? `${MODEL_LABEL[profile.model as keyof typeof MODEL_LABEL] ?? modelName(profile.model)} ${profile.effort ?? text("ui.orch.unknown", locale)}` : text("ui.orch.unknown", locale);
+
+const fixedModelOptions = (locale: Locale) =>
+  CLAUDE_MODELS.map((id) => ({ value: id, label: `${text("ui.orch.fixed", locale)}: ${MODEL_LABEL[id]}` }));
+
+/** One role's model and effort: AUTO with its allowlist, or one fixed value. */
+function roleRows(els: Els, view: View, policy: OrchestrationPolicy, role: Role, act: Actions) {
+  const { Box, Text, Button, Select } = els;
+  const locale = view.locale;
+  const setting = policy.roles[role];
+  const chip = (on: boolean, label: string, line: string, key: string) => (
+    <Button key={key} label={`${on ? "✓" : "·"} ${label}`} plain dimColor={!on} onPress={() => act.orchestration(line)} />
+  );
+  return (
+    <Box flexDirection="column" key={"role-" + role}>
+      <Text bold color={INK.ink} wrap="wrap">{text(`ui.orch.role.${role}` as LocaleKey, locale)}</Text>
+      <Text color={INK.faint} wrap="wrap">{text(`ui.orch.role.${role}.purpose` as LocaleKey, locale)}</Text>
+      <Select
+        key={`model-${role}`}
+        label={text("ui.orch.model", locale)}
+        value={setting.model.mode === "auto" ? "auto" : setting.model.fixed}
+        options={[{ value: "auto", label: text("ui.orch.auto", locale) }, ...fixedModelOptions(locale)]}
+        onSelect={(value) => act.orchestration(value === "auto" ? `role ${role} model auto` : `role ${role} model fixed ${value}`)}
+      />
+      {setting.model.mode === "auto" ? (
+        <Box flexDirection="row" flexWrap="wrap" columnGap={2}>
+          {CLAUDE_MODELS.map((id) => chip(setting.model.allowed.includes(id), MODEL_LABEL[id], `role ${role} model allow ${id}`, `allow-${role}-${id}`))}
+        </Box>
+      ) : null}
+      <Select
+        key={`effort-${role}`}
+        label={text("ui.orch.effort", locale)}
+        value={setting.effort.mode === "auto" ? "auto" : setting.effort.fixed}
+        options={[{ value: "auto", label: text("ui.orch.auto", locale) }, ...PROFILE_EFFORTS.map((level) => ({ value: level, label: `${text("ui.orch.fixed", locale)}: ${level}` }))]}
+        onSelect={(value) => act.orchestration(value === "auto" ? `role ${role} effort auto` : `role ${role} effort fixed ${value}`)}
+      />
+      {setting.effort.mode === "auto" ? (
+        <Box flexDirection="row" flexWrap="wrap" columnGap={2}>
+          {PROFILE_EFFORTS.map((level) => chip(setting.effort.allowed.includes(level), level, `role ${role} effort allow ${level}`, `allow-${role}-${level}`))}
+        </Box>
+      ) : null}
+      {setting.model.fallback.length || setting.effort.fallback.length ? (
+        <Text color={INK.faint} wrap="wrap">{text("ui.orch.fallback", locale, { models: setting.model.fallback.map((id) => MODEL_LABEL[id]).join(", ") || "–", efforts: setting.effort.fallback.join(", ") || "–" })}</Text>
+      ) : null}
+      {policy.override[role] ? <Text color={INK.pass} wrap="wrap">{text("ui.orch.override", locale, { value: profileText(policy.override[role], locale) })}</Text> : null}
+    </Box>
+  );
+}
+
+/** The Configuration tab's orchestration card: roles, switches, limits, the live objective and batches. */
+function orchestrationCard(els: Els, view: View, orch: OrchestrationView, act: Actions) {
+  const { Box, Text, Button, Select, Input } = els;
+  const locale = view.locale;
+  const policy = orch.policy;
+  const toggle = (on: boolean, label: string, line: string, key: string) => (
+    <Button key={key} label={`${on ? "●" : "○"} ${label}`} plain dimColor={!on} onPress={() => act.orchestration(line)} />
+  );
+  const objective = orch.objective;
+  const limits = policy.limits;
+  const nativeValue = policy.nativeAdvisor.mode === "fixed" ? policy.nativeAdvisor.model : policy.nativeAdvisor.mode;
+  return card(els, text("ui.orch.title", locale), [
+    <Box flexDirection="row" flexWrap="wrap" columnGap={2} key="orch-switches">
+      {toggle(policy.enabled, text(policy.enabled ? "ui.orch.on" : "ui.orch.off", locale), policy.enabled ? "off" : "on", "orch-enabled")}
+      {toggle(policy.review, text("ui.orch.review", locale), policy.review ? "review off" : "review on", "orch-review")}
+      {toggle(policy.advice === "auto", text("ui.orch.advice", locale), policy.advice === "auto" ? "advice off" : "advice auto", "orch-advice")}
+      {toggle(policy.batch === "auto", text("ui.orch.batch", locale), policy.batch === "auto" ? "batch off" : "batch auto", "orch-batch")}
+    </Box>,
+    <Text color={INK.faint} wrap="wrap" key="orch-intro">{text("ui.orch.intro", locale, { revision: formatNumber(policy.revision, locale) })}</Text>,
+    ...(policy.review ? [] : [<Text color={INK.fail} wrap="wrap" key="orch-review-off">{text("ui.orch.reviewOff", locale)}</Text>]),
+    grid(els, view.width - 4, ROLES.map((role) => (width: number) => <Box width={width} flexShrink={0} key={"cell-" + role}>{roleRows(els, view, policy, role, act)}</Box>), 30, 3),
+    <Box flexDirection="column" key="orch-native" marginTop={1}>
+      <Select
+        key="native-advisor"
+        label={text("ui.orch.nativeLabel", locale)}
+        value={nativeValue}
+        options={[
+          { value: "off", label: text("ui.orch.nativeOff", locale) },
+          { value: "auto", label: text("ui.orch.nativeAuto", locale) },
+          ...fixedModelOptions(locale),
+        ]}
+        onSelect={(value) => act.orchestration(value === "off" || value === "auto" ? `native ${value}` : `native fixed ${value}`)}
+      />
+      <Text color={INK.faint} wrap="wrap">{text("ui.orch.nativeNote", locale)}</Text>
+      {policy.nativeAdvisor.mode !== "off" ? <Text color={INK.pass} wrap="wrap">{text("ui.orch.nativeHeld", locale)}</Text> : null}
+    </Box>,
+    <Text color={INK.dim} wrap="wrap" key="orch-limits">{text("ui.orch.limits", locale, {
+      workers: limits.workers, reviewers: limits.reviewers, calls: limits.activeCalls, units: limits.units,
+      advice: limits.adviceCalls, repairs: limits.repairRounds, reviews: limits.reviewPasses, turns: limits.workerTurns,
+      timeout: formatNumber(Math.round(limits.callTimeoutMs / 1000), locale),
+    })}</Text>,
+    <Input
+      key="orch-command"
+      value=""
+      placeholder={text("ui.orch.commandPlaceholder", locale)}
+      submitLabel={text("ui.orch.commandSubmit", locale)}
+      onSubmit={(value) => act.orchestration(value)}
+    />,
+    orch.message ? <Text key="orch-message" color={orch.message.ok ? INK.route : INK.fail} wrap="wrap">{orch.message.text}</Text> : null,
+    <Box flexDirection="column" key="orch-objective" marginTop={1}>
+      <Text bold color={INK.ink}>{text("ui.orch.objective", locale)}</Text>
+      {objective ? (
+        <Box flexDirection="column">
+          <Text color={INK.dim} wrap="wrap">{text("ui.orch.objectiveLine", locale, { id: objective.id, mode: objective.workMode, revision: formatNumber(objective.revision, locale) })}</Text>
+          <Text wrap="wrap">{text("ui.orch.requested", locale, { value: objective.requested ? profileText(objective.requested, locale) : text("ui.orch.nativeRequest", locale) + (objective.why ? ` (${objective.why})` : "") })}</Text>
+          <Text wrap="wrap">{text("ui.orch.applied", locale, { value: objective.applied ? profileText(objective.applied, locale) : text("ui.orch.unknown", locale) })}</Text>
+          <Text wrap="wrap">{text("ui.orch.observed", locale, { value: objective.observed?.model ? `${modelName(objective.observed.model)} · ${text("ui.orch.effortUnknown", locale)}` : text("ui.orch.unknown", locale) })}</Text>
+          <Box flexDirection="row" columnGap={2}>
+            <Button key="orch-apply" label={text(objective.applyPending ? "ui.orch.applyPending" : "ui.orch.apply", locale)} plain dimColor={objective.applyPending === true} onPress={() => act.orchestration("apply")} />
+            <Button key="orch-end" label={text("ui.orch.end", locale)} plain onPress={() => act.orchestration("end")} />
+          </Box>
+        </Box>
+      ) : <Text color={INK.faint} wrap="wrap">{text("ui.orch.noObjective", locale)}</Text>}
+    </Box>,
+    ...(orch.batches.length ? [
+      <Box flexDirection="column" key="orch-batches" marginTop={1}>
+        <Text bold color={INK.ink}>{text("ui.orch.batches", locale)}</Text>
+        {orch.batches.map((b) => (
+          <Box flexDirection="row" columnGap={2} key={"batch-" + b.id}>
+            <Text color={b.verified ? INK.route : INK.pass} wrap="truncate">{text("ui.orch.batchLine", locale, { id: b.id, approved: b.approved, total: b.total, integration: b.integration, state: text(b.verified ? "ui.orch.verified" : "ui.orch.unverified", locale) })}</Text>
+            {!b.cancelled && !b.verified ? <Button key={"cancel-" + b.id} label={text("ui.orch.cancel", locale)} plain onPress={() => act.orchestration(`cancel ${b.id}`)} /> : null}
+          </Box>
+        ))}
+      </Box>,
+    ] : []),
+  ], { width: view.width, color: policy.enabled ? INK.route : INK.border, note: text("ui.orch.note", locale) });
 }
 
 /**

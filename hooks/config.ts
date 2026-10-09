@@ -2,6 +2,7 @@
 import { isProvider, PROVIDERS, resolveModel, resolveProvider, resolveUrl, type JevSettings, type ProviderId } from "./core/jev.ts";
 import { localeFor, localeOption, type Locale, type LocaleOption } from "./i18n.ts";
 import { modelTier, TIER_MODEL, type AgentPlanConfig } from "./core/plan.ts";
+import { catalogueModel, type ClaudeModelId } from "./core/orchestration.ts";
 
 export interface ModOptions {
   provider?: string;
@@ -29,6 +30,8 @@ export interface Settings extends AgentPlanConfig, JevSettings {
   locale: Locale;
   localeOption: LocaleOption;
   claudeModels: string[];
+  /** Orchestration models the user limited Claude to (claude_models); absent = not limited, availability unknown. */
+  catalogue?: ClaudeModelId[];
 }
 
 type Env = Record<string, string>;
@@ -92,14 +95,17 @@ export function keyFor(id: ProviderId, options: ModOptions, env: Env, stored: St
 /** Pure: register.tsx reads the store and the environment (only it may reach `$`). */
 export function resolveSettings(options: ModOptions, env: Env, stored: StoredSettings = {}): Settings {
   const provider = resolveProvider(env, chosenProvider(options, env, stored));
+  const listed = options.claude_models?.trim() ? options.claude_models.split(",").map((id) => id.trim()) : undefined;
+  const catalogue = listed ? [...new Set(listed.map(catalogueModel).filter((id): id is ClaudeModelId => id !== undefined))] : undefined;
   return {
     provider,
     ...keyFor(provider, options, env, stored),
     localeOption: localeOption(options.locale),
     locale: localeFor(options.locale === "auto" ? undefined : options.locale),
     promptLocale: options.routing_locale === "pt" ? "pt" : "en",
-    claudeModels: [...new Set((options.claude_models?.trim() ? options.claude_models.split(",") : Object.values(TIER_MODEL))
-      .map((id) => id.trim()).filter((id) => id.length <= 128 && /^claude-[a-z0-9.-]+$/i.test(id) && modelTier(id)))].slice(0, 40),
+    claudeModels: [...new Set((listed ?? Object.values(TIER_MODEL))
+      .filter((id) => id.length <= 128 && /^claude-[a-z0-9.-]+$/i.test(id) && modelTier(id)))].slice(0, 40),
+    ...(catalogue ? { catalogue } : {}),
     url: resolveUrl(provider),
     jevModel: resolveModel(provider, options.model?.trim()),
     timeoutMs: timeoutMs(options, env),

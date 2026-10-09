@@ -4,6 +4,7 @@
 // Drawing lives in rows.ts; the hooks that feed this module live with the band.
 
 import type { RouteEvent } from "../../types";
+import { EFFORTS } from "../core/contracts.ts";
 import { text, type Locale, type LocaleKey } from "../i18n.ts";
 import { type DeckSettings, type Section, type Show, SECTIONS } from "./settings.ts";
 import { trunc } from "./theme.ts";
@@ -26,7 +27,7 @@ export const COST_SESSIONS = 30;
 /** The version `/deck version` and `/deck status` print: the plugin's own. Keep it equal to `version` in `.claude-plugin/plugin.json`. */
 export const DECK_VERSION = "0.1.0";
 
-export const EFFORTS = ["low", "medium", "high", "xhigh", "max"] as const;
+export { EFFORTS };
 export const TIER_MODEL: Record<string, string> = { fast: "haiku", balanced: "sonnet", deep: "opus" };
 const MODEL_RANK: Record<string, number> = { haiku: 0, sonnet: 1, opus: 2 };
 

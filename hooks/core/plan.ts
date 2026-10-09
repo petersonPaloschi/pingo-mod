@@ -3,19 +3,22 @@ import type { AskJev } from "./request.ts";
 import { truncate } from "./state.ts";
 import { askTimed } from "./request.ts";
 import { readChoice } from "./selection.ts";
+import { catalogueModel, CLAUDE_MODELS } from "./orchestration.ts";
 import type { Answer, Json, ModelContext, Questions } from "./types.ts";
 import { text, type Locale, type LocaleKey } from "../i18n.ts";
-import type {
-  AgentPlan,
-  Effort,
-  Features,
-  HeldModelPick,
-  ModelPick,
-  ModelReason,
-  Tier,
+import {
+  EFFORTS,
+  type AgentPlan,
+  type Effort,
+  type Features,
+  type HeldModelPick,
+  type ModelPick,
+  type ModelReason,
+  type Tier,
 } from "./contracts.ts";
 
 export { DEFAULT_FEATURES } from "./contracts.ts";
+export { EFFORTS };
 export { readChoice } from "./selection.ts";
 export type {
   AgentPlan,
@@ -73,6 +76,8 @@ export function modelTier(id: string | undefined): Tier | undefined {
 
 /** Whether this model generation accepts an effort setting. Unknown models fail closed. */
 export function supportsEffort(modelId: string | undefined): boolean {
+  // The orchestration catalogue (Fable included) documents all five levels.
+  if (catalogueModel(modelId)) return true;
   const model = parseModelId(modelId);
   if (!model) return false;
   if (model.alias) return model.tier !== "haiku";
@@ -81,14 +86,12 @@ export function supportsEffort(modelId: string | undefined): boolean {
   if (model.tier === "haiku") return major > 5 || (major === 5 && minor >= 5);
   return model.tier === "opus" ? major > 4 || (major === 4 && minor >= 5) : major > 4 || (major === 4 && minor >= 6);
 }
-/** Default model IDs available in configuration; native agents accept the tier aliases. */
+/** Defaults use the first three catalogue entries (Haiku, Sonnet, Opus); native agents accept tier aliases. */
 export const TIER_MODEL: Record<Tier, string> = {
-  haiku: "claude-haiku-5-5",
-  sonnet: "claude-sonnet-5-5",
-  opus: "claude-opus-5-5",
+  haiku: CLAUDE_MODELS[0],
+  sonnet: CLAUDE_MODELS[1],
+  opus: CLAUDE_MODELS[2],
 };
-
-export const EFFORTS: readonly Effort[] = ["low", "medium", "high", "xhigh", "max"];
 
 export const MODEL_KEY = "model";
 export const EFFORT_KEY = "effort";
