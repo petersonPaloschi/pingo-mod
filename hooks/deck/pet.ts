@@ -5,6 +5,7 @@
 import { brailleBit, brailleChar, DEPTH, hex } from "../dots.ts";
 import type { BrailleCell } from "../dots.ts";
 import { bayer, MOODS, pingoSvg, type Mood } from "../mascots/pingo.ts";
+import { css, HUE } from "../theme.ts";
 
 export const PET_ACTS = ["idle", "walk", "run", "jump", "console", "read", "sleep", "celebrate", "alert"] as const;
 export type PetAct = (typeof PET_ACTS)[number];
@@ -116,7 +117,7 @@ export function stepPet(pet: Pet, mood: DeckMood, now: number, rand: () => numbe
   return true;
 }
 
-// The Deck's props keep their own colors; only the body is drawn in pingo's palette.
+// The props keep their own colors, apart from every mood's, so the eyes alone wear the mood's color.
 const PROP = {
   dark: 0x4a4a48,
   screen: 0x5dcaa5,
@@ -182,8 +183,10 @@ function buildSvgBody(state: PetAct, hat: string, shades: boolean): string {
   return shadow + body + propsSvg(state) + accessoriesSvg(hat, shades);
 }
 
+// the hats keep their own colors (a chef's hat is white, a cowboy's brown), and never a mood's: the eyes alone
+// wear the mood's color. The party and wizard hats take the identity's magenta and violet.
 const HAT_COLORS: Record<string, string> = {
-  tophat: "#454551", party: "#ff5fa8", crown: "#ffd23f", wizard: "#7a4fd6", cowboy: "#8b5a2b",
+  tophat: "#454551", party: css(HUE.magenta), crown: "#ffd23f", wizard: css(HUE.violet), cowboy: "#8b5a2b",
   propeller: "#3c7be0", chef: "#f4f4f4", viking: "#9aa3ad", halo: "#ffc400", santa: "#e03c3c", nightcap: "#3c7be0",
 };
 

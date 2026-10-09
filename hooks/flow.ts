@@ -5,6 +5,7 @@
 // so a test sees exactly what the pane draws.
 import type { TraceAgent, TraceMessage, TraceRun, TraceState } from "../types";
 import { DOT, hex } from "./dots.ts";
+import { PAINT } from "./theme.ts";
 import { formatClock, formatDuration, formatNumber, localeFor, text, type Locale, type LocaleKey } from "./i18n.ts";
 import { displayWidth } from "./layout.ts";
 import { confirmedModels, isDone, runTiming } from "./trace.ts";
@@ -26,16 +27,17 @@ export function prettyModel(id: string | undefined): string {
 type Style = { color: string; bold?: boolean; bg?: string };
 export type FlowSegment = { text: string } & Style;
 
-const C = {
-  ink: hex(DOT.ink),
-  dim: hex(DOT.dim),
-  faint: hex(DOT.faint),
+// Text in the drawing follows the person's theme (PAINT); the hues that name a node keep their mid-tone hex.
+const C: Record<"ink" | "dim" | "faint" | "blue" | "orange" | "you" | "green" | "fail" | "pass", string> = {
+  ink: PAINT.text,
+  dim: PAINT.muted,
+  faint: PAINT.rule,
   blue: hex(DOT.base),
-  orange: hex(DOT.claude),
-  you: hex(DOT.you),
-  green: hex(DOT.route),
-  fail: hex(DOT.fail),
-  pass: hex(DOT.pass),
+  orange: PAINT.claude,
+  you: PAINT.you,
+  green: PAINT.ok,
+  fail: PAINT.fail,
+  pass: PAINT.warn,
 };
 
 /** A grid of characters, each with its own style, turned into runs of one style per line. */

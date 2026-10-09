@@ -9,7 +9,7 @@ type Eyes = "happy" | "spinner" | "pill" | "x" | "line" | "closed";
 
 export const MOODS: Record<Mood, { eyes: Eyes; color: number; face: string }> = {
   routing: { eyes: "happy", color: DOT.route, face: "(^‿^)" },
-  thinking: { eyes: "spinner", color: DOT.ink, face: "(◌_◌)" },
+  thinking: { eyes: "spinner", color: DOT.brand, face: "(◌_◌)" },
   passthrough: { eyes: "pill", color: DOT.pass, face: "( •_•)" },
   failing: { eyes: "x", color: DOT.fail, face: "(×_×)" },
   idle: { eyes: "line", color: DOT.idle, face: "(–_–)" },

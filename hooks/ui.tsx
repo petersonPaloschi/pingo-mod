@@ -28,6 +28,7 @@ import { flowLines, flowScene } from "./flow.ts";
 import { runTiming, traceConsults } from "./trace.ts";
 import { formatAge, formatClock, formatCompact, formatDecimal, formatDuration, formatNumber, localeFor, reasonTitle, text, type Locale, type LocaleKey, type LocaleOption } from "./i18n.ts";
 import { displayWidth, rowsOf } from "./layout.ts";
+import { blockBar, css, EIGHTHS, GLYPH, HUE, PAINT } from "./theme.ts";
 import { brailleFrame, MOODS, pingoLiveSvg, type Mood } from "./mascots/pingo.ts";
 import { AGENT_MASCOTS, isMascot } from "./mascots/agents.ts";
 import { renderDeck, type DeckBand, type Surface } from "./deck/band.tsx";
@@ -55,18 +56,27 @@ export const TABS: readonly (readonly (readonly [JevTab, string, string])[])[] =
   ],
 ];
 
-/** Text colors: ink for content, grays for labels and notes, the rest only for state. */
+/**
+ * Text colors, all from hooks/theme.ts: theme keys for content, labels and rules (they follow the person's light
+ * or dark theme), the rest only for state, each state also told by a glyph.
+ */
 const INK = {
-  ink: hex(DOT.ink),
-  dim: hex(DOT.dim),
-  faint: "#929baa",
-  border: "#596273",
-  route: hex(DOT.route),
-  pass: hex(DOT.pass),
-  fail: hex(DOT.fail),
-  you: hex(DOT.you),
-  claude: hex(DOT.claude),
+  ink: PAINT.text,
+  dim: PAINT.muted,
+  faint: PAINT.muted,
+  border: PAINT.rule,
+  brand: PAINT.brand,
+  route: PAINT.ok,
+  pass: PAINT.warn,
+  fail: PAINT.fail,
+  you: PAINT.you,
+  claude: PAINT.claude,
 };
+
+function toggleButton(els: Els, key: string, on: boolean, label: string, onPress: () => void, hotkey?: string) {
+  const { Button } = els;
+  return <Button key={key} label={`${on ? GLYPH.on : GLYPH.off} ${label}`} plain hotkey={hotkey} dimColor={!on} onPress={onPress} />;
+}
 
 const MOOD_OF: Record<StatusKind, Mood> = {
   routing: "routing",
@@ -135,6 +145,8 @@ export interface View {
 /** Requested, applied and observed are kept apart: what the runtime did not report stays unknown. */
 export interface OrchestrationView {
   policy: OrchestrationPolicy;
+  /** The command being typed. */
+  draft: string;
   objective?: {
     id: string;
     workMode: WorkMode;
@@ -185,6 +197,9 @@ export interface Actions {
   deckCity: (value: string) => void;
   /** One orchestration settings command (core/orchestration.ts applyCommand, plus apply/end/cancel). */
   orchestration: (line: string) => void;
+  /** The orchestration command field: each change, then Enter. */
+  orchestrationType: (value: string) => void;
+  orchestrationSubmit: (line: string) => void;
 }
 
 const fit = (text: string, width: number) => (text.length > width ? text.slice(0, Math.max(0, width - 1)) + "…" : text.padEnd(width));
@@ -299,13 +314,18 @@ function recentStats(view: View) {
   };
 }
 
+function statsParts(stats: ReturnType<typeof recentStats>, locale: Locale) {
+  return {
+    calls: text("ui.stats.calls", locale, { count: formatNumber(stats.calls, locale) }),
+    latency: stats.latency === undefined ? "" : text("ui.stats.latency", locale, { value: formatNumber(stats.latency, locale) }),
+    tokens: text("ui.stats.tokens", locale, { value: stats.tokens === undefined ? "–" : formatCompact(stats.tokens, locale) }),
+    failures: text("ui.stats.failures", locale, { count: formatNumber(stats.failures, locale) }),
+  };
+}
+
 function statsLine(stats: ReturnType<typeof recentStats>, locale: Locale): string {
-  return [
-    text("ui.stats.calls", locale, { count: formatNumber(stats.calls, locale) }),
-    stats.latency === undefined ? "" : text("ui.stats.latency", locale, { value: formatNumber(stats.latency, locale) }),
-    text("ui.stats.tokens", locale, { value: stats.tokens === undefined ? "–" : formatCompact(stats.tokens, locale) }),
-    text("ui.stats.failures", locale, { count: formatNumber(stats.failures, locale) }),
-  ].filter(Boolean).join(" · ");
+  const parts = statsParts(stats, locale);
+  return [parts.calls, parts.latency, parts.tokens, parts.failures].filter(Boolean).join(" · ");
 }
 
 function statsPartial(stats: ReturnType<typeof recentStats>, locale: Locale): string | undefined {
@@ -320,18 +340,9 @@ export function moodOf(view: Pick<View, "events" | "routing" | "now" | "live" | 
   return MOOD_OF[status(view.events, view.routing, view.now, view.locale).kind];
 }
 
-/**
- * The rail's width for a pane `width` columns wide, or 0 when the bar goes on top. The host draws each button with
- * its number key and brackets, so the rail needs 26 columns to keep every label on one row; it only appears where
- * the screen beside it still has room to breathe.
- */
-export function railWidth(width: number): number {
-  return width >= 120 ? 26 : 0;
-}
-
-/** Pingo's size in cells for a pane `width` wide: the large sphere in the rail, the small one in the bar on top. */
+/** Pingo's size in cells: the small sphere beside its speech bubble, smaller still in a narrow pane. */
 export function pingoSize(width: number): { columns: number; rows: number } {
-  return railWidth(width) ? { columns: 18, rows: 8 } : width < 60 ? { columns: 8, rows: 4 } : { columns: 12, rows: 5 };
+  return width < 60 ? { columns: 8, rows: 4 } : { columns: 12, rows: 5 };
 }
 
 /** Pingo: braille in the terminal, SVG circles on the desktop. */
@@ -350,66 +361,85 @@ function pingoArt(els: Els, view: View, mood: Mood) {
 }
 
 /** Dark ink for a label drawn on a colored ground. */
-const PILL_INK = "#14161b";
+const PILL_INK = PAINT.onFill;
 
-/** A label on a colored ground: a state, a model, the kind of a request. */
+/** A label on a colored ground: a state, a model, the kind of a request. The ground is a mid-tone hex. */
 function pill(els: Els, label: string, ground: string) {
   const { Text } = els;
   return <Text bold color={PILL_INK} backgroundColor={ground}>{` ${label} `}</Text>;
 }
 
+/** Columns a section's body is indented under its title. */
+const INDENT = 2;
+
 /**
- * A card: a rounded frame with its title alone on the first row (so a title can be found by its words), an
- * optional faint note under it, then the body. Every screen of the dashboard is built of these.
+ * A section, the one part every screen is built of: its title alone in the first Text (so a title can be found
+ * by its words), a rule to the right edge, then the body indented under it. No frame: the rule and the indent
+ * group it, so sections side by side never leave empty boxes. `color` paints the title, `rule` the rule (a state
+ * or a mascot); an alert writes "!" on the rule and paints both red.
  */
-function card(els: Els, title: string, body: RenderChildren, opts: { color?: string; width?: number; note?: string } = {}) {
+function card(els: Els, title: string, body: RenderChildren, opts: { width: number; color?: string; rule?: string; note?: string; alert?: boolean }) {
   const { Box, Text } = els;
+  const width = Math.max(10, opts.width);
+  const mark = opts.alert ? ` ${GLYPH.warn}` : "";
+  const room = width - displayWidth(title) - displayWidth(mark) - 1;
   return (
-    <Box flexDirection="column" borderStyle="round" borderColor={opts.color ?? INK.border} paddingX={1} flexShrink={0} {...(opts.width === undefined ? {} : { width: opts.width })}>
-      <Text bold color={opts.color ?? INK.ink} wrap="wrap">{title}</Text>
-      {opts.note ? <Text color={INK.faint} wrap="wrap">{opts.note}</Text> : null}
-      <Box flexDirection="column" marginTop={1}>
+    <Box flexDirection="row" flexWrap="wrap" width={width} flexShrink={0}>
+      <Text bold color={opts.alert ? INK.fail : opts.color ?? INK.ink} wrap="wrap">{title}</Text>
+      {room >= 2 ? <Text color={opts.alert ? INK.fail : opts.rule ?? INK.border}>{`${mark} ${GLYPH.rule.repeat(room)}`}</Text> : null}
+      <Box flexDirection="column" width={width} paddingLeft={INDENT}>
+        {opts.note ? <Text color={INK.faint} wrap="wrap">{opts.note}</Text> : null}
         {body}
       </Box>
     </Box>
   );
 }
 
-/** Cards side by side, two to a row where `width` holds two of at least `min` columns, one to a row otherwise. */
+/** Columns between sections side by side. */
+const GUTTER = 3;
+
+/** Sections side by side, two to a row where `width` holds two of at least `min` columns, one to a row otherwise. */
 function grid(els: Els, width: number, cards: readonly ((width: number) => RenderChildren)[], min = 34, maxColumns = 2) {
   const { Box } = els;
-  const columns = Math.max(1, Math.min(maxColumns, Math.floor((width + 1) / (min + 1))));
-  const each = Math.floor((width - columns + 1) / columns);
+  const columns = Math.max(1, Math.min(maxColumns, Math.floor((width + GUTTER) / (min + GUTTER))));
+  const each = Math.floor((width - GUTTER * (columns - 1)) / columns);
   return (
-    <Box flexDirection="row" flexWrap="wrap" columnGap={1} rowGap={1}>
+    <Box flexDirection="row" flexWrap="wrap" columnGap={GUTTER} rowGap={1}>
       {cards.map((make) => make(each))}
     </Box>
   );
 }
 
-/** The five-minute figures, one to a line: what the rail shows under Pingo. A failure count above zero is red. */
-function statLines(els: Els, view: View) {
+/** The last five minutes in one line, what Pingo's bubble says under its sentence. A failure count above zero is red. */
+function recentLine(els: Els, view: View) {
   const { Text } = els;
   const stats = recentStats(view);
   const partial = statsPartial(stats, view.locale);
+  const parts = statsParts(stats, view.locale);
   return [
-    <Text color={INK.faint} wrap="truncate">{text("ui.rail.recent", view.locale)}</Text>,
-    <Text color={INK.ink} wrap="wrap">{text("ui.stats.calls", view.locale, { count: formatNumber(stats.calls, view.locale) })}</Text>,
-    stats.latency === undefined ? null : <Text color={INK.ink} wrap="wrap">{text("ui.stats.latency", view.locale, { value: formatNumber(stats.latency, view.locale) })}</Text>,
-    <Text color={INK.ink} wrap="wrap">{text("ui.stats.tokens", view.locale, { value: stats.tokens === undefined ? "–" : formatCompact(stats.tokens, view.locale) })}</Text>,
-    <Text bold={stats.failures > 0} color={stats.failures > 0 ? INK.fail : INK.ink} wrap="wrap">{text("ui.stats.failures", view.locale, { count: formatNumber(stats.failures, view.locale) })}</Text>,
+    <Text wrap="wrap">
+      <Text color={INK.dim}>{`${text("ui.rail.recent", view.locale)}: `}</Text>
+      <Text color={INK.ink}>{`${[parts.calls, parts.latency, parts.tokens].filter(Boolean).join(" · ")} · `}</Text>
+      <Text bold={stats.failures > 0} color={stats.failures > 0 ? INK.fail : INK.ink}>
+        {`${stats.failures > 0 ? `${GLYPH.warn} ` : ""}${parts.failures}`}
+      </Text>
+    </Text>,
     partial ? <Text color={INK.faint} wrap="wrap">{partial}</Text> : null,
   ];
 }
 
-/** The tab buttons. Upright in the rail, one per row, the open one marked ▸; side by side in the top bar. */
-function navButtons(els: Els, view: View, act: Actions, upright: boolean) {
-  const { Button } = els;
+/** The tab buttons side by side; the open one on the brand ground and marked ▸, so it reads without color too. */
+function navButtons(els: Els, view: View, act: Actions) {
+  const { Button, Text } = els;
   return TABS.flat().map(([id, label, hotkey]) => {
     const name = text(label as LocaleKey, view.locale);
-    const open = view.tab === id;
-    const shown = upright ? `${open ? "▸" : " "} ${name}` : open ? `▸ ${name}` : name;
-    return <Button key={"tab-" + id} label={shown} hotkey={hotkey} plain {...(open ? {} : { dimColor: true })} onPress={() => act.tab(id)} />;
+    return view.tab === id ? (
+      <Button key={"tab-" + id} label={`${GLYPH.open} ${name}`} hotkey={hotkey} plain onPress={() => act.tab(id)}>
+        <Text bold color={PILL_INK} backgroundColor={INK.brand}>{` ${GLYPH.open} ${name} `}</Text>
+      </Button>
+    ) : (
+      <Button key={"tab-" + id} label={name} hotkey={hotkey} plain dimColor onPress={() => act.tab(id)} />
+    );
   });
 }
 
@@ -419,73 +449,75 @@ function routingButton(els: Els, view: View, act: Actions) {
 }
 
 /**
- * The rail down the left of the pane, framed in Pingo's mood color: the name, the screens, the routing switch,
- * then Pingo with its state and the last five minutes. The screens come first, so a short pane cuts Pingo and
- * the figures, never the way to another screen.
+ * The top of the pane at every width: Pingo, and beside it the name, its mood as a face and a word, the routing
+ * switch, and a speech bubble in the mood's color with what is going on and the last five minutes. The screens
+ * follow on one line (two where narrow), the open one on the brand ground. A short terminal pane keeps one line
+ * of header and the screens.
  */
-function rail(els: Els, view: View, act: Actions, width: number) {
-  const { Box, Text } = els;
-  const state = status(view.events, view.routing, view.now, view.locale);
-  const mood = moodOf(view);
-  const ink = hex(MOODS[mood].color);
-  return (
-    <Box flexDirection="column" width={width} flexShrink={0} borderStyle="round" borderColor={ink} paddingX={1} {...(view.fixed ? { height: view.rows, overflow: "hidden" } : {})}>
-      <Text bold color={INK.ink} wrap="truncate">⠿ jev</Text>
-      <Box flexDirection="column" marginTop={1}>
-        {navButtons(els, view, act, true)}
-      </Box>
-      <Box flexDirection="column" marginTop={1}>
-        {routingButton(els, view, act)}
-      </Box>
-      <Box flexDirection="column" marginTop={1} alignItems="center">
-        {pingoArt(els, view, mood)}
-      </Box>
-      <Text wrap="truncate">{pill(els, MOODS[mood].face, ink)}</Text>
-      <Text bold color={ink} wrap="wrap">{view.live.asking ? text("ui.header.asking", view.locale) : `${state.icon} ${state.title}`}</Text>
-      <Box flexDirection="column" marginTop={1}>
-        {statLines(els, view)}
-      </Box>
-    </Box>
-  );
-}
-
-/** A pane too narrow for the rail gets the same parts as a bar on top: Pingo and its state, then the screens. */
-function topBar(els: Els, view: View, act: Actions) {
+function header(els: Els, view: View, act: Actions) {
   const { Box, Text } = els;
   const state = status(view.events, view.routing, view.now, view.locale);
   const mood = moodOf(view);
   const ink = hex(MOODS[mood].color);
   const compact = view.surface === "terminal" && view.rows < 24;
-  return (
+  const said = view.live.asking ? text("ui.header.asking", view.locale) : state.title;
+  const nameLine = (
+    <Box flexDirection="row" flexWrap="wrap" columnGap={1}>
+      <Text bold color={INK.brand}>⠿ jev</Text>
+      <Text wrap="truncate">{pill(els, MOODS[mood].face, ink)}</Text>
+      <Text bold color={ink}>{`${state.icon} ${said}`}</Text>
+      <Text color={INK.border}>·</Text>
+      {routingButton(els, view, act)}
+    </Box>
+  );
+  const nav = (
+    <Box flexDirection="row" flexWrap="wrap" columnGap={2}>
+      {navButtons(els, view, act)}
+    </Box>
+  );
+  if (compact) {
+    return (
+      <Box flexDirection="column">
+        {nameLine}
+        {nav}
+      </Box>
+    );
+  }
+  const bubble = (
     <Box flexDirection="column" borderStyle="round" borderColor={ink} paddingX={1}>
-      <Box flexDirection="row" columnGap={2}>
-        {compact ? null : pingoArt(els, view, mood)}
-        <Box flexDirection="column" flexGrow={1} flexShrink={1}>
-          <Text bold color={INK.ink} wrap="truncate">⠿ jev</Text>
-          {compact ? null : <Text wrap="truncate">
-            {pill(els, MOODS[mood].face, ink)}
-            <Text bold color={ink}>{` ${view.live.asking ? text("ui.header.asking", view.locale) : state.title}`}</Text>
-          </Text>}
-          {!compact && view.width >= 70 ? <Text color={INK.dim} wrap="wrap">{statsLine(recentStats(view), view.locale)}</Text> : null}
-          {routingButton(els, view, act)}
+      <Text color={INK.ink} wrap="wrap">{view.live.asking ? text("ui.header.asking", view.locale) : state.text}</Text>
+      {recentLine(els, view)}
+    </Box>
+  );
+  // a narrow pane puts the bubble under Pingo and its name, across the whole width, so it does not wrap word by word
+  const narrow = view.width < 60;
+  return (
+    <Box flexDirection="column" rowGap={1}>
+      <Box flexDirection="column">
+        <Box flexDirection="row" columnGap={2}>
+          <Box flexDirection="column" flexShrink={0} paddingLeft={1}>
+            {pingoArt(els, view, mood)}
+          </Box>
+          <Box flexDirection="column" flexGrow={1} flexShrink={1} justifyContent={narrow ? "center" : "flex-start"}>
+            {nameLine}
+            {narrow ? null : bubble}
+          </Box>
         </Box>
+        {narrow ? bubble : null}
       </Box>
-      <Box flexDirection="row" flexWrap="wrap" columnGap={2} marginTop={1}>
-        {navButtons(els, view, act, false)}
-      </Box>
+      {nav}
     </Box>
   );
 }
 
-/** The open screen's name over a rule in Pingo's mood color, and what the screen is for, faint, beside it. */
+/** The open screen's name in the brand color and, beside it, what the screen is for. */
 function titleBar(els: Els, view: View) {
   const { Box, Text } = els;
   const entry = TABS.flat().find(([id]) => id === view.tab) ?? TABS[0]![0]!;
   return (
-    <Box flexDirection="column">
-      <Text bold color={hex(MOODS[moodOf(view)].color)}>{text(entry[1] as LocaleKey, view.locale)}</Text>
-      <Text color={INK.dim} wrap="wrap">{text(`ui.purpose.${view.tab}` as LocaleKey, view.locale)}</Text>
-      <Text color={INK.border} wrap="truncate">{"─".repeat(Math.max(1, view.width))}</Text>
+    <Box flexDirection="row" flexWrap="wrap" columnGap={1}>
+      <Text bold color={INK.brand}>{text(entry[1] as LocaleKey, view.locale)}</Text>
+      <Text color={INK.dim} wrap="wrap">{`· ${text(`ui.purpose.${view.tab}` as LocaleKey, view.locale)}`}</Text>
     </Box>
   );
 }
@@ -503,67 +535,82 @@ function rangePicker(els: Els, view: View, act: Actions) {
   );
 }
 
-/** A heading inside a card: bold and dim, its words alone in the Text so they can be found as they are. */
+/** A heading inside a section: bold and dim, its words alone in the Text so they can be found as they are. */
 function section(els: Els, title: string) {
   const { Text } = els;
   return <Text bold color={INK.dim} wrap="truncate">{title}</Text>;
 }
 
+/** A line that stands where a section has nothing to show: a hollow glyph, then why. */
+function emptyLine(els: Els, message: string) {
+  const { Text } = els;
+  return <Text color={INK.dim} wrap="wrap">{`${GLYPH.off} ${message}`}</Text>;
+}
+
 /**
- * A group of figures as a table inside a card, `width` columns wide: the label, the value in bold, and its note.
- * A figure that flags a failure is red. Each part is its own Text; the label and value are cut to their columns,
- * the note wraps in its own.
+ * A group of figures, `width` columns wide: the label, dotted leaders to the value in bold, and its note. A figure
+ * that flags a failure is red and marked "!". A label too long for its column wraps there rather than being cut;
+ * a note too narrow beside them goes under.
  */
 function figures(els: Els, group: readonly Tile[], width: number) {
   const { Box, Text } = els;
-  // the label column is as wide as the longest label (within reason); a note too narrow beside them goes under
-  const labelWidth = Math.min(Math.max(...group.map((tile) => displayWidth(tile.label))), Math.max(10, Math.floor(width * 0.55)));
-  const valueWidth = Math.min(Math.max(...group.map((tile) => displayWidth(tile.value))), 16);
+  const valueWidth = Math.min(Math.max(...group.map((tile) => displayWidth(tile.value) + (tile.alert ? 2 : 0))), 16);
+  const longest = Math.max(...group.map((tile) => displayWidth(tile.label)));
+  const labelWidth = Math.max(8, Math.min(longest + 4, width - valueWidth - 2));
   const noteWidth = width - labelWidth - valueWidth - 4;
   const under = noteWidth < 16;
   const note = (tile: Tile) => <Text color={tile.alert ? INK.fail : INK.faint} wrap="wrap">{tile.sub}</Text>;
+  const led = (label: string) => {
+    const dots = labelWidth - displayWidth(label) - 1;
+    return dots >= 1 ? `${label} ${GLYPH.leader.repeat(dots)}` : label;
+  };
   return (
     <Box flexDirection="column" rowGap={under ? 1 : 0}>
       {group.map((tile) => (
         <Box flexDirection="column">
-          <Box flexDirection="row" columnGap={2}>
+          <Box flexDirection="row" columnGap={1}>
             <Box width={labelWidth} flexShrink={0}>
-              <Text color={INK.dim}>{fit(tile.label, labelWidth)}</Text>
+              <Text color={INK.dim} wrap="wrap">{led(tile.label)}</Text>
             </Box>
-            <Box width={valueWidth} flexShrink={0}>
-              <Text bold color={tile.alert ? INK.fail : INK.ink}>{fit(tile.value, valueWidth)}</Text>
+            <Box width={valueWidth} flexShrink={0} justifyContent="flex-end">
+              <Text bold color={tile.alert ? INK.fail : INK.ink}>{`${tile.alert ? `${GLYPH.warn} ` : ""}${tile.value}`}</Text>
             </Box>
-            {under ? null : <Box width={noteWidth} flexShrink={0}>{note(tile)}</Box>}
+            {under ? null : <Box width={noteWidth} flexShrink={0} marginLeft={1}>{note(tile)}</Box>}
           </Box>
-          {under ? note(tile) : null}
+          {under ? <Box paddingLeft={2}>{note(tile)}</Box> : null}
         </Box>
       ))}
     </Box>
   );
 }
 
-/** What happened to the requests: one bar of solid blocks split by outcome, and a legend of counts under it. */
+/**
+ * What happened to the requests: each outcome on its own line, its glyph and name, then a bar as long as its share
+ * of all requests, with the count and share. The glyph and the words tell the outcome; the color repeats them.
+ */
 function outcomeBar(els: Els, events: readonly RouteEvent[], width: number, locale: Locale) {
   const { Box, Text } = els;
   const counts = new Map(tally(events.map(category)));
   const present = categories(locale).filter(([name]) => counts.get(name));
-  const blocks = shares(present.map(([name]) => counts.get(name) ?? 0), Math.max(10, width));
+  const room = Math.max(6, width - 16);
   return (
     <Box flexDirection="column" marginBottom={1}>
-      <Text>
-        {present.map(([name], i) => (
-          <Text color={hex(CATEGORY_DOT[name][1])}>{"█".repeat(blocks[i]!)}</Text>
-        ))}
-      </Text>
-      <Box flexDirection="row" flexWrap="wrap" columnGap={2}>
-        {present.map(([name, label]) => (
-          <Text>
-            <Text color={hex(CATEGORY_DOT[name][1])}>■ </Text>
-            <Text color={INK.dim}>{`${label} `}</Text>
-            <Text bold color={INK.ink}>{`${int(counts.get(name) ?? 0, locale)} · ${pct(counts.get(name) ?? 0, events.length, locale)}`}</Text>
-          </Text>
-        ))}
-      </Box>
+      {present.map(([name, label]) => {
+        const count = counts.get(name) ?? 0;
+        const [glyph, color] = CATEGORY_DOT[name];
+        return (
+          <Box flexDirection="column">
+            <Text wrap="wrap">
+              <Text bold color={hex(color)}>{`${glyph} `}</Text>
+              <Text color={INK.ink}>{label}</Text>
+            </Text>
+            <Text wrap="truncate">
+              <Text color={hex(color)}>{`  ${blockBar(count / Math.max(1, events.length), room).padEnd(room)}`}</Text>
+              <Text bold color={INK.ink}>{` ${int(count, locale)} · ${pct(count, events.length, locale)}`}</Text>
+            </Text>
+          </Box>
+        );
+      })}
     </Box>
   );
 }
@@ -609,6 +656,9 @@ function sparkline(els: Els, view: View, events: readonly RouteEvent[], width: n
     else runs.push([char, color]);
   });
   const complete = events.filter((event) => event.usage?.input !== undefined && event.usage.cached !== undefined && event.usage.cacheWrite !== undefined && event.usage.output !== undefined).length;
+  // a slot whose worst outcome failed is marked under the line, so a failure is told by a glyph and not by color alone
+  const failedSlot = OUTCOMES.indexOf("failed");
+  const marks = worst.some((outcome) => outcome === failedSlot) ? worst.map((outcome) => (outcome === failedSlot ? CATEGORY_DOT.failed[0] : " ")).join("").trimEnd() : "";
   return (
     <Box flexDirection="column">
       <Text>
@@ -616,6 +666,8 @@ function sparkline(els: Els, view: View, events: readonly RouteEvent[], width: n
           <Text color={color}>{chars}</Text>
         ))}
       </Text>
+      {marks ? <Text bold color={INK.fail} wrap="truncate">{marks}</Text> : null}
+      {marks ? <Text color={INK.fail} wrap="wrap">{text("ui.timeline.failMarks", view.locale)}</Text> : null}
       <Text color={INK.faint} wrap="wrap">
         {text("ui.timeline.caption", view.locale, {
           start: view.range > 0 ? text("ui.timeline.ago", view.locale, { age: formatAge(view.range, view.locale) }) : text("ui.timeline.start", view.locale),
@@ -660,24 +712,22 @@ function overview(els: Els, view: View, act: Actions) {
     return (
       <Box flexDirection="column" rowGap={1}>
         {head}
-        <Box borderStyle="round" borderColor={INK.faint} paddingX={1}>
-          <Text color={INK.dim} wrap="wrap">{text("ui.overview.empty", view.locale)}</Text>
-        </Box>
+        {emptyLine(els, text("ui.overview.empty", view.locale))}
       </Box>
     );
   }
-  const alertOf = (group: readonly Tile[]) => (group.some((tile) => tile.alert) ? INK.fail : INK.faint);
+  const alertOf = (group: readonly Tile[]) => group.some((tile) => tile.alert);
   const cards: ((width: number) => RenderChildren)[] = [];
   if (events.length) {
-    cards.push((width) => card(els, text("ui.overview.routing", view.locale), [outcomeBar(els, events, width - 4, view.locale), figures(els, group("routing"), width - 4)], { width, color: alertOf(group("routing")) }));
+    cards.push((width) => card(els, text("ui.overview.routing", view.locale), [outcomeBar(els, events, width - INDENT, view.locale), figures(els, group("routing"), width - INDENT)], { width, alert: alertOf(group("routing")) }));
   }
-  if (group("jev").length) cards.push((width) => card(els, text("ui.overview.jev", view.locale), figures(els, group("jev"), width - 4), { width, color: alertOf(group("jev")) }));
-  if (group("tokens").length) cards.push((width) => card(els, text("ui.overview.tokens", view.locale), figures(els, group("tokens"), width - 4), { width }));
+  if (group("jev").length) cards.push((width) => card(els, text("ui.overview.jev", view.locale), figures(els, group("jev"), width - INDENT), { width, alert: alertOf(group("jev")) }));
+  if (group("tokens").length) cards.push((width) => card(els, text("ui.overview.tokens", view.locale), figures(els, group("tokens"), width - INDENT), { width, alert: alertOf(group("tokens")) }));
   return (
     <Box flexDirection="column" rowGap={1}>
       {head}
-      {grid(els, view.width, cards, 28)}
-      {events.length ? card(els, text("ui.overview.timeline", view.locale), sparkline(els, view, events, view.width - 4)) : null}
+      {grid(els, view.width, cards, 44)}
+      {events.length ? card(els, text("ui.overview.timeline", view.locale), sparkline(els, view, events, view.width - INDENT), { width: view.width }) : null}
     </Box>
   );
 }
@@ -702,9 +752,9 @@ function logView(els: Els, view: View) {
         grouped.length === 0
           ? <Text color={INK.faint}>{text("ui.log.noReasons", view.locale)}</Text>
           : grid(els, view.width - 4, reasonsShown.map((reason) => (reasonWidth) => (
-                <Box width={reasonWidth} flexShrink={0}>
+                <Box flexDirection="column" width={reasonWidth} flexShrink={0}>
                   <Text bold color={colorFor(reason.who)} wrap="wrap">{`${reasonTitle(reason.name, view.locale)} · ${int(reason.count, view.locale)} · ${pct(reason.count, unhandled, view.locale)}`}</Text>
-                  <Text color={colorFor(reason.who)} wrap="truncate">{"▬".repeat(Math.max(1, Math.round((Math.max(6, reasonWidth - 2) * reason.count) / most)))}</Text>
+                  <Text color={colorFor(reason.who)} wrap="truncate">{blockBar(reason.count / most, Math.max(6, reasonWidth - 2)) || EIGHTHS[0]}</Text>
                 </Box>
               )), 28),
         { width: view.width, note: grouped.length > reasonsShown.length ? text("ui.log.moreReasons", view.locale, { hidden: formatNumber(grouped.length - reasonsShown.length, view.locale) }) : undefined },
@@ -799,7 +849,7 @@ function step(els: Els, n: number, label: string, done: boolean, body: RenderChi
   return (
     <Box flexDirection="column" marginTop={1}>
       <Text wrap="truncate">
-        {pill(els, done ? "✓" : String(n), done ? INK.route : INK.faint)}
+        {pill(els, done ? GLYPH.ok : String(n), done ? css(HUE.ok) : css(HUE.neutral))}
         <Text bold color={INK.ink}>{` ${label}`}</Text>
       </Text>
       <Box flexDirection="column" marginLeft={4}>
@@ -812,7 +862,7 @@ function step(els: Els, n: number, label: string, done: boolean, body: RenderChi
 /** Feature switches and the preferences that control their behavior. */
 function featuresView(els: Els, view: View, act: Actions) {
   const { Box, Text, Button, Select } = els;
-  const state = `● ${text("ui.configuration.enabledValue", view.locale)}  ○ ${text("ui.configuration.disabledValue", view.locale)}`;
+  const state = `${GLYPH.on} ${text("ui.configuration.enabledValue", view.locale)}  ${GLYPH.off} ${text("ui.configuration.disabledValue", view.locale)}`;
   const summaryKeys: Record<FeatureId, LocaleKey> = {
     agents: "ui.features.summary.agents",
     farol: "ui.features.summary.farol",
@@ -824,15 +874,8 @@ function featuresView(els: Els, view: View, act: Actions) {
     sentinela: "ui.features.summary.sentinela",
     vigia: "ui.features.summary.vigia",
   };
-  const preferenceToggle = (key: keyof FeaturePreferences, label: string, on: boolean) => () => (
-    <Button
-      key={key}
-      label={`${on ? "●" : "○"} ${label}`}
-      plain
-      dimColor={!on}
-      onPress={() => act.preference(key, !on)}
-    />
-  );
+  const preferenceToggle = (key: keyof FeaturePreferences, label: string, on: boolean) => () =>
+    toggleButton(els, key, on, label, () => act.preference(key, !on));
   const locale = view.locale;
   const preferences = view.preferences;
   const featuresList = features(locale).map((feature) => (cellWidth: number) => {
@@ -840,14 +883,7 @@ function featuresView(els: Els, view: View, act: Actions) {
     const name = feature.id === "agents" ? text("ui.features.agentsShort", locale) : feature.name;
     return (
       <Box flexDirection="column" width={cellWidth} flexShrink={0}>
-        <Button
-          key={"feature-" + feature.id}
-          label={`${on ? "●" : "○"} ${name}`}
-          plain
-          hotkey={feature.hotkey}
-          dimColor={!on}
-          onPress={() => act.feature(feature.id, !on)}
-        />
+        {toggleButton(els, "feature-" + feature.id, on, name, () => act.feature(feature.id, !on), feature.hotkey)}
         <Text color={INK.dim} wrap="wrap">{text(summaryKeys[feature.id], locale)}</Text>
       </Box>
     );
@@ -905,14 +941,14 @@ function configurationView(els: Els, view: View, act: Actions) {
   const typed = view.setup.typed ?? "";
   const message = view.setup.message;
   const connected = view.setup.isOk && Boolean(message) && !view.setup.busy;
-  const cardWidth = view.width >= 101 ? Math.floor((view.width - 1) / 2) : view.width;
+  const cardWidth = view.width >= 101 ? Math.floor((view.width - GUTTER) / 2) : view.width;
   return (
     <Box flexDirection="column" rowGap={1}>
       <Box flexDirection="column">
         <Text color={INK.dim} wrap="wrap">{text("ui.setup.intro", view.locale)}</Text>
         {!view.routing ? <Text color={INK.pass} wrap="wrap">{text("ui.configuration.routingOff", view.locale)}</Text> : null}
       </Box>
-      <Box flexDirection="row" flexWrap="wrap" columnGap={1} rowGap={1}>
+      <Box flexDirection="row" flexWrap="wrap" columnGap={GUTTER} rowGap={1}>
         {card(
           els,
           text("ui.configuration.provider", view.locale),
@@ -985,7 +1021,7 @@ function configurationView(els: Els, view: View, act: Actions) {
             <Text color={INK.pass} wrap="wrap">{text("ui.setup.privacy", view.locale)}</Text>
           </Box>,
           ],
-          { width: cardWidth, color: connected ? INK.route : INK.border },
+          { width: cardWidth, ...(connected ? { rule: INK.route } : {}) },
         )}
         {card(els, text("ui.configuration.history", view.locale), [
           <Text color={INK.faint} wrap="truncate">{view.meta}</Text>,
@@ -1054,9 +1090,7 @@ function orchestrationCard(els: Els, view: View, orch: OrchestrationView, act: A
   const { Box, Text, Button, Select, Input } = els;
   const locale = view.locale;
   const policy = orch.policy;
-  const toggle = (on: boolean, label: string, line: string, key: string) => (
-    <Button key={key} label={`${on ? "●" : "○"} ${label}`} plain dimColor={!on} onPress={() => act.orchestration(line)} />
-  );
+  const toggle = (on: boolean, label: string, line: string, key: string) => toggleButton(els, key, on, label, () => act.orchestration(line));
   const objective = orch.objective;
   const limits = policy.limits;
   const nativeValue = policy.nativeAdvisor.mode === "fixed" ? policy.nativeAdvisor.model : policy.nativeAdvisor.mode;
@@ -1092,10 +1126,11 @@ function orchestrationCard(els: Els, view: View, orch: OrchestrationView, act: A
     })}</Text>,
     <Input
       key="orch-command"
-      value=""
+      value={orch.draft}
       placeholder={text("ui.orch.commandPlaceholder", locale)}
       submitLabel={text("ui.orch.commandSubmit", locale)}
-      onSubmit={(value) => act.orchestration(value)}
+      onInput={(value) => act.orchestrationType(value)}
+      onSubmit={(value) => act.orchestrationSubmit(value)}
     />,
     orch.message ? <Text key="orch-message" color={orch.message.ok ? INK.route : INK.fail} wrap="wrap">{orch.message.text}</Text> : null,
     <Box flexDirection="column" key="orch-objective" marginTop={1}>
@@ -1124,7 +1159,7 @@ function orchestrationCard(els: Els, view: View, orch: OrchestrationView, act: A
         ))}
       </Box>,
     ] : []),
-  ], { width: view.width, color: policy.enabled ? INK.route : INK.border, note: text("ui.orch.note", locale) });
+  ], { width: view.width, ...(policy.enabled ? { rule: INK.route } : {}), note: text("ui.orch.note", locale) });
 }
 
 /**
@@ -1136,9 +1171,7 @@ function deckView(els: Els, view: View, act: Actions) {
   const { locale, deck } = view;
   if (!deck) return <Text color={INK.faint} wrap="wrap">{text("ui.deck.intro", locale)}</Text>;
   const { settings } = deck;
-  const toggle = (key: string, on: boolean, label: string, command: string) => (
-    <Button key={key} plain label={`${on ? "●" : "○"} ${label}`} dimColor={!on} onPress={() => act.deck(`${command} ${on ? "off" : "on"}`)} />
-  );
+  const toggle = (key: string, on: boolean, label: string, command: string) => toggleButton(els, key, on, label, () => act.deck(`${command} ${on ? "off" : "on"}`));
   const choices = (names: Record<string, string>, list: readonly string[]) => list.map((value) => ({ value, label: names[value] ?? value }));
   const verb = deck.note?.verb;
   const noteGroup = !verb ? undefined
@@ -1150,7 +1183,7 @@ function deckView(els: Els, view: View, act: Actions) {
     : "ui.deck.status";
   const groups: [LocaleKey, RenderChildren][] = [
     ["ui.deck.band", <Box flexDirection="column" rowGap={1}>
-      <Button key="deck-band" plain label={`${deck.open ? "●" : "○"} ${text(deck.open ? "ui.deck.bandOpen" : "ui.deck.bandShut", locale, { hotkey: "e" })}`} hotkey="e" onPress={() => act.deck(deck.open ? "collapse" : "expand")} />
+      {toggleButton(els, "deck-band", deck.open, text(deck.open ? "ui.deck.bandOpen" : "ui.deck.bandShut", locale, { hotkey: "e" }), () => act.deck(deck.open ? "collapse" : "expand"), "e")}
       <Box flexDirection="column">
         <Text color={INK.dim}>{text("ui.deck.look", locale)}</Text>
         <Select key="deck-look" value={settings.collapsed} options={COLLAPSED.map((value) => ({ value, label: text(`ui.deck.look.${value}`, locale) }))} onSelect={(value) => act.deck(`collapsed ${value}`)} />
@@ -1160,14 +1193,14 @@ function deckView(els: Els, view: View, act: Actions) {
       <Select key="deck-style-desktop" label={text("ui.deck.styleDesktop", locale)} value={settings.style.desktop} options={choices(DESKTOP_STYLE_NAMES, DESKTOP_STYLES)} onSelect={(value) => act.deckStyle("desktop", value)} />
       <Button key="deck-style-pick" plain label={text("ui.deck.stylePick", locale, { hotkey: "s" })} hotkey="s" onPress={() => act.deck("style")} />
     </Box>],
-    ["ui.deck.show", <Box flexDirection="column" rowGap={1}>
+    ["ui.deck.show", <Box flexDirection="column">
       {SECTIONS.map((id) => toggle(`deck-show-${id}`, settings.show[id], text(`deck.section.${id}`, locale), id))}
-      <Box flexDirection="row" flexWrap="wrap" columnGap={2} rowGap={1}>
+      <Box flexDirection="row" flexWrap="wrap" columnGap={2} marginTop={1}>
         <Button key="deck-all-on" plain label={text("ui.deck.showAll", locale)} onPress={() => act.deck("all on")} />
         <Button key="deck-all-off" plain label={text("ui.deck.hideAll", locale)} dimColor onPress={() => act.deck("all off")} />
       </Box>
     </Box>],
-    ["ui.deck.extras", <Box flexDirection="column" rowGap={1}>
+    ["ui.deck.extras", <Box flexDirection="column">
       {toggle("deck-auto", settings.auto, text("ui.deck.auto", locale), "auto")}
       {toggle("deck-sound", settings.sound, text("ui.deck.sound", locale), "sound")}
       {toggle("deck-quiet", settings.quiet, text("ui.deck.quiet", locale), "quiet")}
@@ -1177,7 +1210,7 @@ function deckView(els: Els, view: View, act: Actions) {
       <Text color={INK.dim} wrap="wrap">{settings.city ? text("ui.deck.cityNow", locale, { city: settings.city.name }) : text("ui.deck.cityNone", locale)}</Text>
       <Input key="deck-city" value={deck.draft} placeholder={text("ui.deck.cityPlaceholder", locale)} submitLabel={text("ui.deck.citySet", locale)} onInput={(value) => act.deckType(value)} onSubmit={(value) => act.deckCity(value)} />
     </Box>],
-    ["ui.deck.tools", <Box flexDirection="column" rowGap={1}>
+    ["ui.deck.tools", <Box flexDirection="column">
       <Button key="deck-panel-open" plain label={text("ui.deck.panelOpen", locale, { hotkey: "p" })} hotkey="p" onPress={() => act.deck("panel")} />
       <Button key="deck-panel-close" plain label={text("ui.deck.panelClose", locale)} onPress={() => act.deck("panel off")} />
       <Button key="deck-demo" plain label={text("ui.deck.demo", locale)} onPress={() => act.deck("demo")} />
@@ -1407,7 +1440,7 @@ function liveView(els: Els, view: View, act: Actions, rows: number) {
       {view.flowDetails ? <Box flexDirection="column" rowGap={1}>{liveTop(els, view, act)}{runFlow(els, view)}</Box> : grid(els, view.width, [
         (width) => <Box width={width} flexShrink={0}>{liveTop(els, { ...view, width }, act)}</Box>,
         (width) => <Box width={width} flexShrink={0}>{runFlow(els, { ...view, width })}</Box>,
-      ], 38)}
+      ], 48)}
       {logRule(els, view, text("ui.live.title", view.locale))}
     </Box>
   );
@@ -1465,13 +1498,13 @@ function liveTop(els: Els, view: View, act: Actions) {
       <Text wrap="wrap">
         {pill(els, `${mood.face} ${text("ui.live.jev", view.locale)}`, hex(mood.color))}
         <Text color={now.asking ? INK.route : INK.dim}>{` ${now.asking ? text("ui.live.asking", view.locale) : state.title}  `}</Text>
-        {pill(els, `◆ ${modelName(now.model)}${now.effort ? ` · ${now.effort}` : ""}`, INK.claude)}
+        {pill(els, `◆ ${modelName(now.model)}${now.effort ? ` · ${now.effort}` : ""}`, css(HUE.claude))}
         {running.map((run) => {
           const mascot = mascotOf(run);
           return (
             <Text>
               <Text> </Text>
-              {pill(els, `◆ ${mascot ? mascot.name : text("ui.live.subagent", view.locale)}`, mascot ? hex(mascot.color) : INK.route)}
+              {pill(els, `◆ ${mascot ? mascot.name : text("ui.live.subagent", view.locale)}`, mascot ? hex(mascot.color) : css(HUE.ok))}
             </Text>
           );
         })}
@@ -1549,28 +1582,34 @@ function agentState(els: Els, view: View, run: AgentRun) {
   );
 }
 
-/** One subagent's card, `width` wide, framed in its mascot's color while it runs and faint once it has ended. */
+/** A subagent's accent: its mascot's color while it runs, red after an error, the rule color once it has ended. */
+function agentAccent(run: AgentRun): string {
+  const mascot = mascotOf(run);
+  return run.state === "running" ? (mascot ? hex(mascot.color) : INK.route) : run.state === "error" ? INK.fail : INK.border;
+}
+
+/** "Explore #3", the title of a subagent's section. */
+const agentTitle = (run: AgentRun, locale: Locale) => text("ui.agent.number", locale, { type: run.type, number: formatNumber(run.n, locale) });
+
+/** One subagent as a section `width` wide, its rule in its mascot's color while it runs: who, state, task, figures. */
 function agentCard(els: Els, view: View, act: Actions, run: AgentRun, width: number) {
   const { Box, Text, Button } = els;
   const mascot = mascotOf(run);
-  const frame = run.state === "running" ? (mascot ? hex(mascot.color) : INK.route) : run.state === "error" ? INK.fail : INK.faint;
-  const lineWidth = Math.max(1, width - 4);
-  return (
-    <Box flexDirection="column" width={width} flexShrink={0} borderStyle="round" borderColor={frame} paddingX={1}>
-      <Box flexDirection="row" flexWrap="wrap" columnGap={1}>
-        {agentName(els, run, view.locale)}
-        {agentState(els, view, run)}
-      </Box>
-      <Text bold color={INK.ink} wrap="truncate">{oneLine(run.description, lineWidth)}</Text>
-      <Text color={INK.dim} wrap="truncate">{oneLine(`${agentModel(run, view.locale)} · ${agentNumbers(run, view.locale)}`, lineWidth)}</Text>
-      <Text color={run.state === "running" ? INK.ink : INK.dim} wrap="wrap">
-        {oneLine(run.state === "running" ? `▶ ${run.activity ?? text("ui.agent.running", view.locale)}` : run.text ? `“${run.text}”` : text("ui.agent.noResponse", view.locale), lineWidth)}
-      </Text>
-      <Box flexDirection="row" columnGap={1} flexWrap="wrap">
-        <Button key={`agent-open-${run.n}`} label={text("ui.agent.liveOpen", view.locale, { number: formatNumber(run.n, view.locale) })} onPress={() => act.openAgent(run.n)} />
-      </Box>
-    </Box>
-  );
+  const lineWidth = Math.max(1, width - INDENT);
+  return card(els, agentTitle(run, view.locale), [
+    <Box flexDirection="row" flexWrap="wrap" columnGap={1}>
+      {mascot ? <Text>{pill(els, `◆ ${mascot.name}`, hex(mascot.color))}</Text> : null}
+      {agentState(els, view, run)}
+    </Box>,
+    <Text bold color={INK.ink} wrap="truncate">{oneLine(run.description, lineWidth)}</Text>,
+    <Text color={INK.dim} wrap="truncate">{oneLine(`${agentModel(run, view.locale)} · ${agentNumbers(run, view.locale)}`, lineWidth)}</Text>,
+    <Text color={run.state === "running" ? INK.ink : INK.dim} wrap="wrap">
+      {oneLine(run.state === "running" ? `${GLYPH.run} ${run.activity ?? text("ui.agent.running", view.locale)}` : run.text ? `“${run.text}”` : text("ui.agent.noResponse", view.locale), lineWidth)}
+    </Text>,
+    <Box flexDirection="row" columnGap={1} flexWrap="wrap">
+      <Button key={`agent-open-${run.n}`} label={text("ui.agent.liveOpen", view.locale, { number: formatNumber(run.n, view.locale) })} onPress={() => act.openAgent(run.n)} />
+    </Box>,
+  ], { width, rule: agentAccent(run), ...(run.state === "running" && mascot ? { color: hex(mascot.color) } : {}) });
 }
 
 /** The Agents screen: every subagent Claude started as a card, running ones first, two to a row where they fit. */
@@ -1589,11 +1628,9 @@ function agentsView(els: Els, view: View, act: Actions) {
         {finished ? <Button key="agents-clear" label={text("ui.agents.clearFinished", view.locale, { count: formatNumber(finished, view.locale) })} hotkey="l" onPress={() => act.clearAgents()} /> : null}
       </Box>
       {list.length === 0 ? (
-        <Box borderStyle="round" borderColor={INK.faint} paddingX={1}>
-          <Text color={INK.dim} wrap="wrap">{text("ui.agents.emptyDescription", view.locale)}</Text>
-        </Box>
+        emptyLine(els, text("ui.agents.emptyDescription", view.locale))
       ) : (
-        grid(els, view.width, shown.map((run) => (width: number) => agentCard(els, view, act, run, width)), 24, 3)
+        grid(els, view.width, shown.map((run) => (width: number) => agentCard(els, view, act, run, width)), 36, 3)
       )}
       {hidden ? <Text color={INK.faint} wrap="truncate">{text("ui.agents.more", view.locale, { hidden: formatNumber(hidden, view.locale) })}</Text> : null}
     </Box>
@@ -1623,22 +1660,23 @@ export function renderAgentPane(els: Els, view: View, run: AgentRun | undefined,
   if (run.state !== "running" && run.text) {
     lines.push({ seq: -1, time: run.endedAt ?? view.now, who: "agent", agent: run.id, mascot: run.mascot, kind: "agent", tone: "info", text: text("ui.agent.result", view.locale, { text: run.text }) });
   }
-  // the top is a card in the mascot’s color: who it is, its state, its task and its figures
-  const mascot = mascotOf(run);
+  // the top is a section ruled in the mascot’s color: who it is, its state, its task and its figures
   const top = (
-    <Box flexDirection="column" flexShrink={0} borderStyle="round" borderColor={run.state === "running" ? (mascot ? hex(mascot.color) : INK.route) : INK.faint} paddingX={1}>
-      <Text wrap="truncate">{agentName(els, run, view.locale)}</Text>
-      {agentState(els, view, run)}
-      <Text bold color={INK.ink} wrap="truncate-end">{run.description}</Text>
-      <Text color={INK.dim} wrap="truncate-end">{agentModel(run, view.locale)}</Text>
-      <Text color={INK.faint} wrap="truncate-end">{agentNumbers(run, view.locale)}</Text>
-      {run.state === "running" ? (
-        <Text wrap="truncate-end">
-          <Text color={INK.faint}>{text("ui.agent.now", view.locale)} </Text>
-          <Text bold color={INK.ink}>{run.activity ?? text("ui.agent.running", view.locale)}</Text>
-        </Text>
-      ) : null}
-      {buttons}
+    <Box flexDirection="column" flexShrink={0}>
+      {card(els, agentTitle(run, view.locale), [
+        <Text wrap="truncate">{agentName(els, run, view.locale)}</Text>,
+        agentState(els, view, run),
+        <Text bold color={INK.ink} wrap="truncate-end">{run.description}</Text>,
+        <Text color={INK.dim} wrap="truncate-end">{agentModel(run, view.locale)}</Text>,
+        <Text color={INK.faint} wrap="truncate-end">{agentNumbers(run, view.locale)}</Text>,
+        run.state === "running" ? (
+          <Text wrap="truncate-end">
+            <Text color={INK.faint}>{text("ui.agent.now", view.locale)} </Text>
+            <Text bold color={INK.ink}>{run.activity ?? text("ui.agent.running", view.locale)}</Text>
+          </Text>
+        ) : null,
+        buttons,
+      ], { width: view.width, rule: agentAccent(run) })}
     </Box>
   );
   // The task Claude gave it opens the log: shown once scrolled back to the start.
@@ -1720,7 +1758,7 @@ function runFlow(els: Els, view: View) {
       </Text>,
       ...details.map((detail) => <Text color={detail.color} wrap="wrap">{detail.text}</Text>),
       ...times,
-    ]);
+    ], { width: view.width });
   }
   const lines = flowLines({ trace: view.trace, now: view.now, width: Math.max(1, view.width - 2), locale: view.locale });
   return (
@@ -1812,14 +1850,14 @@ function modelsView(els: Els, view: View) {
   return (
     <Box flexDirection="column" rowGap={1}>
       {grid(els, view.width, [
-        (width) => card(els, text("ui.models.now", view.locale), <Text wrap="truncate">{pill(els, `◆ ${modelName(view.live.model)}`, INK.claude)}{view.live.effort ? <Text color={INK.ink}>{` ${text("ui.models.effort", view.locale, { effort: view.live.effort })}`}</Text> : null}</Text>, { color: INK.claude, width }),
+        (width) => card(els, text("ui.models.now", view.locale), <Text wrap="truncate">{pill(els, `◆ ${modelName(view.live.model)}`, css(HUE.claude))}{view.live.effort ? <Text color={INK.ink}>{` ${text("ui.models.effort", view.locale, { effort: view.live.effort })}`}</Text> : null}</Text>, { color: INK.claude, width }),
         (width) => card(els, text("ui.models.jevUsage", view.locale), jevGroups.length
           ? jevGroups.map((group) => {
               const counters = (["input", "output", "cacheRead", "cacheWrite"] as const).filter((counter) => group.sums[counter] !== undefined).map((counter) => jevCounterText(group, counter, view.locale));
               return <Box flexDirection="column"><Text bold color={INK.ink} wrap="truncate">{text(group.observed ? "ui.models.jevObserved" : "ui.models.jevRequested", view.locale, { model: modelName(group.model), calls: formatNumber(group.calls, view.locale) })}</Text><Text color={INK.dim} wrap="truncate">{counters.join(" · ") || text("ui.models.jevNoUsage", view.locale)}</Text></Box>;
             })
-          : <Text color={INK.faint} wrap="truncate">{text("ui.models.jevNoUsage", view.locale)}</Text>, { width }),
-      ], 18)}
+          : <Text color={INK.faint} wrap="wrap">{text("ui.models.jevNoUsage", view.locale)}</Text>, { width }),
+      ], 40)}
       {card(els, text("ui.models.requests", view.locale), shown.length
         ? shown.map((step) => {
             const model = step.observed && step.observed !== step.sent
@@ -1837,38 +1875,27 @@ function modelsView(els: Els, view: View) {
 }
 
 /**
- * The Jev pane: the rail on the left (or the bar on top, in a narrow pane), and the open screen beside it under
- * its title. Every screen is drawn and measured at the width it really gets. On the terminal the pane is exactly
- * its room tall: the rail and the title stay, and the screen below the title moves by its own offset.
+ * The Jev pane: the header (Pingo and its speech bubble, then the screens) on top at every width, the open
+ * screen's title, then the screen itself across the whole width. Every screen is drawn and measured at the width
+ * it really gets. On the terminal the pane is exactly its room tall: the header stays, and the screen below the
+ * title moves by its own offset.
  */
 export function renderPane(els: Els, view: View, act: Actions) {
   const { Box, Text } = els;
-  // the full run details take the whole width: the drawn run needs every column it can get
-  const side = !(view.tab === "live" && view.flowDetails) ? railWidth(view.width) : 0;
-  const width = side ? Math.max(20, view.width - side - 1) : view.width;
-  const inner: View = { ...view, width };
-  const top = side ? (
-    titleBar(els, inner)
-  ) : (
-    <Box flexDirection="column">
-      {topBar(els, view, act)}
+  const width = view.width;
+  const inner: View = view;
+  const top = (
+    <Box flexDirection="column" rowGap={1}>
+      {header(els, view, act)}
       {titleBar(els, inner)}
     </Box>
   );
   const fixed = view.fixed ? { height: view.rows, overflow: "hidden" as const } : {};
-  const frame = (main: RenderChildren) =>
-    side ? (
-      <Box flexDirection="row" columnGap={1} {...fixed}>
-        {rail(els, view, act, side)}
-        <Box flexDirection="column" width={width} flexShrink={0} {...(view.fixed ? fixed : { rowGap: 1 })}>
-          {main}
-        </Box>
-      </Box>
-    ) : (
-      <Box flexDirection="column" {...(view.fixed ? fixed : { rowGap: 1 })}>
-        {main}
-      </Box>
-    );
+  const frame = (main: RenderChildren) => (
+    <Box flexDirection="column" {...(view.fixed ? fixed : { rowGap: 1 })}>
+      {main}
+    </Box>
+  );
   if (!view.fixed) return frame([top, tabBody(els, inner, act, view.rows)]);
   const rows = Math.max(4, view.rows - rowsOf(top, width));
   if (view.tab === "live") return frame([top, liveView(els, inner, act, rows)]);
@@ -1932,7 +1959,10 @@ export function renderAbove(els: ElementTable, view: View, deck: DeckBand | null
   );
 }
 
-/** Above the prompt: current status, observed Jev metrics, model, activity, and running agents. */
+/**
+ * Above the prompt, in the dashboard's language: Pingo's face and Jev's state in the mood's color with the last five
+ * minutes beside it, then the main model, what Claude is doing, and the subagents at work in their mascots' colors.
+ */
 export function renderBand(els: ElementTable, view: View) {
   const { Box, Text } = els;
   const state = status(view.events, view.routing, view.now, view.locale);
@@ -1940,26 +1970,28 @@ export function renderBand(els: ElementTable, view: View) {
   const moodInk = hex(MOODS[mood].color);
   const stats = recentStats(view);
   const now = view.live;
-  const running = view.agents.filter((run) => run.state === "running").length;
+  const runningAgents = view.agents.filter((run) => run.state === "running");
+  const running = runningAgents.length;
   return (
     <Box flexDirection="column">
       <Box flexDirection="row" columnGap={1} flexWrap="wrap">
+        <Text bold color={INK.brand}>⠿</Text>
         <Text bold color={moodInk}>{`${MOODS[mood].face} ${text("ui.live.jev", view.locale)}: ${view.live.asking ? text("ui.band.asking", view.locale) : state.title}`}</Text>
-        <Text color={INK.dim}>{statsLine(stats, view.locale)}</Text>
+        <Text color={INK.border}>·</Text>
+        <Text color={stats.failures > 0 ? INK.fail : INK.dim}>{`${stats.failures > 0 ? `${GLYPH.warn} ` : ""}${statsLine(stats, view.locale)}`}</Text>
         {statsPartial(stats, view.locale) ? <Text color={INK.faint}>{statsPartial(stats, view.locale)}</Text> : null}
       </Box>
       <Box flexDirection="row" columnGap={1} flexWrap="wrap">
-        <Text color={INK.ink}>{`◆ ${modelName(now.model)}${now.effort ? ` · ${now.effort}` : ""}`}</Text>
-        <Text color={INK.faint}>·</Text>
-        <Text color={now.activity ? INK.ink : INK.faint}>{now.activity ? `▶ ${now.activity}` : text("ui.band.idle", view.locale)}</Text>
-        {running ? <Text color={INK.faint}>·</Text> : null}
+        <Text color={INK.claude}>◆</Text>
+        <Text color={INK.ink}>{`${modelName(now.model)}${now.effort ? ` · ${now.effort}` : ""}`}</Text>
+        <Text color={INK.border}>·</Text>
+        <Text color={now.activity ? INK.ink : INK.faint}>{now.activity ? `${GLYPH.run} ${now.activity}` : text("ui.band.idle", view.locale)}</Text>
+        {running ? <Text color={INK.border}>·</Text> : null}
         {running
-          ? view.agents
-              .filter((run) => run.state === "running")
-              .map((run) => {
-                const mascot = mascotOf(run);
-                return <Text bold color={mascot ? hex(mascot.color) : INK.route}>◆</Text>;
-              })
+          ? runningAgents.map((run) => {
+              const mascot = mascotOf(run);
+              return <Text bold color={mascot ? hex(mascot.color) : INK.route}>◆</Text>;
+            })
           : null}
         {running ? <Text color={INK.route}>{text("ui.band.runningCount", view.locale, { count: formatNumber(running, view.locale), agents: text(running === 1 ? "ui.band.running.agent" : "ui.band.running.agents", view.locale) })}</Text> : null}
       </Box>

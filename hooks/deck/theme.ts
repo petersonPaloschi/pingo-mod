@@ -1,5 +1,6 @@
 // Colors and small helpers shared by the Deck drawings. Pure, no I/O.
-// Every color is a literal: the state and tier hues, the track and tick greys, and the text tones.
+// Every color comes from hooks/theme.ts: the state and tier hues, the track and tick tones, and the text tones.
+import { css, HUE, PAINT, SVG_PAINT } from "../theme.ts";
 export type RGB = [number, number, number];
 export type StyleName = "run" | "ask" | "hot" | "done" | "ok" | "warn";
 export type TierName = "haiku" | "sonnet" | "opus";
@@ -65,32 +66,43 @@ export interface TextProps {
   bold?: boolean;
 }
 
+// The Deck paints with the same identity as the dashboard (hooks/theme.ts): mid-tone fills that hold on a dark
+// and a light terminal, text through theme keys, and the SVG forms apart, since an SVG cannot name a theme key.
+const fill = (color: number) => css(color);
+
 export const STYLE: Record<StyleName, Style> = {
-  run: { fill: "#9C95EC", on: "#26215C", glyph: "●", desk: "#8B7CF6" },
-  ask: { fill: "#EBA83A", on: "#412402", glyph: "?", desk: "#E09A1E" },
-  hot: { fill: "#E2706F", on: "#501313", glyph: "!", desk: "#E5484D" },
-  done: { fill: "#5DCAA5", on: "#04342C", glyph: "✓", desk: "#30A46C" },
-  ok: { fill: "#5DCAA5", on: "#04342C", glyph: "◔", desk: "#30A46C" },
-  warn: { fill: "#EBA83A", on: "#412402", glyph: "◑", desk: "#E09A1E" },
+  run: { fill: fill(HUE.brand), on: PAINT.onFill, glyph: "●", desk: fill(HUE.brand) },
+  ask: { fill: fill(HUE.warn), on: PAINT.onFill, glyph: "?", desk: fill(HUE.warn) },
+  hot: { fill: fill(HUE.fail), on: PAINT.onFill, glyph: "!", desk: fill(HUE.fail) },
+  done: { fill: fill(HUE.ok), on: PAINT.onFill, glyph: "✓", desk: fill(HUE.ok) },
+  ok: { fill: fill(HUE.ok), on: PAINT.onFill, glyph: "◔", desk: fill(HUE.ok) },
+  warn: { fill: fill(HUE.warn), on: PAINT.onFill, glyph: "◑", desk: fill(HUE.warn) },
 };
 
 export const TIER: Record<TierName, { term: string; desk: string }> = {
-  haiku: { term: "#5DCAA5", desk: "#30A46C" },
-  sonnet: { term: "#9C95EC", desk: "#8B7CF6" },
-  opus: { term: "#EBA83A", desk: "#E09A1E" },
+  haiku: { term: fill(HUE.teal), desk: fill(HUE.teal) },
+  sonnet: { term: fill(HUE.info), desk: fill(HUE.info) },
+  opus: { term: fill(HUE.violet), desk: fill(HUE.violet) },
 };
 
-export const TRACK = "#3a3936";
-export const TRACK_BG = "#2b2a28";
-export const TICK_ON = "#f2f0ea";
-export const TICK_OFF = "#55534e";
-export const DIM = "#77756f";
-export const MUTED = "#9a9893";
-export const TEXT = "#e8e6e1";
+/** The empty part of a terminal bar: a glyph color, and the ground under a solid or pixel bar. */
+export const TRACK = PAINT.rule;
+export const TRACK_BG = PAINT.rule;
+/** A tick or step that is reached, and one that is not yet. */
+export const TICK_ON = PAINT.text;
+export const TICK_OFF = PAINT.muted;
+export const DIM = PAINT.muted;
+export const MUTED = PAINT.muted;
+export const TEXT = PAINT.text;
 /** Body text: the chip names, the effort values, and the agent titles. */
-export const BODY = "#c9c7c1";
+export const BODY = PAINT.text;
 /** Text on a terminal pill (a route tier, an agent's model); the desktop pills use white. */
-export const PILL_INK = "#1e1e1e";
+export const PILL_INK = PAINT.onFill;
+/** A running bar's head between frames, and the shine that sweeps a solid bar: the brand hue lighter and darker. */
+export const HEAD_DIM = "#127985";
+export const SHINE = "#7cc9d3";
+/** The text tones inside the desktop SVG rows. */
+export const SVG_TEXT = { text: SVG_PAINT.text, body: "#c9ccd4", muted: SVG_PAINT.muted, dim: SVG_PAINT.muted } as const;
 
 export function hash(a: number, b: number, k: number): number {
   const x = Math.sin(a * 127.1 + b * 311.7 + k * 74.7) * 43758.5453;

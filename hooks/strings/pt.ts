@@ -334,6 +334,7 @@ export const pt: Record<keyof typeof en, string> = {
   "ui.overview.tokens": "Uso de tokens",
   "ui.overview.timeline": "Linha do tempo",
   "ui.timeline.caption": "{start} … agora · a altura da barra é o total de tokens informados em cada intervalo · maior intervalo com {peak} tokens",
+  "ui.timeline.failMarks": "× sob a linha marca um intervalo com solicitação que falhou.",
   "ui.timeline.partial": "{reported}/{total} solicitações têm contagens completas de entrada, cache e saída; as demais barras somam só os contadores informados.",
   "ui.timeline.usageUnavailable": "Nenhuma contagem de tokens foi informada neste período.",
   "ui.timeline.start": "início",

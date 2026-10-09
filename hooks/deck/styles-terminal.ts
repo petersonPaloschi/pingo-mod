@@ -1,5 +1,5 @@
 // Terminal bar styles. Each returns exactly W cells for a row. Pure, no I/O.
-import { STYLE, TRACK, TRACK_BG, TICK_ON, TICK_OFF, MUTED, hash, seedOf, trunc, textCells } from "./theme.ts";
+import { STYLE, TRACK, TRACK_BG, TICK_ON, TICK_OFF, MUTED, TEXT, HEAD_DIM, SHINE, hash, seedOf, trunc, textCells } from "./theme.ts";
 import type { Cell, Row, Style } from "./theme.ts";
 
 export const TERMINAL_STYLES = ["segments", "line", "solid", "dots", "pixel", "spark"] as const;
@@ -43,7 +43,7 @@ function segments(row: Row, W: number, frame: number): Cell[] {
       continue;
     }
     const head = row.animating && x === Math.floor(fx);
-    cells.push(x < Math.floor(fx) ? { ch: "▰", color: st.fill } : head ? { ch: "▰", color: frame % 4 < 2 ? st.fill : "#6e6aa8" } : { ch: "▱", color: TRACK });
+    cells.push(x < Math.floor(fx) ? { ch: "▰", color: st.fill } : head ? { ch: "▰", color: frame % 4 < 2 ? st.fill : HEAD_DIM } : { ch: "▱", color: TRACK });
   }
   return withLabel(cells, row, W);
 }
@@ -73,7 +73,7 @@ function solid(row: Row, W: number, frame: number): Cell[] {
     const ch = text[x] ?? " ";
     const inFill = x < f;
     const shine = inFill && Math.abs(x - sweep) < 2;
-    cells.push(inFill ? { ch, color: st.on, bg: shine ? "#cfc9f7" : st.fill, bold: true } : { ch, color: MUTED, bg: TRACK_BG });
+    cells.push(inFill ? { ch, color: st.on, bg: shine ? SHINE : st.fill, bold: true } : { ch, color: TEXT, bg: TRACK_BG });
   }
   return cells;
 }

@@ -6,7 +6,7 @@
 import { text, type Locale } from "../i18n.ts";
 import { EFFORTS, fmtUsd, shortModel, stripTool, type Agent, type DeckRow, type RouteView, type Spend } from "./model.ts";
 import type { DeckSize, DeckSurfaceStyle } from "./settings.ts";
-import { BODY, DIM, MUTED, PILL_INK, STYLE, TEXT, TIER, esc, textCells, textWidth, trunc, type AgentRow, type Row, type TierName } from "./theme.ts";
+import { BODY, DIM, MUTED, PILL_INK, STYLE, SVG_TEXT, TEXT, TIER, esc, textCells, textWidth, trunc, type AgentRow, type Row, type TierName } from "./theme.ts";
 import { desktopTrack, stripsHeight, stripsSvg, type LastHead, type LastStrip } from "./styles-desktop.ts";
 import { terminalMini } from "./styles-terminal.ts";
 
@@ -23,7 +23,7 @@ export type Cell = ReturnType<typeof textCells>[number];
 // a model's tier color, for a desktop SVG or a terminal cell; a model with no tier is muted
 export function tierColor(model: string, desktop = true): string {
   const t = TIER[shortModel(model) as TierName];
-  return t ? (desktop ? t.desk : t.term) : MUTED;
+  return t ? (desktop ? t.desk : t.term) : desktop ? SVG_TEXT.muted : MUTED;
 }
 
 // the history a row keeps between redraws, so a moving strip or track does not restart
@@ -87,7 +87,7 @@ export type RowDrawOptions = {
 function dirColor(dir: RouteView["dir"], desktop: boolean): string {
   if (dir === "↓") return desktop ? STYLE.ok.desk : STYLE.ok.fill;
   if (dir === "↑") return desktop ? STYLE.warn.desk : STYLE.warn.fill;
-  return MUTED;
+  return desktop ? SVG_TEXT.muted : MUTED;
 }
 
 // one route-history slot: a failure, a suggestion the router did not apply, or an applied model
@@ -146,7 +146,7 @@ export function routeSvg(row: DeckRow, W: number, routeHist: readonly string[], 
   if (!v) return "";
   let x = 0;
   if (v.noAnswer) {
-    let o = `<text x="0" y="15" style="font:400 12px ${FONT};fill:${DIM}">${text("deck.route.kept", locale)}</text>`;
+    let o = `<text x="0" y="15" style="font:400 12px ${FONT};fill:${SVG_TEXT.dim}">${text("deck.route.kept", locale)}</text>`;
     x = 34;
     const w = textWidth(v.to, 6.4) + 14;
     o += `<rect x="${x}" y="3" width="${w}" height="16" rx="4" fill="${tierColor(v.to)}"/><text x="${x + 7}" y="15" style="font:500 11.5px ${FONT};fill:#fff">${esc(v.to)}</text>`;
@@ -154,12 +154,12 @@ export function routeSvg(row: DeckRow, W: number, routeHist: readonly string[], 
     o += `<text x="${x}" y="15" style="font:500 12px ${FONT};fill:${STYLE.warn.desk}">! ${esc(v.reason)}</text>`;
     x += textWidth("! " + v.reason, 6.6) + 10;
     if (v.hint) {
-      o += `<text x="${x}" y="15" style="font:400 11.5px ${FONT};fill:${MUTED}">· ${esc(v.hint)}</text>`;
+      o += `<text x="${x}" y="15" style="font:400 11.5px ${FONT};fill:${SVG_TEXT.muted}">· ${esc(v.hint)}</text>`;
       x += textWidth("· " + v.hint, 6.4) + 10;
     }
     return o + historyStrip(routeHist, W, x);
   }
-  let out = `<text x="0" y="15" style="font:400 12px ${FONT};fill:${DIM}">${esc(v.from)}</text>`;
+  let out = `<text x="0" y="15" style="font:400 12px ${FONT};fill:${SVG_TEXT.dim}">${esc(v.from)}</text>`;
   x += textWidth(v.from, 6.4) + 6;
   out += `<text x="${x}" y="15" style="font:500 12px ${FONT};fill:${dirColor(v.dir, true)}">${v.dir === "=" ? "=" : "→"}</text>`;
   x += 14;
@@ -168,7 +168,7 @@ export function routeSvg(row: DeckRow, W: number, routeHist: readonly string[], 
     const want = t === v.want && !on;
     const w = textWidth(t, 6.4) + 14;
     out += `<rect x="${x}" y="3" width="${w}" height="16" rx="4" fill="${on ? tierColor(t) : GREY}" fill-opacity="${on ? 1 : 0.16}"${want ? ` stroke="${tierColor(t)}" stroke-dasharray="2 2"` : ""}/>`;
-    out += `<text x="${x + 7}" y="15" style="font:${on ? 500 : 400} 11.5px ${FONT};fill:${on ? "#fff" : MUTED}">${t}</text>`;
+    out += `<text x="${x + 7}" y="15" style="font:${on ? 500 : 400} 11.5px ${FONT};fill:${on ? "#fff" : SVG_TEXT.muted}">${t}</text>`;
     x += w + 4;
   }
   x += 8;
@@ -178,16 +178,16 @@ export function routeSvg(row: DeckRow, W: number, routeHist: readonly string[], 
       out += `<rect x="${x + (i - 1) * 7}" y="${17 - (3 + i * 3)}" width="5" height="${3 + i * 3}" rx="1.5" fill="${i <= lvl ? STYLE.run.desk : GREY}" fill-opacity="${i <= lvl ? 1 : 0.25}"/>`;
     }
     x += 32;
-    out += `<text x="${x}" y="15" style="font:400 12px ${FONT};fill:${BODY}">${esc(v.effort)}</text>`;
+    out += `<text x="${x}" y="15" style="font:400 12px ${FONT};fill:${SVG_TEXT.body}">${esc(v.effort)}</text>`;
     x += textWidth(v.effort, 6.4) + 14;
   }
   if (v.conf != null) {
     const c = v.conf >= 0.6 ? STYLE.ok.desk : STYLE.warn.desk;
-    out += `<text x="${x}" y="15" style="font:400 11.5px ${FONT};fill:${DIM}">${text("deck.route.conf", locale)}</text>`;
+    out += `<text x="${x}" y="15" style="font:400 11.5px ${FONT};fill:${SVG_TEXT.dim}">${text("deck.route.conf", locale)}</text>`;
     x += 30;
     out += `<rect x="${x}" y="8" width="44" height="6" rx="3" fill="${GREY}" fill-opacity=".25"/><rect x="${x}" y="8" width="${(44 * v.conf).toFixed(1)}" height="6" rx="3" fill="${c}"/>`;
     x += 50;
-    out += `<text x="${x}" y="15" style="font:400 11.5px ${FONT};fill:${MUTED}">${v.conf.toFixed(2)}</text>`;
+    out += `<text x="${x}" y="15" style="font:400 11.5px ${FONT};fill:${SVG_TEXT.muted}">${v.conf.toFixed(2)}</text>`;
     x += 40;
   }
   if (v.risky != null && v.risky > 0.7) {
@@ -195,7 +195,7 @@ export function routeSvg(row: DeckRow, W: number, routeHist: readonly string[], 
     x += 56;
   }
   if (v.unapplied) {
-    out += `<text x="${x}" y="15" style="font:400 11.5px ${FONT};fill:${DIM}">${text("deck.route.notApplied", locale)}</text>`;
+    out += `<text x="${x}" y="15" style="font:400 11.5px ${FONT};fill:${SVG_TEXT.dim}">${text("deck.route.notApplied", locale)}</text>`;
     x += 72;
   }
   return out + historyStrip(routeHist, W, x);
@@ -260,7 +260,7 @@ export function rowSvg(row: DeckRow, W: number, o: RowDrawOptions): { height: nu
 
 function rightColor(row: DeckRow): string {
   const v = row.route;
-  if (row.kind !== "route" || !v) return MUTED;
+  if (row.kind !== "route" || !v) return SVG_TEXT.muted;
   if (v.noAnswer) return STYLE.warn.desk;
   return dirColor(v.dir, true);
 }
@@ -277,6 +277,17 @@ export function fadeInSvg(source: string, ageMs: number, fadeMs: number): string
     "</g>" +
     source.slice(tail)
   );
+}
+
+// ---------- glyphs ----------
+
+// a row's glyph: its state when that asks for something (a question, a failure, a finished plan, a limit's fill),
+// otherwise what kind of row it is, so a plan, an agent, the context and a limit never share one dot
+const KIND_GLYPH: Record<DeckRow["kind"], string> = { bar: "☰", activity: "◇", meter: "◫", route: "⇄" };
+export function rowGlyph(row: DeckRow): string {
+  if (row.kind === "route") return KIND_GLYPH.route;
+  if (row.style !== "run") return STYLE[row.style].glyph;
+  return KIND_GLYPH[row.kind];
 }
 
 // ---------- collapsed looks ----------
@@ -324,7 +335,7 @@ export function collapsedChips(ordered: readonly DeckRow[], o: ChipOptions): { c
     }
     chips.push({
       kind: "item",
-      glyph: st.glyph + " ",
+      glyph: rowGlyph(row) + " ",
       glyphColor: o.desktop ? st.desk : st.fill,
       text: row.short + " ",
       textColor: row.state === "needs_input" ? st.fill : row.limit ? TEXT : BODY,
@@ -351,7 +362,7 @@ export function collapsedText(ordered: readonly DeckRow[], extras: readonly stri
       parts.push({ text: row.route ? row.route.to + (row.route.effort ? " · " + row.route.effort : "") : row.short, color: MUTED });
       continue;
     }
-    parts.push({ text: st.glyph + " ", color: desktop ? st.desk : st.fill });
+    parts.push({ text: rowGlyph(row) + " ", color: desktop ? st.desk : st.fill });
     parts.push({ text: row.short, color: row.state === "needs_input" ? st.fill : MUTED });
   }
   if (extras.length) parts.push({ text: (parts.length ? "  " : "") + [...extras].reverse().join("  "), color: MUTED });
@@ -395,6 +406,6 @@ export function collapsedRings(rows: readonly DeckRow[], spend: Spend, costOn: b
     });
   }
   const busy = rows.find((r) => (r.kind === "bar" || r.kind === "activity") && r.animating && r.state !== "needs_input");
-  if (busy) items.push({ kind: "busy", glyph: STYLE[busy.style].glyph, color: MUTED, text: trunc(busy.short, 22) });
+  if (busy) items.push({ kind: "busy", glyph: rowGlyph(busy), color: MUTED, text: trunc(busy.short, 22) });
   return items;
 }

@@ -17,6 +17,7 @@ import {
   FOLD_STEP,
   RIGHT_W,
   routeCellsTerminal,
+  rowGlyph,
   rowSvg,
   tierColor,
   toTrackRow,
@@ -26,6 +27,11 @@ import {
   type RingItem,
 } from "./rows.ts";
 import { BODY, DIM, MUTED, PILL_INK, STYLE, TEXT, TRACK, runs, textWidth, trunc, type AgentState, type StyleName } from "./theme.ts";
+import { displayWidth } from "../layout.ts";
+import { GLYPH } from "../theme.ts";
+
+const RULE = GLYPH.rule;
+const BRANCH = GLYPH.branch;
 import { terminalBar } from "./styles-terminal.ts";
 
 export type Surface = "terminal" | "desktop";
@@ -97,11 +103,14 @@ export function renderDeck(els: ElementTable, band: DeckBand, surface: Surface) 
     );
   }
   const count = band.rows.length;
+  const countText = "· " + (count === 1 ? text("deck.rows.one", band.locale, { count }) : text("deck.rows.many", band.locale, { count }));
+  // the terminal header carries a rule from the row count to the clock and weather, as every section does
+  const ruleRoom = band.cols - displayWidth(text("deck.toggle.expanded", band.locale)) - 3 - displayWidth(countText) - displayWidth(extrasStr) - 5;
   const header = (
     <Box flexDirection="row" columnGap={1} alignItems="center">
       {toggle}
-      <Text color={DIM}>{"· " + (count === 1 ? text("deck.rows.one", band.locale, { count }) : text("deck.rows.many", band.locale, { count }))}</Text>
-      {inlinePet ? inlinePetEl(els, band, extrasStr.length) : <Box flexGrow={1} />}
+      <Text color={DIM}>{countText}</Text>
+      {inlinePet ? inlinePetEl(els, band, extrasStr.length) : desktop || ruleRoom < 2 ? <Box flexGrow={1} /> : <Box flexGrow={1}><Text color={TRACK}>{RULE.repeat(ruleRoom)}</Text></Box>}
       {extrasEl}
     </Box>
   );
@@ -252,7 +261,7 @@ function desktopRows(els: ElementTable, band: DeckBand, shown: number) {
     const source = band.foldAge === null ? drawn.source : fadeInSvg(drawn.source, band.foldAge - i * FOLD_STEP, FOLD_FADE);
     return (
       <Box key={"row-" + row.id} flexDirection="row" alignItems={row.strips ? "flex-start" : "center"} gap={1}>
-        <Text color={st.desk}>{row.kind === "route" ? "⇄" : st.glyph}</Text>
+        <Text color={st.desk}>{rowGlyph(row)}</Text>
         <Text wrap="truncate">{trunc(row.title, TITLE_MAX_CH)}</Text>
         <Box flexGrow={1} />
         <Svg source={source} alt={rowAlt(row, band.locale)} width={drawn.width} height={drawn.height} />
@@ -262,13 +271,20 @@ function desktopRows(els: ElementTable, band: DeckBand, shown: number) {
   });
 }
 
-// the expanded rows in the terminal: a glyph, the title, the bar, the right-hand value, the agents under it, and the ✕
+// the share a row has come, as the value column shows it next to its bar
+const pctOf = (row: DeckRow) => `${Math.round(Math.max(0, Math.min(100, row.pct)))}%`;
+
+/** The value column: wide enough for "100%". */
+const VALUE_W = 4;
+
+// the expanded rows in the terminal: a glyph, the title, the value next to its bar, the bar, what is left of the
+// right-hand value (a reset, a rate), the agents under it as a tree, and the ✕
 function terminalRows(els: ElementTable, band: DeckBand, shown: number, hasLane: boolean) {
   const { Box, Text } = els;
   const maxRows = Math.max(2, (band.maxRows ?? DEFAULT_MAX_ROWS) - 1 - (hasLane ? PET_BRAILLE.rows : 0));
-  const labelW = Math.min(24, Math.max(12, Math.floor(band.cols * 0.2)));
-  const rightW = 12;
-  const barW = Math.max(16, band.cols - labelW - rightW - 8);
+  const labelW = Math.min(22, Math.max(10, Math.floor(band.cols * 0.18)));
+  const rightW = band.rows.some((row) => row.kind !== "route" && row.right && row.right !== pctOf(row)) ? 11 : 0;
+  const barW = Math.max(1, band.cols - labelW - VALUE_W - rightW - 9);
   const frame = Math.floor(band.now / FRAME_MS);
   const lines: RenderNode[] = [];
   for (const row of band.rows.slice(0, shown)) {
@@ -277,12 +293,12 @@ function terminalRows(els: ElementTable, band: DeckBand, shown: number, hasLane:
       const { cells, dirColor } = routeCellsTerminal(row, band.routeHist, band.locale);
       lines.push(
         <Box key={"row-" + row.id} flexDirection="row" columnGap={1}>
-          <Text color={STYLE.run.fill}>{"⇄"}</Text>
+          <Text color={STYLE.run.fill}>{rowGlyph(row)}</Text>
           <Box width={labelW} flexShrink={0}>
-            <Text color={TEXT}>{row.title}</Text>
+            <Text color={TEXT} bold wrap="truncate">{trunc(row.title, labelW)}</Text>
           </Box>
-          <Box flexGrow={1} flexDirection="row">{runs(Text, cells.slice(0, barW))}</Box>
-          <Box width={rightW} flexShrink={0} justifyContent="flex-end">
+          <Box flexGrow={1} flexDirection="row">{runs(Text, cells.slice(0, barW + VALUE_W + 1))}</Box>
+          <Box flexShrink={0} justifyContent="flex-end">
             <Text color={dirColor}>{row.right}</Text>
           </Box>
           {closeButton(els, band, row)}
@@ -291,16 +307,23 @@ function terminalRows(els: ElementTable, band: DeckBand, shown: number, hasLane:
       continue;
     }
     const st = STYLE[row.style];
+    const value = pctOf(row);
+    const rest = row.right && row.right !== value ? row.right : "";
     lines.push(
       <Box key={"row-" + row.id} flexDirection="row" columnGap={1}>
-        <Text color={st.fill}>{st.glyph}</Text>
+        <Text color={st.fill} bold>{rowGlyph(row)}</Text>
         <Box width={labelW} flexShrink={0}>
-          <Text color={TEXT} wrap="truncate">{trunc(row.title, labelW)}</Text>
+          <Text color={TEXT} bold wrap="truncate">{trunc(row.title, labelW)}</Text>
+        </Box>
+        <Box width={VALUE_W} flexShrink={0} justifyContent="flex-end">
+          <Text color={row.style === "run" ? TEXT : st.fill} bold>{value}</Text>
         </Box>
         <Box flexGrow={1} flexDirection="row">{runs(Text, terminalBar(band.settings.style.terminal, toTrackRow(row), barW, frame))}</Box>
-        <Box width={rightW} flexShrink={0} justifyContent="flex-end">
-          <Text color={MUTED}>{row.right}</Text>
-        </Box>
+        {rightW ? (
+          <Box width={rightW} flexShrink={0} justifyContent="flex-end">
+            <Text color={MUTED}>{rest}</Text>
+          </Box>
+        ) : null}
         {closeButton(els, band, row)}
       </Box>,
     );
@@ -309,22 +332,24 @@ function terminalRows(els: ElementTable, band: DeckBand, shown: number, hasLane:
       lines.push(agentLine(els, band, ag, frame, labelW));
     }
     if (row.strips?.hidden.length && lines.length < maxRows) {
-      lines.push(<Text key={"more-" + row.id} color={DIM}>{"    " + text("deck.strips.more", band.locale, { count: row.strips.hidden.length })}</Text>);
+      lines.push(<Text key={"more-" + row.id} color={DIM}>{`  ${BRANCH} ` + text("deck.strips.more", band.locale, { count: row.strips.hidden.length })}</Text>);
     }
   }
   return lines;
 }
 
-// one agent under a terminal row: its state glyph, its title, what it is doing, its model, and how long it has run
+// one agent under a terminal row, as a branch of it: its state glyph, its title, what it is doing, its model on its
+// tier's ground, and how long it has run
 function agentLine(els: ElementTable, band: DeckBand, ag: Agent, frame: number, labelW: number) {
   const { Box, Text } = els;
   const ast = STYLE[AGENT_STYLE[ag.state]];
+  const glyph = ag.state === "running" ? (frame % 6 < 3 ? "○" : "●") : ast.glyph;
   return (
     <Box key={"agent-" + ag.id} flexDirection="row" columnGap={1}>
-      <Text>{ag.depth ? "    " : "  "}</Text>
-      <Text color={ast.fill}>{ag.state === "running" && frame % 6 < 3 ? "○" : "●"}</Text>
-      <Box width={labelW - 1} flexShrink={0}>
-        <Text color={BODY} wrap="truncate">{trunc((ag.depth ? "↳ " : "") + ag.title, labelW - 1)}</Text>
+      <Text color={TRACK}>{ag.depth ? `    ${BRANCH}` : `  ${BRANCH}`}</Text>
+      <Text color={ast.fill} bold>{glyph}</Text>
+      <Box width={Math.max(8, labelW - 2)} flexShrink={0}>
+        <Text color={BODY} wrap="truncate">{trunc(ag.title, Math.max(8, labelW - 2))}</Text>
       </Box>
       <Text color={ast.fill} wrap="truncate">{stripTool(ag, band.locale)}</Text>
       {ag.model ? <Text color={PILL_INK} backgroundColor={tierColor(ag.model, false)}>{" " + ag.model + " "}</Text> : null}

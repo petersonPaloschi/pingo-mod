@@ -99,7 +99,8 @@ import { FOLD_FADE, FOLD_STEP, TRACK_H, toTrackRow, type DrawCaches } from "./de
 import { DESKTOP_STYLES, DESKTOP_STYLE_NAMES, desktopTrack } from "./deck/styles-desktop.ts";
 import { TERMINAL_STYLES, TERMINAL_STYLE_NAMES, terminalBar } from "./deck/styles-terminal.ts";
 import { applyDeckCommand, deckUsage, deckWords, openReply } from "./deck/wire.ts";
-import { DIM, STYLE, runs } from "./deck/theme.ts";
+import { DIM, runs } from "./deck/theme.ts";
+import { GLYPH, PAINT } from "./theme.ts";
 
 const PANE = "jev";
 type FeatureId = keyof FeatureFlags;
@@ -250,6 +251,7 @@ let blitBroken = false;
  */
 let deckNote: (NonNullable<DeckPanel["note"]> & { key: string }) | null = null;
 let deckDraft = "";
+let orchestrationDraft = "";
 
 function transport($: EngineInterface, locale?: Locale): Transport {
   return {
@@ -644,6 +646,7 @@ async function orchestrationView($: EngineInterface): Promise<View["orchestratio
   const message = await read($, orchMessage);
   return {
     policy,
+    draft: orchestrationDraft,
     ...(objective ? {
       objective: {
         id: objective.id,
@@ -1404,7 +1407,7 @@ function stylePicker(
           />
         </Box>
         {preview}
-        <Text color={name === current ? STYLE.ok.fill : DIM}>{name === current ? "← now" : " "}</Text>
+        <Text color={name === current ? PAINT.brand : DIM} bold={name === current}>{name === current ? `${GLYPH.open} now` : " "}</Text>
       </Box>
     );
   });
@@ -1892,7 +1895,7 @@ async function sementeAbove($: EngineInterface, e: { props: { hasSurvey?: boolea
   const { Box, Button, Text } = renderElements($, e);
   const pt = (await getSettings($)).locale === "pt";
   const label = pt ? `${found.length} ${found.length === 1 ? "ideia salva combina" : "ideias salvas combinam"} com o trabalho recente` : found.length === 1 ? "1 saved idea fits recent work" : `${found.length} saved ideas fit recent work`;
-  return <Box flexDirection="column"><Box><Text>💡 {label}: </Text><Text dimColor wrap="truncate-end">{found.map((idea) => idea.text).join(" · ")} </Text><Button key="send" label={pt ? "Enviar" : "Send"} variant="primary" onPress={() => void sendSemente($, found)} /><Button key="dismiss" label={pt ? "Dispensar" : "Dismiss"} role="dismiss" onPress={async () => { for (const idea of found) sementeDismissed.add(idea.id); await update($, sementeNudges, () => []); }} /></Box>{below}</Box>;
+  return <Box flexDirection="column"><Box><Text color={PAINT.brand}>◆ </Text><Text>{label}: </Text><Text dimColor wrap="truncate-end">{found.map((idea) => idea.text).join(" · ")} </Text><Button key="send" label={pt ? "Enviar" : "Send"} variant="primary" onPress={() => void sendSemente($, found)} /><Button key="dismiss" label={pt ? "Dispensar" : "Dismiss"} role="dismiss" onPress={async () => { for (const idea of found) sementeDismissed.add(idea.id); await update($, sementeNudges, () => []); }} /></Box>{below}</Box>;
 }
 
 async function lapidaStart($: EngineInterface) {
@@ -1920,7 +1923,7 @@ async function lapidaAbove($: EngineInterface, e: { props: { hasSurvey?: boolean
   const label = phase === "enhancing" ? "Lapida…" : phase === "ready" ? (pt ? "Lapida · revise o rascunho" : "Lapida · review the rewrite") : phase === "error" ? await read($, lapidaNote) : "Lapida";
   const notes = phase === "ready" ? await read($, lapidaChanges) : [];
   const width = Math.max(10, (e.props.bodyColumns || 80) - 2);
-  return <Box flexDirection="column"><Box><Text dimColor>{label} </Text>{!enhancing && <Button key="lapida-enhance" label={pt ? "Lapidar (e)" : "Enhance (e)"} hotkey="e" onPress={enhanceDraft} />}<Text> </Text>{!enhancing && <Button key="lapida-send" label={pt ? "Enviar (s)" : "Send (s)"} hotkey="s" onPress={send} />}</Box>{notes.map((line) => <Text key={line} dimColor wrap="truncate-end">{`+ ${line}`.slice(0, width)}</Text>)}{below}</Box>;
+  return <Box flexDirection="column"><Box><Text color={PAINT.brand}>◆ </Text><Text dimColor>{label} </Text>{!enhancing && <Button key="lapida-enhance" label={pt ? "Lapidar (e)" : "Enhance (e)"} hotkey="e" onPress={enhanceDraft} />}<Text> </Text>{!enhancing && <Button key="lapida-send" label={pt ? "Enviar (s)" : "Send (s)"} hotkey="s" onPress={send} />}</Box>{notes.map((line) => <Text key={line} dimColor wrap="truncate-end">{`+ ${line}`.slice(0, width)}</Text>)}{below}</Box>;
 }
 
 type PrismaQuestionInput = { question: string; header: string; multiSelect?: boolean; options?: { label: string; description?: string; preview?: string }[] };
@@ -2091,7 +2094,7 @@ async function sentinelaAbove($: EngineInterface, e: { props: { hasSurvey?: bool
   const count = (status: SentinelaSession["status"]) => list.filter((row) => row.status === status).length;
   const { Box, Button, Text } = renderElements($, e);
   const locale = (await getSettings($)).locale;
-  return <Box flexDirection="column"><Box><Button key="sessions" label={locale === "pt" ? "Sessões" : "Sessions"} onPress={() => void toggleSentinela($)} /><Text> </Text><Text color="error">? {count("waiting")} {locale === "pt" ? "aguardando" : "waiting"}  </Text><Text color="warning">● {count("working")} {locale === "pt" ? "trabalhando" : "working"}  </Text><Text color="success">✓ {count("done")} {locale === "pt" ? "concluídas" : "done"}</Text></Box>{below}</Box>;
+  return <Box flexDirection="column"><Box><Text color={PAINT.brand}>◆ </Text><Button key="sessions" label={locale === "pt" ? "Sessões" : "Sessions"} onPress={() => void toggleSentinela($)} /><Text> </Text><Text color="error">? {count("waiting")} {locale === "pt" ? "aguardando" : "waiting"}  </Text><Text color="warning">● {count("working")} {locale === "pt" ? "trabalhando" : "working"}  </Text><Text color="success">✓ {count("done")} {locale === "pt" ? "concluídas" : "done"}</Text></Box>{below}</Box>;
 }
 
 const vigiaFlat = (value: string, max: number) => { const text = value.replace(/\s+/g, " ").trim(); return text.length > max ? `${text.slice(0, max - 1)}…` : text; };
@@ -2208,8 +2211,8 @@ async function vigiaAbove($: EngineInterface, e: { props: { hasSurvey?: boolean 
   const pt = (await getSettings($)).locale === "pt";
   const collapsed = await read($, vigiaCollapsed);
   const toggle = <Button key="vigia-toggle" label={collapsed ? (pt ? "exibir" : "show") : (pt ? "ocultar" : "hide")} plain dimColor onPress={async () => { const value = !await read($, vigiaCollapsed); await update($, vigiaCollapsed, () => value); await $.store.set("vigia:collapsed", value); }} />;
-  if (collapsed) return <Box flexDirection="column"><Box gap={1}><Text dimColor>👥 {others.length} {pt ? "outras sessões neste projeto" : `other session${others.length === 1 ? "" : "s"} here`} ·</Text>{conflicts.length > 0 && <Text color="error">⚠ {conflicts.length} {pt ? "conflitos" : `file clash${conflicts.length === 1 ? "" : "es"}`} ·</Text>}{toggle}</Box>{below}</Box>;
-  return <Box flexDirection="column"><Box flexDirection="column" borderStyle="round" borderColor="gray" paddingX={1}><Box justifyContent="space-between"><Text dimColor>{pt ? "👥 Também trabalhando neste projeto · /vigia" : "👥 Also working in this project · /vigia"}</Text>{toggle}</Box>{conflicts.slice(0, 2).map((conflict) => <Text key={`${conflict.other.id}-${conflict.file}`} color="error" wrap="truncate">⚠ {pt ? "Conflito" : "Clash"}: {conflict.file} · {vigiaName(conflict.other)} · {vigiaAgo(now - conflict.at)}</Text>)}{others.slice(0, 3).map((record) => <Box key={record.id} flexDirection="column"><Text wrap="truncate"><Text color={record.isBusy ? "warning" : "success"}>{record.isBusy ? "● " : "◐ "}</Text><Text bold>{vigiaName(record)}</Text><Text dimColor> · {record.isBusy ? (pt ? "trabalhando" : "working") : (pt ? "aguardando" : "waiting")}</Text></Text>{(vigiaDoing(record) ?? record.lastPrompt) && <Text wrap="truncate">◆ {vigiaDoing(record) ?? record.lastPrompt}{vigiaNext(record) ? ` → ${vigiaNext(record)}` : ""}</Text>}</Box>)}</Box>{below}</Box>;
+  if (collapsed) return <Box flexDirection="column"><Box gap={1}><Text color={PAINT.brand}>◆</Text><Text dimColor>{others.length} {pt ? "outras sessões neste projeto" : `other session${others.length === 1 ? "" : "s"} here`} ·</Text>{conflicts.length > 0 && <Text color="error">! {conflicts.length} {pt ? "conflitos" : `file clash${conflicts.length === 1 ? "" : "es"}`} ·</Text>}{toggle}</Box>{below}</Box>;
+  return <Box flexDirection="column"><Box flexDirection="column"><Box gap={1}><Text color={PAINT.brand}>◆</Text><Text dimColor>{pt ? "Também trabalhando neste projeto · /vigia" : "Also working in this project · /vigia"}</Text>{toggle}</Box>{conflicts.slice(0, 2).map((conflict) => <Text key={`${conflict.other.id}-${conflict.file}`} color="error" wrap="truncate">  ! {pt ? "Conflito" : "Clash"}: {conflict.file} · {vigiaName(conflict.other)} · {vigiaAgo(now - conflict.at)}</Text>)}{others.slice(0, 3).map((record) => <Box key={record.id} flexDirection="column" paddingLeft={2}><Text wrap="truncate"><Text color={record.isBusy ? "warning" : "success"}>{record.isBusy ? "● " : "◐ "}</Text><Text bold>{vigiaName(record)}</Text><Text dimColor> · {record.isBusy ? (pt ? "trabalhando" : "working") : (pt ? "aguardando" : "waiting")}</Text></Text>{(vigiaDoing(record) ?? record.lastPrompt) && <Text wrap="truncate">◆ {vigiaDoing(record) ?? record.lastPrompt}{vigiaNext(record) ? ` → ${vigiaNext(record)}` : ""}</Text>}</Box>)}</Box>{below}</Box>;
 }
 
 export function normalizeTab(value: unknown): JevTab {
@@ -2522,6 +2525,14 @@ function actions($: EngineInterface, requestId = PANE): Actions {
     clearAgents: () => void removeRuns($, () => true),
     jevLive: () => void openPane($, "live"),
     orchestration: (line) => void runOrchestration($, line),
+    orchestrationType: (value) => {
+      orchestrationDraft = value;
+      $.ui.invalidate("ui.render");
+    },
+    orchestrationSubmit: (line) => {
+      orchestrationDraft = "";
+      void runOrchestration($, line);
+    },
     deck: (args) => void runDeckFromTab($, args),
     deckStyle: (surface, name) => void setDeckStyleFromTab($, surface, name),
     deckType: (value) => {
@@ -2591,6 +2602,7 @@ export const register: Register = (on, given) => {
   draftKey = "";
   deckNote = null;
   deckDraft = "";
+  orchestrationDraft = "";
   deckLanes.clear();
   deckPetLoop?.cancel();
   deckPetLoop = undefined;

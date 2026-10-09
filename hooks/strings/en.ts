@@ -332,6 +332,7 @@ export const en = {
   "ui.overview.tokens": "Token usage",
   "ui.overview.timeline": "Timeline",
   "ui.timeline.caption": "{start} … now · bar height is the request tokens reported in each slot · tallest slot {peak} tokens",
+  "ui.timeline.failMarks": "× under the line marks a slot with a failed request.",
   "ui.timeline.partial": "{reported}/{total} requests have complete input, cache, and output counts; the other bars count only the counters reported.",
   "ui.timeline.usageUnavailable": "No request token counts were reported in this range.",
   "ui.timeline.start": "start",

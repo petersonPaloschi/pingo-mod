@@ -1,6 +1,6 @@
 // Desktop bar styles as SVG markup (22px tall), plus agent strips. Pure, no I/O.
 // The pixel style and the strips adapt plan-progress (zycck/claude-mods, MIT, Kirill Serditov).
-import { STYLE, MUTED, hash, seedOf, esc, textWidth, hex, mix, rgb } from "./theme.ts";
+import { STYLE, SVG_TEXT, hash, seedOf, esc, textWidth, hex, mix, rgb } from "./theme.ts";
 import type { AgentRow, AgentState, AgentView, Row, Style, StyleName } from "./theme.ts";
 import { elapsed } from "./model.ts";
 
@@ -119,7 +119,7 @@ function pixel(row: Row, W: number, nowMs: number, lastHead: LastHead): string {
 }
 
 function label(row: Row, x: number, color: string): string {
-  return `<text x="${x}" y="15" style="font:500 12px ${FONT};fill:${color}">${esc(row.name)}${row.count ? `<tspan dx="6" style="font-weight:400;fill:${MUTED}">${esc(row.count)}</tspan>` : ""}</text>`;
+  return `<text x="${x}" y="15" style="font:500 12px ${FONT};fill:${color}">${esc(row.name)}${row.count ? `<tspan dx="6" style="font-weight:400;fill:${SVG_TEXT.muted}">${esc(row.count)}</tspan>` : ""}</text>`;
 }
 
 function barShare(W: number): number {
@@ -178,7 +178,7 @@ function solid(row: Row, W: number, nowMs: number, lastHead: LastHead): string {
   return (
     `<defs><clipPath id="${id}a"><rect width="${W}" height="${H}" rx="6"/></clipPath><clipPath id="${id}b"><rect width="${fx.toFixed(1)}" height="${H}">${glide}</rect></clipPath></defs>` +
     `<g clip-path="url(#${id}a)"><rect width="${W}" height="${H}" fill="#808080" fill-opacity=".16"/>` +
-    `<text x="10" y="15" style="font:500 12px ${FONT};fill:${MUTED}">${text}</text>` +
+    `<text x="10" y="15" style="font:500 12px ${FONT};fill:${SVG_TEXT.muted}">${text}</text>` +
     `<g clip-path="url(#${id}b)"><rect width="${W}" height="${H}" fill="${st.desk}"/>${sweep}<text x="10" y="15" style="font:500 12px ${FONT};fill:#fff">${text}</text></g></g>`
   );
 }
@@ -235,7 +235,7 @@ function spark(row: Row, W: number, _nowMs: number, lastHead: LastHead): string 
     out += `<rect x="${sx}" y="10.5" width="${sw}" height="1" fill="#808080" fill-opacity=".3"/>`;
   }
   const lx = sx + sw + 14;
-  out += `<text x="${lx}" y="15" style="font:500 12px ${FONT};fill:${color}">${esc(row.name)}${row.rate ? `<tspan dx="8" style="font-weight:400;fill:${MUTED}">${esc(row.rate)}</tspan>` : row.count ? `<tspan dx="6" style="font-weight:400;fill:${MUTED}">${esc(row.count)}</tspan>` : ""}</text>`;
+  out += `<text x="${lx}" y="15" style="font:500 12px ${FONT};fill:${color}">${esc(row.name)}${row.rate ? `<tspan dx="8" style="font-weight:400;fill:${SVG_TEXT.muted}">${esc(row.rate)}</tspan>` : row.count ? `<tspan dx="6" style="font-weight:400;fill:${SVG_TEXT.muted}">${esc(row.count)}</tspan>` : ""}</text>`;
   return out;
 }
 

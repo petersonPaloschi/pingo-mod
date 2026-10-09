@@ -1,29 +1,35 @@
 // The dotted visual system: one palette, braille cells, and shared dot meters.
 // Everything is a dot: the mascot, the meters, the timeline. The body is ink; color only says state.
+import { css, HUE } from "./theme.ts";
 
 /** Draws in the terminal's own default color (a Raster cell's "no color"). */
 export const DEFAULT_COLOR = 0x01000000;
 
-/** The palette, tuned for a dark terminal. */
+/**
+ * The palette as numbers, for Raster cells: the mid-tone hues of hooks/theme.ts, so the mascot, the meters and
+ * the timeline hold on a dark and on a light terminal. Text paints with theme keys (PAINT), not with these.
+ */
 export const DOT = {
   ink: 0xe9ebef,
-  dim: 0x8d93a0,
-  faint: 0x4a4f5a,
-  route: 0x5ef0a8,
-  pass: 0xf2c14e,
-  fail: 0xff6b5e,
-  idle: 0x8d93a0,
-  base: 0x8fa2ff,
+  dim: HUE.neutral,
+  faint: 0x6b7280,
+  route: HUE.ok,
+  pass: HUE.warn,
+  fail: HUE.fail,
+  idle: HUE.neutral,
+  base: HUE.info,
   /** Who speaks in the live log, the one place color names a speaker and not a state. */
-  you: 0xc9a7ff,
-  claude: 0xd97757,
+  you: HUE.violet,
+  claude: HUE.claude,
+  /** Pingo's own accent: the open screen, a call to Jev in flight. */
+  brand: HUE.brand,
 } as const;
 
 /** Body dots from the far side of a sphere to the near side: dimmer far away. */
 export const DEPTH = [0x2c2f36, 0x434750, 0x676c78, 0x9a9fab, 0xc9ccd4, 0xe9ebef] as const;
 
 /** A palette color as the string a Text or Box paints with. */
-export const hex = (color: number) => `#${color.toString(16).padStart(6, "0")}`;
+export const hex = css;
 
 /** Same input, same value in [0, 1): flicker-free "randomness" between redraws. */
 export function noise(x: number, y: number): number {
