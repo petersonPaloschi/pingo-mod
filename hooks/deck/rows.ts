@@ -6,11 +6,10 @@
 import { text, type Locale } from "../i18n.ts";
 import { EFFORTS, fmtUsd, shortModel, stripTool, type Agent, type DeckRow, type RouteView, type Spend } from "./model.ts";
 import type { DeckSize, DeckSurfaceStyle } from "./settings.ts";
-import { BODY, DIM, MUTED, PILL_INK, STYLE, SVG_TEXT, TEXT, TIER, esc, textCells, textWidth, trunc, type AgentRow, type Row, type TierName } from "./theme.ts";
+import { BODY, DIM, MUTED, PILL_INK, STYLE, SVG_TEXT, SVG_TRACK, TEXT, TIER, esc, textCells, textWidth, trunc, type AgentRow, type Row, type TierName } from "./theme.ts";
 import { desktopTrack, stripsHeight, stripsSvg, type LastHead, type LastStrip } from "./styles-desktop.ts";
 import { terminalMini } from "./styles-terminal.ts";
 
-const GREY = "#808080";
 export const TRACK_H = 22;
 export const RIGHT_W = 92;
 const FONT = "'Anthropic Sans',ui-sans-serif,system-ui,sans-serif";
@@ -167,7 +166,7 @@ export function routeSvg(row: DeckRow, W: number, routeHist: readonly string[], 
     const on = t === v.to;
     const want = t === v.want && !on;
     const w = textWidth(t, 6.4) + 14;
-    out += `<rect x="${x}" y="3" width="${w}" height="16" rx="4" fill="${on ? tierColor(t) : GREY}" fill-opacity="${on ? 1 : 0.16}"${want ? ` stroke="${tierColor(t)}" stroke-dasharray="2 2"` : ""}/>`;
+    out += `<rect x="${x}" y="3" width="${w}" height="16" rx="4" fill="${on ? tierColor(t) : SVG_TRACK}" fill-opacity="${on ? 1 : 0.16}"${want ? ` stroke="${tierColor(t)}" stroke-dasharray="2 2"` : ""}/>`;
     out += `<text x="${x + 7}" y="15" style="font:${on ? 500 : 400} 11.5px ${FONT};fill:${on ? "#fff" : SVG_TEXT.muted}">${t}</text>`;
     x += w + 4;
   }
@@ -175,7 +174,7 @@ export function routeSvg(row: DeckRow, W: number, routeHist: readonly string[], 
   if (v.effort) {
     const lvl = Math.max(1, EFFORTS.indexOf(v.effort as (typeof EFFORTS)[number]) + 1);
     for (let i = 1; i <= 4; i++) {
-      out += `<rect x="${x + (i - 1) * 7}" y="${17 - (3 + i * 3)}" width="5" height="${3 + i * 3}" rx="1.5" fill="${i <= lvl ? STYLE.run.desk : GREY}" fill-opacity="${i <= lvl ? 1 : 0.25}"/>`;
+      out += `<rect x="${x + (i - 1) * 7}" y="${17 - (3 + i * 3)}" width="5" height="${3 + i * 3}" rx="1.5" fill="${i <= lvl ? STYLE.run.desk : SVG_TRACK}" fill-opacity="${i <= lvl ? 1 : 0.25}"/>`;
     }
     x += 32;
     out += `<text x="${x}" y="15" style="font:400 12px ${FONT};fill:${SVG_TEXT.body}">${esc(v.effort)}</text>`;
@@ -185,7 +184,7 @@ export function routeSvg(row: DeckRow, W: number, routeHist: readonly string[], 
     const c = v.conf >= 0.6 ? STYLE.ok.desk : STYLE.warn.desk;
     out += `<text x="${x}" y="15" style="font:400 11.5px ${FONT};fill:${SVG_TEXT.dim}">${text("deck.route.conf", locale)}</text>`;
     x += 30;
-    out += `<rect x="${x}" y="8" width="44" height="6" rx="3" fill="${GREY}" fill-opacity=".25"/><rect x="${x}" y="8" width="${(44 * v.conf).toFixed(1)}" height="6" rx="3" fill="${c}"/>`;
+    out += `<rect x="${x}" y="8" width="44" height="6" rx="3" fill="${SVG_TRACK}" fill-opacity=".25"/><rect x="${x}" y="8" width="${(44 * v.conf).toFixed(1)}" height="6" rx="3" fill="${c}"/>`;
     x += 50;
     out += `<text x="${x}" y="15" style="font:400 11.5px ${FONT};fill:${SVG_TEXT.muted}">${v.conf.toFixed(2)}</text>`;
     x += 40;
@@ -228,7 +227,7 @@ export function ringSvg(pct: number, color: string, icon: "usd" | "week" | "cloc
         : `<path d="M11 7.2V11l2.4 1.6" fill="none" stroke="${color}" stroke-width="1.4" stroke-linecap="round"/>`;
   return (
     `<svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 22 22">` +
-    `<circle cx="11" cy="11" r="${r}" fill="none" stroke="${GREY}" stroke-opacity=".3" stroke-width="2.2"/>` +
+    `<circle cx="11" cy="11" r="${r}" fill="none" stroke="${SVG_TRACK}" stroke-opacity=".3" stroke-width="2.2"/>` +
     `<circle cx="11" cy="11" r="${r}" fill="none" stroke="${color}" stroke-width="2.2" stroke-linecap="round" stroke-dasharray="${((C * Math.min(100, pct)) / 100).toFixed(1)} ${C.toFixed(1)}" transform="rotate(-90 11 11)"/>` +
     glyph +
     "</svg>"
@@ -294,7 +293,7 @@ export function rowGlyph(row: DeckRow): string {
 
 // one mini bar of the desktop chips: a 36-by-8 track with its fill
 export function chipBarSvg(pct: number, color: string): string {
-  return `<svg xmlns="http://www.w3.org/2000/svg" width="36" height="8"><rect width="36" height="8" rx="4" fill="${GREY}" fill-opacity=".2"/><rect width="${Math.max((36 * pct) / 100, pct > 0 ? 4 : 0)}" height="8" rx="4" fill="${color}"/></svg>`;
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="36" height="8"><rect width="36" height="8" rx="4" fill="${SVG_TRACK}" fill-opacity=".2"/><rect width="${Math.max((36 * pct) / 100, pct > 0 ? 4 : 0)}" height="8" rx="4" fill="${color}"/></svg>`;
 }
 
 export type ChipMini = { kind: "svg"; pct: number; color: string; alt: string } | { kind: "cells"; cells: Cell[] };

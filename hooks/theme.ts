@@ -56,6 +56,7 @@ export const PAINT = {
 /** The same roles for an SVG source, which cannot name a theme key: mid-tones that hold on both grounds. */
 export const SVG_PAINT = {
   muted: css(HUE.neutral),
+  track: "#808080",
 } as const;
 
 /** Glyphs that say a state without color. */

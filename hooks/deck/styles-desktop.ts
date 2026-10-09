@@ -1,6 +1,6 @@
 // Desktop bar styles as SVG markup (22px tall), plus agent strips. Pure, no I/O.
 // The pixel style and the strips adapt plan-progress (zycck/claude-mods, MIT, Kirill Serditov).
-import { AGENT_STYLE, STYLE, SVG_TEXT, hash, seedOf, esc, textWidth, hex, mix, rgb, type AgentRow, type AgentView, type Row, type Style, type StyleName } from "./theme.ts";
+import { AGENT_STYLE, STYLE, SVG_TEXT, SVG_TRACK, hash, seedOf, esc, textWidth, hex, mix, rgb, type AgentRow, type AgentView, type Row, type Style, type StyleName } from "./theme.ts";
 import { elapsed } from "./model.ts";
 
 export const DESKTOP_STYLES = ["pixel", "segments", "line", "solid", "dots", "spark"] as const;
@@ -111,7 +111,7 @@ function pixel(row: Row, W: number, nowMs: number, lastHead: LastHead): string {
     `<style>${css}</style>` +
     `<defs><clipPath id="${id}a"><rect width="${W}" height="${H}" rx="${H / 2}"/></clipPath><clipPath id="${id}b"><rect width="${fx.toFixed(1)}" height="${H}">${glideFill}</rect></clipPath>` +
     `<linearGradient id="${id}g" x1="0" x2="${Math.max(1, fx).toFixed(1)}" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="${rgb(acc)}" stop-opacity="${done ? 0.3 : 0.05}"/><stop offset="1" stop-color="${rgb(acc)}" stop-opacity=".33"/></linearGradient></defs>` +
-    `<g clip-path="url(#${id}a)"><rect width="${W}" height="${H}" fill="#808080" fill-opacity=".16"/>` +
+    `<g clip-path="url(#${id}a)"><rect width="${W}" height="${H}" fill="${SVG_TRACK}" fill-opacity=".16"/>` +
     `<g clip-path="url(#${id}b)"><rect width="${fx.toFixed(1)}" height="${H}" fill="url(#${id}g)"/>${px}</g>${marks}</g>` +
     pillMarkup(row, W, fx, from, st)
   );
@@ -139,7 +139,7 @@ function segments(row: Row, W: number, nowMs: number, lastHead: LastHead): strin
     const x = i * (sw + gap) + (stages.has(i) ? 2 : 0);
     const on = i < Math.floor(filled);
     const head = !on && i === Math.floor(filled) && row.animating;
-    out += `<rect x="${x.toFixed(1)}" y="5" width="${(sw - (stages.has(i) ? 2 : 0)).toFixed(1)}" height="12" rx="2" fill="${on || head ? color : "#808080"}" fill-opacity="${on ? 1 : head ? 0.5 : 0.18}"${head ? ' class="t1"' : ""}/>`;
+    out += `<rect x="${x.toFixed(1)}" y="5" width="${(sw - (stages.has(i) ? 2 : 0)).toFixed(1)}" height="12" rx="2" fill="${on || head ? color : SVG_TRACK}" fill-opacity="${on ? 1 : head ? 0.5 : 0.18}"${head ? ' class="t1"' : ""}/>`;
   }
   glideFrom(lastHead, row.id, 0);
   return `<style>${twinkleCss(nowMs, false)}</style>${out}${label(row, bw + 12, color)}`;
@@ -156,7 +156,7 @@ function line(row: Row, W: number, _nowMs: number, lastHead: LastHead): string {
   for (const m of row.marks) marks += `<rect x="${(m.f * bw).toFixed(1)}" y="${m.stage ? 6 : 8}" width="1.5" height="${m.stage ? 10 : 6}" rx=".75" fill="${m.f * bw < fx ? color : "#8A8984"}" opacity=".7"/>`;
   const pulse = row.animating ? '<animate attributeName="r" values="4;5.5;4" dur="1.2s" repeatCount="indefinite"/>' : "";
   return (
-    `<rect x="0" y="10" width="${bw}" height="2" rx="1" fill="#808080" fill-opacity=".25"/>` +
+    `<rect x="0" y="10" width="${bw}" height="2" rx="1" fill="${SVG_TRACK}" fill-opacity=".25"/>` +
     `<rect x="0" y="9.5" width="${fx.toFixed(1)}" height="3" rx="1.5" fill="${color}">${glide}</rect>${marks}` +
     `<circle cx="${fx.toFixed(1)}" cy="11" r="4" fill="${color}">${glideDot}${pulse}</circle>` +
     label(row, bw + 14, color)
@@ -176,7 +176,7 @@ function solid(row: Row, W: number, nowMs: number, lastHead: LastHead): string {
   const text = esc(row.name) + (row.count ? " · " + esc(row.count) : "");
   return (
     `<defs><clipPath id="${id}a"><rect width="${W}" height="${H}" rx="6"/></clipPath><clipPath id="${id}b"><rect width="${fx.toFixed(1)}" height="${H}">${glide}</rect></clipPath></defs>` +
-    `<g clip-path="url(#${id}a)"><rect width="${W}" height="${H}" fill="#808080" fill-opacity=".16"/>` +
+    `<g clip-path="url(#${id}a)"><rect width="${W}" height="${H}" fill="${SVG_TRACK}" fill-opacity=".16"/>` +
     `<text x="10" y="15" style="font:500 12px ${FONT};fill:${SVG_TEXT.muted}">${text}</text>` +
     `<g clip-path="url(#${id}b)"><rect width="${W}" height="${H}" fill="${st.desk}"/>${sweep}<text x="10" y="15" style="font:500 12px ${FONT};fill:#fff">${text}</text></g></g>`
   );
@@ -192,18 +192,18 @@ function dots(row: Row, W: number, nowMs: number, lastHead: LastHead): string {
     for (let i = 0; i < row.steps; i++) {
       const done = i < (row.finished ?? 0);
       const cur = i === row.finished && row.animating;
-      if (i > 0) out += `<rect x="${x - gapW + 5}" y="10.25" width="${gapW - 10}" height="1.5" rx=".75" fill="${done || cur ? color : "#808080"}" fill-opacity="${done || cur ? 0.8 : 0.3}"/>`;
+      if (i > 0) out += `<rect x="${x - gapW + 5}" y="10.25" width="${gapW - 10}" height="1.5" rx=".75" fill="${done || cur ? color : SVG_TRACK}" fill-opacity="${done || cur ? 0.8 : 0.3}"/>`;
       out += done
         ? `<circle cx="${x}" cy="11" r="5" fill="${color}"/>`
         : cur
           ? `<circle cx="${x}" cy="11" r="5" fill="none" stroke="${color}" stroke-width="2"/><circle cx="${x}" cy="11" r="2.4" fill="${color}" class="t0"/>`
-          : `<circle cx="${x}" cy="11" r="4.5" fill="none" stroke="#808080" stroke-opacity=".45" stroke-width="1.5"/>`;
+          : `<circle cx="${x}" cy="11" r="4.5" fill="none" stroke="${SVG_TRACK}" stroke-opacity=".45" stroke-width="1.5"/>`;
       x += gapW;
     }
   } else {
     for (let i = 0; i < 10; i++) {
       const v = row.pct / 10 - i;
-      out += `<circle cx="${x}" cy="11" r="5" fill="#808080" fill-opacity=".2"/>`;
+      out += `<circle cx="${x}" cy="11" r="5" fill="${SVG_TRACK}" fill-opacity=".2"/>`;
       if (v > 0) out += `<clipPath id="d${seedOf(row.id) % 997}${i}"><rect x="${x - 5}" y="6" width="${10 * Math.min(1, v)}" height="10"/></clipPath><circle cx="${x}" cy="11" r="5" fill="${color}" clip-path="url(#d${seedOf(row.id) % 997}${i})"/>`;
       x += 16;
     }
@@ -219,7 +219,7 @@ function spark(row: Row, W: number, _nowMs: number, lastHead: LastHead): string 
   const fx = (row.pct / 100) * bw;
   const from = glideFrom(lastHead, row.id, fx);
   const glide = Math.abs(from - fx) > 0.5 ? `<animate attributeName="width" from="${from.toFixed(1)}" to="${fx.toFixed(1)}" dur=".45s" ${EASE} fill="freeze"/>` : "";
-  let out = `<rect x="0" y="7" width="${bw}" height="8" rx="4" fill="#808080" fill-opacity=".2"/><rect x="0" y="7" width="${fx.toFixed(1)}" height="8" rx="4" fill="${color}">${glide}</rect>`;
+  let out = `<rect x="0" y="7" width="${bw}" height="8" rx="4" fill="${SVG_TRACK}" fill-opacity=".2"/><rect x="0" y="7" width="${fx.toFixed(1)}" height="8" rx="4" fill="${color}">${glide}</rect>`;
   const sw = Math.max(60, Math.round(W * 0.3));
   const sx = bw + 14;
   const hist = (row.hist ?? []).slice(-30);
@@ -231,7 +231,7 @@ function spark(row: Row, W: number, _nowMs: number, lastHead: LastHead): string 
     const [lx, ly] = pts[pts.length - 1]!;
     out += `<circle cx="${lx.toFixed(1)}" cy="${ly.toFixed(1)}" r="2.6" fill="${color}"><animate attributeName="r" values="2.6;3.6;2.6" dur="1.6s" repeatCount="indefinite"/></circle>`;
   } else {
-    out += `<rect x="${sx}" y="10.5" width="${sw}" height="1" fill="#808080" fill-opacity=".3"/>`;
+    out += `<rect x="${sx}" y="10.5" width="${sw}" height="1" fill="${SVG_TRACK}" fill-opacity=".3"/>`;
   }
   const lx = sx + sw + 14;
   out += `<text x="${lx}" y="15" style="font:500 12px ${FONT};fill:${color}">${esc(row.name)}${row.rate ? `<tspan dx="8" style="font-weight:400;fill:${SVG_TEXT.muted}">${esc(row.rate)}</tspan>` : row.count ? `<tspan dx="6" style="font-weight:400;fill:${SVG_TEXT.muted}">${esc(row.count)}</tspan>` : ""}</text>`;
@@ -315,7 +315,7 @@ export function stripsSvg(
   if (v.hidden.length) {
     const y = v.shown.length * (STRIP_H + STRIP_GAP);
     const done = v.hidden.filter((a) => a.state === "done").length;
-    out += `<rect x="0" y="${y}" width="${W}" height="${STRIP_H}" rx="${STRIP_H / 2}" fill="#808080" fill-opacity=".14"/><text x="10" y="${y + 12.5}" class="sn st">${esc(more(v.hidden.length, done))}</text>`;
+    out += `<rect x="0" y="${y}" width="${W}" height="${STRIP_H}" rx="${STRIP_H / 2}" fill="${SVG_TRACK}" fill-opacity=".14"/><text x="10" y="${y + 12.5}" class="sn st">${esc(more(v.hidden.length, done))}</text>`;
   }
   return (
     `<style>.sn{font:400 11.5px ${FONT};fill:#F0EEFC}.st{fill-opacity:.65}` +

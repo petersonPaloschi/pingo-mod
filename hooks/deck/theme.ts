@@ -106,6 +106,7 @@ export const HEAD_DIM = css(DECK_ACCENT.headDim);
 export const SHINE = css(DECK_ACCENT.shine);
 /** The text tones inside the desktop SVG rows. */
 export const SVG_TEXT = { body: SVG_PAINT.muted, muted: SVG_PAINT.muted, dim: SVG_PAINT.muted } as const;
+export const SVG_TRACK = SVG_PAINT.track;
 
 export function hash(a: number, b: number, k: number): number {
   const x = Math.sin(a * 127.1 + b * 311.7 + k * 74.7) * 43758.5453;
