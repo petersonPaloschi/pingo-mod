@@ -3,6 +3,10 @@ import { mock } from "claude-code/testing";
 
 import { DEFAULT_FEATURES, type Features } from "../hooks/core/plan.ts";
 import type { Answer, ChoiceAnswer, NoulAnswer, SystemOneRequest } from "../hooks/core/types.ts";
+import { MOODS } from "../hooks/mascots/pingo.ts";
+
+/** Pingo's face as the dashboard draws it, in any mood: a Text with the face alone. */
+export const PINGO_FACE = new RegExp(`^(${Object.values(MOODS).map((mood) => mood.face.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|")})$`);
 
 export const PANE_PROPS = {
   title: "Jev",

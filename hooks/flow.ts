@@ -228,7 +228,7 @@ function jevNode(run: TraceRun, locale: Locale): FlowNode {
       color: failed ? C.fail : C.dim,
     });
   }
-  return { id: "jev", glyph: "◆", color, label: text("flow.node.jev", locale), details };
+  return { id: "jev", glyph: GLYPH.on, color, label: text("flow.node.jev", locale), details };
 }
 
 function mainNode(run: TraceRun, now: number, locale: Locale): FlowNode {
@@ -242,7 +242,7 @@ function mainNode(run: TraceRun, now: number, locale: Locale): FlowNode {
   const responding = run.endedAt === undefined && last !== undefined && last.endedAt === undefined;
   return {
     id: "main",
-    glyph: "◆",
+    glyph: GLYPH.on,
     color: C.orange,
     label: text("flow.node.main", locale),
     details: [
@@ -323,7 +323,7 @@ function agentsNode(run: TraceRun, now: number, locale: Locale): FlowNode {
   const hidden = run.agents.length - shown.length;
   return {
     id: "agents",
-    glyph: "◇",
+    glyph: GLYPH.off,
     color: C.blue,
     label: text("flow.node.agents", locale),
     branch: true,
@@ -610,7 +610,7 @@ function drawTimeline(g: Canvas, x: number, y: number, width: number, run: Trace
     if (endAt > startAt) {
       g.put(x + labelWidth + 1 + startAt, y, "━".repeat(endAt - startAt + 1), { color: event.color });
     }
-    g.put(x + labelWidth + 1 + endAt, y, running ? GLYPH.on : "◆", { color: event.color, bold: true });
+    g.put(x + labelWidth + 1 + endAt, y, running ? GLYPH.run : GLYPH.on, { color: event.color, bold: true });
     g.put(x + labelWidth + 1 + barWidth + 1, y, fit(duration(event.startedAt, finish, locale), durationWidth), { color: C.dim });
     y++;
   }
@@ -658,7 +658,7 @@ function drawWideFlow(g: Canvas, trace: TraceState, scene: FlowScene, now: numbe
   const agents = run.agents.slice(-MAX_AGENT_LINES);
   const hidden = run.agents.length - agents.length;
   if (agents.length) {
-    card("agents", text("flow.node.dispatcher" as LocaleKey, locale), "◇", C.blue, [
+    card("agents", text("flow.node.dispatcher" as LocaleKey, locale), GLYPH.off, C.blue, [
       { text: text("flow.dispatcher.count" as LocaleKey, locale, { count: formatNumber(run.agents.length, locale) }) + (hidden ? ` · +${formatNumber(hidden, locale)}` : ""), color: C.ink, bold: true },
     ]);
     // As many subagent cards to a row as fit, the rows one row apart like every other box.
@@ -673,7 +673,7 @@ function drawWideFlow(g: Canvas, trace: TraceState, scene: FlowScene, now: numbe
         // The last card takes the columns left over, so every row ends where the boxes above do.
         const left = centerX + column * (cardWidth + GAP);
         const span = column === columns - 1 ? centerX + centerWidth - left : cardWidth;
-        rowEnd = Math.max(rowEnd, drawCard(g, left, end, span, agent.type, "◇", color, agentCardDetails(agent, now, locale), agent.state === "running", 1));
+        rowEnd = Math.max(rowEnd, drawCard(g, left, end, span, agent.type, GLYPH.off, color, agentCardDetails(agent, now, locale), agent.state === "running", 1));
       });
       end = rowEnd;
     }

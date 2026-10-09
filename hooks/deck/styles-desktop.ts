@@ -1,6 +1,6 @@
 // Desktop bar styles as SVG markup (22px tall), plus agent strips. Pure, no I/O.
 // The pixel style and the strips adapt plan-progress (zycck/claude-mods, MIT, Kirill Serditov).
-import { AGENT_STYLE, STYLE, SVG_TEXT, SVG_TRACK, hash, seedOf, esc, textWidth, hex, mix, rgb, type AgentRow, type AgentView, type Row, type Style, type StyleName } from "./theme.ts";
+import { AGENT_STYLE, STYLE, SVG_ON_FILL, SVG_TEXT, SVG_TRACK, hash, seedOf, esc, textWidth, hex, mix, rgb, type AgentRow, type AgentView, type Row, type Style, type StyleName } from "./theme.ts";
 import { elapsed } from "./model.ts";
 
 export const DESKTOP_STYLES = ["pixel", "segments", "line", "solid", "dots", "spark"] as const;
@@ -62,8 +62,8 @@ function pillMarkup(row: Row, W: number, fx: number, from: number, st: Style, ma
     kw = Math.round(20 + iconW + textWidth(shown) + countW);
     const left = -kw / 2 + 10;
     knob = `<rect x="${-kw / 2}" y="0" width="${kw}" height="${H}" rx="${H / 2}" fill="${color}"/>`;
-    if (icon) knob += `<path d="${icon}" transform="translate(${left} 5) scale(.5)" fill="none" stroke="#fff" stroke-width="3.6" stroke-linecap="round" stroke-linejoin="round"/>`;
-    knob += `<text x="${left + iconW}" y="${H / 2 + 4.2}" style="font:500 12px ${FONT};fill:#fff">${esc(shown)}${row.count ? `<tspan dx="6" style="font-weight:400;fill-opacity:.75">${esc(row.count)}</tspan>` : ""}</text>`;
+    if (icon) knob += `<path d="${icon}" transform="translate(${left} 5) scale(.5)" fill="none" stroke="${SVG_ON_FILL}" stroke-width="3.6" stroke-linecap="round" stroke-linejoin="round"/>`;
+    knob += `<text x="${left + iconW}" y="${H / 2 + 4.2}" style="font:500 12px ${FONT};fill:${SVG_ON_FILL}">${esc(shown)}${row.count ? `<tspan dx="6" style="font-weight:400;fill-opacity:.75">${esc(row.count)}</tspan>` : ""}</text>`;
   }
   const at = (x: number) => Math.max(kw / 2, Math.min(W - kw / 2, x >= kw ? x - kw / 2 : x + kw / 2));
   const kx = at(fx);
@@ -171,14 +171,14 @@ function solid(row: Row, W: number, nowMs: number, lastHead: LastHead): string {
   const glide = Math.abs(from - fx) > 0.5 ? `<animate attributeName="width" from="${from.toFixed(1)}" to="${fx.toFixed(1)}" dur=".45s" ${EASE} fill="freeze"/>` : "";
   const t = (nowMs / 1000) % 2.4;
   const sweep = row.animating
-    ? `<rect x="-60" y="0" width="60" height="${H}" fill="#fff" fill-opacity=".18"><animate attributeName="x" from="-60" to="${W}" dur="2.4s" begin="-${t.toFixed(2)}s" repeatCount="indefinite"/></rect>`
+    ? `<rect x="-60" y="0" width="60" height="${H}" fill="${SVG_ON_FILL}" fill-opacity=".18"><animate attributeName="x" from="-60" to="${W}" dur="2.4s" begin="-${t.toFixed(2)}s" repeatCount="indefinite"/></rect>`
     : "";
   const text = esc(row.name) + (row.count ? " · " + esc(row.count) : "");
   return (
     `<defs><clipPath id="${id}a"><rect width="${W}" height="${H}" rx="6"/></clipPath><clipPath id="${id}b"><rect width="${fx.toFixed(1)}" height="${H}">${glide}</rect></clipPath></defs>` +
     `<g clip-path="url(#${id}a)"><rect width="${W}" height="${H}" fill="${SVG_TRACK}" fill-opacity=".16"/>` +
     `<text x="10" y="15" style="font:500 12px ${FONT};fill:${SVG_TEXT.muted}">${text}</text>` +
-    `<g clip-path="url(#${id}b)"><rect width="${W}" height="${H}" fill="${st.desk}"/>${sweep}<text x="10" y="15" style="font:500 12px ${FONT};fill:#fff">${text}</text></g></g>`
+    `<g clip-path="url(#${id}b)"><rect width="${W}" height="${H}" fill="${st.desk}"/>${sweep}<text x="10" y="15" style="font:500 12px ${FONT};fill:${SVG_ON_FILL}">${text}</text></g></g>`
   );
 }
 

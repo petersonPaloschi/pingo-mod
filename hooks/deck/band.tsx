@@ -28,10 +28,8 @@ import {
 } from "./rows.ts";
 import { AGENT_STYLE, BODY, DIM, MUTED, PILL_INK, STYLE, TEXT, TRACK, runs, textWidth, trunc } from "./theme.ts";
 import { terminalBar } from "./styles-terminal.ts";
-import { displayWidth } from "../layout.ts";
 import { GLYPH } from "../theme.ts";
 
-const RULE = GLYPH.rule;
 const BRANCH = GLYPH.branch;
 
 export type Surface = "terminal" | "desktop";
@@ -102,13 +100,12 @@ export function renderDeck(els: ElementTable, band: DeckBand, surface: Surface) 
   }
   const count = band.rows.length;
   const countText = "· " + (count === 1 ? text("deck.rows.one", band.locale, { count }) : text("deck.rows.many", band.locale, { count }));
-  // the terminal header carries a rule from the row count to the clock and weather, as every section does
-  const ruleRoom = band.cols - displayWidth(text("deck.toggle.expanded", band.locale)) - 3 - displayWidth(countText) - displayWidth(extrasStr) - 5;
+  // the head of the trail: the toggle and the row count, the clock and weather at the far end
   const header = (
     <Box flexDirection="row" columnGap={1} alignItems="center">
       {toggle}
       <Text color={DIM}>{countText}</Text>
-      {inlinePet ? inlinePetEl(els, band, extrasStr.length) : desktop || ruleRoom < 2 ? <Box flexGrow={1} /> : <Box flexGrow={1}><Text color={TRACK}>{RULE.repeat(ruleRoom)}</Text></Box>}
+      {inlinePet ? inlinePetEl(els, band, extrasStr.length) : <Box flexGrow={1} />}
       {extrasEl}
     </Box>
   );
@@ -275,8 +272,8 @@ const pctOf = (row: DeckRow) => `${Math.round(Math.max(0, Math.min(100, row.pct)
 /** The value column: wide enough for "100%". */
 const VALUE_W = 4;
 
-// the expanded rows in the terminal: a glyph, the title, the value next to its bar, the bar, what is left of the
-// right-hand value (a reset, a rate), the agents under it as a tree, and the ✕
+// the expanded rows in the terminal, a trail: each row's node (its state), the title, the bar, its share right after
+// it, what is left of the right-hand value (a reset, a rate), the ✕, and the agents hanging under it
 function terminalRows(els: ElementTable, band: DeckBand, shown: number, hasLane: boolean) {
   const { Box, Text } = els;
   const maxRows = Math.max(2, (band.maxRows ?? DEFAULT_MAX_ROWS) - 1 - (hasLane ? PET_BRAILLE.rows : 0));
@@ -313,10 +310,10 @@ function terminalRows(els: ElementTable, band: DeckBand, shown: number, hasLane:
         <Box width={labelW} flexShrink={0}>
           <Text color={TEXT} bold wrap="truncate">{trunc(row.title, labelW)}</Text>
         </Box>
+        <Box flexGrow={1} flexDirection="row">{runs(Text, terminalBar(band.settings.style.terminal, toTrackRow(row), barW, frame))}</Box>
         <Box width={VALUE_W} flexShrink={0} justifyContent="flex-end">
           <Text color={row.style === "run" ? TEXT : st.fill} bold>{value}</Text>
         </Box>
-        <Box flexGrow={1} flexDirection="row">{runs(Text, terminalBar(band.settings.style.terminal, toTrackRow(row), barW, frame))}</Box>
         {rightW ? (
           <Box width={rightW} flexShrink={0} justifyContent="flex-end">
             <Text color={MUTED}>{rest}</Text>
@@ -330,21 +327,21 @@ function terminalRows(els: ElementTable, band: DeckBand, shown: number, hasLane:
       lines.push(agentLine(els, band, ag, frame, labelW));
     }
     if (row.strips?.hidden.length && lines.length < maxRows) {
-      lines.push(<Text key={"more-" + row.id} color={DIM}>{`  ${BRANCH} ` + text("deck.strips.more", band.locale, { count: row.strips.hidden.length })}</Text>);
+      lines.push(<Text key={"more-" + row.id} color={DIM}>{`  ${BRANCH}${GLYPH.rule} ` + text("deck.strips.more", band.locale, { count: row.strips.hidden.length })}</Text>);
     }
   }
   return lines;
 }
 
-// one agent under a terminal row, as a branch of it: its state glyph, its title, what it is doing, its model on its
-// tier's ground, and how long it has run
+// one agent hanging under a terminal row (╰─): its state glyph, its title, what it is doing, its model on its tier's
+// ground, and how long it has run
 function agentLine(els: ElementTable, band: DeckBand, ag: Agent, frame: number, labelW: number) {
   const { Box, Text } = els;
   const ast = STYLE[AGENT_STYLE[ag.state]];
   const glyph = ag.state === "running" ? (frame % 6 < 3 ? GLYPH.off : GLYPH.on) : ast.glyph;
   return (
     <Box key={"agent-" + ag.id} flexDirection="row" columnGap={1}>
-      <Text color={TRACK}>{ag.depth ? `    ${BRANCH}` : `  ${BRANCH}`}</Text>
+      <Text color={TRACK}>{ag.depth ? `    ${BRANCH}${GLYPH.rule}` : `  ${BRANCH}${GLYPH.rule}`}</Text>
       <Text color={ast.fill} bold>{glyph}</Text>
       <Box width={Math.max(8, labelW - 2)} flexShrink={0}>
         <Text color={BODY} wrap="truncate">{trunc(ag.title, Math.max(8, labelW - 2))}</Text>

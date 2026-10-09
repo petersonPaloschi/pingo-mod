@@ -170,7 +170,7 @@ describe("runtime without main-turn advice", () => {
     const ui = await $.ui.mount({ plugin: "jev", surface: "terminal", component: "Pane", requestId: "jev", props: PANE_PROPS });
     for (const [alias, label] of [["flow", "Live"], ["reasons", "Logs"], ["features", "Configuration"], ["setup", "Configuration"]]) {
       await $.command.run({ command: "jev", args: alias, origin: ORIGIN } as never);
-      expect(JSON.stringify(await ui.drawn())).toContain(`▸ ${label}`);
+      expect(JSON.stringify(await ui.drawn())).toContain(`◉ ${label}`);
     }
     expect(await $.command.run({ command: "jev", args: "baseline", origin: ORIGIN } as never)).toMatchObject({ text: expect.stringContaining("Usage:") });
     await ui.unmount();

@@ -6,9 +6,10 @@
 import { text, type Locale } from "../i18n.ts";
 import { EFFORTS, fmtUsd, shortModel, stripTool, type Agent, type DeckRow, type RouteView, type Spend } from "./model.ts";
 import type { DeckSize, DeckSurfaceStyle } from "./settings.ts";
-import { BODY, DIM, MUTED, PILL_INK, STYLE, SVG_TEXT, SVG_TRACK, TEXT, TIER, esc, textCells, textWidth, trunc, type AgentRow, type Row, type TierName } from "./theme.ts";
+import { BODY, DIM, MUTED, PILL_INK, STYLE, SVG_ON_FILL, SVG_TEXT, SVG_TRACK, TEXT, TIER, esc, textCells, textWidth, trunc, type AgentRow, type Row, type TierName } from "./theme.ts";
 import { desktopTrack, stripsHeight, stripsSvg, type LastHead, type LastStrip } from "./styles-desktop.ts";
 import { terminalMini } from "./styles-terminal.ts";
+import { GLYPH } from "../theme.ts";
 
 export const TRACK_H = 22;
 export const RIGHT_W = 92;
@@ -148,7 +149,7 @@ export function routeSvg(row: DeckRow, W: number, routeHist: readonly string[], 
     let o = `<text x="0" y="15" style="font:400 12px ${FONT};fill:${SVG_TEXT.dim}">${text("deck.route.kept", locale)}</text>`;
     x = 34;
     const w = textWidth(v.to, 6.4) + 14;
-    o += `<rect x="${x}" y="3" width="${w}" height="16" rx="4" fill="${tierColor(v.to)}"/><text x="${x + 7}" y="15" style="font:500 11.5px ${FONT};fill:#fff">${esc(v.to)}</text>`;
+    o += `<rect x="${x}" y="3" width="${w}" height="16" rx="4" fill="${tierColor(v.to)}"/><text x="${x + 7}" y="15" style="font:500 11.5px ${FONT};fill:${SVG_ON_FILL}">${esc(v.to)}</text>`;
     x += w + 12;
     o += `<text x="${x}" y="15" style="font:500 12px ${FONT};fill:${STYLE.warn.desk}">! ${esc(v.reason)}</text>`;
     x += textWidth("! " + v.reason, 6.6) + 10;
@@ -167,7 +168,7 @@ export function routeSvg(row: DeckRow, W: number, routeHist: readonly string[], 
     const want = t === v.want && !on;
     const w = textWidth(t, 6.4) + 14;
     out += `<rect x="${x}" y="3" width="${w}" height="16" rx="4" fill="${on ? tierColor(t) : SVG_TRACK}" fill-opacity="${on ? 1 : 0.16}"${want ? ` stroke="${tierColor(t)}" stroke-dasharray="2 2"` : ""}/>`;
-    out += `<text x="${x + 7}" y="15" style="font:${on ? 500 : 400} 11.5px ${FONT};fill:${on ? "#fff" : SVG_TEXT.muted}">${t}</text>`;
+    out += `<text x="${x + 7}" y="15" style="font:${on ? 500 : 400} 11.5px ${FONT};fill:${on ? SVG_ON_FILL : SVG_TEXT.muted}">${t}</text>`;
     x += w + 4;
   }
   x += 8;
@@ -280,13 +281,10 @@ export function fadeInSvg(source: string, ageMs: number, fadeMs: number): string
 
 // ---------- glyphs ----------
 
-// a row's glyph: its state when that asks for something (a question, a failure, a finished plan, a limit's fill),
-// otherwise what kind of row it is, so a plan, an agent, the context and a limit never share one dot
-const KIND_GLYPH: Record<DeckRow["kind"], string> = { bar: "☰", activity: "◇", meter: "◫", route: "⇄" };
+// a row's node on the trail: its state (● at work, ? a question, ! a failure, ✓ a finished plan, ◔ ◑ a limit's
+// fill), or → for the route, which has no bar; the title beside it says what the row is
 export function rowGlyph(row: DeckRow): string {
-  if (row.kind === "route") return KIND_GLYPH.route;
-  if (row.style !== "run") return STYLE[row.style].glyph;
-  return KIND_GLYPH[row.kind];
+  return row.kind === "route" ? GLYPH.route : STYLE[row.style].glyph;
 }
 
 // ---------- collapsed looks ----------

@@ -1806,7 +1806,7 @@ async function farolAbove($: EngineInterface, e: { props: { hasSurvey?: boolean 
   const pt = (await getSettings($)).locale === "pt";
   const open = items.filter((item) => item.verdict === "open").length;
   const label = open ? pt ? `${open} suposiç${open === 1 ? "ão" : "ões"} para revisar` : `${open} assumption${open === 1 ? "" : "s"} to review` : pt ? `${rules.length} regra${rules.length === 1 ? "" : "s"} do projeto` : `${rules.length} project rule${rules.length === 1 ? "" : "s"}`;
-  return <Box flexDirection="column"><Button key="farol-open" label={`◆ ${label} · Farol`} plain onPress={() => void $.ui.open({ id: "farol", title: "Farol", focus: true })} />{below}</Box>;
+  return <Box flexDirection="column"><Button key="farol-open" label={`${GLYPH.on} ${label} · Farol`} plain onPress={() => void $.ui.open({ id: "farol", title: "Farol", focus: true })} />{below}</Box>;
 }
 
 async function clarezaStart($: EngineInterface) {
@@ -1853,7 +1853,7 @@ async function clarezaAbove($: EngineInterface, e: { props: { hasSurvey?: boolea
   const line = await read($, clarezaStatus);
   if (!line && !grade) return below;
   const { Box, Button, Text } = renderElements($, e);
-  const top = <Box flexDirection="row" columnGap={1}><Text dimColor wrap="truncate-end">◆ {line}</Text>{grade && <Text color={grade.pass ? "success" : "error"}>{grade.pass ? `${GLYPH.ok} Clareza` : `✗ ${grade.problems.join("; ")}`}{grade.fixing ? " · rewriting" : ""}</Text>}</Box>;
+  const top = <Box flexDirection="row" columnGap={1}><Text dimColor wrap="truncate-end">{GLYPH.on} {line}</Text>{grade && <Text color={grade.pass ? "success" : "error"}>{grade.pass ? `${GLYPH.ok} Clareza` : `✗ ${grade.problems.join("; ")}`}{grade.fixing ? " · rewriting" : ""}</Text>}</Box>;
   const offered = grade?.offered.length ? <Box flexDirection="row" flexWrap="wrap" columnGap={1}><Text dimColor>{(await getSettings($)).locale === "pt" ? "Eu sei:" : "I know this:"}</Text>{grade.offered.map((term) => <Button key={`clareza-${term}`} label={term} dimColor onPress={async () => { await addClarezaTerms($, [term]); await update($, clarezaGrade, (value) => value && { ...value, offered: value.offered.filter((word) => word !== term) }); }} />)}</Box> : null;
   return <Box flexDirection="column">{top}{offered}{below}</Box>;
 }
@@ -1895,7 +1895,7 @@ async function sementeAbove($: EngineInterface, e: { props: { hasSurvey?: boolea
   const { Box, Button, Text } = renderElements($, e);
   const pt = (await getSettings($)).locale === "pt";
   const label = pt ? `${found.length} ${found.length === 1 ? "ideia salva combina" : "ideias salvas combinam"} com o trabalho recente` : found.length === 1 ? "1 saved idea fits recent work" : `${found.length} saved ideas fit recent work`;
-  return <Box flexDirection="column"><Box><Text color={PAINT.brand}>◆ </Text><Text>{label}: </Text><Text dimColor wrap="truncate-end">{found.map((idea) => idea.text).join(" · ")} </Text><Button key="send" label={pt ? "Enviar" : "Send"} variant="primary" onPress={() => void sendSemente($, found)} /><Button key="dismiss" label={pt ? "Dispensar" : "Dismiss"} role="dismiss" onPress={async () => { for (const idea of found) sementeDismissed.add(idea.id); await update($, sementeNudges, () => []); }} /></Box>{below}</Box>;
+  return <Box flexDirection="column"><Box><Text color={PAINT.brand}>{GLYPH.on} </Text><Text>{label}: </Text><Text dimColor wrap="truncate-end">{found.map((idea) => idea.text).join(" · ")} </Text><Button key="send" label={pt ? "Enviar" : "Send"} variant="primary" onPress={() => void sendSemente($, found)} /><Button key="dismiss" label={pt ? "Dispensar" : "Dismiss"} role="dismiss" onPress={async () => { for (const idea of found) sementeDismissed.add(idea.id); await update($, sementeNudges, () => []); }} /></Box>{below}</Box>;
 }
 
 async function lapidaStart($: EngineInterface) {
@@ -1923,7 +1923,7 @@ async function lapidaAbove($: EngineInterface, e: { props: { hasSurvey?: boolean
   const label = phase === "enhancing" ? "Lapida…" : phase === "ready" ? (pt ? "Lapida · revise o rascunho" : "Lapida · review the rewrite") : phase === "error" ? await read($, lapidaNote) : "Lapida";
   const notes = phase === "ready" ? await read($, lapidaChanges) : [];
   const width = Math.max(10, (e.props.bodyColumns || 80) - 2);
-  return <Box flexDirection="column"><Box><Text color={PAINT.brand}>◆ </Text><Text dimColor>{label} </Text>{!enhancing && <Button key="lapida-enhance" label={pt ? "Lapidar (e)" : "Enhance (e)"} hotkey="e" onPress={enhanceDraft} />}<Text> </Text>{!enhancing && <Button key="lapida-send" label={pt ? "Enviar (s)" : "Send (s)"} hotkey="s" onPress={send} />}</Box>{notes.map((line) => <Text key={line} dimColor wrap="truncate-end">{`+ ${line}`.slice(0, width)}</Text>)}{below}</Box>;
+  return <Box flexDirection="column"><Box><Text color={PAINT.brand}>{GLYPH.on} </Text><Text dimColor>{label} </Text>{!enhancing && <Button key="lapida-enhance" label={pt ? "Lapidar (e)" : "Enhance (e)"} hotkey="e" onPress={enhanceDraft} />}<Text> </Text>{!enhancing && <Button key="lapida-send" label={pt ? "Enviar (s)" : "Send (s)"} hotkey="s" onPress={send} />}</Box>{notes.map((line) => <Text key={line} dimColor wrap="truncate-end">{`+ ${line}`.slice(0, width)}</Text>)}{below}</Box>;
 }
 
 type PrismaQuestionInput = { question: string; header: string; multiSelect?: boolean; options?: { label: string; description?: string; preview?: string }[] };
@@ -2094,7 +2094,7 @@ async function sentinelaAbove($: EngineInterface, e: { props: { hasSurvey?: bool
   const count = (status: SentinelaSession["status"]) => list.filter((row) => row.status === status).length;
   const { Box, Button, Text } = renderElements($, e);
   const locale = (await getSettings($)).locale;
-  return <Box flexDirection="column"><Box><Text color={PAINT.brand}>◆ </Text><Button key="sessions" label={locale === "pt" ? "Sessões" : "Sessions"} onPress={() => void toggleSentinela($)} /><Text> </Text><Text color="error">{GLYPH.ask} {count("waiting")} {locale === "pt" ? "aguardando" : "waiting"}  </Text><Text color="warning">{GLYPH.on} {count("working")} {locale === "pt" ? "trabalhando" : "working"}  </Text><Text color="success">{GLYPH.ok} {count("done")} {locale === "pt" ? "concluídas" : "done"}</Text></Box>{below}</Box>;
+  return <Box flexDirection="column"><Box><Text color={PAINT.brand}>{GLYPH.on} </Text><Button key="sessions" label={locale === "pt" ? "Sessões" : "Sessions"} onPress={() => void toggleSentinela($)} /><Text> </Text><Text color="error">{GLYPH.ask} {count("waiting")} {locale === "pt" ? "aguardando" : "waiting"}  </Text><Text color="warning">{GLYPH.on} {count("working")} {locale === "pt" ? "trabalhando" : "working"}  </Text><Text color="success">{GLYPH.ok} {count("done")} {locale === "pt" ? "concluídas" : "done"}</Text></Box>{below}</Box>;
 }
 
 const vigiaFlat = (value: string, max: number) => { const text = value.replace(/\s+/g, " ").trim(); return text.length > max ? `${text.slice(0, max - 1)}…` : text; };
@@ -2211,8 +2211,8 @@ async function vigiaAbove($: EngineInterface, e: { props: { hasSurvey?: boolean 
   const pt = (await getSettings($)).locale === "pt";
   const collapsed = await read($, vigiaCollapsed);
   const toggle = <Button key="vigia-toggle" label={collapsed ? (pt ? "exibir" : "show") : (pt ? "ocultar" : "hide")} plain dimColor onPress={async () => { const value = !await read($, vigiaCollapsed); await update($, vigiaCollapsed, () => value); await $.store.set("vigia:collapsed", value); }} />;
-  if (collapsed) return <Box flexDirection="column"><Box gap={1}><Text color={PAINT.brand}>◆</Text><Text dimColor>{others.length} {pt ? "outras sessões neste projeto" : `other session${others.length === 1 ? "" : "s"} here`} ·</Text>{conflicts.length > 0 && <Text color="error">! {conflicts.length} {pt ? "conflitos" : `file clash${conflicts.length === 1 ? "" : "es"}`} ·</Text>}{toggle}</Box>{below}</Box>;
-  return <Box flexDirection="column"><Box flexDirection="column"><Box gap={1}><Text color={PAINT.brand}>◆</Text><Text dimColor>{pt ? "Também trabalhando neste projeto · /vigia" : "Also working in this project · /vigia"}</Text>{toggle}</Box>{conflicts.slice(0, 2).map((conflict) => <Text key={`${conflict.other.id}-${conflict.file}`} color="error" wrap="truncate">  ! {pt ? "Conflito" : "Clash"}: {conflict.file} · {vigiaName(conflict.other)} · {vigiaAgo(now - conflict.at)}</Text>)}{others.slice(0, 3).map((record) => <Box key={record.id} flexDirection="column" paddingLeft={2}><Text wrap="truncate"><Text color={record.isBusy ? "warning" : "success"}>{record.isBusy ? `${GLYPH.on} ` : "◐ "}</Text><Text bold>{vigiaName(record)}</Text><Text dimColor> · {record.isBusy ? (pt ? "trabalhando" : "working") : (pt ? "aguardando" : "waiting")}</Text></Text>{(vigiaDoing(record) ?? record.lastPrompt) && <Text wrap="truncate">◆ {vigiaDoing(record) ?? record.lastPrompt}{vigiaNext(record) ? ` → ${vigiaNext(record)}` : ""}</Text>}</Box>)}</Box>{below}</Box>;
+  if (collapsed) return <Box flexDirection="column"><Box gap={1}><Text color={PAINT.brand}>{GLYPH.on}</Text><Text dimColor>{others.length} {pt ? "outras sessões neste projeto" : `other session${others.length === 1 ? "" : "s"} here`} ·</Text>{conflicts.length > 0 && <Text color="error">! {conflicts.length} {pt ? "conflitos" : `file clash${conflicts.length === 1 ? "" : "es"}`} ·</Text>}{toggle}</Box>{below}</Box>;
+  return <Box flexDirection="column"><Box flexDirection="column"><Box gap={1}><Text color={PAINT.brand}>{GLYPH.on}</Text><Text dimColor>{pt ? "Também trabalhando neste projeto · /vigia" : "Also working in this project · /vigia"}</Text>{toggle}</Box>{conflicts.slice(0, 2).map((conflict) => <Text key={`${conflict.other.id}-${conflict.file}`} color="error" wrap="truncate">  ! {pt ? "Conflito" : "Clash"}: {conflict.file} · {vigiaName(conflict.other)} · {vigiaAgo(now - conflict.at)}</Text>)}{others.slice(0, 3).map((record) => <Box key={record.id} flexDirection="column" paddingLeft={2}><Text wrap="truncate"><Text color={record.isBusy ? "warning" : "success"}>{record.isBusy ? `${GLYPH.on} ` : "◐ "}</Text><Text bold>{vigiaName(record)}</Text><Text dimColor> · {record.isBusy ? (pt ? "trabalhando" : "working") : (pt ? "aguardando" : "waiting")}</Text></Text>{(vigiaDoing(record) ?? record.lastPrompt) && <Text wrap="truncate">{GLYPH.branch} {vigiaDoing(record) ?? record.lastPrompt}{vigiaNext(record) ? ` → ${vigiaNext(record)}` : ""}</Text>}</Box>)}</Box>{below}</Box>;
 }
 
 export function normalizeTab(value: unknown): JevTab {
@@ -3544,10 +3544,10 @@ export const register: Register = (on, given) => {
         const overlap = isMe || !current ? [] : vigiaShared(own, record);
         const doing = vigiaDoing(record);
         const next = vigiaNext(record);
-        return <Box key={record.id} flexDirection="column" borderStyle="round" borderColor={isMe ? "cyan" : current ? "yellow" : "gray"} borderDimColor={!current} paddingX={1}>
+        return <Box key={record.id} flexDirection="column" borderStyle="round" borderColor={isMe ? PAINT.you : current ? PAINT.warn : PAINT.rule} borderDimColor={!current} paddingX={1}>
           <Box justifyContent="space-between"><Text bold wrap="truncate">{isMe ? "★ " : ""}{vigiaName(record)}</Text><Text color={current ? record.isBusy ? "warning" : "success" : "gray"}>{current ? record.isBusy ? `${GLYPH.on} ${pt ? "trabalhando" : "working"}` : `◐ ${pt ? "aguardando" : "waiting"}` : `${GLYPH.off} ${pt ? "encerrada" : "ended"} ${vigiaAgo(now - record.beatAt)}`}</Text></Box>
           <Text dimColor>{isMe ? (pt ? "esta sessão" : "this session") : record.id.slice(0, 8)} · {record.turns ?? 0} {pt ? "turnos" : "turns"} · {vigiaAgo(now - record.startedAt)}</Text>
-          {record.done && <Text wrap="wrap"><Text color="success">{GLYPH.ok} {pt ? "Feito" : "Done"}  </Text>{record.done}</Text>}{doing && <Text wrap="wrap"><Text color="warning">◆ {pt ? "Fazendo" : "Doing"} </Text>{doing}</Text>}{next && <Text wrap="wrap"><Text color="cyan">→ {pt ? "Próximo" : "Next"}  </Text>{next}</Text>}
+          {record.done && <Text wrap="wrap"><Text color="success">{GLYPH.ok} {pt ? "Feito" : "Done"}  </Text>{record.done}</Text>}{doing && <Text wrap="wrap"><Text color="warning">{GLYPH.run} {pt ? "Fazendo" : "Doing"} </Text>{doing}</Text>}{next && <Text wrap="wrap"><Text color={PAINT.brand}>{GLYPH.route} {pt ? "Próximo" : "Next"}  </Text>{next}</Text>}
           {record.tasks.length > 0 && <Text color="magenta">☰ {pt ? "Tarefas" : "Tasks"} {taskBar(record.tasks)}</Text>}{!!record.files?.length && <Text dimColor wrap="truncate">✎ {pt ? "Arquivos" : "Files"} {record.files.slice(0, 5).join(", ")}</Text>}{!!overlap.length && <Text color="error" wrap="truncate">⚠ {pt ? "Também alterados" : "Also edited"}: {overlap.join(", ")}</Text>}
           {!current && <Text dimColor>↺ claude --resume {record.id}</Text>}
         </Box>;

@@ -1,7 +1,7 @@
 // The pane and the band draw valid trees on both surfaces, and their controls act.
 import type { On, RenderPropsOf } from "claude-code";
 import { expect, mock, test } from "claude-code/testing";
-import { PANE_PROPS, mockEngineServices, mockStore, status, successfulFetches } from "./helpers.ts";
+import { PANE_PROPS, PINGO_FACE, mockEngineServices, mockStore, status, successfulFetches } from "./helpers.ts";
 
 const BAND_PROPS = { hasSurvey: false, isWorking: false, maxRows: 3, bodyColumns: 100 } as unknown as RenderPropsOf["AbovePrompt"];
 
@@ -141,7 +141,7 @@ test("Pingo remains in the header without a frame timer", async ($, on) => {
   });
   await $.session.start({ cwd: "/workspace" } as never).catch(() => undefined);
   const ui = await $.ui.mount({ plugin: "jev", surface: "terminal", component: "Pane", requestId: "jev", props: PANE_PROPS });
-  expect(await ui.find({ type: "Raster", key: "pingo" } as never)).toBeDefined();
+  expect(await ui.find({ type: "Text", text: PINGO_FACE })).toBeDefined();
   await clock.advance(100);
   expect(blits).toEqual([]);
   await ui.unmount();

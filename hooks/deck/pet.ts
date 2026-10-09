@@ -184,9 +184,9 @@ function buildSvgBody(state: PetAct, hat: string, shades: boolean): string {
 }
 
 // the hats keep their own colors (a chef's hat is white, a cowboy's brown), and never a mood's: the eyes alone
-// wear the mood's color. The party and wizard hats take the identity's magenta and violet.
+// wear the mood's color. The party and wizard hats take the identity's plum and sky.
 const HAT_COLORS: Record<string, string> = {
-  tophat: "#454551", party: css(HUE.magenta), crown: "#ffd23f", wizard: css(HUE.violet), cowboy: "#8b5a2b",
+  tophat: "#454551", party: css(HUE.plum), crown: "#ffd23f", wizard: css(HUE.you), cowboy: "#8b5a2b",
   propeller: "#3c7be0", chef: "#f4f4f4", viking: "#9aa3ad", halo: "#ffc400", santa: "#e03c3c", nightcap: "#3c7be0",
 };
 

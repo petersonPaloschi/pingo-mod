@@ -1,11 +1,11 @@
-// The shared identity: hues that hold on light and dark terminals, bars that tell near shares apart, Deck rows that
-// never share a glyph, and a failed slot of the timeline marked by a glyph, not by color alone.
+// Trilha, the shared identity: hues that hold on light and dark terminals, dot meters that fill by halves, Deck rows
+// whose node tells their state by a glyph, and a failed slot of the timeline marked by a glyph, not by color alone.
 import { expect, mock, test } from "claude-code/testing";
 
 import { rowGlyph } from "../hooks/deck/rows.ts";
 import { SVG_TEXT } from "../hooks/deck/theme.ts";
 import type { DeckRow } from "../hooks/deck/model.ts";
-import { blockBar, css, HUE, PAINT } from "../hooks/theme.ts";
+import { css, dotMeter, HUE, PAINT, SVG_PAINT } from "../hooks/theme.ts";
 import { PANE_PROPS } from "./helpers.ts";
 
 /** WCAG relative luminance and contrast ratio of two "#rrggbb" colors. */
@@ -18,11 +18,12 @@ const contrast = (a: string, b: string) => {
   return (hi! + 0.05) / (lo! + 0.05);
 };
 
-test("every hue keeps 3:1 on a dark and a light terminal, and the ink on it keeps 4.5:1", () => {
+test("every hue keeps 3:1 on a dark and a light terminal, and the ink on it keeps 4.7:1", () => {
   for (const [name, hue] of Object.entries(HUE)) {
     expect({ name, dark: contrast(css(hue), "#1e1e1e") >= 3 }).toEqual({ name, dark: true });
     expect({ name, light: contrast(css(hue), "#ffffff") >= 3 }).toEqual({ name, light: true });
-    expect({ name, ink: contrast(PAINT.onFill, css(hue)) >= 4.5 }).toEqual({ name, ink: true });
+    expect({ name, svg: contrast(SVG_PAINT.onFill, css(hue)) >= 3 }).toEqual({ name, svg: true });
+    expect({ name, ink: contrast(PAINT.onFill, css(hue)) >= 4.7 }).toEqual({ name, ink: true });
   }
 });
 
@@ -31,21 +32,21 @@ test("SVG body text stays readable on light and dark backgrounds", () => {
   expect(contrast(SVG_TEXT.body, "#ffffff") >= 3).toBe(true);
 });
 
-test("a block bar fills by eighths, so near shares still differ", () => {
-  expect(blockBar(0, 10)).toBe("");
-  expect(blockBar(1, 4)).toBe("████");
-  expect(blockBar(0.5, 3)).toBe("█▌");
-  expect(blockBar(0.41, 10)).not.toBe(blockBar(0.44, 10));
+test("a dot meter fills by halves and always keeps its length", () => {
+  expect(dotMeter(0)).toEqual(["", "○○○○○○○○○○"]);
+  expect(dotMeter(1, 4)).toEqual(["●●●●", ""]);
+  expect(dotMeter(0.45)).toEqual(["●●●●◐", "○○○○○"]);
+  expect(dotMeter(0.12)).toEqual(["●", "○○○○○○○○○"]);
+  for (const share of [0, 0.03, 0.26, 0.5, 0.74, 0.99, 1, 1.4, -1]) expect([...dotMeter(share).join("")].length).toBe(10);
 });
 
-test("Deck rows of different kinds never share a glyph, and a state that asks for something shows its own", () => {
+test("a Deck row's node is its state's glyph, each state its own, and the route an arrow", () => {
   const row = (kind: DeckRow["kind"], style: DeckRow["style"] = "run") =>
     ({ id: kind, kind, style, title: "", pct: 0, marks: [], right: "", short: "", strips: null }) as DeckRow;
-  const kinds: DeckRow["kind"][] = ["bar", "activity", "meter", "route"];
-  expect(new Set(kinds.map((kind) => rowGlyph(row(kind)))).size).toBe(kinds.length);
-  expect(rowGlyph(row("bar", "ask"))).toBe("?");
-  expect(rowGlyph(row("bar", "hot"))).toBe("!");
-  expect(rowGlyph(row("bar", "done"))).toBe("✓");
+  const styles: DeckRow["style"][] = ["run", "ask", "hot", "done", "ok", "warn"];
+  expect(new Set(styles.map((style) => rowGlyph(row("bar", style)))).size).toBe(styles.length);
+  expect(styles.map((style) => rowGlyph(row("meter", style)))).toEqual(["●", "?", "!", "✓", "◔", "◑"]);
+  expect(rowGlyph(row("route"))).toBe("→");
 });
 
 test("the timeline marks a slot whose request failed with ×, under the line", async ($, on) => {

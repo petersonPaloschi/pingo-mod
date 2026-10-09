@@ -83,9 +83,9 @@ export const STYLE: Record<StyleName, Style> = {
 export const AGENT_STYLE: Record<AgentState, StyleName> = { running: "run", waiting: "ask", error: "hot", done: "done" };
 
 export const TIER: Record<TierName, { term: string; desk: string }> = {
-  haiku: { term: fill(HUE.teal), desk: fill(HUE.teal) },
+  haiku: { term: fill(HUE.brand), desk: fill(HUE.brand) },
   sonnet: { term: fill(HUE.info), desk: fill(HUE.info) },
-  opus: { term: fill(HUE.violet), desk: fill(HUE.violet) },
+  opus: { term: fill(HUE.plum), desk: fill(HUE.plum) },
 };
 
 /** The empty part of a terminal bar: a glyph color, and the ground under a solid or pixel bar. */
@@ -106,7 +106,8 @@ export const HEAD_DIM = css(DECK_ACCENT.headDim);
 export const SHINE = css(DECK_ACCENT.shine);
 /** The text tones inside the desktop SVG rows. */
 export const SVG_TEXT = { body: SVG_PAINT.muted, muted: SVG_PAINT.muted, dim: SVG_PAINT.muted } as const;
-export const SVG_TRACK = SVG_PAINT.track;
+export const SVG_ON_FILL = SVG_PAINT.onFill;
+export const SVG_TRACK = SVG_PAINT.muted;
 
 export function hash(a: number, b: number, k: number): number {
   const x = Math.sin(a * 127.1 + b * 311.7 + k * 74.7) * 43758.5453;
