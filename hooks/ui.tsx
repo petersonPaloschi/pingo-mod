@@ -1,5 +1,5 @@
-// The dashboard uses dotted meters and timelines, text status, and animated mascots for the user
-// and subagents. DESIGN.md describes the visual system; dots.ts draws the shared primitives.
+// The Jev dashboard: a rail with the screens, Pingo and the last five minutes down the left of the pane (a bar on
+// top when the pane is narrow), and the open screen beside it, built of framed cards, colored pills and block bars.
 import type { ElementTable, RenderChildren } from "claude-code";
 
 import type { AgentRun, AgentState, FeatureFlags, FeatureId, FeedEntry, FeedTone, JevTab, LiveNow, RouteEvent, SetupDraft, TraceState, TraceStep } from "../types";
@@ -22,14 +22,14 @@ import {
   type Tile,
   type TileGroup,
 } from "./events.ts";
-import { cellsOf, constellation, DOT, hex } from "./dots.ts";
+import { cellsOf, DOT, hex } from "./dots.ts";
 import { failureHint, failureKind } from "./errors.ts";
 import { flowLines, flowScene } from "./flow.ts";
 import { runTiming, traceConsults } from "./trace.ts";
 import { formatAge, formatClock, formatCompact, formatDecimal, formatDuration, formatNumber, localeFor, reasonTitle, text, type Locale, type LocaleKey, type LocaleOption } from "./i18n.ts";
 import { displayWidth, rowsOf } from "./layout.ts";
-import { brailleFrame, MOODS, pingoSvg, type Mood } from "./mascots/pingo.ts";
-import { AGENT_MASCOTS, isMascot, MASCOT_ORDER } from "./mascots/agents.ts";
+import { brailleFrame, MOODS, pingoLiveSvg, type Mood } from "./mascots/pingo.ts";
+import { AGENT_MASCOTS, isMascot } from "./mascots/agents.ts";
 import { renderDeck, type DeckBand, type Surface } from "./deck/band.tsx";
 import { COLLAPSED, SECTIONS, SIZES, type DeckSettings } from "./deck/settings.ts";
 import { DESKTOP_STYLE_NAMES, DESKTOP_STYLES } from "./deck/styles-desktop.ts";
@@ -39,7 +39,7 @@ import { deckHelp } from "./deck/wire.ts";
 /** The pane needs Select and Input, which the terminal and the desktop app draw. */
 export type Els = ElementTable<"terminal" | "desktop">;
 
-/** The seven destinations kept visible in the header, split across two rows. */
+/** The seven screens, in the order the rail lists them, with their number keys. */
 export const TABS: readonly (readonly (readonly [JevTab, string, string])[])[] = [
   [
     ["overview", "ui.tab.overview", "1"],
@@ -294,9 +294,18 @@ export function moodOf(view: Pick<View, "events" | "routing" | "now" | "live" | 
   return MOOD_OF[status(view.events, view.routing, view.now, view.locale).kind];
 }
 
-/** Pingo's size in the pane header, in cells: the render and the animation must agree. */
+/**
+ * The rail's width for a pane `width` columns wide, or 0 when the bar goes on top. The host draws each button with
+ * its number key and brackets, so the rail needs 26 columns to keep every label on one row; it only appears where
+ * the screen beside it still has room to breathe.
+ */
+export function railWidth(width: number): number {
+  return width >= 120 ? 26 : 0;
+}
+
+/** Pingo's size in cells for a pane `width` wide: the large sphere in the rail, the small one in the bar on top. */
 export function pingoSize(width: number): { columns: number; rows: number } {
-  return width >= 60 ? { columns: 18, rows: 8 } : { columns: 14, rows: 6 };
+  return railWidth(width) ? { columns: 18, rows: 8 } : { columns: 14, rows: 6 };
 }
 
 /** Pingo: braille in the terminal, SVG circles on the desktop. */
@@ -308,47 +317,149 @@ function pingoArt(els: Els, view: View, mood: Mood) {
   }
   if (view.surface === "desktop" && "Svg" in els) {
     const { Svg } = els as ElementTable<"desktop">;
-    // one frame a second: the pane is drawn about that often, and a frame is kept for as long as its second lasts
-    return <Svg source={pingoSvg(mood, Math.floor(view.now / 1000))} alt={`Pingo, ${text(`mascot.mood.${mood}` as LocaleKey, view.locale)}`} />;
+    // one still sphere per mood: the source never changes, so the app keeps the CSS animation it started
+    return <Svg source={pingoLiveSvg(mood)} alt={`Pingo, ${text(`mascot.mood.${mood}` as LocaleKey, view.locale)}`} />;
   }
   return null;
 }
 
-function header(els: Els, view: View, act: Actions) {
-  const { Box, Button, Text } = els;
+/** Dark ink for a label drawn on a colored ground. */
+const PILL_INK = "#14161b";
+
+/** A label on a colored ground: a state, a model, the kind of a request. */
+function pill(els: Els, label: string, ground: string) {
+  const { Text } = els;
+  return <Text bold color={PILL_INK} backgroundColor={ground}>{` ${label} `}</Text>;
+}
+
+/**
+ * A card: a rounded frame with its title alone on the first row (so a title can be found by its words), an
+ * optional faint note under it, then the body. Every screen of the dashboard is built of these.
+ */
+function card(els: Els, title: string, body: RenderChildren, opts: { color?: string; width?: number; note?: string } = {}) {
+  const { Box, Text } = els;
+  return (
+    <Box flexDirection="column" borderStyle="round" borderColor={opts.color ?? INK.faint} paddingX={1} flexShrink={0} {...(opts.width === undefined ? {} : { width: opts.width })}>
+      <Text bold color={INK.ink} wrap="truncate">{title}</Text>
+      {opts.note ? <Text color={INK.faint} wrap="wrap">{opts.note}</Text> : null}
+      <Box flexDirection="column" marginTop={1}>
+        {body}
+      </Box>
+    </Box>
+  );
+}
+
+/** Cards side by side, two to a row where `width` holds two of at least `min` columns, one to a row otherwise. */
+function grid(els: Els, width: number, cards: readonly ((width: number) => RenderChildren)[], min = 34) {
+  const { Box } = els;
+  const each = width >= min * 2 + 1 ? Math.floor((width - 1) / 2) : width;
+  return (
+    <Box flexDirection="row" flexWrap="wrap" columnGap={1}>
+      {cards.map((make) => make(each))}
+    </Box>
+  );
+}
+
+/** The five-minute figures, one to a line: what the rail shows under Pingo. A failure count above zero is red. */
+function statLines(els: Els, view: View) {
+  const { Text } = els;
+  const stats = recentStats(view);
+  const partial = statsPartial(stats, view.locale);
+  return [
+    <Text color={INK.faint} wrap="truncate">{text("ui.rail.recent", view.locale)}</Text>,
+    <Text color={INK.ink} wrap="wrap">{text("ui.stats.calls", view.locale, { count: formatNumber(stats.calls, view.locale) })}</Text>,
+    stats.latency === undefined ? null : <Text color={INK.ink} wrap="wrap">{text("ui.stats.latency", view.locale, { value: formatNumber(stats.latency, view.locale) })}</Text>,
+    <Text color={INK.ink} wrap="wrap">{text("ui.stats.tokens", view.locale, { value: stats.tokens === undefined ? "–" : formatCompact(stats.tokens, view.locale) })}</Text>,
+    <Text bold={stats.failures > 0} color={stats.failures > 0 ? INK.fail : INK.ink} wrap="wrap">{text("ui.stats.failures", view.locale, { count: formatNumber(stats.failures, view.locale) })}</Text>,
+    partial ? <Text color={INK.faint} wrap="wrap">{partial}</Text> : null,
+  ];
+}
+
+/** The tab buttons. Upright in the rail, one per row, the open one marked ▸; side by side in the top bar. */
+function navButtons(els: Els, view: View, act: Actions, upright: boolean) {
+  const { Button } = els;
+  return TABS.flat().map(([id, label, hotkey]) => {
+    const name = text(label as LocaleKey, view.locale);
+    const open = view.tab === id;
+    const shown = upright ? `${open ? "▸" : " "} ${name}` : open ? `▸ ${name}` : name;
+    return <Button key={"tab-" + id} label={shown} hotkey={hotkey} plain {...(open ? {} : { dimColor: true })} onPress={() => act.tab(id)} />;
+  });
+}
+
+function routingButton(els: Els, view: View, act: Actions) {
+  const { Button } = els;
+  return <Button key="routing" label={text(view.routing ? "ui.header.turnOff" : "ui.header.turnOn", view.locale)} hotkey="r" onPress={() => act.routing(!view.routing)} />;
+}
+
+/**
+ * The rail down the left of the pane, framed in Pingo's mood color: the name, the screens, the routing switch,
+ * then Pingo with its state and the last five minutes. The screens come first, so a short pane cuts Pingo and
+ * the figures, never the way to another screen.
+ */
+function rail(els: Els, view: View, act: Actions, width: number) {
+  const { Box, Text } = els;
   const state = status(view.events, view.routing, view.now, view.locale);
   const mood = moodOf(view);
-  const moodInk = hex(MOODS[mood].color);
-  const stats = recentStats(view);
+  const ink = hex(MOODS[mood].color);
   return (
-    <Box flexDirection="column">
-      <Box flexDirection="row" columnGap={2} flexWrap="wrap">
+    <Box flexDirection="column" width={width} flexShrink={0} borderStyle="round" borderColor={ink} paddingX={1} {...(view.fixed ? { height: view.rows, overflow: "hidden" } : {})}>
+      <Text bold color={INK.ink} wrap="truncate">⠿ jev</Text>
+      <Box flexDirection="column" marginTop={1}>
+        {navButtons(els, view, act, true)}
+      </Box>
+      <Box flexDirection="column" marginTop={1}>
+        {routingButton(els, view, act)}
+      </Box>
+      <Box flexDirection="column" marginTop={1} alignItems="center">
+        {pingoArt(els, view, mood)}
+      </Box>
+      <Text wrap="truncate">{pill(els, MOODS[mood].face, ink)}</Text>
+      <Text bold color={ink} wrap="wrap">{view.live.asking ? text("ui.header.asking", view.locale) : `${state.icon} ${state.title}`}</Text>
+      <Box flexDirection="column" marginTop={1}>
+        {statLines(els, view)}
+      </Box>
+    </Box>
+  );
+}
+
+/** A pane too narrow for the rail gets the same parts as a bar on top: Pingo and its state, then the screens. */
+function topBar(els: Els, view: View, act: Actions) {
+  const { Box, Text } = els;
+  const state = status(view.events, view.routing, view.now, view.locale);
+  const mood = moodOf(view);
+  const ink = hex(MOODS[mood].color);
+  return (
+    <Box flexDirection="column" borderStyle="round" borderColor={ink} paddingX={1}>
+      <Box flexDirection="row" columnGap={2}>
         {pingoArt(els, view, mood)}
         <Box flexDirection="column" flexGrow={1} flexShrink={1}>
+          <Text bold color={INK.ink} wrap="truncate">⠿ jev</Text>
           <Text wrap="truncate">
-            <Text bold color={INK.ink}>⠿ jev</Text>
-            <Text color={INK.faint}>{`  · ${text(mood === "thinking" ? "ui.header.asking" : "ui.header.mascot", view.locale)}`}</Text>
+            {pill(els, MOODS[mood].face, ink)}
+            <Text bold color={ink}>{` ${view.live.asking ? text("ui.header.asking", view.locale) : state.title}`}</Text>
           </Text>
-          <Text bold color={moodInk} wrap="truncate">{`${MOODS[mood].face} ${state.icon} ${state.title}`}</Text>
-          <Text color={INK.dim} wrap="truncate">{statsLine(stats, view.locale)}</Text>
-          {statsPartial(stats, view.locale) ? <Text color={INK.faint} wrap="truncate">{statsPartial(stats, view.locale)}</Text> : null}
+          <Text color={INK.dim} wrap="wrap">{statsLine(recentStats(view), view.locale)}</Text>
+          {routingButton(els, view, act)}
         </Box>
-        <Button
-          key="routing"
-          label={text(view.routing ? "ui.header.turnOff" : "ui.header.turnOn", view.locale)}
-          hotkey="r"
-          onPress={() => act.routing(!view.routing)}
-        />
       </Box>
-      <Box flexDirection="row" flexWrap="wrap" columnGap={1} marginTop={1}>
-        {TABS.flat().map(([id, label, hotkey]) => {
-          const name = text(label as LocaleKey, view.locale);
-          // The open tab is bracketed and bright; the others are dim labels you press.
-          const open = view.tab === id;
-          return <Button key={"tab-" + id} label={open ? `❮ ${name} ❯` : ` ${name} `} hotkey={hotkey} plain {...(open ? {} : { dimColor: true })} onPress={() => act.tab(id)} />;
-        })}
+      <Box flexDirection="row" flexWrap="wrap" columnGap={2} marginTop={1}>
+        {navButtons(els, view, act, false)}
       </Box>
-      <Text color={INK.faint} wrap="truncate">{"─".repeat(Math.max(1, view.width))}</Text>
+    </Box>
+  );
+}
+
+/** The open screen's name over a rule in Pingo's mood color, and what the screen is for, faint, beside it. */
+function titleBar(els: Els, view: View) {
+  const { Box, Text } = els;
+  const entry = TABS.flat().find(([id]) => id === view.tab) ?? TABS[0]![0]!;
+  return (
+    <Box flexDirection="column">
+      <Text wrap="truncate">
+        <Text bold color={INK.ink}>{text(entry[1] as LocaleKey, view.locale)}</Text>
+        <Text color={INK.faint}>{`  ${text(`ui.purpose.${view.tab}` as LocaleKey, view.locale)}`}</Text>
+      </Text>
+      <Text color={hex(MOODS[moodOf(view)].color)} wrap="truncate">{"━".repeat(Math.max(1, view.width))}</Text>
     </Box>
   );
 }
@@ -366,53 +477,63 @@ function rangePicker(els: Els, view: View, act: Actions) {
   );
 }
 
+/** A heading inside a card: bold and dim, its words alone in the Text so they can be found as they are. */
 function section(els: Els, title: string) {
   const { Text } = els;
-  return (
-    <Text bold color={INK.ink}>
-      <Text color={INK.faint}>⠿ </Text>
-      {title}
-    </Text>
-  );
+  return <Text bold color={INK.dim} wrap="truncate">{title}</Text>;
 }
 
-/** One group of figures, as label / value / note columns with no boxes around them; a narrow pane wraps them. */
-function figures(els: Els, view: View, group: readonly Tile[]) {
+/**
+ * A group of figures as a table inside a card, `width` columns wide: the label, the value in bold, and its note.
+ * A figure that flags a failure is red. Each part is its own Text; the label and value are cut to their columns,
+ * the note wraps in its own.
+ */
+function figures(els: Els, group: readonly Tile[], width: number) {
   const { Box, Text } = els;
-  const perRow = view.width >= 75 ? 3 : 2;
-  const cellWidth = Math.max(14, Math.floor(view.width / perRow) - 2);
+  // the label column is as wide as the longest label (within reason); a note too narrow beside them goes under
+  const labelWidth = Math.min(Math.max(...group.map((tile) => displayWidth(tile.label))), Math.max(10, Math.floor(width * 0.55)));
+  const valueWidth = Math.min(Math.max(...group.map((tile) => displayWidth(tile.value))), 16);
+  const noteWidth = width - labelWidth - valueWidth - 4;
+  const under = noteWidth < 16;
+  const note = (tile: Tile) => <Text color={tile.alert ? INK.fail : INK.faint} wrap="wrap">{tile.sub}</Text>;
   return (
-    <Box flexDirection="row" flexWrap="wrap" columnGap={2} rowGap={1}>
+    <Box flexDirection="column" rowGap={under ? 1 : 0}>
       {group.map((tile) => (
-        <Box flexDirection="column" width={cellWidth}>
-          <Text color={INK.dim}>{fit(tile.label, cellWidth)}</Text>
-          <Text bold color={INK.ink}>{fit(tile.value, cellWidth)}</Text>
-          <Text color={tile.alert ? INK.fail : INK.faint}>{fit(tile.sub, cellWidth)}</Text>
+        <Box flexDirection="column">
+          <Box flexDirection="row" columnGap={2}>
+            <Box width={labelWidth} flexShrink={0}>
+              <Text color={INK.dim}>{fit(tile.label, labelWidth)}</Text>
+            </Box>
+            <Box width={valueWidth} flexShrink={0}>
+              <Text bold color={tile.alert ? INK.fail : INK.ink}>{fit(tile.value, valueWidth)}</Text>
+            </Box>
+            {under ? null : <Box width={noteWidth} flexShrink={0}>{note(tile)}</Box>}
+          </Box>
+          {under ? note(tile) : null}
         </Box>
       ))}
     </Box>
   );
 }
 
-/** What happened to each request, as a strip of dots per category and a one-row legend. */
-function dotsBar(els: Els, events: readonly RouteEvent[], width: number, locale: Locale) {
+/** What happened to the requests: one bar of solid blocks split by outcome, and a legend of counts under it. */
+function outcomeBar(els: Els, events: readonly RouteEvent[], width: number, locale: Locale) {
   const { Box, Text } = els;
   const counts = new Map(tally(events.map(category)));
   const present = categories(locale).filter(([name]) => counts.get(name));
-  const room = Math.max(10, width);
-  const dots = shares(present.map(([name]) => counts.get(name) ?? 0), room);
+  const blocks = shares(present.map(([name]) => counts.get(name) ?? 0), Math.max(10, width));
   return (
-    <Box flexDirection="column">
+    <Box flexDirection="column" marginBottom={1}>
       <Text>
         {present.map(([name], i) => (
-          <Text color={hex(CATEGORY_DOT[name][1])}>{"⣿".repeat(dots[i]!)}</Text>
+          <Text color={hex(CATEGORY_DOT[name][1])}>{"█".repeat(blocks[i]!)}</Text>
         ))}
       </Text>
-      <Box flexDirection="row" flexWrap="wrap" columnGap={3}>
+      <Box flexDirection="row" flexWrap="wrap" columnGap={2}>
         {present.map(([name, label]) => (
           <Text>
-            <Text color={hex(CATEGORY_DOT[name][1])}>{`${CATEGORY_DOT[name][0]} `}</Text>
-            <Text color={INK.dim}>{label} </Text>
+            <Text color={hex(CATEGORY_DOT[name][1])}>■ </Text>
+            <Text color={INK.dim}>{`${label} `}</Text>
             <Text bold color={INK.ink}>{`${int(counts.get(name) ?? 0, locale)} · ${pct(counts.get(name) ?? 0, events.length, locale)}`}</Text>
           </Text>
         ))}
@@ -421,56 +542,69 @@ function dotsBar(els: Els, events: readonly RouteEvent[], width: number, locale:
   );
 }
 
-/** The timeline as a constellation: one dot per request, left to right in time, higher with more tokens. */
-function sky(els: Els, view: View, events: readonly RouteEvent[]) {
-  const { Box, Text } = els;
-  const columns = Math.max(20, Math.min(72, view.width - 2));
-  const rows = 4;
-  const end = view.now;
-  const start = view.range > 0 ? end - view.range : Math.min(end - 60e3, ...events.map(at));
-  const tokens = (event: RouteEvent) => event.usage && Object.values(event.usage).some((value) => value !== undefined)
+const LEVELS = "▁▂▃▄▅▆▇█";
+const OUTCOMES: readonly Category[] = ["passthrough", "hint", "failed"];
+
+/** A request's reported tokens, every counter it has; none when it reported none. */
+function requestTokens(event: RouteEvent): number | undefined {
+  return event.usage && Object.values(event.usage).some((value) => value !== undefined)
     ? (event.usage.input ?? 0) + (event.usage.cached ?? 0) + (event.usage.cacheWrite ?? 0) + (event.usage.output ?? 0)
     : undefined;
-  const values = events.map(tokens).filter((value): value is number => value !== undefined);
-  const complete = events.filter((event) => event.usage?.input !== undefined && event.usage.cached !== undefined && event.usage.cacheWrite !== undefined && event.usage.output !== undefined).length;
-  const peak = Math.max(1, ...values);
-  const priority: Record<Category, number> = { passthrough: 0, hint: 1, failed: 2 };
-  const points = events.flatMap((event) => {
-    const value = tokens(event);
-    return value === undefined ? [] : [{
-      x: (at(event) - start) / Math.max(1, end - start),
-      // Square root, so a few huge requests do not flatten the rest onto the ground.
-      y: Math.sqrt(value / peak),
-      color: CATEGORY_DOT[category(event)][1],
-      priority: priority[category(event)],
-    }];
+}
+
+/**
+ * The range as a sparkline `width` columns wide: one column per slot of time, as tall as the tokens its requests
+ * reported (by square root, so a few huge requests do not flatten the rest), in the color of its worst outcome.
+ * A slot with no request is a faint dot.
+ */
+function sparkline(els: Els, view: View, events: readonly RouteEvent[], width: number) {
+  const { Box, Text } = els;
+  const columns = Math.max(10, width);
+  const end = view.now;
+  const start = view.range > 0 ? end - view.range : Math.min(end - 60e3, ...events.map(at));
+  if (!events.some((event) => requestTokens(event) !== undefined)) {
+    return <Text color={INK.faint} wrap="wrap">{text("ui.timeline.usageUnavailable", view.locale)}</Text>;
+  }
+  const sums = new Array<number>(columns).fill(0);
+  const worst = new Array<number>(columns).fill(-1);
+  for (const event of events) {
+    const slot = Math.min(columns - 1, Math.max(0, Math.floor(((at(event) - start) / Math.max(1, end - start)) * columns)));
+    sums[slot] = sums[slot]! + (requestTokens(event) ?? 0);
+    worst[slot] = Math.max(worst[slot]!, OUTCOMES.indexOf(category(event)));
+  }
+  const peak = Math.max(1, ...sums);
+  // runs of one color, so the row is a handful of Texts and not one per column
+  const runs: [string, string][] = [];
+  sums.forEach((sum, i) => {
+    const color = worst[i]! < 0 ? INK.faint : hex(CATEGORY_DOT[OUTCOMES[worst[i]!]!][1]);
+    const char = worst[i]! < 0 ? "·" : LEVELS[Math.min(LEVELS.length - 1, Math.floor(Math.sqrt(sum / peak) * LEVELS.length))]!;
+    const last = runs.at(-1);
+    if (last && last[1] === color) last[0] += char;
+    else runs.push([char, color]);
   });
+  const complete = events.filter((event) => event.usage?.input !== undefined && event.usage.cached !== undefined && event.usage.cacheWrite !== undefined && event.usage.output !== undefined).length;
   return (
     <Box flexDirection="column">
-      {points.length ? (
-        <Box flexDirection="column">
-          {constellation(points, columns, rows).map((row) => (
-            <Text>
-              {row.map(([text, color]) => (
-                <Text color={hex(color)}>{text}</Text>
-              ))}
-            </Text>
-          ))}
-          <Text color={INK.faint}>{text("ui.timeline.caption", view.locale, {
-            start: view.range > 0 ? text("ui.timeline.ago", view.locale, { age: formatAge(view.range, view.locale) }) : text("ui.timeline.start", view.locale),
-            peak: int(peak, view.locale),
-          })}</Text>
-          {complete < events.length ? <Text color={INK.faint} wrap="wrap">{text("ui.timeline.partial", view.locale, { reported: int(complete, view.locale), total: int(events.length, view.locale) })}</Text> : null}
-        </Box>
-      ) : <Text color={INK.faint}>{text("ui.timeline.usageUnavailable", view.locale)}</Text>}
+      <Text>
+        {runs.map(([chars, color]) => (
+          <Text color={color}>{chars}</Text>
+        ))}
+      </Text>
+      <Text color={INK.faint} wrap="wrap">
+        {text("ui.timeline.caption", view.locale, {
+          start: view.range > 0 ? text("ui.timeline.ago", view.locale, { age: formatAge(view.range, view.locale) }) : text("ui.timeline.start", view.locale),
+          peak: int(peak, view.locale),
+        })}
+      </Text>
+      {complete < events.length ? <Text color={INK.faint} wrap="wrap">{text("ui.timeline.partial", view.locale, { reported: int(complete, view.locale), total: int(events.length, view.locale) })}</Text> : null}
     </Box>
   );
 }
 
 /**
- * The selected range at a glance. The range picker leads, since it scopes every figure below; the
- * header's meters keep their own last-five-minutes window. The status sentence shows only when it
- * says more than the header does: why Jev is failing or passing, when it last ran, that it is off.
+ * The selected range at a glance. The range picker leads, since it scopes every figure; the rail's figures keep
+ * their own last five minutes. The status sentence shows only when it says more than the rail does. Then cards:
+ * Routing, Jev's answers and Token usage side by side where they fit, and the Timeline across the whole width.
  */
 function overview(els: Els, view: View, act: Actions) {
   const { Box, Text } = els;
@@ -479,45 +613,53 @@ function overview(els: Els, view: View, act: Actions) {
   const state = status(view.events, view.routing, view.now, view.locale);
   const all = consults.length ? tiles(events, view.locale, consults) : tiles(events, view.locale);
   const group = (id: TileGroup) => all.filter((tile) => tile.group === id);
-  // A heading sits on its content; the blank rows fall between groups.
-  const part = (title: LocaleKey, ...body: RenderChildren[]) => (
-    <Box flexDirection="column">
-      {section(els, text(title, view.locale))}
-      {body}
-    </Box>
-  );
   // With nothing ever recorded, "no requests in the last 5 minutes" only repeats the empty line.
   const note = state.kind === "routing" || (state.kind === "idle" && view.events.length === 0) ? null : state.text;
+  const head = (
+    <Box flexDirection="column">
+      <Box flexDirection="row" flexWrap="wrap" columnGap={2}>
+        {rangePicker(els, view, act)}
+        {events.length === 0 ? null : (
+          <Text bold color={INK.ink} wrap="truncate">
+            {text("ui.overview.scope", view.locale, { count: int(events.length, view.locale), requests: text(events.length === 1 ? "unit.request" : "unit.requests", view.locale) })}
+          </Text>
+        )}
+        {consults.length ? <Text color={INK.dim} wrap="truncate">{text(view.range <= 0 && view.trace.turns > view.trace.runs.length ? "ui.overview.consultScopeRetained" : "ui.overview.consultScope", view.locale, { count: int(consults.length, view.locale) })}</Text> : null}
+      </Box>
+      {note === null ? null : <Text color={INK.pass} wrap="wrap">{note}</Text>}
+      <Text color={INK.faint} wrap="wrap">{view.meta}</Text>
+    </Box>
+  );
+  if (events.length === 0 && consults.length === 0) {
+    return (
+      <Box flexDirection="column" rowGap={1}>
+        {head}
+        <Box borderStyle="round" borderColor={INK.faint} paddingX={1}>
+          <Text color={INK.dim} wrap="wrap">{text("ui.overview.empty", view.locale)}</Text>
+        </Box>
+      </Box>
+    );
+  }
+  const alertOf = (group: readonly Tile[]) => (group.some((tile) => tile.alert) ? INK.fail : INK.faint);
+  const cards: ((width: number) => RenderChildren)[] = [];
+  if (events.length) {
+    cards.push((width) => card(els, text("ui.overview.routing", view.locale), [outcomeBar(els, events, width - 4, view.locale), figures(els, group("routing"), width - 4)], { width, color: alertOf(group("routing")) }));
+  }
+  if (group("jev").length) cards.push((width) => card(els, text("ui.overview.jev", view.locale), figures(els, group("jev"), width - 4), { width, color: alertOf(group("jev")) }));
+  if (group("tokens").length) cards.push((width) => card(els, text("ui.overview.tokens", view.locale), figures(els, group("tokens"), width - 4), { width }));
   return (
     <Box flexDirection="column" rowGap={1}>
-      <Box flexDirection="column">
-        <Box flexDirection="row" flexWrap="wrap" columnGap={2}>
-          {rangePicker(els, view, act)}
-          {events.length === 0 ? null : (
-            <Text color={INK.dim} wrap="truncate">
-              {text("ui.overview.scope", view.locale, { count: int(events.length, view.locale), requests: text(events.length === 1 ? "unit.request" : "unit.requests", view.locale) })}
-            </Text>
-          )}
-          {consults.length ? <Text color={INK.dim} wrap="truncate">{text(view.range <= 0 && view.trace.turns > view.trace.runs.length ? "ui.overview.consultScopeRetained" : "ui.overview.consultScope", view.locale, { count: int(consults.length, view.locale) })}</Text> : null}
-        </Box>
-        {note === null ? null : <Text color={INK.ink} wrap="wrap">{note}</Text>}
-        <Text color={INK.faint} wrap="wrap">{view.meta}</Text>
-      </Box>
-      {events.length === 0 && consults.length === 0 ? (
-        <Text color={INK.dim} wrap="wrap">{text("ui.overview.empty", view.locale)}</Text>
-      ) : (
-        <Box flexDirection="column" rowGap={1}>
-          {events.length ? part("ui.overview.routing", figures(els, view, group("routing")), dotsBar(els, events, view.width - 2, view.locale)) : null}
-          {group("jev").length ? part("ui.overview.jev", figures(els, view, group("jev"))) : null}
-          {group("tokens").length ? part("ui.overview.tokens", figures(els, view, group("tokens"))) : null}
-          {events.length ? part("ui.overview.timeline", sky(els, view, events)) : null}
-        </Box>
-      )}
+      {head}
+      {grid(els, view.width, cards, 46)}
+      {events.length ? card(els, text("ui.overview.timeline", view.locale), sparkline(els, view, events, view.width - 4)) : null}
     </Box>
   );
 }
 
-/** The request log: newest first, one line per request, marked ● hint, ○ passthrough, × failed. */
+/**
+ * The Logs screen: a card of reason groups, each with a bar as long as its share of the largest, then the request
+ * log itself, newest first, one line per request with its outcome on a colored ground.
+ */
 function logView(els: Els, view: View) {
   const { Box, Text } = els;
   const room = view.fixed ? 200 : Math.max(3, view.rows - 18);
@@ -525,30 +667,43 @@ function logView(els: Els, view: View) {
   const grouped = reasons(view.events, view.locale);
   const unhandled = view.events.filter((event) => !routed(event)).length;
   const colorFor = (who: string) => (who === text("reason.who.failed", view.locale) ? INK.fail : who === text("reason.who.asked", view.locale) ? INK.pass : INK.dim);
+  const most = Math.max(1, ...grouped.map((reason) => reason.count));
+  const barRoom = Math.max(6, view.width - 6);
   return (
     <Box flexDirection="column" rowGap={1}>
-      {section(els, text("ui.log.title", view.locale))}
+      {card(
+        els,
+        text("ui.log.reasons", view.locale),
+        grouped.length === 0
+          ? <Text color={INK.faint}>{text("ui.log.noReasons", view.locale)}</Text>
+          : grouped.map((reason) => (
+              <Box flexDirection="column" marginTop={1}>
+                <Text wrap="wrap">
+                  <Text bold color={colorFor(reason.who)}>{reasonTitle(reason.name, view.locale)}</Text>
+                  <Text color={INK.ink}>{` · ${int(reason.count, view.locale)} · ${pct(reason.count, unhandled, view.locale)}`}</Text>
+                </Text>
+                <Text color={colorFor(reason.who)}>{"▬".repeat(Math.max(1, Math.round((barRoom * reason.count) / most)))}</Text>
+                <Text color={INK.dim} wrap="wrap">{reason.meaning}</Text>
+              </Box>
+            )),
+      )}
       <Box flexDirection="column">
-        {section(els, text("ui.log.reasons", view.locale))}
-        {grouped.length === 0 ? <Text color={INK.faint}>{text("ui.log.noReasons", view.locale)}</Text> : null}
-        {grouped.map((reason) => (
-          <Text wrap="wrap">
-            <Text bold color={colorFor(reason.who)}>{reasonTitle(reason.name, view.locale)}</Text>
-            <Text color={INK.ink}>{` · ${int(reason.count, view.locale)} · ${pct(reason.count, unhandled, view.locale)}`}</Text>
-            <Text color={INK.dim}>{` — ${reason.meaning}`}</Text>
-          </Text>
-        ))}
+        {section(els, text("ui.log.title", view.locale))}
+        <Text color={INK.faint} wrap="wrap">{text("ui.log.footer", view.locale)}</Text>
+        <Box flexDirection="column" marginTop={1}>
+          {rows.length === 0 ? <Text color={INK.dim}>{text("ui.log.empty", view.locale)}</Text> : null}
+          {rows.map((event) => logEntry(els, view, event))}
+        </Box>
       </Box>
-      <Box flexDirection="column">
-        {rows.length === 0 ? <Text color={INK.dim}>{text("ui.log.empty", view.locale)}</Text> : null}
-        {rows.map((event) => logEntry(els, view, event))}
-      </Box>
-      <Text color={INK.faint} wrap="wrap">{text("ui.log.footer", view.locale)}</Text>
     </Box>
   );
 }
 
-/** One request of the log: time, outcome and figures, and why on a line under it. */
+/**
+ * One request of the log, in two columns: its time, then what happened (its outcome on a colored ground) and how
+ * long it took; its figures faint under that; why it went that way under them. Wrapped lines stay in the second
+ * column, and a blank row closes each request so they stand apart.
+ */
 function logEntry(els: Els, view: View, event: RouteEvent) {
   const { Box, Text } = els;
   const kind = category(event);
@@ -568,37 +723,40 @@ function logEntry(els: Els, view: View, event: RouteEvent) {
     event.usage.cacheWrite === undefined ? "" : text("ui.log.cacheWriteTokens", view.locale, { value: int(event.usage.cacheWrite, view.locale) }),
     event.usage.output === undefined ? "" : text("ui.log.outputTokens", view.locale, { value: int(event.usage.output, view.locale) }),
   ].filter(Boolean).join(" · ") : "";
+  const figures = [
+    confidence === undefined ? "" : formatDecimal(confidence, view.locale),
+    event.jev ? `${int(event.jev.latencyMs, view.locale)} ms` : "",
+    usage,
+  ].filter(Boolean).join(" · ");
   return (
-    <Box flexDirection="column">
-      <Text wrap="wrap">
-        <Text color={INK.faint}>{`${clock(at(event), view.locale)} `}</Text>
-        <Text bold color={hex(color)}>{`${glyph} `}</Text>
-        <Text color={INK.ink}>{what}</Text>
-        <Text color={INK.dim}>
-          {[
-            confidence === undefined ? "" : ` · ${formatDecimal(confidence, view.locale)}`,
-            event.jev ? ` · ${int(event.jev.latencyMs, view.locale)} ms` : "",
-            usage ? ` · ${usage}` : "",
-            text("ui.log.duration", view.locale, { value: formatDecimal(event.durationMs / 1000, view.locale, 1) + text("format.seconds", view.locale, { value: "" }) }),
-          ].join("")}
+    <Box flexDirection="row" marginBottom={1}>
+      <Box width={clockWidth(view.locale)} flexShrink={0}>
+        <Text color={INK.faint}>{clock(at(event), view.locale)}</Text>
+      </Box>
+      <Box flexDirection="column" flexGrow={1} flexShrink={1}>
+        <Text wrap="wrap">
+          {pill(els, glyph, hex(color))}
+          <Text bold color={INK.ink}>{` ${what}`}</Text>
+          <Text color={INK.dim}>{text("ui.log.duration", view.locale, { value: formatDecimal(event.durationMs / 1000, view.locale, 1) + text("format.seconds", view.locale, { value: "" }) })}</Text>
         </Text>
-      </Text>
-      {event.reason ? <Text color={kind === "failed" ? INK.fail : INK.faint} wrap="wrap">{text("ui.log.reason", view.locale, { reason: reasonDetail })}</Text> : null}
-      {kind === "failed" && event.error ? <Text color={INK.fail} wrap="wrap">{text("ui.log.cause", view.locale, { cause: event.error })}</Text> : null}
-      {kind === "failed" ? <Text color={INK.pass} wrap="wrap">{text("ui.log.hint", view.locale, { hint: failureHint(failureKind(event.error ?? "", event.reason), view.locale) })}</Text> : null}
-      {kind === "failed"
-        ? (event.jevRaw ?? []).map((raw, index, all) => (
-            <Box flexDirection="column" marginLeft={2}>
-              <Text color={INK.ink} bold wrap="truncate">
-                {text("ui.log.raw", view.locale, {
-                  part: all.length > 1 ? text("ui.log.rawPart", view.locale, { n: formatNumber(index + 1, view.locale), total: formatNumber(all.length, view.locale) }) : "",
-                  chars: formatNumber(raw.length, view.locale),
-                })}
-              </Text>
-              <Text color={INK.dim} wrap="wrap">{rawReply(raw, view.locale)}</Text>
-            </Box>
-          ))
-        : null}
+        {figures ? <Text color={INK.faint} wrap="wrap">{figures}</Text> : null}
+        {event.reason ? <Text color={kind === "failed" ? INK.fail : INK.dim} wrap="wrap">{text("ui.log.reason", view.locale, { reason: reasonDetail })}</Text> : null}
+        {kind === "failed" && event.error ? <Text color={INK.fail} wrap="wrap">{text("ui.log.cause", view.locale, { cause: event.error })}</Text> : null}
+        {kind === "failed" ? <Text color={INK.pass} wrap="wrap">{text("ui.log.hint", view.locale, { hint: failureHint(failureKind(event.error ?? "", event.reason), view.locale) })}</Text> : null}
+        {kind === "failed"
+          ? (event.jevRaw ?? []).map((raw, index, all) => (
+              <Box flexDirection="column" borderStyle="round" borderColor={INK.fail} paddingX={1}>
+                <Text color={INK.ink} bold wrap="truncate">
+                  {text("ui.log.raw", view.locale, {
+                    part: all.length > 1 ? text("ui.log.rawPart", view.locale, { n: formatNumber(index + 1, view.locale), total: formatNumber(all.length, view.locale) }) : "",
+                    chars: formatNumber(raw.length, view.locale),
+                  })}
+                </Text>
+                <Text color={INK.dim} wrap="wrap">{rawReply(raw, view.locale)}</Text>
+              </Box>
+            ))
+          : null}
+      </Box>
     </Box>
   );
 }
@@ -617,24 +775,26 @@ function rawReply(raw: string, locale: Locale): string {
   return [...lines.slice(0, RAW_ROWS), text("ui.log.rawMore", locale, { count: formatNumber(lines.length - RAW_ROWS, locale) })].join("\n");
 }
 
-/** One step of the setup: a number, a label column, and what is set there. */
+/** One step of the setup: its number on a colored ground (a check once done), its label, and what is set there. */
 function step(els: Els, n: number, label: string, done: boolean, body: RenderChildren) {
   const { Box, Text } = els;
   return (
-    <Box flexDirection="row" columnGap={1}>
-      <Box width={13} flexShrink={0}>
-        <Text wrap="truncate">
-          <Text bold color={done ? INK.route : INK.dim}>{done ? "● " : `${n} `}</Text>
-          <Text bold color={INK.ink}>{label}</Text>
-        </Text>
-      </Box>
-      <Box flexDirection="column" flexGrow={1} flexShrink={1}>
+    <Box flexDirection="column" marginTop={1}>
+      <Text wrap="truncate">
+        {pill(els, done ? "✓" : String(n), done ? INK.route : INK.faint)}
+        <Text bold color={INK.ink}>{` ${label}`}</Text>
+      </Text>
+      <Box flexDirection="column" marginLeft={4}>
         {body}
       </Box>
     </Box>
   );
 }
 
+/**
+ * The Configuration screen as three cards: the provider and language (with the three steps of the key), the
+ * subagents' planning, and the history kept on disk.
+ */
 function configurationView(els: Els, view: View, act: Actions) {
   const { Box, Text, Button, Select, Input } = els;
   const chosen = PROVIDER_IDS.includes(view.setup.provider as never) ? view.setup.provider : PROVIDER_IDS.includes(view.key.provider as never) ? view.key.provider : "typesafe";
@@ -642,18 +802,94 @@ function configurationView(els: Els, view: View, act: Actions) {
   const saved = view.key.source !== "none";
   const typed = view.setup.typed ?? "";
   const message = view.setup.message;
+  const connected = view.setup.isOk && Boolean(message) && !view.setup.busy;
   return (
     <Box flexDirection="column" rowGap={1}>
       <Box flexDirection="column">
         <Text color={INK.dim} wrap="wrap">{text("ui.setup.intro", view.locale)}</Text>
         {!view.routing ? <Text color={INK.pass} wrap="wrap">{text("ui.configuration.routingOff", view.locale)}</Text> : null}
       </Box>
-      <Box flexDirection="column" rowGap={1}>
-        {section(els, text("ui.configuration.agents", view.locale))}
-        {features(view.locale).map((feature) => {
+      {card(
+        els,
+        text("ui.configuration.provider", view.locale),
+        [
+          <Select
+            key="language"
+            label={text("ui.setup.language", view.locale)}
+            value={view.localeOption}
+            options={[
+              { value: "auto", label: text("ui.setup.languageAuto", view.locale) },
+              { value: "en", label: text("ui.setup.languageEnglish", view.locale) },
+              { value: "pt", label: text("ui.setup.languagePortuguese", view.locale) },
+            ]}
+            onSelect={(value) => act.locale(value as LocaleOption)}
+          />,
+          <Text color={INK.faint} wrap="wrap">{text("ui.setup.languageHelp", view.locale)}</Text>,
+          step(
+            els,
+            1,
+            text("ui.setup.provider", view.locale),
+            true,
+            <Box flexDirection="column">
+              <Select key="provider" value={chosen} options={PROVIDER_IDS.map((id) => ({ value: id, label: PROVIDERS[id].label }))} onSelect={(value) => act.provider(value)} />
+              <Text color={INK.faint} wrap="wrap">{text("ui.setup.providerNote", view.locale, { note: text(info.noteKey, view.locale), url: info.keyUrl })}</Text>
+            </Box>,
+          ),
+          step(
+            els,
+            2,
+            text("ui.setup.keyLabel", view.locale),
+            saved && !typed,
+            <Box flexDirection="column">
+              {saved ? (
+                <Text wrap="wrap">
+                  <Text color={INK.route}>{`••••${view.key.tail}`}</Text>
+                  <Text color={INK.dim}>{text("ui.setup.keyInUse", view.locale, { source: text(`source.${view.key.source}` as LocaleKey, view.locale) })}</Text>
+                </Text>
+              ) : (
+                <Text color={INK.pass} wrap="wrap">{text("ui.setup.noKeyYet", view.locale, { env: info.keyEnv })}</Text>
+              )}
+              <Input
+                key="api-key"
+                value={typed}
+                placeholder={text(saved ? "ui.setup.keyPlaceholder" : "ui.setup.keyPlaceholderEmpty", view.locale)}
+                submitLabel={text("ui.setup.testSave", view.locale)}
+                onInput={(value) => act.typeKey(value)}
+                onSubmit={(value) => act.submitKey(value)}
+              />
+              <Text color={INK.faint} wrap="wrap">{text("ui.setup.maskedHelp", view.locale)}</Text>
+            </Box>,
+          ),
+          step(
+            els,
+            3,
+            text("ui.setup.connection", view.locale),
+            connected,
+            <Box flexDirection="column">
+              <Box flexDirection="row" columnGap={2} flexWrap="wrap">
+                <Button key="validate" label={`${text(typed ? "ui.setup.testSave" : "ui.setup.testConnection", view.locale)} (v)`} hotkey="v" onPress={() => act.validate()} />
+                {saved && view.key.source === "plugin" ? <Button key="forget" label={`${text("ui.setup.removeKey", view.locale)} (f)`} hotkey="f" onPress={() => act.forgetKey()} /> : null}
+              </Box>
+              {message ? (
+                <Text bold color={view.setup.busy ? INK.dim : view.setup.isOk ? INK.route : INK.fail} wrap="wrap">
+                  {`${view.setup.busy ? "◌" : view.setup.isOk ? "●" : "×"} ${message}`}
+                </Text>
+              ) : null}
+            </Box>,
+          ),
+          <Box marginTop={1}>
+            <Text color={INK.pass} wrap="wrap">{text("ui.setup.privacy", view.locale)}</Text>
+          </Box>,
+        ],
+        { color: connected ? INK.route : INK.faint },
+      )}
+      {card(
+        els,
+        text("ui.configuration.agents", view.locale),
+        features(view.locale).map((feature) => {
           const on = view.features[feature.id];
           return (
-            <Box flexDirection="column">
+            <Box flexDirection="column" marginTop={1}>
               <Button
                 key={"feature-" + feature.id}
                 label={on ? `● ${text("ui.configuration.enabled", view.locale, { hotkey: feature.hotkey })}` : `○ ${text("ui.configuration.disabled", view.locale, { hotkey: feature.hotkey })}`}
@@ -663,98 +899,21 @@ function configurationView(els: Els, view: View, act: Actions) {
               <Text color={INK.dim} wrap="wrap">{feature.description}</Text>
             </Box>
           );
-        })}
-      </Box>
-      <Box flexDirection="column">
-        {section(els, text("ui.configuration.provider", view.locale))}
-        <Select
-          key="language"
-          label={text("ui.setup.language", view.locale)}
-          value={view.localeOption}
-          options={[
-            { value: "auto", label: text("ui.setup.languageAuto", view.locale) },
-            { value: "en", label: text("ui.setup.languageEnglish", view.locale) },
-            { value: "pt", label: text("ui.setup.languagePortuguese", view.locale) },
-          ]}
-          onSelect={(value) => act.locale(value as LocaleOption)}
-        />
-        <Text color={INK.faint} wrap="wrap">{text("ui.setup.languageHelp", view.locale)}</Text>
-      </Box>
-      {step(
-        els,
-        1,
-        text("ui.setup.provider", view.locale),
-        true,
-        <Box flexDirection="column">
-          <Select
-            key="provider"
-            value={chosen}
-            options={PROVIDER_IDS.map((id) => ({ value: id, label: PROVIDERS[id].label }))}
-            onSelect={(value) => act.provider(value)}
-          />
-          <Text color={INK.faint} wrap="wrap">{text("ui.setup.providerNote", view.locale, { note: text(info.noteKey, view.locale), url: info.keyUrl })}</Text>
-        </Box>,
+        }),
       )}
-      {step(
-        els,
-        2,
-        text("ui.setup.keyLabel", view.locale),
-        saved && !typed,
-        <Box flexDirection="column">
-          {saved ? (
-            <Text wrap="wrap">
-              <Text color={INK.route}>{`••••${view.key.tail}`}</Text>
-              <Text color={INK.dim}>{text("ui.setup.keyInUse", view.locale, { source: text(`source.${view.key.source}` as LocaleKey, view.locale) })}</Text>
-            </Text>
-          ) : (
-            <Text color={INK.pass} wrap="wrap">{text("ui.setup.noKeyYet", view.locale, { env: info.keyEnv })}</Text>
-          )}
-          <Input
-            key="api-key"
-            value={typed}
-            placeholder={text(saved ? "ui.setup.keyPlaceholder" : "ui.setup.keyPlaceholderEmpty", view.locale)}
-            submitLabel={text("ui.setup.testSave", view.locale)}
-            onInput={(value) => act.typeKey(value)}
-            onSubmit={(value) => act.submitKey(value)}
-          />
-          <Text color={INK.faint} wrap="wrap">
-            {text("ui.setup.maskedHelp", view.locale)}
-          </Text>
-        </Box>,
-      )}
-      {step(
-        els,
-        3,
-        text("ui.setup.connection", view.locale),
-        view.setup.isOk && Boolean(message) && !view.setup.busy,
-        <Box flexDirection="column">
-          <Box flexDirection="row" columnGap={2} flexWrap="wrap">
-            <Button key="validate" label={`${text(typed ? "ui.setup.testSave" : "ui.setup.testConnection", view.locale)} (v)`} hotkey="v" onPress={() => act.validate()} />
-            {saved && view.key.source === "plugin" ? <Button key="forget" label={`${text("ui.setup.removeKey", view.locale)} (f)`} hotkey="f" onPress={() => act.forgetKey()} /> : null}
-          </Box>
-          {message ? (
-            <Text bold color={view.setup.busy ? INK.dim : view.setup.isOk ? INK.route : INK.fail} wrap="wrap">
-              {`${view.setup.busy ? "◌" : view.setup.isOk ? "●" : "×"} ${message}`}
-            </Text>
-          ) : null}
-        </Box>,
-      )}
-      <Text color={INK.pass} wrap="wrap">
-        {text("ui.setup.privacy", view.locale)}
-      </Text>
-      <Box flexDirection="column">
-        <Text color={INK.faint} wrap="wrap">{view.meta}</Text>
+      {card(els, text("ui.configuration.history", view.locale), [
+        <Text color={INK.faint} wrap="wrap">{view.meta}</Text>,
         <Box flexDirection="row">
           <Button key="clear" label={`${text("ui.setup.clearHistory", view.locale)} (c)`} hotkey="c" onPress={() => act.clear()} />
-        </Box>
-      </Box>
+        </Box>,
+      ])}
     </Box>
   );
 }
 
 /**
- * The Deck tab: every /deck command as a control, each with the command it runs beneath it. A control
- * sends its command line through act.deck, so the tab and the slash command are one code path.
+ * The Deck screen: every /deck command as a control, in cards, each with the command it runs beneath it. A
+ * control sends its command line through act.deck, so the screen and the slash command are one code path.
  */
 function deckView(els: Els, view: View, act: Actions) {
   const { Box, Text, Button, Select, Input } = els;
@@ -763,10 +922,10 @@ function deckView(els: Els, view: View, act: Actions) {
   const { settings } = deck;
   // a command's help line, its alignment padding folded into a dash
   const tip = (key: LocaleKey) => <Text color={INK.faint} wrap="wrap">{deckHelp(key, settings, locale).replace(/ {2,}/, " — ")}</Text>;
-  // the reply a control got, under the section that owns the command
+  // the reply a control got, under the card that owns the command
   const reply = (...verbs: string[]) =>
     deck.note && verbs.includes(deck.note.verb) ? (
-      <Text bold color={INK.ink} wrap="wrap">{`● ${deck.note.text}`}</Text>
+      <Text bold color={INK.route} wrap="wrap">{`● ${deck.note.text}`}</Text>
     ) : null;
   // an on/off setting as a toggle: ● when on, a dim ○ when off; pressing it sends the opposite
   const toggle = (key: string, on: boolean, label: string, command: string) => (
@@ -776,8 +935,7 @@ function deckView(els: Els, view: View, act: Actions) {
   return (
     <Box flexDirection="column" rowGap={1}>
       <Text color={INK.dim} wrap="wrap">{text("ui.deck.intro", locale)}</Text>
-      <Box flexDirection="column">
-        {section(els, text("ui.deck.band", locale))}
+      {card(els, text("ui.deck.band", locale), [
         <Box flexDirection="row">
           <Button
             key="deck-band"
@@ -785,82 +943,78 @@ function deckView(els: Els, view: View, act: Actions) {
             hotkey="e"
             onPress={() => act.deck(deck.open ? "collapse" : "expand")}
           />
-        </Box>
-        {tip("deck.help.toggle")}
-        {tip("deck.help.expand")}
+        </Box>,
+        tip("deck.help.toggle"),
+        tip("deck.help.expand"),
         <Select
           key="deck-look"
           label={text("ui.deck.look", locale)}
           value={settings.collapsed}
           options={COLLAPSED.map((value) => ({ value, label: text(`ui.deck.look.${value}`, locale) }))}
           onSelect={(value) => act.deck(`collapsed ${value}`)}
-        />
-        {tip("deck.help.collapsed")}
+        />,
+        tip("deck.help.collapsed"),
         <Select
           key="deck-size"
           label={text("ui.deck.size", locale)}
           value={settings.size}
           options={SIZES.map((value) => ({ value, label: text(`ui.deck.size.${value}`, locale) }))}
           onSelect={(value) => act.deck(`size ${value}`)}
-        />
-        {tip("deck.help.size")}
-        {reply("", "expand", "collapse", "collapsed", "size")}
-      </Box>
-      <Box flexDirection="column">
-        {section(els, text("ui.deck.style", locale))}
+        />,
+        tip("deck.help.size"),
+        reply("", "expand", "collapse", "collapsed", "size"),
+      ])}
+      {card(els, text("ui.deck.style", locale), [
         <Select
           key="deck-style-cli"
           label={text("ui.deck.styleCli", locale)}
           value={settings.style.terminal}
           options={choices(TERMINAL_STYLE_NAMES, TERMINAL_STYLES)}
           onSelect={(value) => act.deckStyle("terminal", value)}
-        />
+        />,
         <Select
           key="deck-style-desktop"
           label={text("ui.deck.styleDesktop", locale)}
           value={settings.style.desktop}
           options={choices(DESKTOP_STYLE_NAMES, DESKTOP_STYLES)}
           onSelect={(value) => act.deckStyle("desktop", value)}
-        />
-        <Text color={INK.faint} wrap="wrap">{text("ui.deck.styleNote", locale)}</Text>
+        />,
+        <Text color={INK.faint} wrap="wrap">{text("ui.deck.styleNote", locale)}</Text>,
         <Box flexDirection="row">
           <Button key="deck-style-pick" label={text("ui.deck.stylePick", locale, { hotkey: "s" })} hotkey="s" onPress={() => act.deck("style")} />
-        </Box>
-        {tip("deck.help.style")}
-        {tip("deck.help.styleName")}
-        {reply("style")}
-      </Box>
-      <Box flexDirection="column">
-        {section(els, text("ui.deck.show", locale))}
+        </Box>,
+        tip("deck.help.style"),
+        tip("deck.help.styleName"),
+        reply("style"),
+      ])}
+      {card(els, text("ui.deck.show", locale), [
         <Box flexDirection="row" flexWrap="wrap" columnGap={2}>
           {SECTIONS.map((id) => toggle(`deck-show-${id}`, settings.show[id], text(`deck.section.${id}`, locale), id))}
-        </Box>
+        </Box>,
         <Box flexDirection="row" flexWrap="wrap" columnGap={2}>
           <Button key="deck-all-on" label={text("ui.deck.showAll", locale)} plain onPress={() => act.deck("all on")} />
           <Button key="deck-all-off" label={text("ui.deck.hideAll", locale)} plain dimColor onPress={() => act.deck("all off")} />
-        </Box>
-        {tip("deck.help.section")}
-        {reply("all", ...SECTIONS)}
-      </Box>
-      <Box flexDirection="column">
-        {section(els, text("ui.deck.extras", locale))}
+        </Box>,
+        tip("deck.help.section"),
+        reply("all", ...SECTIONS),
+      ])}
+      {card(els, text("ui.deck.extras", locale), [
         <Box flexDirection="row" flexWrap="wrap" columnGap={2}>
           {toggle("deck-auto", settings.auto, text("ui.deck.auto", locale), "auto")}
           {toggle("deck-sound", settings.sound, text("ui.deck.sound", locale), "sound")}
           {toggle("deck-quiet", settings.quiet, text("ui.deck.quiet", locale), "quiet")}
           {toggle("deck-cost", settings.cost, text("ui.deck.cost", locale), "cost")}
-        </Box>
-        {tip("deck.help.auto")}
-        {tip("deck.help.sound")}
-        {tip("deck.help.quiet")}
-        {tip("deck.help.cost")}
-        {reply("auto", "sound", "quiet", "cost")}
-      </Box>
-      <Box flexDirection="column">
-        {section(els, text("ui.deck.city", locale))}
+        </Box>,
+        tip("deck.help.auto"),
+        tip("deck.help.sound"),
+        tip("deck.help.quiet"),
+        tip("deck.help.cost"),
+        reply("auto", "sound", "quiet", "cost"),
+      ])}
+      {card(els, text("ui.deck.city", locale), [
         <Text color={settings.city ? INK.ink : INK.dim} wrap="wrap">
           {settings.city ? text("ui.deck.cityNow", locale, { city: settings.city.name }) : text("ui.deck.cityNone", locale)}
-        </Text>
+        </Text>,
         <Input
           key="deck-city"
           value={deck.draft}
@@ -868,30 +1022,28 @@ function deckView(els: Els, view: View, act: Actions) {
           submitLabel={text("ui.deck.citySet", locale)}
           onInput={(value) => act.deckType(value)}
           onSubmit={(value) => act.deckCity(value)}
-        />
-        {tip("deck.help.city")}
-        {reply("city")}
-      </Box>
-      <Box flexDirection="column">
-        {section(els, text("ui.deck.tools", locale))}
+        />,
+        tip("deck.help.city"),
+        reply("city"),
+      ])}
+      {card(els, text("ui.deck.tools", locale), [
         <Box flexDirection="row" flexWrap="wrap" columnGap={2}>
           <Button key="deck-panel-open" label={text("ui.deck.panelOpen", locale, { hotkey: "p" })} hotkey="p" onPress={() => act.deck("panel")} />
           <Button key="deck-panel-close" label={text("ui.deck.panelClose", locale)} onPress={() => act.deck("panel off")} />
           <Button key="deck-demo" label={text("ui.deck.demo", locale)} onPress={() => act.deck("demo")} />
           <Button key="deck-clear" label={text("ui.deck.clear", locale)} onPress={() => act.deck("clear")} />
-        </Box>
-        {tip("deck.help.panel")}
-        {tip("deck.help.demo")}
-        {tip("deck.help.clear")}
-        {reply("panel", "demo", "clear")}
-      </Box>
-      <Box flexDirection="column">
-        {section(els, text("ui.deck.status", locale))}
-        <Text color={INK.ink} wrap="wrap">{deck.status}</Text>
-        {tip("deck.help.status")}
-        <Text color={INK.faint} wrap="wrap">{text("deck.reply.version", locale, { version: deck.version })}</Text>
-        {tip("deck.help.version")}
-      </Box>
+        </Box>,
+        tip("deck.help.panel"),
+        tip("deck.help.demo"),
+        tip("deck.help.clear"),
+        reply("panel", "demo", "clear"),
+      ])}
+      {card(els, text("ui.deck.status", locale), [
+        <Text color={INK.ink} wrap="wrap">{deck.status}</Text>,
+        tip("deck.help.status"),
+        <Text color={INK.faint} wrap="wrap">{text("deck.reply.version", locale, { version: deck.version })}</Text>,
+        tip("deck.help.version"),
+      ])}
     </Box>
   );
 }
@@ -1069,6 +1221,17 @@ function stuckLog(els: Els, view: View, lines: readonly FeedEntry[], rows: numbe
   );
 }
 
+/** A one-row divider over a log: its name in bold, then a rule to the edge. */
+function logRule(els: Els, view: View, title: string) {
+  const { Text } = els;
+  return (
+    <Text wrap="truncate">
+      <Text bold color={INK.dim}>{title}</Text>
+      <Text color={INK.faint}>{` ${"─".repeat(Math.max(1, view.width - displayWidth(title) - 1))}`}</Text>
+    </Text>
+  );
+}
+
 /** The live log: who speaks, then every observable event, newest last. */
 function liveView(els: Els, view: View, act: Actions, rows: number) {
   const { Box, Text } = els;
@@ -1108,7 +1271,7 @@ function liveView(els: Els, view: View, act: Actions, rows: number) {
     <Box flexDirection="column" height={rows} overflow="hidden">
       {top}
       {flow}
-      <Text color={INK.faint} wrap="truncate">{"┄".repeat(Math.max(1, view.width))}</Text>
+      {logRule(els, view, text("ui.live.title", view.locale))}
       {stuckLog(els, view, view.feed, logRows, empty, back)}
     </Box>
   );
@@ -1140,50 +1303,50 @@ function jevTally(trace: TraceState, events: readonly RouteEvent[]) {
 }
 
 /**
- * The Live tab's fixed top: current model and activity, and a compact Jev usage tally.
+ * The Live tab's fixed top: a row of pills (Jev and its state, the main model, each subagent at work in its
+ * mascot's color), what Claude is doing now, the session's Jev tally, and the switch to the full run details.
  */
 function liveTop(els: Els, view: View, act: Actions) {
   const { Box, Text, Button } = els;
   const state = status(view.events, view.routing, view.now, view.locale);
-  const running = view.agents.filter((run) => run.state === "running").length;
+  const running = view.agents.filter((run) => run.state === "running");
   const mood = MOODS[moodOf(view)];
   const now = view.live;
   const tally = jevTally(view.trace, view.events);
   return (
     <Box flexDirection="column" flexShrink={0}>
-      <Box flexDirection="column" flexShrink={1}>
-          {section(els, text("ui.live.title", view.locale))}
-          <Text wrap="truncate">
-            <Text bold color={hex(mood.color)}>{`${mood.face} Jev`}</Text>
-            <Text color={now.asking ? INK.route : INK.dim}>{` · ${now.asking ? text("ui.live.asking", view.locale) : state.title}`}</Text>
-            <Text color={INK.faint}>{` · ${text("ui.live.nowModel", view.locale, { model: modelName(now.model), effort: now.effort ? ` · ${now.effort}` : "" })}`}</Text>
-          </Text>
-          <Text wrap="truncate" color={now.activity ? INK.ink : INK.faint}>{now.activity ? `▶ ${now.activity}` : text("ui.live.nowIdle", view.locale)}</Text>
-          <Text wrap="truncate" color={INK.dim}>
-            {text("ui.live.session", view.locale, {
-              calls: formatNumber(tally.calls, view.locale),
-              tokens: tally.tokens === undefined ? "–" : formatCompact(tally.tokens, view.locale),
-              latency: tally.latency === undefined ? "" : text("ui.live.sessionLatency", view.locale, { value: formatNumber(tally.latency, view.locale) }),
-            })}
-          </Text>
-          {tally.reported < tally.calls ? <Text color={INK.faint} wrap="truncate">{text("ui.live.sessionTokensPartial", view.locale, { reported: formatNumber(tally.reported, view.locale), total: formatNumber(tally.calls, view.locale) })}</Text> : null}
-          {tally.retained ? <Text color={INK.faint} wrap="truncate">{text("ui.live.sessionRetained", view.locale)}</Text> : null}
-          <Text wrap="truncate">
-            <Text bold color={INK.you}>{`● ${text("ui.live.you", view.locale)}`}</Text>
-            <Text color={INK.faint}>{" · "}</Text>
-            <Text bold color={INK.claude}>Claude</Text>
-            <Text color={INK.faint}>{` · ⠿ ${text("ui.live.mod", view.locale)} ·`}</Text>
-            {MASCOT_ORDER.map((id) => (
-              <Text bold color={hex(AGENT_MASCOTS[id].color)}>{` ◆ ${AGENT_MASCOTS[id].name}`}</Text>
-            ))}
-          </Text>
-          {running ? <Text color={INK.route} wrap="wrap">{text("ui.live.runningAgents", view.locale, { count: formatNumber(running, view.locale), unit: text(running === 1 ? "unit.agent" : "unit.agents", view.locale) })}</Text> : null}
-          <Button
-            key="flow-details"
-            label={text(view.flowDetails ? "ui.flow.backToLive" : "ui.flow.details", view.locale)}
-            hotkey={view.flowDetails ? "b" : "f"}
-            onPress={() => act.flowDetails(!view.flowDetails)}
-          />
+      <Text wrap="wrap">
+        {pill(els, `${mood.face} ${text("ui.live.jev", view.locale)}`, hex(mood.color))}
+        <Text color={now.asking ? INK.route : INK.dim}>{` ${now.asking ? text("ui.live.asking", view.locale) : state.title}  `}</Text>
+        {pill(els, `◆ ${modelName(now.model)}${now.effort ? ` · ${now.effort}` : ""}`, INK.claude)}
+        {running.map((run) => {
+          const mascot = mascotOf(run);
+          return (
+            <Text>
+              <Text> </Text>
+              {pill(els, `◆ ${mascot ? mascot.name : text("ui.live.subagent", view.locale)}`, mascot ? hex(mascot.color) : INK.route)}
+            </Text>
+          );
+        })}
+      </Text>
+      <Text wrap="truncate" bold={Boolean(now.activity)} color={now.activity ? INK.ink : INK.faint}>{now.activity ? `▶ ${now.activity}` : text("ui.live.nowIdle", view.locale)}</Text>
+      <Text wrap="truncate" color={INK.dim}>
+        {text("ui.live.session", view.locale, {
+          calls: formatNumber(tally.calls, view.locale),
+          tokens: tally.tokens === undefined ? "–" : formatCompact(tally.tokens, view.locale),
+          latency: tally.latency === undefined ? "" : text("ui.live.sessionLatency", view.locale, { value: formatNumber(tally.latency, view.locale) }),
+        })}
+      </Text>
+      {tally.reported < tally.calls ? <Text color={INK.faint} wrap="truncate">{text("ui.live.sessionTokensPartial", view.locale, { reported: formatNumber(tally.reported, view.locale), total: formatNumber(tally.calls, view.locale) })}</Text> : null}
+      {tally.retained ? <Text color={INK.faint} wrap="truncate">{text("ui.live.sessionRetained", view.locale)}</Text> : null}
+      {running.length ? <Text color={INK.route} wrap="wrap">{text("ui.live.runningAgents", view.locale, { count: formatNumber(running.length, view.locale), unit: text(running.length === 1 ? "unit.agent" : "unit.agents", view.locale) })}</Text> : null}
+      <Box flexDirection="row" marginBottom={1}>
+        <Button
+          key="flow-details"
+          label={text(view.flowDetails ? "ui.flow.backToLive" : "ui.flow.details", view.locale)}
+          hotkey={view.flowDetails ? "b" : "f"}
+          onPress={() => act.flowDetails(!view.flowDetails)}
+        />
       </Box>
     </Box>
   );
@@ -1223,54 +1386,73 @@ function agentModel(run: AgentRun, locale: Locale): string {
 /** A subagent's name and color, when its identifier is known. */
 const mascotOf = (run: AgentRun) => (isMascot(run.mascot) ? AGENT_MASCOTS[run.mascot] : undefined);
 
-/** "/•ᴗ•\ Tetra  Explore #3": the mascot's face and name in its color, then the type and number. */
+/** "◆ Tetra  Explore #3": the mascot's name on its color, then the type and number. */
 function agentName(els: Els, run: AgentRun, locale: Locale) {
   const { Text } = els;
   const mascot = mascotOf(run);
   return (
     <Text>
-      {mascot ? <Text bold color={hex(mascot.color)}>{`◆ ${mascot.name}`}</Text> : <Text bold color={INK.ink}>◆</Text>}
-      <Text color={INK.ink}>{`  ${text("ui.agent.number", locale, { type: run.type, number: formatNumber(run.n, locale) })}`}</Text>
+      {mascot ? pill(els, `◆ ${mascot.name}`, hex(mascot.color)) : <Text bold color={INK.ink}>◆</Text>}
+      <Text bold color={INK.ink}>{`  ${text("ui.agent.number", locale, { type: run.type, number: formatNumber(run.n, locale) })}`}</Text>
     </Text>
   );
 }
 
-/** The Agents tab: every subagent Claude started, running ones first, each with its own live. */
+/** A subagent's state as a word in its color, and how long it has run. */
+function agentState(els: Els, view: View, run: AgentRun) {
+  const { Text } = els;
+  const [stateKey, glyph, color] = AGENT_STATE[run.state];
+  return (
+    <Text wrap="truncate">
+      <Text bold color={color}>{`${glyph} ${text(stateKey, view.locale)}`}</Text>
+      <Text color={INK.dim}>{` · ${formatDuration((run.endedAt ?? view.now) - run.startedAt, view.locale)}`}</Text>
+    </Text>
+  );
+}
+
+/** One subagent's card, `width` wide, framed in its mascot's color while it runs and faint once it has ended. */
+function agentCard(els: Els, view: View, act: Actions, run: AgentRun, width: number) {
+  const { Box, Text, Button } = els;
+  const mascot = mascotOf(run);
+  const frame = run.state === "running" ? (mascot ? hex(mascot.color) : INK.route) : run.state === "error" ? INK.fail : INK.faint;
+  return (
+    <Box flexDirection="column" width={width} flexShrink={0} borderStyle="round" borderColor={frame} paddingX={1}>
+      <Text wrap="truncate">{agentName(els, run, view.locale)}</Text>
+      {agentState(els, view, run)}
+      <Text bold color={INK.ink} wrap="wrap">{run.description}</Text>
+      <Text color={INK.dim} wrap="wrap">{agentModel(run, view.locale)}</Text>
+      <Text color={run.state === "running" ? INK.ink : INK.dim} wrap="wrap">
+        {run.state === "running" ? `▶ ${run.activity ?? text("ui.agent.running", view.locale)}` : run.text ? `“${oneLine(run.text, 121)}”` : text("ui.agent.noResponse", view.locale)}
+      </Text>
+      <Text color={INK.faint} wrap="wrap">{agentNumbers(run, view.locale)}</Text>
+      <Box flexDirection="row" columnGap={2} flexWrap="wrap">
+        <Button key={`agent-open-${run.n}`} label={text("ui.agent.liveOpen", view.locale, { number: formatNumber(run.n, view.locale) })} onPress={() => act.openAgent(run.n)} />
+        {run.state === "running" ? null : <Button key={`agent-remove-${run.n}`} label={text("ui.agent.remove", view.locale)} onPress={() => act.removeAgent(run.n)} />}
+      </Box>
+    </Box>
+  );
+}
+
+/** The Agents screen: every subagent Claude started as a card, running ones first, two to a row where they fit. */
 function agentsView(els: Els, view: View, act: Actions) {
   const { Box, Text, Button } = els;
   const list = [...view.agents].sort((a, b) => Number(b.state === "running") - Number(a.state === "running") || b.n - a.n);
-  const finished = list.filter((run) => run.state !== "running").length;
+  const running = list.filter((run) => run.state === "running").length;
+  const finished = list.length - running;
   return (
     <Box flexDirection="column" rowGap={1}>
-      {section(els, text("ui.agents.title", view.locale))}
-      {finished ? (
-        <Box flexDirection="row">
-          <Button key="agents-clear" label={text("ui.agents.clearFinished", view.locale, { count: formatNumber(finished, view.locale) })} hotkey="l" onPress={() => act.clearAgents()} />
-        </Box>
-      ) : null}
+      <Box flexDirection="row" flexWrap="wrap" columnGap={2}>
+        {section(els, text("ui.agents.title", view.locale))}
+        {running ? <Text color={INK.route}>{text("ui.live.runningAgents", view.locale, { count: formatNumber(running, view.locale), unit: text(running === 1 ? "unit.agent" : "unit.agents", view.locale) })}</Text> : null}
+        {finished ? <Button key="agents-clear" label={text("ui.agents.clearFinished", view.locale, { count: formatNumber(finished, view.locale) })} hotkey="l" onPress={() => act.clearAgents()} /> : null}
+      </Box>
       {list.length === 0 ? (
-        <Text color={INK.dim} wrap="wrap">{text("ui.agents.emptyDescription", view.locale)}</Text>
-      ) : null}
-      {list.map((run) => {
-        const [stateKey, glyph, color] = AGENT_STATE[run.state];
-        return (
-          <Box flexDirection="column">
-            <Text wrap="wrap">
-              {agentName(els, run, view.locale)}
-              <Text bold color={color}>{`  ${glyph} ${text(stateKey, view.locale)}`}</Text>
-              <Text color={INK.dim}>{` · ${formatDuration((run.endedAt ?? view.now) - run.startedAt, view.locale)} · ${agentModel(run, view.locale)}`}</Text>
-            </Text>
-            <Text color={INK.ink} wrap="wrap">{`   ${run.description}`}</Text>
-            <Text color={INK.dim} wrap="wrap">
-              {`   ${run.state === "running" ? (run.activity ?? text("ui.agent.running", view.locale)) : run.text ? `“${oneLine(run.text, 121)}”` : text("ui.agent.noResponse", view.locale)} · ${agentNumbers(run, view.locale)}`}
-            </Text>
-            <Box flexDirection="row" marginLeft={3} columnGap={2}>
-              <Button key={`agent-open-${run.n}`} label={text("ui.agent.liveOpen", view.locale, { number: formatNumber(run.n, view.locale) })} onPress={() => act.openAgent(run.n)} />
-              {run.state === "running" ? null : <Button key={`agent-remove-${run.n}`} label={text("ui.agent.remove", view.locale)} onPress={() => act.removeAgent(run.n)} />}
-            </Box>
-          </Box>
-        );
-      })}
+        <Box borderStyle="round" borderColor={INK.faint} paddingX={1}>
+          <Text color={INK.dim} wrap="wrap">{text("ui.agents.emptyDescription", view.locale)}</Text>
+        </Box>
+      ) : (
+        grid(els, view.width, list.map((run) => (width: number) => agentCard(els, view, act, run, width)), 44)
+      )}
       <Text color={INK.faint} wrap="wrap">{text("ui.agent.instructions", view.locale)}</Text>
     </Box>
   );
@@ -1293,21 +1475,19 @@ export function renderAgentPane(els: Els, view: View, run: AgentRun | undefined,
       </Box>
     );
   }
-  const [stateKey, glyph, color] = AGENT_STATE[run.state];
   const lines: FeedEntry[] = view.feed.filter((entry) => entry.agent === run.id);
   const modelSteps = view.trace.runs.flatMap((entry) => entry.steps).filter((step) => step.agentId === run.id).slice(-6);
   // Its answer closes the log, in full, once it has ended.
   if (run.state !== "running" && run.text) {
     lines.push({ seq: -1, time: run.endedAt ?? view.now, who: "agent", agent: run.id, mascot: run.mascot, kind: "agent", tone: "info", text: text("ui.agent.result", view.locale, { text: run.text }) });
   }
+  // the top is a card in the mascot’s color: who it is, its state, its task and its figures
+  const mascot = mascotOf(run);
   const top = (
-    <Box flexDirection="column" flexShrink={0}>
-      <Text wrap="wrap">
-        {agentName(els, run, view.locale)}
-        <Text bold color={color}>{`  ${glyph} ${text(stateKey, view.locale)}`}</Text>
-        <Text color={INK.dim}>{` · ${formatDuration((run.endedAt ?? view.now) - run.startedAt, view.locale)}`}</Text>
-      </Text>
-      <Text color={INK.ink} wrap="truncate-end">{run.description}</Text>
+    <Box flexDirection="column" flexShrink={0} borderStyle="round" borderColor={run.state === "running" ? (mascot ? hex(mascot.color) : INK.route) : INK.faint} paddingX={1}>
+      <Text wrap="truncate">{agentName(els, run, view.locale)}</Text>
+      {agentState(els, view, run)}
+      <Text bold color={INK.ink} wrap="truncate-end">{run.description}</Text>
       <Text color={INK.dim} wrap="truncate-end">{agentModel(run, view.locale)}</Text>
       <Text color={INK.faint} wrap="truncate-end">{agentNumbers(run, view.locale)}</Text>
       {run.state === "running" ? (
@@ -1360,38 +1540,49 @@ export function renderAgentPane(els: Els, view: View, run: AgentRun | undefined,
   return (
     <Box flexDirection="column" height={view.rows} overflow="hidden">
       {top}
-      <Text color={INK.faint} wrap="truncate">{"┄".repeat(Math.max(1, view.width))}</Text>
+      {logRule(els, view, text("ui.live.title", view.locale))}
       {stuckLog(els, view, lines, logRows, empty, back, task)}
     </Box>
   );
 }
 
-/** The latest run's observed sequence and earlier runs, embedded in Live. */
+/**
+ * The latest run as Live shows it. On a fixed terminal pane it is a card: the run's sequence as a chain of nodes,
+ * its latest details and its timing. Opened in full (or on the desktop), it is the whole drawn run and its history.
+ */
 function runFlow(els: Els, view: View) {
   const { Box, Text } = els;
   const run = view.trace.runs.find((candidate) => candidate.id === view.trace.active) ?? view.trace.runs.at(-1);
   const timing = run ? runTiming(run, view.now) : undefined;
   const scene = flowScene(view.trace, view.now, view.locale);
   const compact = view.fixed && !view.flowDetails && scene.nodes.length > 0;
-  const compactDetails = compact ? [
-    ...(scene.nodes.find((node) => node.id === "message")?.details.slice(-2) ?? []),
-    ...(scene.nodes.find((node) => node.id === "agents")?.details.slice(-2) ?? []),
-    ...(scene.nodes.find((node) => node.id === "answer")?.details.slice(0, 2) ?? []),
+  const times = timing ? [
+    <Text color={INK.ink} wrap="wrap">{text("ui.flow.timing.main", view.locale, { duration: timing.mainResponseMs === undefined ? text("ui.flow.timing.pending", view.locale) : formatDuration(timing.mainResponseMs, view.locale) })}</Text>,
+    <Text color={INK.dim} wrap="wrap">{text("ui.flow.timing.total", view.locale, { duration: formatDuration(timing.totalMs, view.locale), state: text(timing.complete ? "ui.flow.timing.complete" : "ui.flow.timing.active", view.locale) })}</Text>,
   ] : [];
+  if (compact) {
+    const details = [
+      ...(scene.nodes.find((node) => node.id === "message")?.details.slice(-2) ?? []),
+      ...(scene.nodes.find((node) => node.id === "agents")?.details.slice(-2) ?? []),
+      ...(scene.nodes.find((node) => node.id === "answer")?.details.slice(0, 2) ?? []),
+    ];
+    return card(els, text("ui.flow.sequence", view.locale), [
+      <Text wrap="wrap">
+        {scene.nodes.map((node, index) => (
+          <Text>
+            {index ? <Text color={INK.faint}>{" → "}</Text> : null}
+            <Text color={node.color} bold>{`${node.glyph} ${node.label}`}</Text>
+          </Text>
+        ))}
+      </Text>,
+      ...details.map((detail) => <Text color={detail.color} wrap="wrap">{detail.text}</Text>),
+      ...times,
+    ]);
+  }
   const lines = flowLines({ trace: view.trace, now: view.now, width: Math.max(1, view.width - 2), locale: view.locale });
   return (
     <Box flexDirection="column">
-      {compact ? (
-        <Box flexDirection="column">
-          <Text bold color={INK.ink}>{text("ui.flow.sequence", view.locale)}</Text>
-          <Text wrap="wrap">
-            {scene.nodes.map((node, index) => (
-              <Text color={node.color} bold>{`${index ? " → " : ""}${node.glyph} ${node.label}`}</Text>
-            ))}
-          </Text>
-          {compactDetails.map((detail) => <Text color={detail.color} wrap="wrap">{detail.text}</Text>)}
-        </Box>
-      ) : lines.map((parts) => (
+      {lines.map((parts) => (
         <Text wrap="truncate">
           {parts.length === 0 ? " " : null}
           {parts.map((part) => (
@@ -1401,10 +1592,9 @@ function runFlow(els: Els, view: View) {
           ))}
         </Text>
       ))}
-      {timing ? (
+      {times.length ? (
         <Box flexDirection="column" marginTop={1}>
-          <Text color={INK.ink}>{text("ui.flow.timing.main", view.locale, { duration: timing.mainResponseMs === undefined ? text("ui.flow.timing.pending", view.locale) : formatDuration(timing.mainResponseMs, view.locale) })}</Text>
-          <Text color={INK.dim}>{text("ui.flow.timing.total", view.locale, { duration: formatDuration(timing.totalMs, view.locale), state: text(timing.complete ? "ui.flow.timing.complete" : "ui.flow.timing.active", view.locale) })}</Text>
+          {times}
           <Text color={INK.faint} wrap="wrap">{text("ui.flow.timing.note", view.locale)}</Text>
         </Box>
       ) : null}
@@ -1466,113 +1656,146 @@ function jevCounterText(group: ReturnType<typeof jevUsageGroups>[number], counte
   return reported < group.calls ? `${value} ${text("ui.models.counterPartial", locale, { reported: formatNumber(reported, locale), total: formatNumber(group.calls, locale) })}` : value;
 }
 
-/** The Models tab reports recorded requests and responses, without predicting later choices. */
+/**
+ * The Models screen reports recorded requests and responses, without predicting later choices: the main model
+ * now as a card, the latest run's requests one row each (a change of model marked in yellow), and Jev's usage.
+ */
 function modelsView(els: Els, view: View) {
   const { Box, Text } = els;
   const run = view.trace.runs.find((candidate) => candidate.id === view.trace.active) ?? view.trace.runs.at(-1);
   const steps = run?.steps.filter((step) => !step.agentId) ?? [];
   const jevGroups = jevUsageGroups(view.trace);
+  const shown = steps.slice(-12);
   return (
     <Box flexDirection="column" rowGap={1}>
-      <Box flexDirection="column">
-        {section(els, text("ui.models.now", view.locale))}
-        <Text bold color={INK.ink}>{`◆ ${modelName(view.live.model)}${view.live.effort ? ` · ${view.live.effort}` : ""}`}</Text>
-      </Box>
-      <Box flexDirection="column" rowGap={1}>
-        {section(els, text("ui.models.requests", view.locale))}
-        {steps.length ? steps.slice(-12).map((step, index, shown) => {
-          const actual = step.observed ?? step.sent;
-          const previous = shown[index - 1];
-          const priorModel = previous ? previous.observed ?? previous.sent : undefined;
-          return (
-            <Box flexDirection="column">
-              <Text color={INK.faint} wrap="truncate">
-                {text("ui.models.request", view.locale, { number: formatNumber(step.index + 1, view.locale) })}
-                {` · ${clock(step.startedAt, view.locale)} · ${step.endedAt === undefined ? text("ui.models.inProgress", view.locale) : formatDuration(step.endedAt - step.startedAt, view.locale)}`}
-              </Text>
-              <Text wrap="wrap">
-                {step.observed
-                  ? text("ui.models.responseModel", view.locale, { model: modelName(step.observed) })
-                  : text("ui.models.requestedModel", view.locale, { model: modelName(step.sent) })}
-                {step.effort ? ` · ${text("ui.models.effort", view.locale, { effort: step.effort })}` : ""}
-              </Text>
-              {step.observed && step.observed !== step.sent ? (
-                <Text color={INK.pass} wrap="wrap">{text("ui.models.requestResponseDiff", view.locale, { requested: modelName(step.sent), observed: modelName(step.observed) })}</Text>
-              ) : null}
-              {step.original !== step.sent ? (
-                <Text color={INK.dim} wrap="wrap">{text("ui.models.engineModelDiff", view.locale, { original: modelName(step.original), sent: modelName(step.sent) })}</Text>
-              ) : null}
-              {priorModel && actual !== priorModel ? (
-                <Text color={INK.dim} wrap="wrap">{text("ui.models.modelChanged", view.locale, { from: modelName(priorModel), to: modelName(actual) })}</Text>
-              ) : null}
-              <Text color={INK.faint} wrap="wrap">{stepUsage(step.usage, view.locale)}</Text>
-            </Box>
-          );
-        }) : <Text color={INK.faint} wrap="wrap">{text("ui.models.empty", view.locale)}</Text>}
-        <Text color={INK.faint} wrap="wrap">{text("ui.models.observedNote", view.locale)}</Text>
-        <Text color={INK.faint} wrap="wrap">{text("ui.models.costUnavailable", view.locale)}</Text>
-      </Box>
-      <Box flexDirection="column" rowGap={1}>
-        {section(els, text("ui.models.jevUsage", view.locale))}
-        {jevGroups.length ? jevGroups.map((group) => (
-          <Box flexDirection="column">
-            <Text bold color={INK.ink} wrap="wrap">{text(group.observed ? "ui.models.jevObserved" : "ui.models.jevRequested", view.locale, { model: modelName(group.model), calls: formatNumber(group.calls, view.locale) })}</Text>
-            <Text color={INK.faint} wrap="wrap">{jevCounterText(group, "input", view.locale)} · {jevCounterText(group, "output", view.locale)} · {jevCounterText(group, "cacheRead", view.locale)} · {jevCounterText(group, "cacheWrite", view.locale)}</Text>
-          </Box>
-        )) : <Text color={INK.faint} wrap="wrap">{text("ui.models.jevNoUsage", view.locale)}</Text>}
-        {view.trace.turns > view.trace.runs.length ? <Text color={INK.faint} wrap="wrap">{text("ui.models.jevRetained", view.locale)}</Text> : null}
-      </Box>
+      {card(
+        els,
+        text("ui.models.now", view.locale),
+        <Text wrap="wrap">
+          {pill(els, `◆ ${modelName(view.live.model)}`, INK.claude)}
+          {view.live.effort ? <Text color={INK.ink}>{`  ${text("ui.models.effort", view.locale, { effort: view.live.effort })}`}</Text> : null}
+        </Text>,
+        { color: INK.claude },
+      )}
+      {card(
+        els,
+        text("ui.models.requests", view.locale),
+        [
+          ...(shown.length
+            ? shown.map((step, index) => {
+                const actual = step.observed ?? step.sent;
+                const previous = shown[index - 1];
+                const priorModel = previous ? previous.observed ?? previous.sent : undefined;
+                const changed = Boolean(priorModel && actual !== priorModel);
+                return (
+                  <Box flexDirection="column" marginTop={1}>
+                    <Text wrap="wrap">
+                      <Text bold color={changed ? INK.pass : INK.ink}>{`${changed ? "▲" : "●"} ${text("ui.models.request", view.locale, { number: formatNumber(step.index + 1, view.locale) })}`}</Text>
+                      <Text color={INK.faint}>{`  ${clock(step.startedAt, view.locale)} · ${step.endedAt === undefined ? text("ui.models.inProgress", view.locale) : formatDuration(step.endedAt - step.startedAt, view.locale)}`}</Text>
+                    </Text>
+                    <Text color={INK.ink} wrap="wrap">
+                      {`  ${step.observed ? text("ui.models.responseModel", view.locale, { model: modelName(step.observed) }) : text("ui.models.requestedModel", view.locale, { model: modelName(step.sent) })}`}
+                      {step.effort ? ` · ${text("ui.models.effort", view.locale, { effort: step.effort })}` : ""}
+                    </Text>
+                    {step.observed && step.observed !== step.sent ? (
+                      <Text color={INK.pass} wrap="wrap">{`  ${text("ui.models.requestResponseDiff", view.locale, { requested: modelName(step.sent), observed: modelName(step.observed) })}`}</Text>
+                    ) : null}
+                    {step.original !== step.sent ? (
+                      <Text color={INK.dim} wrap="wrap">{`  ${text("ui.models.engineModelDiff", view.locale, { original: modelName(step.original), sent: modelName(step.sent) })}`}</Text>
+                    ) : null}
+                    {changed && priorModel ? <Text color={INK.pass} wrap="wrap">{`  ${text("ui.models.modelChanged", view.locale, { from: modelName(priorModel), to: modelName(actual) })}`}</Text> : null}
+                    <Text color={INK.faint} wrap="wrap">{`  ${stepUsage(step.usage, view.locale)}`}</Text>
+                  </Box>
+                );
+              })
+            : [<Text color={INK.faint} wrap="wrap">{text("ui.models.empty", view.locale)}</Text>]),
+          <Box flexDirection="column" marginTop={1}>
+            <Text color={INK.faint} wrap="wrap">{text("ui.models.observedNote", view.locale)}</Text>
+            <Text color={INK.faint} wrap="wrap">{text("ui.models.costUnavailable", view.locale)}</Text>
+          </Box>,
+        ],
+      )}
+      {card(
+        els,
+        text("ui.models.jevUsage", view.locale),
+        [
+          ...(jevGroups.length
+            ? jevGroups.map((group) => (
+                <Box flexDirection="column" marginTop={1}>
+                  <Text bold color={INK.ink} wrap="wrap">{text(group.observed ? "ui.models.jevObserved" : "ui.models.jevRequested", view.locale, { model: modelName(group.model), calls: formatNumber(group.calls, view.locale) })}</Text>
+                  {(["input", "output", "cacheRead", "cacheWrite"] as const).map((counter) => (
+                    <Text color={INK.dim} wrap="wrap">{`  ${jevCounterText(group, counter, view.locale)}`}</Text>
+                  ))}
+                </Box>
+              ))
+            : [<Text color={INK.faint} wrap="wrap">{text("ui.models.jevNoUsage", view.locale)}</Text>]),
+          view.trace.turns > view.trace.runs.length ? <Text color={INK.faint} wrap="wrap">{text("ui.models.jevRetained", view.locale)}</Text> : null,
+        ],
+      )}
     </Box>
   );
 }
 
+/**
+ * The Jev pane: the rail on the left (or the bar on top, in a narrow pane), and the open screen beside it under
+ * its title. Every screen is drawn and measured at the width it really gets. On the terminal the pane is exactly
+ * its room tall: the rail and the title stay, and the screen below the title moves by its own offset.
+ */
 export function renderPane(els: Els, view: View, act: Actions) {
   const { Box, Text } = els;
-  const top = header(els, view, act);
-  if (!view.fixed) {
-    return (
-      <Box flexDirection="column" rowGap={1}>
-        {top}
-        {tabBody(els, view, act, view.rows)}
+  // the full run details take the whole width: the drawn run needs every column it can get
+  const side = view.tab === "live" && view.flowDetails ? 0 : railWidth(view.width);
+  const width = side ? Math.max(20, view.width - side - 1) : view.width;
+  const inner: View = { ...view, width };
+  const top = side ? (
+    titleBar(els, inner)
+  ) : (
+    <Box flexDirection="column">
+      {topBar(els, view, act)}
+      {titleBar(els, inner)}
+    </Box>
+  );
+  const fixed = view.fixed ? { height: view.rows, overflow: "hidden" as const } : {};
+  const frame = (main: RenderChildren) =>
+    side ? (
+      <Box flexDirection="row" columnGap={1} {...fixed}>
+        {rail(els, view, act, side)}
+        <Box flexDirection="column" width={width} flexShrink={0} {...(view.fixed ? fixed : { rowGap: 1 })}>
+          {main}
+        </Box>
+      </Box>
+    ) : (
+      <Box flexDirection="column" {...(view.fixed ? fixed : { rowGap: 1 })}>
+        {main}
       </Box>
     );
-  }
-  // The header stays; the body below it is exactly the room left, and moves by its own offset.
-  const rows = Math.max(4, view.rows - rowsOf(top, view.width));
-  if (view.tab === "live") {
-    return (
-      <Box flexDirection="column" height={view.rows} overflow="hidden">
-        {top}
-        {liveView(els, view, act, rows)}
-      </Box>
-    );
-  }
-  const body = <Box flexDirection="column" flexShrink={0}>{tabBody(els, view, act, rows)}</Box>;
-  const total = rowsOf(body, view.width);
+  if (!view.fixed) return frame([top, tabBody(els, inner, act, view.rows)]);
+  const rows = Math.max(4, view.rows - rowsOf(top, width));
+  if (view.tab === "live") return frame([top, liveView(els, inner, act, rows)]);
+  const body = <Box flexDirection="column" flexShrink={0}>{tabBody(els, inner, act, rows)}</Box>;
+  const total = rowsOf(body, width);
   const max = Math.max(0, total - rows + 1);
   // Logs has its newest on top: scrolled down, it keeps to the requests it showed.
   const newest = view.events.at(-1)?.seq ?? 0;
   const offset =
     view.tab === "logs"
-      ? anchored("log", view.scroll, newest, (since) => view.events.filter((event) => event.seq > since).reduce((s, event) => s + rowsOf(logEntry(els, view, event), view.width), 0), max)
+      ? anchored("log", view.scroll, newest, (since) => view.events.filter((event) => event.seq > since).reduce((s, event) => s + rowsOf(logEntry(els, inner, event), width), 0), max)
       : Math.min(view.scroll, max);
   act.layout(view.tab === "logs" ? view.scroll + max - offset : max, false);
   const more = total - offset > rows - 1;
-  return (
-    <Box flexDirection="column" height={view.rows} overflow="hidden">
-      {top}
-      <Box flexDirection="column" height={rows - (max ? 1 : 0)} overflow="hidden" flexShrink={0}>
-        <Box flexDirection="column" flexShrink={0} marginTop={-offset}>
-          {body}
-        </Box>
+  return frame([
+    top,
+    <Box flexDirection="column" height={rows - (max ? 1 : 0)} overflow="hidden" flexShrink={0}>
+      <Box flexDirection="column" flexShrink={0} marginTop={-offset}>
+        {body}
       </Box>
-      {max ? (
-        <Text color={INK.faint} wrap="truncate">
-          {text("ui.scroll.footer", view.locale, { up: offset > 0 ? "▲" : " ", down: more ? "▼" : " ", percent: formatNumber((100 * offset) / max, view.locale) })}
-        </Text>
-      ) : null}
-    </Box>
-  );
+    </Box>,
+    max ? (
+      <Text color={INK.faint} wrap="truncate">
+        {text("ui.scroll.footer", view.locale, { up: offset > 0 ? "▲" : " ", down: more ? "▼" : " ", percent: formatNumber((100 * offset) / max, view.locale) })}
+      </Text>
+    ) : null,
+  ]);
 }
 
 /** What the active tab draws under the header. */

@@ -166,7 +166,7 @@ test("Overview groups its figures under headings and flags failed Jev calls on b
   for (const surface of ["terminal", "desktop"] as const) {
     const ui = await $.ui.mount({ plugin: "jev", surface, component: "Pane", requestId: "jev", props: PANE_PROPS });
     await ui.press({ key: "tab-overview" });
-    for (const heading of [/⠿ Routing$/, /⠿ Jev's answers$/, /⠿ Token usage$/, /⠿ Timeline$/]) {
+    for (const heading of [/^Routing$/, /^Jev's answers$/, /^Token usage$/, /^Timeline$/]) {
       expect(await ui.find({ type: "Text", text: heading })).toBeDefined();
     }
     expect(await ui.find({ type: "Text", text: "2 requests in this range" })).toBeDefined();

@@ -4,7 +4,7 @@
 // laid out along a lane as wide as the band, so the host can repaint them in place without drawing anything else.
 import { brailleBit, brailleChar, DEPTH, hex } from "../dots.ts";
 import type { BrailleCell } from "../dots.ts";
-import { MOODS, pingoSvg, type Mood } from "../mascots/pingo.ts";
+import { bayer, MOODS, pingoSvg, type Mood } from "../mascots/pingo.ts";
 
 export const PET_ACTS = ["idle", "walk", "run", "jump", "console", "read", "sleep", "celebrate", "alert"] as const;
 export type PetAct = (typeof PET_ACTS)[number];
@@ -424,10 +424,6 @@ function props(grid: Grid, act: PetAct, t: number) {
 
 /** The sphere on the grid: its centre across, the row its foot rests on, and its radius, in dots. One dot is left above it for the bob. */
 const SPHERE = { cx: PET_RASTER.width / 2, foot: 14.7, r: 6.7 };
-
-/** A 4x4 ordered-dither matrix: a dot is lit where the shading beats its entry, so the same shade is always the same pattern. */
-const BAYER = [0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5];
-const bayer = (x: number, y: number) => (BAYER[(y & 3) * 4 + (x & 3)]! + 0.5) / 16;
 
 type Pixels = readonly (readonly [number, number])[];
 /** The eight dots around a three by three eye, in order; a spinner lights four in a row. */

@@ -2,7 +2,7 @@
 import { describe, expect, test } from "claude-code/testing";
 
 import { brailleBit, brailleChar, constellation, DOT } from "../hooks/dots.ts";
-import { brailleFrame, brailleText, eyeAt, MOODS, pingoSvg, type Mood } from "../hooks/mascots/pingo.ts";
+import { brailleFrame, brailleText, eyeAt, MOODS, pingoLiveSvg, pingoSvg, type Mood } from "../hooks/mascots/pingo.ts";
 import { AGENT_MASCOTS, MASCOT_ORDER, pickMascot } from "../hooks/mascots/agents.ts";
 
 const ALL_MOODS = Object.keys(MOODS) as Mood[];
@@ -58,6 +58,30 @@ describe("Pingo", () => {
       expect(svg).toStartWith("<svg");
       expect((svg.match(/<circle /g) ?? []).length > 500).toBe(true);
       expect(svg.length).toBeLessThanOrEqual(131_072);
+    }
+  });
+
+  // An eye is a few dots. A cell that holds body dots as well as the eye's color is a blob: the old sphere had up to
+  // eight dots in one eye cell, and its eye-colored cells spread over the face.
+  test("braille eyes take only their own few cells, without the body's dots", () => {
+    const dotsIn = (char: string) => (char === " " ? 0 : [...((char.codePointAt(0)! - 0x2800).toString(2))].filter((bit) => bit === "1").length);
+    for (const mood of ["routing", "failing", "idle"] as const) {
+      let most = 0;
+      for (let i = 0; i < 100; i++) {
+        for (const [char, color] of brailleFrame(mood, i * 0.07, 18, 8).flat()) {
+          if (color === MOODS[mood].color) most = Math.max(most, dotsIn(char));
+        }
+      }
+      expect(most).toBeLessThanOrEqual(5);
+    }
+  });
+
+  test("the desktop Pingo is one still source per mood, so its CSS animation is not restarted", () => {
+    for (const mood of ALL_MOODS) {
+      const svg = pingoLiveSvg(mood);
+      expect(svg).toBe(pingoLiveSvg(mood));
+      expect(svg).toContain("animation:pl-breathe");
+      expect((svg.match(/<circle /g) ?? []).length > 500).toBe(true);
     }
   });
 });

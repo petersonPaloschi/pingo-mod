@@ -1,10 +1,10 @@
 # Visual design
 
-Dots reinforce state; text carries exact values, identity, duration, and observed consumption. The terminal and desktop use the same state and layout.
+The dashboard is built of framed cards, colored pills and block bars; text carries exact values, identity, duration, and observed consumption. The terminal and desktop use the same state and layout.
 
 ## Principles
 
-1. Use one visual unit for meters, timelines, and the simple Pingo.
+1. Build every screen of the dashboard from the same parts: cards with a title, pills for states and identities, block bars for shares.
 2. Keep values and scope readable; confidence and activity are not quality or savings.
 3. Use color for state and speaker identity, alongside a readable name and status.
 4. Keep rendering deterministic and update on observable events.
@@ -32,19 +32,21 @@ Pingo is a simple status indicator. The user is identified by a readable label a
 
 ## Dashboard
 
-- **Header:** Pingo, Jev status, observed call count, latency, reported input usage and failures, routing switch, and the tab bar. Its consultation figures use the last five minutes of retained observations.
-- **Overview:** the range picker leads, with the number of requests it covers, because it scopes every figure below. The header's meters keep their own five-minute window. The status sentence appears only when it adds something the header lacks: why Jev is failing or passing, when it last ran, or that routing is off. The provider line follows. The figures come in titled groups. **Routing** has the request totals and the outcome strip with a one-row legend. **Jev's answers** has calls, latency and confidence; failed calls show in red. **Token usage** has LLM and Jev tokens. **Timeline** has the request constellation. A range with no requests shows one line in place of a wall of zeros.
-- **Live:** visible speaker activity and the execution graph. The graph preserves sequence, tools and sources, worker branches, duration, advisor observations, edits, and results. It updates from events without a pulse loop. Terminal defaults to a compact sequence and keeps space for complete Jev question/answer cards. An expand/back control makes the full diagram scrollable in Live; desktop can show it in the normal document flow.
-- **Models:** actual main and worker model/effort observations and changes. No forecast or observational comparison is presented as a benefit.
-- **Agents:** worker identity, state, actual model/effort, request/tool counts, and live-pane actions.
-- **Logs:** request metadata, error causes, reason filtering/grouping, timing, and reported consumption.
-- **Configuration:** provider setup, credential controls, language, routing, and eligible worker planning.
+- **Rail:** from 120 columns, a framed rail runs down the left of the pane in Pingo's mood color: the name, the seven screens (the open one marked ▸, number keys 1–7), the routing switch, then Pingo, its state as a pill and a sentence, and the last five minutes (calls, latency, input tokens, failures in red). The screens come first, so a short pane cuts Pingo and the figures, never the navigation. Under 120 columns the same parts sit in a framed bar on top, with the screens side by side, so the screen keeps the whole width. The rail is 26 columns wide: the host draws each button with its number key and brackets, and every label must stay on one row.
+- **Title:** each screen opens with its name, a faint line saying what it is for, and a heavy rule in the mood color. Every screen is drawn and measured at the width it gets beside the rail.
+- **Overview:** the range picker leads, with the number of requests it covers, because it scopes every figure below; the rail's figures keep their own five-minute window. The status sentence appears only when it adds something the rail lacks. Then cards, two to a row from 93 columns: **Routing** (a bar of solid blocks split by outcome, its legend, and its figures as a table), **Jev's answers** and **Token usage** (framed red when a figure flags a failure), and **Timeline** across the whole width: a sparkline of reported request tokens per slot of time, colored by each slot's worst outcome. A range with no requests shows one framed line in place of a wall of zeros.
+- **Live:** a row of pills (Jev and its state, the main model, each subagent at work in its mascot's color), the current activity, the session's Jev tally, then the latest run as a card (its nodes as a chain, the latest details, the timing) and the live log under a titled rule. The full run details take the whole pane width, without the rail, because the drawn run needs every column.
+- **Models:** the main model as a pill in a card, the latest run's requests one row each (a change of model marked ▲ in yellow), and Jev's usage by model, one counter to a line. No forecast or observational comparison is presented as a benefit.
+- **Agents:** one card per subagent, two to a row where they fit, framed in its mascot's color while it runs: its name on its color, its state, task, model, activity or answer, counts and live-pane actions.
+- **Logs:** a card of reason groups, each with a bar as long as its share of the largest, then the request log, newest first: the time in its own column, then the outcome on a colored ground with what happened and how long it took, its figures faint under that, and why under them. A blank row closes each request.
+- **Configuration:** three cards: provider and language (with the three steps of the key, each numbered on a colored ground and checked when done), subagent planning, and history.
+- **Deck:** every `/deck` command as a control, one card per group, with the command each runs beneath it.
 
 Request scopes and whole-task scopes are labeled separately. Main completion and background completion use elapsed wall time. Unknown values stay unknown, partial consumption stays partial, and estimates identify their basis. A checkpoint requested is not a successful verification.
 
-## Tab bar
+## Navigation
 
-The order is Overview, Live, Models, Agents, Logs, Configuration. Labels have no numerical hotkey prefixes. The active tab is bracketed and bright; it remains a harmless Button addressed by `tab-<id>`. The row wraps on narrow panes and a thin rule closes the header.
+The order is Overview, Live, Models, Agents, Logs, Configuration, Deck. Each screen is a harmless Button addressed by `tab-<id>` with its number as the hotkey; the open one is bright and marked ▸, the others dim.
 
 Persisted retired tabs map to a valid consolidated screen. Useful former commands open that screen. Removed screen components and feature switches are not retained.
 
@@ -60,6 +62,6 @@ The terminal uses braille for Pingo and dot meters; desktop uses SVG when approp
 
 The Deck band above the prompt keeps its own visual language: its own state and tier colors, six bar styles, three collapsed looks, a pet, and a progress row for each plan, task, agent, context and limit. The palette, one-visual-unit and tab rules above describe the Jev dashboard; they do not apply inside the band.
 
-Motion is the one deliberate exception to the animation rule. The pet, the open and close fold, and the demo move on purpose. Desktop motion is CSS and SVG animation only, with no script timers. Terminal frames are a pure function of act, time and facing, so a repaint needs no stored animation state. The terminal pet is one Raster as wide as the band, repainted in place by a 150 ms loop that runs only while a band is on screen and asks for no redraw. The terminal rows' own motion redraws the UI every other frame, every fourth while the dashboard is open; desktop rows and pet move by CSS and ask for a redraw only when a scene changes. A hidden or idle Deck requests no frames. The dashboard's own Pingo keeps one frame a second and no timer.
+Motion is the one deliberate exception to the animation rule. The pet, the open and close fold, and the demo move on purpose. Desktop motion is CSS and SVG animation only, with no script timers. Terminal frames are a pure function of act, time and facing, so a repaint needs no stored animation state. The terminal pet is one Raster as wide as the band, repainted in place by a 150 ms loop that runs only while a band is on screen and asks for no redraw. The terminal rows' own motion redraws the UI every other frame, every fourth while the dashboard is open; desktop rows and pet move by CSS and ask for a redraw only when a scene changes. A hidden or idle Deck requests no frames. The dashboard's own Pingo has no timer. On the desktop it is one still SVG per mood whose breathing, bob, blink, shake and orbit highlight are CSS, so its source never changes between redraws. In the terminal it is drawn when the pane is, and no timer repaints it.
 
 The Pingo mascot is the pet's body. The Deck draws the scene around it: the desk, the alert badge, confetti, sleep marks and dust.

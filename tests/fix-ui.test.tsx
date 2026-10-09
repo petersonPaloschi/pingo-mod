@@ -214,10 +214,37 @@ test("a scrolled-down request log stays on the requests it showed as new ones co
   const events = Array.from({ length: 40 }, (_, i) => event(i + 1));
   expect(offset(events, 0)).toBe(0);
   expect(offset(events, 6)).toBe(6);
-  // Two requests on top, a row each: the body moves down by two to keep the same ones in view.
-  expect(offset([...events, event(41), event(42)], 6)).toBe(8);
+  // Two requests on top, two rows each (the request and the blank row that closes it): the body moves down by
+  // four to keep the same ones in view.
+  expect(offset([...events, event(41), event(42)], 6)).toBe(10);
   expect(offset([...events, event(41), event(42)], 0)).toBe(0);
 });
+
+// The pane draws a rail beside the screen from 64 columns and a bar on top below that; either way the screen is
+// measured at the width it really gets, so the logs keep to what they showed at every width.
+for (const width of [50, 140]) {
+  test(`a scrolled-back live log and a scrolled-down request log keep their place at ${width} columns`, () => {
+    const { els, act, layouts, feedLine, event, view } = harness();
+    const lastShown = (feed: FeedEntry[], scroll: number) => texts(renderPane(els, view({ feed, scroll, width }), act)).filter((one) => /^line \d+$/.test(one)).at(-1);
+    const feed = Array.from({ length: 40 }, (_, i) => feedLine(i + 1));
+    expect(lastShown(feed, 0)).toBe("line 40");
+    expect(lastShown(feed, 5)).toBe("line 35");
+    const grown = [...feed, feedLine(41), feedLine(42), feedLine(43)];
+    expect(lastShown(grown, 5)).toBe("line 35");
+    expect(lastShown(grown, 6)).toBe("line 34");
+    expect(layouts.at(-1)).toBe(6 + 42 - 9);
+    expect(lastShown(grown, 0)).toBe("line 43");
+    const offset = (events: RouteEvent[], scroll: number) => {
+      const moved = elements(renderPane(els, view({ tab: "logs", events, scroll, rows: 20, width }), act)).find((el) => typeof el.props?.marginTop === "number" && (el.props.marginTop as number) < 0);
+      return moved ? -(moved.props!.marginTop as number) : 0;
+    };
+    const events = Array.from({ length: 40 }, (_, i) => event(i + 1));
+    expect(offset(events, 0)).toBe(0);
+    expect(offset(events, 6)).toBe(6);
+    expect(offset([...events, event(41), event(42)], 6)).toBe(10);
+    expect(offset([...events, event(41), event(42)], 0)).toBe(0);
+  });
+}
 
 test("display width counts wide characters twice and marks not at all", () => {
   expect(displayWidth("abc")).toBe(3);

@@ -31,7 +31,7 @@ const kids = (n: any): any[] => [n?.children ?? []].flat(Infinity).filter((k) =>
 const leaves = (n: any): string => (typeof n === "string" || typeof n === "number" ? String(n) : n && typeof n === "object" ? kids(n).map(leaves).join("") : "");
 const everyNode = (n: any): any[] => (n && typeof n === "object" ? [n, ...kids(n).flatMap(everyNode)] : []);
 /** The Box under a section heading: its first child is the heading text, and nothing else. */
-const sectionOf = (tree: unknown, heading: string) => everyNode(tree).find((n) => n.type === "Box" && kids(n)[0] && leaves(kids(n)[0]) === "⠿ " + heading);
+const sectionOf = (tree: unknown, heading: string) => everyNode(tree).find((n) => n.type === "Box" && kids(n)[0] && leaves(kids(n)[0]) === heading);
 
 // the control that stands for each /deck verb: a verb added to the usage block with no control here fails below
 const CONTROL_OF: Record<string, string> = {
