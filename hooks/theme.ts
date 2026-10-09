@@ -65,7 +65,6 @@ export const GLYPH = {
   fail: "×",
   ask: "?",
   run: "▶",
-  idle: "–",
   on: "●",
   off: "○",
   /** The open screen, the chosen option. */

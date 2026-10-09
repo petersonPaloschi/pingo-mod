@@ -10,7 +10,6 @@ export const DEFAULT_COLOR = 0x01000000;
  * the timeline hold on a dark and on a light terminal. Text paints with theme keys (PAINT), not with these.
  */
 export const DOT = {
-  ink: 0xe9ebef,
   dim: HUE.neutral,
   faint: 0x6b7280,
   route: HUE.ok,

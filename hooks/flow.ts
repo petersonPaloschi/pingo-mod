@@ -5,7 +5,7 @@
 // so a test sees exactly what the pane draws.
 import type { TraceAgent, TraceMessage, TraceRun, TraceState } from "../types";
 import { DOT, hex } from "./dots.ts";
-import { PAINT } from "./theme.ts";
+import { GLYPH, PAINT } from "./theme.ts";
 import { formatClock, formatDuration, formatNumber, localeFor, text, type Locale, type LocaleKey } from "./i18n.ts";
 import { displayWidth } from "./layout.ts";
 import { confirmedModels, isDone, runTiming } from "./trace.ts";
@@ -447,7 +447,7 @@ function inboxShown(trace: TraceState, run: TraceRun | undefined): TraceMessage[
 
 /** One line for an earlier run: its number, how it ended, what started it, and its figures. */
 function earlierLine(run: TraceRun, now: number, locale: Locale): { text: string; color: string } {
-  const mark = run.endedAt === undefined ? "◉" : run.reason === "answer" ? "✓" : run.reason === "aborted" ? "⊘" : run.reason === "superseded" ? "·" : "×";
+  const mark = run.endedAt === undefined ? "◉" : run.reason === "answer" ? GLYPH.ok : run.reason === "aborted" ? "⊘" : run.reason === "superseded" ? "·" : GLYPH.fail;
   const what = run.kind === "message" && run.message ? `“${run.message.text}”` : run.kind === "continuation" ? text("flow.earlier.continuation", locale) : run.text ? `“${run.text}”` : "—";
   const figures = [
     text("flow.earlier.line", locale, {

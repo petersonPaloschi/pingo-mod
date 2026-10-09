@@ -86,9 +86,9 @@ const MOOD_OF: Record<StatusKind, Mood> = {
   baseline: "baseline",
 };
 const CATEGORY_DOT: Record<Category, [glyph: string, color: number]> = {
-  hint: ["●", DOT.route],
-  passthrough: ["○", DOT.dim],
-  failed: ["×", DOT.fail],
+  hint: [GLYPH.on, DOT.route],
+  passthrough: [GLYPH.off, DOT.dim],
+  failed: [GLYPH.fail, DOT.fail],
 };
 
 /** What the Deck tab shows: Deck's settings as saved, how its band stands, and the last reply to a control. */
@@ -1012,7 +1012,7 @@ function configurationView(els: Els, view: View, act: Actions) {
               </Box>
               {message ? (
                 <Text bold color={view.setup.busy ? INK.dim : view.setup.isOk ? INK.route : INK.fail} wrap="truncate">
-                  {`${view.setup.busy ? "◌" : view.setup.isOk ? "●" : "×"} ${message}`}
+                  {`${view.setup.busy ? "◌" : view.setup.isOk ? GLYPH.on : GLYPH.fail} ${message}`}
                 </Text>
               ) : null}
             </Box>,
@@ -1509,7 +1509,7 @@ function liveTop(els: Els, view: View, act: Actions) {
           );
         })}
       </Text>
-      <Text wrap="truncate" bold={Boolean(now.activity)} color={now.activity ? INK.ink : INK.faint}>{now.activity ? `▶ ${now.activity}` : text("ui.live.nowIdle", view.locale)}</Text>
+      <Text wrap="truncate" bold={Boolean(now.activity)} color={now.activity ? INK.ink : INK.faint}>{now.activity ? `${GLYPH.run} ${now.activity}` : text("ui.live.nowIdle", view.locale)}</Text>
       <Text wrap="truncate" color={INK.dim}>
         {text("ui.live.session", view.locale, {
           calls: formatNumber(tally.calls, view.locale),
