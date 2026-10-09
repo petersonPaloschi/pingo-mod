@@ -5,6 +5,14 @@ export type Features = FeatureFlags;
 
 export const DEFAULT_FEATURES: Features = {
   agents: false,
+  farol: true,
+  clareza: true,
+  pingoVivo: true,
+  prisma: true,
+  semente: true,
+  lapida: true,
+  sentinela: true,
+  vigia: true,
 };
 
 export type Tier = "haiku" | "sonnet" | "opus";

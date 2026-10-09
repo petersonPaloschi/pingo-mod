@@ -3,7 +3,7 @@ import { expect, test } from "claude-code/testing";
 import { ASK, DESKTOP, TERMINAL, TODOS, deckWorld } from "./helpers.ts";
 
 import { DEFAULT_SETTINGS, SECTIONS } from "../../hooks/deck/settings.ts";
-import { deckHelp, deckUsage } from "../../hooks/deck/wire.ts";
+import { deckUsage } from "../../hooks/deck/wire.ts";
 
 // the Deck tab of the Jev dashboard: every /deck command as a control, through the same code the command runs
 const PANE = {
@@ -22,9 +22,6 @@ const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
 /** What the Deck's settings hold now, as the store has them. */
 const saved = (store: Map<string, unknown>) => store.get("deck") as any;
-
-/** A command's help line as the tab writes it under its control. */
-const tipOf = (line: string) => line.replace(/ {2,}/, " — ");
 
 // the drawn tree, read as plain data
 const kids = (n: any): any[] => [n?.children ?? []].flat(Infinity).filter((k) => k != null && k !== false);
@@ -52,6 +49,12 @@ const CONTROL_OF: Record<string, string> = {
 };
 // the two verbs the status block answers
 const SHOWN: Record<string, RegExp> = { version: /^Deck \d+\.\d+\.\d+$/, status: /^Showing: /m };
+const GROUPS = ["Band above the prompt", "What the band shows", "Alerts and extras", "Weather city", "Panel and sample plan", "What the band shows now"];
+const CONTROL_KEYS = [
+  ...Object.values(CONTROL_OF),
+  ...SECTIONS.map((section) => `deck-show-${section}`),
+  "deck-all-on", "deck-all-off", "deck-style-cli", "deck-style-desktop", "deck-panel-close",
+];
 
 /**
  * Counts the draws of the Jev pane. A plugin in the outermost tier sees each draw before Jev's own hook and
@@ -69,20 +72,19 @@ const drawCounter = {
 };
 const drawsOf = (statuses: readonly string[]) => statuses.filter((line) => line === "draw-count").length;
 
-test("the Deck tab draws on both surfaces, and every /deck command has its help line and its control", LOCALE, async ($, on) => {
+test("the Deck tab groups its settings and keeps command controls on both surfaces", LOCALE, async ($, on) => {
   deckWorld(on);
   await $.session.start(SESSION);
   for (const surface of [TERMINAL, DESKTOP]) {
     const ui = await $.ui.mount({ ...PANE, surface });
     await ui.press({ key: "tab-deck" });
     for (const line of deckUsage(DEFAULT_SETTINGS, "en").split("\n")) {
-      // the help line itself, whole, under its control
-      expect(await ui.find({ type: "Text", text: new RegExp("^" + escapeRe(tipOf(line)) + "$") })).toBeDefined();
       const verb = line.split(/ {2,}/)[0]!.split(" ")[1] ?? "";
       expect([...Object.keys(CONTROL_OF), ...Object.keys(SHOWN)]).toContain(verb);
-      if (verb in SHOWN) expect(await ui.find({ type: "Text", text: SHOWN[verb]! })).toBeDefined();
-      else expect(await ui.find({ key: CONTROL_OF[verb]! })).toBeDefined();
     }
+    for (const heading of GROUPS) expect(await ui.find({ type: "Text", text: heading })).toBeDefined();
+    for (const key of CONTROL_KEYS) expect(await ui.find({ key })).toBeDefined();
+    for (const matcher of Object.values(SHOWN)) expect(await ui.find({ type: "Text", text: matcher })).toBeDefined();
     await ui.unmount();
   }
 });
@@ -92,7 +94,8 @@ test("/jev deck opens the Deck tab, and a command typed elsewhere shows in it", 
   await $.session.start(SESSION);
   await $.command.run({ command: "jev", ...ASK, args: "deck" });
   const ui = await $.ui.mount({ ...PANE, surface: TERMINAL });
-  expect(await ui.find({ type: "Text", text: /Every \/deck command as a control/ })).toBeDefined();
+  expect(await ui.find({ type: "Text", text: "Band above the prompt" })).toBeDefined();
+  expect(await ui.find({ type: "Text", text: "What the band shows" })).toBeDefined();
   expect((await ui.find({ key: "deck-size" }))?.props.value).toBe("compact");
   await $.command.run({ command: "deck", ...ASK, args: "size roomy" });
   expect((await ui.find({ key: "deck-size" }))?.props.value).toBe("roomy");
@@ -146,11 +149,11 @@ test("a reply goes away once the settings change somewhere else", LOCALE, async 
   await ui.press({ key: "deck-band" });
   await clock.advance(1000);
   expect(await ui.find({ type: "Text", text: /Deck expanded\./ })).toBeDefined();
-  expect((await ui.find({ key: "deck-band" }))?.props.label).toBe("● Expanded (e)");
+  expect((await ui.find({ key: "deck-band" }))?.props.label).toBe("● Expanded");
   // collapsed at the prompt: the button follows, and the reply that said "expanded" must not stay under it
   await $.command.run({ command: "deck", ...ASK, args: "collapse" });
   await clock.advance(1000);
-  expect((await ui.find({ key: "deck-band" }))?.props.label).toBe("○ Collapsed (e)");
+  expect((await ui.find({ key: "deck-band" }))?.props.label).toBe("○ Collapsed");
   expect(await ui.find({ type: "Text", text: /Deck expanded\./ })).toBeUndefined();
   await ui.unmount();
 });
@@ -300,10 +303,9 @@ test("the Deck tab follows Portuguese: its labels, the commands' own help, and t
   const ui = await $.ui.mount({ ...PANE, surface: TERMINAL });
   await ui.press({ key: "tab-deck" });
   expect(await ui.find({ type: "Text", text: "Faixa acima do prompt" })).toBeDefined();
-  expect((await ui.find({ key: "deck-look" }))?.props.label).toBe("Aparência recolhida");
-  const help = tipOf(deckHelp("deck.help.collapsed", DEFAULT_SETTINGS, "pt"));
-  expect(help).toContain("aparência recolhida");
-  expect(await ui.find({ type: "Text", text: new RegExp("^" + escapeRe(help) + "$") })).toBeDefined();
+  expect(await ui.find({ type: "Text", text: "O que a faixa mostra" })).toBeDefined();
+  expect(await ui.find({ type: "Text", text: "Alertas e extras" })).toBeDefined();
+  expect((await ui.find({ key: "deck-look" }))?.props.value).toBe(DEFAULT_SETTINGS.collapsed);
   await ui.press({ key: "deck-clear" });
   expect(await ui.find({ type: "Text", text: /Linhas do Deck removidas\./ })).toBeDefined();
   await ui.select({ key: "deck-size", value: "roomy" });

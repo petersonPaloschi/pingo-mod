@@ -3,7 +3,7 @@ import { describe, expect, mock, test, type Engine } from "claude-code/testing";
 
 import { DEFAULT_FEATURES, type Features } from "../hooks/core/plan.ts";
 import type { Answer, SystemOneRequest } from "../hooks/core/types.ts";
-import { PANE_PROPS as basePaneProps, answerJev, mockStore, pick, step } from "./helpers.ts";
+import { PANE_PROPS as basePaneProps, answerJev, mockEngineServices, mockStore, pick, step } from "./helpers.ts";
 
 const ORIGIN = { kind: "composer" } as const;
 const PANE_PROPS = {
@@ -31,6 +31,7 @@ type WorldOptions = {
 
 function world(on: On, opts: WorldOptions = {}) {
   mock.clock(on, { now: Date.parse("2026-10-07T12:00:00Z") });
+  mockEngineServices(on);
   const store: Record<string, unknown> = {
     provider: "typesafe",
     features: opts.storedFeatures ?? { ...DEFAULT_FEATURES, ...opts.features },
@@ -157,10 +158,10 @@ describe("runtime without main-turn advice", () => {
       storedFeatures: { agents: true, tools: true, participation: true, model: true, effort: true, delegation: true, advisor: true },
     });
     await $.session.start({ cwd: "/workspace" } as never).catch(() => undefined);
-    expect(setup.store.features).toEqual({ agents: true });
+    expect(setup.store.features).toEqual({ ...DEFAULT_FEATURES, agents: true });
     const result = await $.command.run({ command: "jev", args: "feature participation on", origin: ORIGIN } as never);
     expect(result.text).toContain("feature");
-    expect(setup.store.features).toEqual({ agents: true });
+    expect(setup.store.features).toEqual({ ...DEFAULT_FEATURES, agents: true });
   });
 
   test("retired tab commands open their consolidated destinations", async ($, on) => {

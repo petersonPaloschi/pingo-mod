@@ -366,7 +366,7 @@ test("a long prompt as a bar title is cut short on Desktop", LOCALE, async ($, o
   await $.turn.start({ text: long, turnId: "t1" });
   const desk = await $.ui.mount({ ...BAND, surface: DESKTOP });
   expect(await desk.find({ type: "Text", text: /^already updated, here…$/ })).toBeDefined();
-  expect(await desk.find({ type: "Text", text: long })).toBeUndefined();
+  expect((await desk.find({ type: "Text", text: long }))?.props.wrap).toBe("truncate-end");
 });
 
 test("agents started without a todo list show as strips under the activity bar, with their model", LOCALE, async ($, on) => {

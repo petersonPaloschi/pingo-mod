@@ -6,7 +6,7 @@ import { describe, expect, mock, test, type Engine } from "claude-code/testing";
 import type { TraceState } from "../types";
 import { flowLines, flowScene, flowSummary, prettyModel } from "../hooks/flow.ts";
 import { displayWidth } from "../hooks/layout.ts";
-import { PANE_PROPS as basePaneProps, step } from "./helpers.ts";
+import { PANE_PROPS as basePaneProps, mockEngineServices, step } from "./helpers.ts";
 import {
   advisorBlocker,
   agentStart,
@@ -478,6 +478,7 @@ const DONE = { input_tokens: 10, output_tokens: 5, cache_read_input_tokens: 0, c
 /** The engine beneath the mod, with no Jev key: what is recorded does not depend on Jev. */
 function world(on: On, opts: { advisorModel?: string; serverToolUses?: { id: string; name: string; input: unknown; startedAt: number; endedAt?: number }[] } = {}) {
   const clock = mock.clock(on, { now: NOW });
+  mockEngineServices(on);
   mock.store(on);
   mock.env(on, {});
   on("command.register", async () => ({ value: { command: "jev" } }));

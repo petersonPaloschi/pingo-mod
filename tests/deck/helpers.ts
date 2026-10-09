@@ -1,5 +1,6 @@
 import type { On } from "claude-code";
 import { mock } from "claude-code/testing";
+import { mockEngineServices } from "../helpers.ts";
 
 /** The mock clock's start: every reset time below is counted from here. */
 export const NOW = Date.parse("2026-10-07T12:00:00Z");
@@ -52,6 +53,7 @@ export type DeckWorldOptions = {
  */
 export function deckWorld(on: On, saved = new Map<string, unknown>(), options: DeckWorldOptions = {}) {
   const clock = mock.clock(on, { now: NOW });
+  mockEngineServices(on);
   mock.env(on, {});
   const state = {
     sessionId: "session-1",
@@ -64,6 +66,7 @@ export function deckWorld(on: On, saved = new Map<string, unknown>(), options: D
     blit: "take" as "take" | "deny" | "throw",
   };
   const blits: { requestId: string; key: string; columns: number | undefined; rows: number | undefined; cells: string }[] = [];
+  const invalidations: string[] = [];
   const fetched: string[] = [];
   const played: { asset: string; gain?: number }[] = [];
   const panes: string[] = [];
@@ -132,8 +135,12 @@ export function deckWorld(on: On, saved = new Map<string, unknown>(), options: D
     blits.push({ requestId: e.requestId, key: e.key, columns: e.columns, rows: e.rows, cells: "cells" in e ? e.cells : "" });
     return { value: state.blit === "deny" ? { deny: "nothing of this plugin's is mounted there" } : {} };
   });
+  on("ui.invalidate", async (_$, e, next) => {
+    invalidations.push(e.event);
+    return next(e);
+  });
   on("ui.render", async () => ({ type: "Text", props: {}, children: ["engine"] }) as never);
-  return { saved, clock, state, fetched, played, panes, logs, statuses, blits };
+  return { saved, clock, state, fetched, played, panes, logs, statuses, blits, invalidations };
 }
 
 /** A TodoWrite list in the middle of its third step. */

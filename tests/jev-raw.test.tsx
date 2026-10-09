@@ -1,7 +1,7 @@
 import { describe, expect, mock, test } from "claude-code/testing";
 
 import { DEFAULT_FEATURES } from "../hooks/core/plan.ts";
-import { PANE_PROPS as basePaneProps } from "./helpers.ts";
+import { PANE_PROPS as basePaneProps, mockEngineServices } from "./helpers.ts";
 
 const PANE_PROPS = {
   ...basePaneProps,
@@ -12,6 +12,7 @@ const PANE_PROPS = {
 describe("Jev's raw reply", () => {
   test("an unusable agent answer is kept in the Live request log", async ($, on) => {
     mock.clock(on, { now: Date.parse("2026-10-07T12:00:00Z") });
+    mockEngineServices(on);
     mock.store(on, { provider: "typesafe", features: { ...DEFAULT_FEATURES, agents: true } });
     mock.env(on, { TYPESAFE_API_KEY: "test-key" });
     on("command.register", async () => ({ value: { command: "jev" } }));

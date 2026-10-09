@@ -1,6 +1,6 @@
 import { describe, expect, test } from "claude-code/testing";
 
-import { modelTier, planAgent, supportsEffort, type AgentPlanConfig, type Features } from "../hooks/core/plan.ts";
+import { DEFAULT_FEATURES, modelTier, planAgent, supportsEffort, type AgentPlanConfig, type Features } from "../hooks/core/plan.ts";
 import type { SystemOneRequest } from "../hooks/core/types.ts";
 import { pick } from "./helpers.ts";
 
@@ -30,7 +30,7 @@ describe("subagent planning", () => {
     minConfidence: 0.7,
     maxMessageChars: 4_000,
   };
-  const features: Features = { agents: true };
+  const features: Features = { ...DEFAULT_FEATURES, agents: true };
   const task = { description: "Find usages", prompt: "Search the repository for this symbol.", subagentType: "search-reviewer" };
 
   test("sends task context and applies validated model and effort choices", async () => {

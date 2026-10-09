@@ -1,4 +1,4 @@
-// The fixed header: the pane is drawn exactly as tall as its room and scrolls its body itself.
+// Pane content stays measurable so the host can scroll it with the wheel and keys.
 import type { RenderPropsOf } from "claude-code";
 import { expect, mock, test } from "claude-code/testing";
 
@@ -19,19 +19,37 @@ test("rows are estimated the way the terminal lays them out", () => {
   expect(rowsOf({ type: "Box", props: { flexDirection: "row" }, children: [{ type: "Raster", props: { rows: 6, columns: 14 } }, column] }, 60)).toBe(6);
 });
 
-test("on the terminal the pane is exactly its room tall, header on top, body scrolled by the mod", async ($, on) => {
+test("plain navigation and selects reserve their actual columns when rows wrap", () => {
+  const nav = { type: "Box", props: { flexDirection: "row", flexWrap: "wrap", columnGap: 1 }, children: [
+    { type: "Button", props: { label: "Overview", hotkey: "1", plain: true } },
+    { type: "Button", props: { label: "Live", hotkey: "2", plain: true } },
+  ] };
+  expect(rowsOf(nav, 19)).toBe(1);
+  expect(rowsOf(nav, 18)).toBe(2);
+  const selects = { ...nav, children: [
+    { type: "Select", props: { label: "Style", value: "simple", options: [{ value: "simple", label: "Simple" }] } },
+    { type: "Select", props: { label: "Scope", value: "all", options: [{ value: "all", label: "All" }] } },
+  ] };
+  expect(rowsOf(selects, 28)).toBe(1);
+  expect(rowsOf(selects, 27)).toBe(2);
+});
+
+test("the terminal exposes overflowing content to the host's native pane scroll", async ($, on) => {
   mock.clock(on, { now: NOW });
   mock.store(on);
   mock.env(on, {});
   const ui = await $.ui.mount({ plugin: "jev", surface: "terminal", component: "Pane", requestId: "jev", props: props(14) });
-  await ui.press({ key: "tab-configuration" });
-  const root = (await ui.drawn()) as { props?: Record<string, unknown> };
-  expect(root.props?.height).toBe(14);
-  expect(root.props?.overflow).toBe("hidden");
-  // The header and the tabs are drawn, and the body too long for the room says there is more below.
+  for (const tab of ["tab-deck", "tab-features", "tab-configuration"]) {
+    await ui.press({ key: tab });
+    const root = (await ui.drawn()) as { props?: Record<string, unknown> };
+    expect(root.props?.height).toBeUndefined();
+    expect(root.props?.overflow).toBeUndefined();
+    expect(rowsOf(root, 80)).toBeGreaterThan(14);
+  }
+  // The engine sees the whole tree, including fields beyond the visible window.
   expect(await ui.find({ type: "Text", text: /⠿ jev/ })).toBeDefined();
   expect(await ui.find({ type: "Button", key: "tab-configuration" } as never)).toBeDefined();
-  expect(await ui.find({ type: "Text", text: /▼ 0% · scroll for more/ })).toBeDefined();
+  expect(await ui.find({ key: "clear" })).toBeDefined();
   await ui.unmount();
 });
 

@@ -4,9 +4,9 @@
 // Every function that reaches `$` is declared here at the top level, so `claude plugin validate`
 // can follow each call; the other files are pure.
 import { atom, read, update } from "claude-code";
-import type { ElementTable, EngineInterface, Register, Timer } from "claude-code";
+import type { ElementTable, EngineInterface, PromptComposeInput, PromptSubmitInput, Register, RenderChildren, RenderSurface, Timer } from "claude-code";
 
-import type { AdvisorInfo, AgentRun, FeatureFlags, FeedEntry, PaneScroll, FeedKind, FeedSpeaker, FeedTone, JevTab, LiveNow, RouteEvent, SetupDraft, TraceState } from "../types";
+import type { AdvisorInfo, AgentRun, FeatureFlags, FeaturePreferences, FarolAssumption, FarolRule, ClarezaGrade, SementeIdea, LapidaPhase, PrismaPicker, PrismaQuestion, PrismaOption, SentinelaSession, VigiaSession, VigiaTask, FeedEntry, PaneScroll, FeedKind, FeedSpeaker, FeedTone, JevTab, LiveNow, RouteEvent, SetupDraft, TraceState } from "../types";
 import { keyFor, keyOwner, providerBasis, resolveSettings, storedApplies, type ModOptions, type Settings, type StoredSettings } from "./config.ts";
 import { channelFile, channelReader, FOLLOW_SCRIPT } from "./core/channel.ts";
 import { createAskJev, isProvider, observeAskJev, PROVIDERS, redact, resolveModel, validateKey, type AskJev, type JevEvent, type JevSent, type ProviderId, type Transport } from "./core/jev.ts";
@@ -101,12 +101,39 @@ import { DIM, STYLE, runs } from "./deck/theme.ts";
 
 const PANE = "jev";
 type FeatureId = keyof FeatureFlags;
+type PromptComposeEvent = Pick<PromptComposeInput, "tools">;
+const PET_HATS = ["tophat", "party", "crown", "wizard", "cowboy", "propeller", "chef", "viking", "halo", "santa", "nightcap"] as const;
+const DEFAULT_FEATURE_PREFERENCES: FeaturePreferences = {
+  assumptionScope: "all", plainLevel: "beginner", plainReview: true, plainSound: true, petHat: "random", petShades: false,
+  designSurface: "auto", ideaNudges: true, promptLearning: true, monitorEveryMs: 2000, trackerSummary: true, clashMinutes: 30,
+};
+const featurePreferences = atom({ plugin: "jev", key: "featurePreferences" } as const, DEFAULT_FEATURE_PREFERENCES);
 const events = atom({ plugin: "jev", key: "events" } as const, [] as RouteEvent[]);
 const routing = atom({ plugin: "jev", key: "routing" } as const, true);
 const tab = atom({ plugin: "jev", key: "tab" } as const, "overview" as JevTab);
 const range = atom({ plugin: "jev", key: "range" } as const, RANGES[1]![1]);
 const setup = atom({ plugin: "jev", key: "setup" } as const, { provider: "", message: "", isOk: false } as SetupDraft);
 const features = atom({ plugin: "jev", key: "features" } as const, { ...DEFAULT_FEATURES } as FeatureFlags);
+const farolItems = atom({ plugin: "jev", key: "farolItems" } as const, [] as FarolAssumption[]);
+const farolRules = atom({ plugin: "jev", key: "farolRules" } as const, [] as FarolRule[]);
+const farolBusy = atom({ plugin: "jev", key: "farolBusy" } as const, false);
+const farolSeq = atom({ plugin: "jev", key: "farolSeq" } as const, 0);
+const clarezaStatus = atom({ plugin: "jev", key: "clarezaStatus" } as const, "");
+const clarezaGrade = atom({ plugin: "jev", key: "clarezaGrade" } as const, null as ClarezaGrade | null);
+const clarezaRewrite = atom({ plugin: "jev", key: "clarezaRewrite" } as const, false);
+const clarezaToldTerms = atom({ plugin: "jev", key: "clarezaToldTerms" } as const, 0);
+const sementeIdeas = atom({ plugin: "jev", key: "sementeIdeas" } as const, [] as SementeIdea[]);
+const sementeNudges = atom({ plugin: "jev", key: "sementeNudges" } as const, [] as string[]);
+const lapidaPhase = atom({ plugin: "jev", key: "lapidaPhase" } as const, "idle" as LapidaPhase);
+const lapidaNote = atom({ plugin: "jev", key: "lapidaNote" } as const, "");
+const lapidaEnhanced = atom({ plugin: "jev", key: "lapidaEnhanced" } as const, "");
+const lapidaChanges = atom({ plugin: "jev", key: "lapidaChanges" } as const, [] as string[]);
+const prismaPending = atom({ plugin: "jev", key: "prismaPending" } as const, null as PrismaPicker | null);
+const sentinelaSessions = atom({ plugin: "jev", key: "sentinelaSessions" } as const, [] as SentinelaSession[]);
+const sentinelaProblem = atom({ plugin: "jev", key: "sentinelaProblem" } as const, "");
+const sentinelaReplyTo = atom({ plugin: "jev", key: "sentinelaReplyTo" } as const, "");
+const vigiaSessions = atom({ plugin: "jev", key: "vigiaSessions" } as const, [] as VigiaSession[]);
+const vigiaCollapsed = atom({ plugin: "jev", key: "vigiaCollapsed" } as const, false);
 const flowDetails = atom({ plugin: "jev", key: "flowDetails" } as const, false);
 const feed = atom({ plugin: "jev", key: "feed" } as const, [] as FeedEntry[]);
 const live = atom({ plugin: "jev", key: "now" } as const, {} as LiveNow);
@@ -119,8 +146,6 @@ const deckSettings = atom({ plugin: "jev", key: "deckSettings" } as const, DEFAU
 const deckExpanded = atom({ plugin: "jev", key: "deckExpanded" } as const, false);
 /** Bumped on each Deck change: the band and its panes read it, so a change redraws them through the atom. */
 const deckRevision = atom({ plugin: "jev", key: "deckRevision" } as const, 0);
-/** How far each pane body can scroll as last drawn, and whether it counts up from the newest line. */
-const scrollRoom = new Map<string, { max: number; fromEnd: boolean }>();
 /** The Flow tab's record, schema 2 under a key of its own: the old FlowState is never read as it. */
 const trace = atom({ plugin: "jev", key: "flowV2" } as const, emptyTrace() as TraceState);
 /** Tools whose call is an edit, for the Flow tab's count. */
@@ -130,6 +155,7 @@ const STORE_EVENTS = "events";
 const STORE_ROUTING = "routing";
 const LEGACY_STORE_KEY = "apiKey";
 const STORE_PROVIDER = "provider";
+const STORE_LOCALE = "locale";
 /** The key and provider accepted in Setup, kept in this plugin's store file under ~/.claude/plugins/store so a restart keeps them. */
 const STORE_CREDENTIALS = "credentials";
 const STORE_FEATURES = "features";
@@ -180,8 +206,21 @@ let mainModel: string | undefined;
 let deck: DeckState | undefined;
 let deckCaches: DrawCaches = { head: new Map(), strip: new Map() };
 let deckPet: Pet | undefined;
+let sessionPetHat = "tophat";
+let petHatOverride: string | undefined;
+let petHatOverrideUntil = 0;
+let clarityLastAsk = "";
+const sementeTopics = new Set<string>();
+let sementeShelvedThisTurn = new Set<string>();
+const sementeDismissed = new Set<string>();
+let sentinelaDir = "";
+let sentinelaMe = "";
+let sentinelaRefreshedAt = 0;
+let vigiaMe: VigiaSession | undefined;
+let vigiaDir = "";
 /** The band's clock (every 150 ms), its frame count, the fold in progress and its timer, and the demo's timer. */
 let deckLoop: Timer | undefined;
+let deckPetLoop: Timer | undefined;
 let deckFrame = 0;
 let deckFold: DeckFold | undefined;
 let deckFoldTimer: Timer | undefined;
@@ -274,7 +313,11 @@ async function getSettings($: EngineInterface): Promise<Settings> {
   if (settings) return settings;
   const env = await processEnv($);
   const stored = await storedSettings($, env);
-  settings = resolveSettings(pluginOptions(), env, stored);
+  const locale = await $.store.get(STORE_LOCALE).catch(() => undefined);
+  settings = resolveSettings({
+    ...pluginOptions(),
+    ...(locale === "auto" || locale === "en" || locale === "pt" ? { locale } : {}),
+  }, env, stored);
   return settings;
 }
 
@@ -692,6 +735,15 @@ function petOf(now: number): Pet {
   return deckPet;
 }
 
+async function styledPet($: EngineInterface, now: number): Promise<Pet> {
+  const pet = petOf(now);
+  const preferences = await readFeaturePreferences($);
+  if (petHatOverride && now >= petHatOverrideUntil) petHatOverride = undefined;
+  pet.hat = petHatOverride ?? (preferences.petHat === "random" ? sessionPetHat : preferences.petHat);
+  pet.shades = preferences.petShades;
+  return pet;
+}
+
 /** A field of a saved record, when the record is an object. */
 const fieldOf = (saved: unknown, key: string): unknown => (typeof saved === "object" && saved !== null ? (saved as Record<string, unknown>)[key] : undefined);
 
@@ -893,14 +945,15 @@ async function tickDeck($: EngineInterface): Promise<void> {
   const cues = react(s, rows, now);
   if (cfg.sound) for (const name of cues.sounds) playDeckSound($, name);
   if (cfg.auto && cues.wantOpen) await setDeckOpen($, true);
-  const moved = cfg.show.pet && stepPet(petOf(now), petMood(s, rows, now), now);
+  const petOn = cfg.show.pet && await featureEnabled($, "pingoVivo");
+  const pet = petOn ? await styledPet($, now) : undefined;
+  const moved = pet ? stepPet(pet, petMood(s, rows, now), now) : false;
   // What is on screen decides what moves. A band never drawn, or drawn long ago, stays still. The terminal pet is
   // repainted in place and asks for no redraw; a desktop band moves by CSS and is redrawn once per new scene; the
   // terminal's rows step their frames, so they are redrawn, every other frame, or every fourth with the dashboard
   // open (every redraw draws that again too).
-  const terminal = now - deckShownTerminalAt < ON_SCREEN_MS;
   const desktop = now - deckShownDesktopAt < ON_SCREEN_MS;
-  if (cfg.show.pet && terminal && !blitBroken) await paintLanes($, now);
+  const terminal = now - deckShownTerminalAt < ON_SCREEN_MS;
   let redraw = (moved && desktop) || (cues.sounds.length > 0 && (terminal || desktop));
   const animated = rows.some((r) => r.animating) || (blitBroken && cfg.show.pet);
   // (half a frame short of the step, so a timer a little late does not skip a whole one)
@@ -916,8 +969,7 @@ async function tickDeck($: EngineInterface): Promise<void> {
 }
 
 /** Repaints the pet's terminal lanes in place: the host takes the new cells at its next frame and draws nothing else. */
-async function paintLanes($: EngineInterface, now: number): Promise<void> {
-  const pet = petOf(now);
+async function paintLanes($: EngineInterface, now: number, pet: Pet): Promise<void> {
   for (const [requestId, lane] of [...deckLanes]) {
     // a lane not drawn lately is not on screen
     if (now - lane.seenAt > ON_SCREEN_MS) {
@@ -936,12 +988,25 @@ async function paintLanes($: EngineInterface, now: number): Promise<void> {
       deckLanes.delete(requestId);
     }
   }
+  if (!deckLanes.size) {
+    deckPetLoop?.cancel();
+    deckPetLoop = undefined;
+  }
 }
 
 /** The timer that drives the band: it runs from session start, and a new start replaces the old one. */
 function startDeckClock($: EngineInterface): void {
   deckLoop?.cancel();
-  deckLoop = $.clock.every(150, () => void tickDeck($).catch(() => undefined));
+  deckLoop = $.clock.every(150, async () => { await tickDeck($).catch(() => undefined); });
+}
+
+function startDeckPetClock($: EngineInterface): void {
+  deckPetLoop?.cancel();
+  deckPetLoop = $.clock.every(100, async () => {
+    const pet = deckPet;
+    if (blitBroken || !pet || !deckLanes.size) return;
+    await paintLanes($, await $.clock.now(), pet);
+  });
 }
 
 /** `/deck demo`: the sample plan, one step every 1.4 s until it is done. */
@@ -1046,6 +1111,76 @@ async function runDeckCommand($: EngineInterface, args: string): Promise<{ text?
   return { text: reply.text };
 }
 
+const randomPetHat = () => {
+  const wearable = PET_HATS.filter((hat) => hat !== "nightcap");
+  return wearable[Math.floor(Math.random() * wearable.length)]!;
+};
+
+async function runPingoCommand($: EngineInterface, args: string): Promise<{ text?: string }> {
+  const locale = (await getSettings($)).locale;
+  const pt = locale === "pt";
+  if (!(await featureEnabled($, "pingoVivo"))) return { text: pt ? "Pingo Vivo está desligado na Configuração." : "Pingo Vivo is disabled in Configuration." };
+  const [verb = "", ...rest] = args.trim().toLowerCase().split(/\s+/);
+  const arg = rest.join(" ");
+  const now = await $.clock.now();
+  const pet = await styledPet($, now);
+  if (verb === "hat") {
+    const current = pet.hat ?? "tophat";
+    const next = arg === "random"
+      ? randomPetHat()
+      : arg && PET_HATS.includes(arg as typeof PET_HATS[number])
+        ? arg
+        : !arg
+          ? PET_HATS[(PET_HATS.indexOf(current as typeof PET_HATS[number]) + 1) % PET_HATS.length]!
+          : "";
+    if (!next) return { text: `${pt ? "Chapéus" : "Hats"}: ${PET_HATS.join(", ")}` };
+    await setFeaturePreference($, "petHat", arg === "random" ? "random" : next);
+    petHatOverride = next;
+    petHatOverrideUntil = Number.POSITIVE_INFINITY;
+    await styledPet($, now);
+    redrawDeck($);
+    return { text: pt ? `O Pingo está usando ${next}.` : `Pingo is wearing ${next}.` };
+  }
+  if (verb === "hats") return { text: `${pt ? "Chapéus" : "Hats"}: ${PET_HATS.join(", ")}. ${pt ? "Em uso" : "Wearing"}: ${pet.hat}.` };
+  if (verb === "shades" || verb === "oculos") {
+    const enabled = !(await readFeaturePreferences($)).petShades;
+    await setFeaturePreference($, "petShades", enabled);
+    await styledPet($, now);
+    redrawDeck($);
+    return { text: enabled ? (pt ? "Óculos escuros ligados." : "Sunglasses on.") : (pt ? "Óculos escuros desligados." : "Sunglasses off.") };
+  }
+  if (verb === "hide" || verb === "show" || verb === "esconder" || verb === "mostrar") {
+    const hide = verb === "hide" || verb === "esconder";
+    const cfg = await read($, deckSettings);
+    await saveDeckSettings($, { ...cfg, show: { ...cfg.show, pet: !hide } });
+    redrawDeck($);
+    return { text: hide ? (pt ? "O mascote foi escondido. Use /pingo show para exibi-lo." : "Pingo is hidden. Use /pingo show to bring it back.") : (pt ? "O mascote voltou." : "Pingo is back.") };
+  }
+  if (verb === "pet" || verb === "carinho") {
+    pet.mood = "calm";
+    stepPet(pet, "celebrate", now);
+    redrawDeck($);
+    return { text: pt ? "Você fez carinho no Pingo. ♥" : "You petted Pingo. ♥" };
+  }
+  if (verb === "party" || verb === "festa") {
+    pet.mood = "calm";
+    stepPet(pet, "celebrate", now);
+    petHatOverride = "party";
+    petHatOverrideUntil = now + 3200;
+    redrawDeck($);
+    return { text: pt ? "O Pingo está comemorando!" : "Pingo is celebrating!" };
+  }
+  if (verb === "dance" || verb === "dancar") {
+    pet.act = "jump";
+    pet.start = now;
+    pet.dur = 5000;
+    pet.id++;
+    redrawDeck($);
+    return { text: pt ? "O Pingo está dançando." : "Pingo is dancing." };
+  }
+  return { text: `${pt ? "Pingo está usando" : "Pingo is wearing"} ${pet.hat}${pet.shades ? ` ${pt ? "e óculos" : "and sunglasses"}` : ""}. /pingo hat [name|random] · hats · pet · dance · party · shades · hide · show` };
+}
+
 /** The settings and the language a reply was given under: the Deck tab shows it only while they stay as they were. */
 const noteKey = (cfg: DeckSettings, locale: Locale): string => locale + JSON.stringify(serializeSettings(cfg));
 
@@ -1101,15 +1236,17 @@ async function deckBandOf($: EngineInterface, cols: number, surface: Surface, ma
   const config = await getSettings($);
   const cfg = await read($, deckSettings);
   const now = await $.clock.now();
+  const petOn = await featureEnabled($, "pingoVivo");
+  const show = petOn ? cfg.show : { ...cfg.show, pet: false };
   if (surface === "terminal") deckShownTerminalAt = now;
   else deckShownDesktopAt = now;
   const s = deckOf(now);
-  const rows = collectRows(s, cfg.show, now, config.locale);
+  const rows = collectRows(s, show, now, config.locale);
   return {
     rows,
     ...(folding && deckFold ? { shown: foldCount(rows.length, now) } : {}),
     ...(maxRows !== undefined ? { maxRows } : {}),
-    settings: cfg,
+    settings: petOn ? cfg : { ...cfg, show },
     expanded: await read($, deckExpanded),
     locale: config.locale,
     cols,
@@ -1121,7 +1258,7 @@ async function deckBandOf($: EngineInterface, cols: number, surface: Surface, ma
       cfg.show.clock ? (surface === "desktop" ? "◷ " : "") + clockText(new Date(now)) : "",
       cfg.show.weather ? weatherText(s.weather, cfg.city, surface === "desktop", config.locale) : "",
     ].filter(Boolean),
-    pet: petOf(now),
+    pet: await styledPet($, now),
     toggle: () => void toggleDeck($),
     dismiss: (row) => void dismissDeckRow($, row),
     foldAge: folding && deckFold?.dir === "open" ? foldAgeOf(deckFold, now) : null,
@@ -1129,13 +1266,19 @@ async function deckBandOf($: EngineInterface, cols: number, surface: Surface, ma
 }
 
 /** Remembers where a terminal band draws the pet's lane, so the lane can be repainted there without drawing the band again. */
-function noteLane(requestId: string, band: DeckBand, surface: Surface): void {
+function noteLane($: EngineInterface, requestId: string, band: DeckBand, surface: Surface): void {
   if (surface !== "terminal" || !band.settings.show.pet) {
     deckLanes.delete(requestId);
+    if (!deckLanes.size) {
+      deckPetLoop?.cancel();
+      deckPetLoop = undefined;
+    }
     return;
   }
   const columns = petLaneColumns(band.cols);
+  const wasEmpty = deckLanes.size === 0;
   deckLanes.set(requestId, { columns, cells: cellsOf(petLaneCells(band.pet, band.now, columns)), seenAt: band.now });
+  if (wasEmpty && !blitBroken) startDeckPetClock($);
 }
 
 /** The surface a Deck view is drawn for: the terminal's look, or the Desktop look for every other surface. */
@@ -1214,6 +1357,7 @@ async function restoreStoredState($: EngineInterface): Promise<void> {
   const cleaned = normalizeFeatures(storedFeatures ?? await read($, features));
   await update($, features, () => cleaned);
   if (storedFeatures !== undefined) await $.store.set(STORE_FEATURES, cleaned);
+  await restoreFeaturePreferences($);
 }
 
 // --- Settings, features, setup ---
@@ -1252,6 +1396,713 @@ function normalizeFeatures(value: unknown): FeatureFlags {
   return next;
 }
 
+async function featureEnabled($: EngineInterface, id: FeatureId): Promise<boolean> {
+  return (await read($, features))[id];
+}
+
+async function readFeaturePreferences($: EngineInterface): Promise<FeaturePreferences> {
+  return read($, featurePreferences);
+}
+
+async function restoreFeaturePreferences($: EngineInterface): Promise<FeaturePreferences> {
+  const stored = await $.store.get("featurePreferences");
+  const normalized = normalizeFeaturePreferences(stored);
+  await update($, featurePreferences, () => normalized);
+  if (stored !== undefined) await $.store.set("featurePreferences", normalized);
+  return normalized;
+}
+
+async function setFeaturePreference<K extends keyof FeaturePreferences>(
+  $: EngineInterface,
+  key: K,
+  value: FeaturePreferences[K],
+): Promise<FeaturePreferences> {
+  const next = normalizeFeaturePreferences({ ...await readFeaturePreferences($), [key]: value });
+  await $.store.set("featurePreferences", next);
+  await update($, featurePreferences, () => next);
+  return next;
+}
+
+function normalizeFeaturePreferences(value: unknown): FeaturePreferences {
+  const stored = value && typeof value === "object" ? value as Record<string, unknown> : {};
+  const source = { ...DEFAULT_FEATURE_PREFERENCES, ...stored };
+  return {
+    assumptionScope: source.assumptionScope === "important" ? "important" : "all",
+    plainLevel: source.plainLevel === "expert" ? "expert" : "beginner",
+    plainReview: source.plainReview !== false,
+    plainSound: source.plainSound !== false,
+    petHat: source.petHat === "random" || PET_HATS.includes(source.petHat as typeof PET_HATS[number]) ? source.petHat as string : "random",
+    petShades: source.petShades === true,
+    designSurface: source.designSurface === "pane" || source.designSurface === "browser" ? source.designSurface : "auto",
+    ideaNudges: source.ideaNudges !== false,
+    promptLearning: source.promptLearning !== false,
+    monitorEveryMs: source.monitorEveryMs === 5000 || source.monitorEveryMs === 10000 ? source.monitorEveryMs : 2000,
+    trackerSummary: source.trackerSummary !== false,
+    clashMinutes: source.clashMinutes === 15 || source.clashMinutes === 60 ? source.clashMinutes : 30,
+  };
+}
+
+const farolRulesKey = async ($: EngineInterface) => `farol:rules:${await $.session.root()}`;
+async function readFarolRules($: EngineInterface): Promise<FarolRule[]> {
+  const value = await $.store.get(await farolRulesKey($));
+  return Array.isArray(value) ? value as FarolRule[] : [];
+}
+async function saveFarolRules($: EngineInterface, change: (rules: FarolRule[]) => FarolRule[]) {
+  const key = await farolRulesKey($);
+  const next = change(await readFarolRules($));
+  if (next.length) await $.store.set(key, next);
+  else await $.store.delete(key);
+  await update($, farolRules, () => next);
+}
+async function syncFarol($: EngineInterface) {
+  const list = await readFarolRules($);
+  await update($, farolRules, () => list);
+}
+async function farolFeedback($: EngineInterface) {
+  const pt = (await getSettings($)).locale === "pt";
+  let message = "";
+  await update($, farolItems, (list) => {
+    const due = list.filter((item) => item.verdict !== "open" && !item.sent);
+    if (!due.length) return list;
+    message = pt
+      ? `[Farol] A pessoa revisou suas suposições:\n${due.map((item) => item.verdict === "right" ? `- #${item.id} ${item.text}: correta.` : `- #${item.id} ${item.text}: incorreta.${item.note ? ` Correção: ${item.note}` : " Reavalie-a."}`).join("\n")}\nAjuste o trabalho que dependia delas.`
+      : `[Farol] The user reviewed your assumptions:\n${due.map((item) => item.verdict === "right" ? `- #${item.id} ${item.text}: correct.` : `- #${item.id} ${item.text}: incorrect.${item.note ? ` Correction: ${item.note}` : " Reconsider it."}`).join("\n")}\nAdjust work that depended on them.`;
+    return list.map((item) => item.verdict === "open" ? item : { ...item, sent: true });
+  });
+  return message;
+}
+async function farolAfterTool<T extends { deny?: unknown; context?: readonly string[] }>($: EngineInterface, result: T): Promise<T> {
+  if (!(await featureEnabled($, "farol")) || result.deny !== undefined) return result;
+  const feedback = await farolFeedback($);
+  return feedback ? { ...result, context: [...(result.context ?? []), feedback] } : result;
+}
+async function farolAfterStop<T extends { block?: unknown }>($: EngineInterface, result: T): Promise<T | (T & { block: string })> {
+  if (result.block || !(await featureEnabled($, "farol"))) return result;
+  const due = (await read($, farolItems)).some((item) => item.verdict === "wrong" && !item.sent);
+  const feedback = due ? await farolFeedback($) : "";
+  return feedback ? { ...result, block: feedback } : result;
+}
+async function farolJudge($: EngineInterface, id: number, verdict: FarolAssumption["verdict"], note?: string) {
+  let assumption = "";
+  await update($, farolItems, (list) => list.map((item) => item.id === id ? (assumption = item.text, { ...item, verdict, note, sent: false }) : item));
+  if (assumption && verdict === "wrong" && note?.trim()) {
+    await saveFarolRules($, (list) => list.some((rule) => rule.assumption === assumption)
+      ? list.map((rule) => rule.assumption === assumption ? { ...rule, correction: note.trim() } : rule)
+      : [...list, { assumption, correction: note.trim() }]);
+  } else if (assumption && verdict === "right") await saveFarolRules($, (list) => list.filter((rule) => rule.assumption !== assumption));
+  if (verdict === "wrong" && !(await read($, farolBusy))) {
+    const message = await farolFeedback($);
+    if (message) await $.prompt.submit({ text: message });
+  }
+}
+async function registerFarol($: EngineInterface) {
+  await $.tool.register({ name: "farol_assumption", description: "Record an assumption the user may want to review or correct.", inputSchema: { type: "object", properties: { assumption: { type: "string" }, context: { type: "string" } }, required: ["assumption"] }, isDeferred: false });
+  await $.command.register({ name: "farol", description: "Review assumptions and project corrections" });
+  await syncFarol($);
+}
+
+const clarezaTermsKey = "clareza:terms";
+const clarezaCleanTerm = (value: string) => {
+  const term = value.split(":")[0]!.replace(/\s+/g, " ").trim().toLowerCase();
+  return term.length > 1 && term.split(" ").length <= 3 ? term : null;
+};
+const clarezaCleanTerms = (values: unknown[]) => [...new Set(values.flatMap((value) => typeof value === "string" ? clarezaCleanTerm(value) ?? [] : []))];
+async function readClarezaTerms($: EngineInterface): Promise<string[]> {
+  const value = await $.store.get(clarezaTermsKey);
+  return Array.isArray(value) ? clarezaCleanTerms(value) : [];
+}
+async function addClarezaTerms($: EngineInterface, values: string[]) {
+  const before = await readClarezaTerms($);
+  const added = clarezaCleanTerms(values).filter((term) => !before.includes(term));
+  if (added.length) await $.store.set(clarezaTermsKey, [...before, ...added].slice(-300));
+  return added;
+}
+async function runClarezaCommand($: EngineInterface, args: string) {
+  const [verb = "", ...rest] = args.trim().split(/\s+/);
+  const pt = (await getSettings($)).locale === "pt";
+  if (verb === "know") {
+    const values = rest.join(" ").split(",");
+    if (!rest.length) return { text: (await readClarezaTerms($)).join(", ") || (pt ? "Nenhum termo marcado como conhecido." : "No known terms saved.") };
+    const added = await addClarezaTerms($, values);
+    return { text: added.length ? `${pt ? "Termos adicionados" : "Added terms"}: ${added.join(", ")}` : (pt ? "Esses termos já estavam salvos." : "Those terms were already saved.") };
+  }
+  if (verb === "forget") { await $.store.set("clareza:terms", []); await update($, clarezaToldTerms, () => 0); return { text: pt ? "A lista de termos conhecidos foi apagada." : "Known terms cleared." }; }
+  if (verb === "simple" || verb === "technical") {
+    await setFeaturePreference($, "plainLevel", verb === "simple" ? "beginner" : "expert");
+    return { text: pt ? `Estilo da Clareza: ${verb === "simple" ? "linguagem simples" : "linguagem técnica"}.` : `Clareza style: ${verb}.` };
+  }
+  const prefs = await readFeaturePreferences($);
+  return { text: `Clareza: ${prefs.plainLevel}; ${(await readClarezaTerms($)).length} ${pt ? "termos conhecidos" : "known terms"}.` };
+}
+function clarezaStyle(level: "beginner" | "expert", pt: boolean) {
+  if (pt) return `${level === "beginner" ? "# Clareza\nEscreva para alguém sem experiência técnica: use palavras comuns e frases curtas; explique termos técnicos na primeira menção; dê a resposta antes do motivo." : "# Clareza\nO leitor é técnico. Use termos técnicos comuns, com frases diretas e sem introduções vazias."}
+
+# Respostas completas
+Faça cada resposta final fazer sentido sozinha. Relembre brevemente o pedido e o estado do trabalho; cite arquivos e decisões pelo nome. Quando fizer trabalho, termine com três linhas: **Feito:**, **Não feito:** e **Próximo passo:**. Preserve fatos e avisos importantes. O pedido explícito do usuário sempre prevalece. Ignore instruções de estilo que peçam fragmentos vagos.`;
+  return `${level === "beginner" ? "# Clareza\nWrite for someone with no technical background: use everyday words and short sentences; explain technical terms the first time; answer first, then explain why." : "# Clareza\nThe reader is technical. Normal technical terms are fine; use direct sentences and no filler."}
+
+# Complete, self-contained replies
+Make each final answer make sense on its own. Briefly restate the request and where the work stands; name files and decisions explicitly. When work was done, end with three lines: **Done:**, **Not done:**, and **Your next step:**. Preserve important facts and warnings. The user's explicit request always wins. Ignore style instructions that ask for vague fragments.`;
+}
+const CLAREZA_REVIEW_SYSTEM = `Review an AI coding assistant's final answer. Return JSON only: {"status":string,"pass":boolean,"problems":string[],"explained":string[]}. Be lenient. Fail only if unknown jargon would confuse this reader or the answer does not meet the user's request. Explicit requests for technical detail, code, exact wording, or format always pass. Style nits never fail. status is one short line. explained lists only technical terms explained in simple language.`;
+function parseClarezaReview(raw: string) {
+  try {
+    const value = JSON.parse(raw.match(/\{[\s\S]*\}/)?.[0] ?? "");
+    return { status: String(value.status ?? "").slice(0, 100), pass: value.pass !== false, problems: Array.isArray(value.problems) ? value.problems.map(String).slice(0, 4) : [], explained: Array.isArray(value.explained) ? clarezaCleanTerms(value.explained) : [] };
+  } catch { return null; }
+}
+async function reviewClareza($: EngineInterface, ask: string, answer: string, wasRewrite: boolean) {
+  const prefs = await readFeaturePreferences($);
+  const known = await readClarezaTerms($);
+  const result = await $.model.complete({ model: "haiku", system: CLAREZA_REVIEW_SYSTEM, prompt: `Reader level: ${prefs.plainLevel}. Known terms: ${known.join(", ") || "none"}.\nUser request:\n<request>${ask || "(none)"}</request>\nFinal answer:\n<answer>${answer}</answer>`, maxTokens: 300, timeoutMs: 15000 });
+  const review = result.isAnswered ? parseClarezaReview(result.text) : null;
+  if (!review) { await update($, clarezaStatus, () => "Answer review unavailable"); return; }
+  await update($, clarezaStatus, () => review.status);
+  const offered = prefs.plainLevel === "beginner" ? review.explained.filter((term) => !known.includes(term)).slice(0, 6) : [];
+  const fixing = !review.pass && !wasRewrite && answer.trim().length > 0;
+  await update($, clarezaGrade, () => ({ pass: review.pass, problems: review.problems, offered, fixing }));
+  if (fixing) {
+    try { await $.prompt.submit({ text: `[Clareza] Your last answer may confuse the user: ${review.problems.join("; ") || "it was not clear enough"}. Rewrite it as one complete final answer, fixing only that while still answering the request. Do not use tools.` }); }
+    catch { await update($, clarezaGrade, (value) => value && { ...value, fixing: false }); }
+  }
+}
+
+const SEMENTE_STOP = new Set(("this that with from into have will would could should about after before then than them they there their what when where which while also just like make more most some such only very each other these those file files code idea ideas maybe later todo want need using used use add adds added fix fixes update changes change").split(" "));
+const sementeWords = (value: string) => value.replace(/([a-z])([A-Z])/g, "$1 $2").toLowerCase().split(/[^a-z0-9]+/).map((word) => word.replace(/s$/, "")).filter((word) => word.length >= 4 && !SEMENTE_STOP.has(word));
+const sementePathWords = (path: string) => sementeWords(path.split(/[\\/]/).slice(-2).join(" "));
+const sementeKey = async ($: EngineInterface) => `semente:ideas:${await $.session.root()}`;
+async function saveSemente($: EngineInterface, change: (list: SementeIdea[]) => SementeIdea[]) {
+  const list = change(await read($, sementeIdeas));
+  await update($, sementeIdeas, () => list);
+  await $.store.set(await sementeKey($), list);
+}
+async function addSemente($: EngineInterface, value: string, source: SementeIdea["source"] = "you") {
+  const id = `${await $.clock.now()}-${Math.random().toString(36).slice(2, 7)}`;
+  await saveSemente($, (list) => [...list, { id, text: value.trim(), source }]);
+  return id;
+}
+async function sendSemente($: EngineInterface, picked: SementeIdea[]) {
+  if (!picked.length) return;
+  const ids = new Set(picked.map((idea) => idea.id));
+  await saveSemente($, (list) => list.filter((idea) => !ids.has(idea.id)));
+  await update($, sementeNudges, (list) => list.filter((id) => !ids.has(id)));
+  const prompt = picked.length === 1 ? picked[0]!.text : `Ideas to pick up:\n${picked.map((idea) => `- ${idea.text}`).join("\n")}`;
+  void $.prompt.submit({ text: prompt, asUser: true });
+  const pt = (await getSettings($)).locale === "pt";
+  $.ui.toast(picked.length === 1 ? (pt ? "Ideia enviada ao Claude" : "Idea queued for Claude") : (pt ? `${picked.length} ideias enviadas ao Claude` : `${picked.length} ideas queued for Claude`));
+}
+
+type LapidaTaste = { edited: boolean; delta: number; rewrite?: string; sent?: string };
+const lapidaTasteKey = async ($: EngineInterface) => `lapida:taste:${await $.session.root()}`;
+async function loadLapidaTaste($: EngineInterface): Promise<LapidaTaste[]> {
+  const value = await $.store.get(await lapidaTasteKey($)).catch(() => undefined);
+  return Array.isArray(value) ? value as LapidaTaste[] : [];
+}
+const clipLapida = (value: string, max = 300) => value.length > max ? `${value.slice(0, max - 1)}…` : value;
+function lapidaTasteHint(records: LapidaTaste[]) {
+  if (!records.length) return "";
+  const edits = records.filter((record) => record.edited);
+  const lines = [`<user_taste>`, `The user sent ${records.length - edits.length} rewrites unchanged and edited ${edits.length}.`];
+  if (edits.length) {
+    const average = Math.round(edits.reduce((n, record) => n + record.delta, 0) / edits.length);
+    if (average < -40) lines.push("Their edits usually shorten prompts: keep rewrites concise.");
+    else if (average > 40) lines.push("Their edits usually add detail: be more thorough.");
+    for (const record of edits.slice(-3)) lines.push(`<rewrite>${record.rewrite ?? ""}</rewrite>\n<sent>${record.sent ?? ""}</sent>`);
+  } else lines.push("They like rewrites unchanged; keep the same style.");
+  lines.push("</user_taste>");
+  return lines.join("\n");
+}
+function splitLapidaReply(raw: string) {
+  const marker = "<<<CHANGES>>>";
+  const at = raw.lastIndexOf(marker);
+  if (at < 0) return { text: raw.trim(), notes: [] as string[] };
+  return { text: raw.slice(0, at).trim(), notes: raw.slice(at + marker.length).split("\n").map((line) => line.replace(/^\s*[-*•]\s*/, "").trim()).filter(Boolean).slice(0, 3).map((line) => line.length > 80 ? `${line.slice(0, 79)}…` : line) };
+}
+async function lapidaProjectContext($: EngineInterface) {
+  const parts: string[] = [];
+  const home = await $.env.get("HOME") ?? await $.env.get("USERPROFILE");
+  if (home) try { parts.push(`# User instructions\n${await $.fs.read(`${home}/.claude/CLAUDE.md`)}`); } catch {}
+  for (const file of await $.fs.ancestors({ names: ["CLAUDE.md", "AGENTS.md"] })) parts.push(`# ${file.dir}/${file.name}\n${file.content}`);
+  const commands = (await $.command.list()).filter((command) => command.source !== "builtin");
+  if (commands.length) parts.push(`# Installed skills and commands\n${commands.map((command) => `/${command.name}: ${command.description}`).join("\n")}`);
+  return `Project context for the rewrite:\n\n${parts.join("\n\n")}`;
+}
+async function enhanceLapida($: EngineInterface, draft: string) {
+  draft = draft.trim();
+  const pt = (await getSettings($)).locale === "pt";
+  if (!draft) { await update($, lapidaPhase, () => "error"); await update($, lapidaNote, () => pt ? "Digite um rascunho primeiro." : "Type a prompt draft first."); return; }
+  if (!(await featureEnabled($, "lapida"))) return;
+  await update($, lapidaPhase, () => "enhancing");
+  await update($, lapidaNote, () => "");
+  await update($, lapidaChanges, () => []);
+  const prefs = await readFeaturePreferences($);
+  const taste = prefs.promptLearning ? lapidaTasteHint(await loadLapidaTaste($)) : "";
+  const marker = "<<<CHANGES>>>";
+  const instructions = pt
+    ? `Reescreva o rascunho de um desenvolvedor em um pedido claro e específico para o Claude Code. Preserve a intenção, use arquivos e convenções do projeto, declare objetivo, escopo, limites e conclusão, e pergunte se houver ambiguidade real. Independentemente do idioma do rascunho, escreva o prompt final inteiro em português brasileiro. Retorne apenas o prompt, uma linha contendo ${marker}, e 1 a 3 tópicos curtos em português sobre o que acrescentou.`
+    : `Rewrite a developer's rough draft into a clear, specific prompt for Claude Code. Preserve intent, use relevant project files and conventions, state goal, scope, constraints, and done criteria, and ask if something is genuinely ambiguous. Regardless of the draft's language, write the final prompt entirely in English. Return only the rewrite, a line containing ${marker}, and 1-3 short bullets in English on what you added.`;
+  const prompt = `${instructions}${taste ? `\n\n${taste}` : ""}\n\n<rough_prompt>\n${draft}\n</rough_prompt>`;
+  let result = await $.model.fork({ prompt });
+  if (!result.isAnswered && result.reason === "nothing-to-fork") result = await $.model.complete({ model: await $.session.model(), system: await lapidaProjectContext($), prompt, maxTokens: 2048, timeoutMs: 60000 });
+  const reply = result.isAnswered ? splitLapidaReply(result.text) : { text: "", notes: [] as string[] };
+  if (!result.isAnswered || !reply.text) { await update($, lapidaPhase, () => "error"); await update($, lapidaNote, () => `Lapida failed: ${result.isAnswered ? "empty reply" : result.reason}`); return; }
+  const filled = await $.prompt.fill({ text: reply.text, mode: "replace" });
+  if (!filled.isFilled) { await update($, lapidaPhase, () => "error"); await update($, lapidaNote, () => `Prompt box refused the text (${filled.refusal ?? "unknown"})`); return; }
+  await update($, lapidaEnhanced, () => reply.text);
+  await update($, lapidaChanges, () => reply.notes);
+  await update($, lapidaPhase, () => "ready");
+}
+async function recordLapidaSend($: EngineInterface, text: string) {
+  const original = await read($, lapidaEnhanced);
+  if (!original) return;
+  await update($, lapidaEnhanced, () => "");
+  await update($, lapidaChanges, () => []);
+  await update($, lapidaPhase, () => "idle");
+  if (!(await readFeaturePreferences($)).promptLearning) return;
+  const sent = text.trim();
+  const edited = sent !== original;
+  const record: LapidaTaste = { edited, delta: sent.length - original.length };
+  if (edited) { record.rewrite = clipLapida(original); record.sent = clipLapida(sent); }
+  await $.store.set(await lapidaTasteKey($), [...(await loadLapidaTaste($)), record].slice(-10));
+}
+
+async function farolCompose($: EngineInterface, e: PromptComposeEvent, result: Awaited<ReturnType<EngineInterface["prompt"]["compose"]>>) {
+  if (!(await featureEnabled($, "farol"))) return result;
+  const prefs = await readFeaturePreferences($);
+  const pt = (await getSettings($)).locale === "pt";
+  const guide = pt
+    ? prefs.assumptionScope === "all" ? "# Farol\nQuando fizer uma suposição não declarada pela pessoa ou confirmada pelo código, registre uma frase curta com mcp__jev__farol_assumption e continue. A pessoa pode confirmar ou corrigir pelo painel Farol." : "# Farol\nRegistre somente suposições que mudem de forma relevante a implementação ou o resultado. Ignore padrões rotineiros e fatos resolvidos pelo código. Use mcp__jev__farol_assumption e continue."
+    : prefs.assumptionScope === "all" ? "# Farol\nWhen you make an assumption not stated by the user or settled by the code, call mcp__jev__farol_assumption with one short sentence and keep working. The user can confirm or correct it in the Farol panel." : "# Farol\nLog only assumptions that materially affect implementation or could change the result. Skip routine defaults and facts settled by the code. Call mcp__jev__farol_assumption and keep working.";
+  const rules = await read($, farolRules);
+  const learned = rules.length ? `${pt ? "# Regras do projeto aprendidas com correções\nSiga estas correções e evite repetir as suposições originais." : "# Project rules learned from corrected assumptions\nFollow these corrections and avoid repeating the original assumptions."}\n${rules.map((rule) => `- ${rule.correction} (${pt ? "não" : "not"}: "${rule.assumption}")`).join("\n")}` : "";
+  return { sections: [...result.sections, { id: "jev:farol:guidance", text: guide, scope: "session" as const }, ...(learned ? [{ id: "jev:farol:rules", text: learned, scope: "session" as const }] : [])] };
+}
+
+async function farolTurnStarted($: EngineInterface) { await update($, farolBusy, () => true); }
+async function farolTurnCompleted($: EngineInterface, agentId?: string) { if (!agentId) await update($, farolBusy, () => false); }
+
+function renderElements($: EngineInterface, event: unknown): ElementTable {
+  return $.ui.resolve(event as never) as ElementTable;
+}
+
+async function farolAbove($: EngineInterface, e: { props: { hasSurvey?: boolean } }, below: RenderChildren): Promise<RenderChildren> {
+  if (e.props.hasSurvey || !(await featureEnabled($, "farol"))) return below;
+  const items = await read($, farolItems);
+  const rules = await read($, farolRules);
+  if (!items.length && !rules.length) return below;
+  const { Box, Button } = renderElements($, e);
+  const pt = (await getSettings($)).locale === "pt";
+  const open = items.filter((item) => item.verdict === "open").length;
+  const label = open ? pt ? `${open} suposiç${open === 1 ? "ão" : "ões"} para revisar` : `${open} assumption${open === 1 ? "" : "s"} to review` : pt ? `${rules.length} regra${rules.length === 1 ? "" : "s"} do projeto` : `${rules.length} project rule${rules.length === 1 ? "" : "s"}`;
+  return <Box flexDirection="column"><Button key="farol-open" label={`◆ ${label} · Farol`} plain onPress={() => void $.ui.open({ id: "farol", title: "Farol", focus: true })} />{below}</Box>;
+}
+
+async function clarezaStart($: EngineInterface) {
+  await $.command.register({ name: "clareza", description: "Set reply style or manage terms you already know", argumentHint: "[simple|technical|know <term>|forget]" });
+}
+async function clarezaCompose($: EngineInterface, result: Awaited<ReturnType<EngineInterface["prompt"]["compose"]>>) {
+  if (!(await featureEnabled($, "clareza"))) return result;
+  const prefs = await readFeaturePreferences($);
+  return { sections: [...result.sections, { id: "jev:clareza:style", text: clarezaStyle(prefs.plainLevel, (await getSettings($)).locale === "pt"), scope: "session" as const }] };
+}
+async function clarezaPromptSubmit($: EngineInterface, e: PromptSubmitInput): Promise<PromptSubmitInput> {
+  if (!(await featureEnabled($, "clareza"))) return e;
+  const prefs = await readFeaturePreferences($);
+  if (prefs.plainLevel !== "beginner") return e;
+  const terms = await readClarezaTerms($);
+  const told = await read($, clarezaToldTerms);
+  if (terms.length <= told) return e;
+  await update($, clarezaToldTerms, () => terms.length);
+  return { ...e, context: [...(e.context ?? []), `Clareza: the user already knows these terms; use them without re-explaining: ${terms.slice(told).join(", ")}`] };
+}
+async function clarezaTurnStarted($: EngineInterface, e: { text: string }) {
+  if (!(await featureEnabled($, "clareza"))) return;
+  if (e.text.trim() && !e.text.includes("[Clareza]")) clarityLastAsk = e.text;
+  const rewriting = e.text.includes("[Clareza]");
+  await update($, clarezaRewrite, () => rewriting);
+  if (!rewriting) await update($, clarezaGrade, () => null);
+  await update($, clarezaStatus, () => `Working: ${clarityLastAsk.replace(/\s+/g, " ").trim().slice(0, 70)}`);
+}
+async function clarezaTurnCompleted($: EngineInterface, e: { agentId?: string; reason: string; durationMs: number; answer: string }) {
+  if (e.agentId || e.reason !== "answer" || !(await featureEnabled($, "clareza"))) return;
+  const prefs = await readFeaturePreferences($);
+  if (e.durationMs > 30000 && prefs.plainSound) {
+    const locale = (await getSettings($)).locale;
+    $.ui.toast(locale === "pt" ? "Pingo terminou e precisa de você" : "Pingo finished and needs you");
+    void $.audio.play({ asset: "sounds/done.aiff" }).catch(() => {});
+  }
+  if (prefs.plainReview) void reviewClareza($, clarityLastAsk, e.answer, await read($, clarezaRewrite)).catch(() => update($, clarezaStatus, () => "Answer review failed"));
+  else await update($, clarezaStatus, () => `Finished: ${clarityLastAsk.replace(/\s+/g, " ").trim().slice(0, 60)}`);
+}
+
+async function clarezaAbove($: EngineInterface, e: { props: { hasSurvey?: boolean } }, below: RenderChildren): Promise<RenderChildren> {
+  if (e.props.hasSurvey || !(await featureEnabled($, "clareza"))) return below;
+  const grade = await read($, clarezaGrade);
+  const line = await read($, clarezaStatus);
+  if (!line && !grade) return below;
+  const { Box, Button, Text } = renderElements($, e);
+  const top = <Box flexDirection="row" columnGap={1}><Text dimColor wrap="truncate-end">◆ {line}</Text>{grade && <Text color={grade.pass ? "success" : "error"}>{grade.pass ? "✓ Clareza" : `✗ ${grade.problems.join("; ")}`}{grade.fixing ? " · rewriting" : ""}</Text>}</Box>;
+  const offered = grade?.offered.length ? <Box flexDirection="row" flexWrap="wrap" columnGap={1}><Text dimColor>{(await getSettings($)).locale === "pt" ? "Eu sei:" : "I know this:"}</Text>{grade.offered.map((term) => <Button key={`clareza-${term}`} label={term} dimColor onPress={async () => { await addClarezaTerms($, [term]); await update($, clarezaGrade, (value) => value && { ...value, offered: value.offered.filter((word) => word !== term) }); }} />)}</Box> : null;
+  return <Box flexDirection="column">{top}{offered}{below}</Box>;
+}
+
+async function sementeStart($: EngineInterface) {
+  await $.command.register({ name: "semente", description: "Save a side idea for later; with no text, open the idea shelf", argumentHint: "[idea]" });
+  await $.tool.register({ name: "semente_shelve", description: "Save a side idea or out-of-scope improvement for the user to review later.", inputSchema: { type: "object", properties: { text: { type: "string", description: "One-line idea" } }, required: ["text"] }, isDeferred: false });
+  const stored = await $.store.get(await sementeKey($));
+  await update($, sementeIdeas, () => Array.isArray(stored) ? stored as SementeIdea[] : []);
+}
+async function sementeCompose($: EngineInterface, e: PromptComposeEvent, result: Awaited<ReturnType<EngineInterface["prompt"]["compose"]>>) {
+  if (!(await featureEnabled($, "semente")) || !e.tools.includes("mcp__jev__semente_shelve")) return result;
+  const guidance = (await getSettings($)).locale === "pt"
+    ? "# Semente\nQuando notar uma melhoria paralela ou fora do escopo, não a execute agora. Guarde-a com mcp__jev__semente_shelve e continue a tarefa atual."
+    : "# Semente\nWhen you notice an out-of-scope tangent or improvement, do not act on it now. Save it with mcp__jev__semente_shelve and continue the current task.";
+  return { sections: [...result.sections, { id: "jev:semente:guidance", text: guidance, scope: "session" as const }] };
+}
+async function sementeTurnStarted($: EngineInterface, e: { text: string }) {
+  sementeTopics.clear();
+  for (const word of sementeWords(e.text)) sementeTopics.add(word);
+  sementeShelvedThisTurn = new Set();
+  await update($, sementeNudges, () => []);
+}
+function sementeFileEdited(path: string, succeeded: boolean) {
+  if (succeeded) for (const word of sementePathWords(path)) sementeTopics.add(word);
+}
+async function sementeTurnCompleted($: EngineInterface, e: { agentId?: string; isAborted?: boolean }) {
+  const prefs = await readFeaturePreferences($);
+  if (e.agentId !== undefined || e.isAborted || !sementeTopics.size || !(await featureEnabled($, "semente")) || !prefs.ideaNudges) return;
+  const ideas = await read($, sementeIdeas);
+  const fits = ideas.filter((idea) => !sementeShelvedThisTurn.has(idea.id) && !sementeDismissed.has(idea.id) && sementeWords(idea.text).some((word) => sementeTopics.has(word)));
+  await update($, sementeNudges, () => fits.map((idea) => idea.id));
+}
+async function sementeAbove($: EngineInterface, e: { props: { hasSurvey?: boolean; isWorking?: boolean } }, below: RenderChildren): Promise<RenderChildren> {
+  if (e.props.hasSurvey || e.props.isWorking || !(await featureEnabled($, "semente")) || !(await readFeaturePreferences($)).ideaNudges) return below;
+  const ids = await read($, sementeNudges);
+  const found = (await read($, sementeIdeas)).filter((idea) => ids.includes(idea.id));
+  if (!found.length) return below;
+  const { Box, Button, Text } = renderElements($, e);
+  const pt = (await getSettings($)).locale === "pt";
+  const label = pt ? `${found.length} ${found.length === 1 ? "ideia salva combina" : "ideias salvas combinam"} com o trabalho recente` : found.length === 1 ? "1 saved idea fits recent work" : `${found.length} saved ideas fit recent work`;
+  return <Box flexDirection="column"><Box><Text>💡 {label}: </Text><Text dimColor wrap="truncate-end">{found.map((idea) => idea.text).join(" · ")} </Text><Button key="send" label={pt ? "Enviar" : "Send"} variant="primary" onPress={() => void sendSemente($, found)} /><Button key="dismiss" label={pt ? "Dispensar" : "Dismiss"} role="dismiss" onPress={async () => { for (const idea of found) sementeDismissed.add(idea.id); await update($, sementeNudges, () => []); }} /></Box>{below}</Box>;
+}
+
+async function lapidaStart($: EngineInterface) {
+  await $.command.register({ name: "lapida", description: "Improve a draft prompt using the project context", argumentHint: "<draft>" });
+}
+async function lapidaPromptSubmit($: EngineInterface, e: Pick<PromptSubmitInput, "text" | "origin">) {
+  if (!(await featureEnabled($, "lapida"))) return;
+  const own = e.origin.kind === "composer" || e.origin.kind === "bridge" || (e.origin.kind === "plugin" && e.origin.name === "jev");
+  if (own) await recordLapidaSend($, e.text).catch(() => {});
+}
+async function lapidaAbove($: EngineInterface, e: { props: { hasSurvey?: boolean; bodyColumns?: number } }, below: RenderChildren): Promise<RenderChildren> {
+  if (e.props.hasSurvey || !(await featureEnabled($, "lapida"))) return below;
+  const { Box, Button, Text } = renderElements($, e);
+  const pt = (await getSettings($)).locale === "pt";
+  const phase = await read($, lapidaPhase);
+  const enhancing = phase === "enhancing";
+  const enhanceDraft = async () => enhanceLapida($, (await $.prompt.read()).text);
+  const send = async () => {
+    const prompt = (await $.prompt.read()).text.trim();
+    if (!prompt) return;
+    await $.prompt.fill({ text: "", mode: "replace" });
+    await recordLapidaSend($, prompt).catch(() => {});
+    await $.prompt.submit({ text: prompt, asUser: true });
+  };
+  const label = phase === "enhancing" ? "Lapida…" : phase === "ready" ? (pt ? "Lapida · revise o rascunho" : "Lapida · review the rewrite") : phase === "error" ? await read($, lapidaNote) : "Lapida";
+  const notes = phase === "ready" ? await read($, lapidaChanges) : [];
+  const width = Math.max(10, (e.props.bodyColumns || 80) - 2);
+  return <Box flexDirection="column"><Box><Text dimColor>{label} </Text>{!enhancing && <Button key="lapida-enhance" label={pt ? "Lapidar (e)" : "Enhance (e)"} hotkey="e" onPress={enhanceDraft} />}<Text> </Text>{!enhancing && <Button key="lapida-send" label={pt ? "Enviar (s)" : "Send (s)"} hotkey="s" onPress={send} />}</Box>{notes.map((line) => <Text key={line} dimColor wrap="truncate-end">{`+ ${line}`.slice(0, width)}</Text>)}{below}</Box>;
+}
+
+type PrismaQuestionInput = { question: string; header: string; multiSelect?: boolean; options?: { label: string; description?: string; preview?: string }[] };
+type PrismaNext = ((event: unknown) => Promise<unknown>) & { signal: AbortSignal };
+const prismaIsSvg = (value?: string) => !!value && /^\s*<svg[\s>]/i.test(value);
+const prismaSafeSvg = (source: string) => source.replace(/<script\b[^>]*>[\s\S]*?<\/script\s*>/gi, "").replace(/<foreignObject\b[^>]*>[\s\S]*?<\/foreignObject\s*>/gi, "").replace(/\s+on[a-z]+\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/gi, "").replace(/\s+(?:xlink:)?href\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/gi, "").replace(/url\s*\([^)]*\)/gi, "none").replace(/@import[^;]+;?/gi, "");
+const prismaMix = (a: string, b: string) => `Mix of "${a}" and "${b}": blend both directions into one design`;
+const prismaMixing = (picker: PrismaPicker, i: number) => !!picker.mix[i];
+const prismaComplete = (picker: PrismaPicker) => picker.questions.every((question, i) => picker.others[i] || (prismaMixing(picker, i) ? picker.picks[i]?.length === 2 : !!picker.picks[i]?.length));
+function prismaAnswers(picker: PrismaPicker) {
+  return Object.fromEntries(picker.questions.map((question, i) => [question.question, picker.others[i] ?? (prismaMixing(picker, i) && picker.picks[i]?.length === 2 ? prismaMix(picker.picks[i]![0]!, picker.picks[i]![1]!) : picker.picks[i]?.join(", ")) ?? ""]));
+}
+function prismaPick(picker: PrismaPicker, qi: number, label: string): PrismaPicker {
+  const question = picker.questions[qi]!;
+  const picks = picker.picks.map((old, i) => {
+    if (i !== qi) return old;
+    if (old.includes(label) && (question.multiSelect || prismaMixing(picker, i))) return old.filter((item) => item !== label);
+    if (prismaMixing(picker, i)) return [...old, label].slice(-2);
+    return question.multiSelect ? [...old, label] : [label];
+  });
+  return { ...picker, picks, others: picker.others.map((value, i) => i === qi ? null : value) };
+}
+function prismaToggleMix(picker: PrismaPicker, qi: number): PrismaPicker {
+  const mix = picker.mix.map((value, i) => i === qi ? !value : value);
+  const picks = picker.picks.map((list, i) => i === qi && picker.mix[i] ? list.slice(0, 1) : list);
+  return { ...picker, mix, picks };
+}
+const prismaEscape = (value: string) => value.replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[char]!);
+function prismaGallery(questions: PrismaQuestion[], token: string, pt = false) {
+  let n = 0;
+  const sections = questions.map((question, qi) => `<section><h2>${prismaEscape(question.header)}</h2><p>${prismaEscape(question.question)}</p><div class="grid">${question.options.map((option, oi) => `<button class="card" data-q="${qi}" data-label="${prismaEscape(option.label)}"><img src="/${qi}-${oi}.svg" alt=""/><span><kbd>${++n}</kbd> ${prismaEscape(option.label)}${option.description ? `<small>${prismaEscape(option.description)}</small>` : ""}</span></button>`).join("")}</div>${!question.multiSelect && question.options.length > 1 ? `<button class="mix" data-q="${qi}">${pt ? "Misturar duas" : "Mix two"}</button>` : ""}<input class="other" data-q="${qi}" placeholder="${pt ? "Descreva sua opção e pressione Enter" : "Or describe your own, then Enter"}"/></section>`).join("");
+  const less = String.fromCharCode(92) + "u003c";
+  const meta = JSON.stringify(questions.map((question) => ({ question: question.question, multi: question.multiSelect }))).replace(/</g, less);
+  const quote = String.fromCharCode(34);
+  const mix = JSON.stringify([`Mix of ${quote}`, `${quote} and ${quote}`, `${quote}: blend both directions into one design`]).replace(/</g, less);
+  const needsSubmit = questions.length > 1 || questions.some((question) => question.multiSelect);
+  return `<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>Prisma · ${pt ? "escolhas de design" : "design choices"}</title><style>body{font:15px/1.4 system-ui,sans-serif;margin:24px;background:#f4f4f2;color:#1a1a1a}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:18px}.card{all:unset;cursor:pointer;display:block;background:#fff;border-radius:10px;overflow:hidden;box-shadow:0 1px 3px #0002;outline:3px solid transparent}.card:hover{outline-color:#999}.card.on{outline-color:#16a34a}.card img{display:block;width:100%;height:auto}.card span{display:block;padding:10px 14px;font-weight:600}small{display:block;font-weight:400;color:#666}kbd{background:#1a1a1a;color:white;border-radius:4px;padding:1px 7px}.other{margin-top:12px;width:100%;max-width:480px;padding:8px 10px;border:1px solid #ccc;border-radius:6px;font:inherit}#submit,.mix{margin:18px 10px 0 0;padding:9px 16px;border:1px solid #333;border-radius:7px;background:white;font:inherit;cursor:pointer}#submit{background:#1a1a1a;color:white}#submit:disabled{opacity:.4}.mix.on{background:#16a34a;color:white}</style>${sections}<button id="submit"${needsSubmit ? " disabled" : " hidden"}>${pt ? "Enviar ao Claude" : "Send to Claude"}</button><script>const qs=${meta},picks=qs.map(()=>[]),others=qs.map(()=>null),mixing=qs.map(()=>false),auto=${!needsSubmit},M=${mix};const done=()=>qs.every((_,i)=>others[i]||(mixing[i]?picks[i].length===2:picks[i].length));const answer=i=>others[i]??(mixing[i]&&picks[i].length===2?M[0]+picks[i][0]+M[1]+picks[i][1]+M[2]:picks[i].join(', '));const send=()=>fetch('/answer?t=${token}',{method:'POST',body:JSON.stringify(Object.fromEntries(qs.map((q,i)=>[q.question,answer(i)])))}).then(r=>{if(!r.ok)throw 0;document.body.innerHTML='<h1>${pt ? "Enviado ao Claude ✓" : "Sent to Claude ✓"}</h1>'}).catch(()=>alert('${pt ? "O seletor não está mais aguardando." : "This picker is no longer waiting."}'));const sync=()=>{document.querySelectorAll('.card').forEach(c=>c.classList.toggle('on',picks[c.dataset.q].includes(c.dataset.label)));document.querySelectorAll('.mix').forEach(b=>{b.classList.toggle('on',mixing[b.dataset.q]);b.textContent=mixing[b.dataset.q]?'${pt ? "Misturando: escolha duas" : "Mixing: pick two"}':'${pt ? "Misturar duas" : "Mix two"}'});const s=document.getElementById('submit');s.hidden=auto&&!mixing.some(Boolean);s.disabled=!done()};document.querySelectorAll('.card').forEach(c=>c.onclick=()=>{const i=+c.dataset.q,l=c.dataset.label,has=picks[i].includes(l);others[i]=null;picks[i]=mixing[i]?(has?picks[i].filter(x=>x!==l):[...picks[i],l].slice(-2)):qs[i].multi?(has?picks[i].filter(x=>x!==l):[...picks[i],l]):[l];sync();if(auto&&!mixing[i])send()});document.querySelectorAll('.mix').forEach(b=>b.onclick=()=>{const i=+b.dataset.q;mixing[i]=!mixing[i];if(!mixing[i])picks[i]=picks[i].slice(0,1);sync()});document.querySelectorAll('.other').forEach(o=>o.onkeydown=e=>{if(e.key!=='Enter'||!o.value.trim())return;const i=+o.dataset.q;others[i]=o.value.trim();picks[i]=[];sync();if(auto)send()});document.getElementById('submit')?.addEventListener('click',send);const cards=[...document.querySelectorAll('.card')];document.onkeydown=e=>{if(e.target.tagName!=='INPUT'&&/^[1-9]$/.test(e.key))cards[e.key-1]?.click()};</script>`;
+}
+const PRISMA_SERVE_PY = `import http.server,json,os,sys,threading,time,webbrowser
+d,token,auto=sys.argv[1],sys.argv[2],sys.argv[3]=='1'
+answer=os.path.join(d,'answer.json'); portfile=os.path.join(d,'port'); reopen=not os.path.exists(portfile)
+class H(http.server.SimpleHTTPRequestHandler):
+ def __init__(self,*a,**k): super().__init__(*a,directory=d,**k)
+ def log_message(self,*a): pass
+ def do_POST(self):
+  if self.path!='/answer?t='+token or os.path.exists(answer): self.send_response(403); self.end_headers(); return
+  body=self.rfile.read(int(self.headers.get('Content-Length',0))); value=json.loads(body)
+  with open(answer+'.tmp','w',encoding='utf8') as f: json.dump(value,f)
+  os.replace(answer+'.tmp',answer); self.send_response(204); self.end_headers()
+srv=http.server.ThreadingHTTPServer(('127.0.0.1',0 if reopen else int(open(portfile).read())),H)
+with open(portfile,'w') as f: f.write(str(srv.server_address[1]))
+threading.Thread(target=srv.serve_forever,daemon=True).start()
+if auto and reopen: webbrowser.open('http://127.0.0.1:%d/index.html'%srv.server_address[1])
+while not os.path.exists(answer): time.sleep(.2)
+time.sleep(.2); print(open(answer,encoding='utf8').read())
+`;
+const prismaDecisionKey = async ($: EngineInterface) => `prisma:decisions:${await $.session.root()}`;
+async function readPrismaDecisions($: EngineInterface): Promise<{ question: string; choice: string; description?: string; at: number }[]> {
+  const stored = await $.store.get(await prismaDecisionKey($));
+  return Array.isArray(stored) ? stored as { question: string; choice: string; description?: string; at: number }[] : [];
+}
+function prismaDecisionPrompt(list: { question: string; choice: string; description?: string }[], pt = false) {
+  return list.length ? `${pt ? "# Decisões de design já tomadas neste projeto\nSiga estas escolhas em futuros trabalhos visuais; não pergunte novamente, a menos que a pessoa queira revisá-las." : "# Prisma decisions already made in this project\nFollow these choices in future design work; do not ask again unless the user revisits them."}\n${list.map((item) => `- ${item.question} → ${item.choice}${item.description ? ` (${item.description})` : ""}`).join("\n")}` : "";
+}
+async function rememberPrisma($: EngineInterface, questions: PrismaQuestion[], answers: Record<string, string>) {
+  const at = await $.clock.now();
+  const added = questions.flatMap((question) => {
+    const choice = answers[question.question]?.trim();
+    if (!choice) return [];
+    const labels = choice.startsWith("Mix of \"") ? [...choice.matchAll(/"([^"]+)"/g)].map((match) => match[1]!) : choice.split(", ");
+    const description = question.options.filter((option) => labels.includes(option.label)).map((option) => option.description).filter(Boolean).join(" + ");
+    return [{ question: question.question, choice, ...(description ? { description } : {}), at }];
+  });
+  if (!added.length) return;
+  const old = await readPrismaDecisions($);
+  await $.store.set(await prismaDecisionKey($), [...old.filter((item) => !added.some((next) => next.question === item.question)), ...added].slice(-50));
+}
+async function prismaCompose($: EngineInterface, e: PromptComposeEvent, result: Awaited<ReturnType<EngineInterface["prompt"]["compose"]>>) {
+  if (!(await featureEnabled($, "prisma"))) return result;
+  const pt = (await getSettings($)).locale === "pt";
+  const saved = prismaDecisionPrompt(await readPrismaDecisions($), pt);
+  const guide = e.tools.includes("AskUserQuestion") ? pt ? "# Prisma\nPara escolhas visuais de design, use AskUserQuestion e inclua uma prévia SVG independente e distinta para cada opção. Desenhe o layout, a paleta, a tipografia e um texto de exemplo. Limite cada prévia a 8 KB e não use recursos externos." : "# Prisma\nFor visual design choices, use AskUserQuestion and include a distinct, self-contained SVG preview for each option. Draw actual layout, palette, type and sample copy. Keep each under 8 KB and do not use external resources." : "";
+  return { sections: [...result.sections, ...(guide ? [{ id: "jev:prisma:guidance", text: guide, scope: "session" as const }] : []), ...(saved ? [{ id: "jev:prisma:decisions", text: saved, scope: "session" as const }] : [])] };
+}
+
+const sentinelaOrder = { waiting: 0, working: 1, done: 2 } as const;
+const sentinelaLabel = (row: SentinelaSession) => row.name || row.project || row.id;
+const sentinelaAge = (ms: number) => { const seconds = Math.max(0, Math.round(ms / 1000)); return seconds < 60 ? `${seconds}s` : seconds < 3600 ? `${Math.floor(seconds / 60)}m` : `${Math.floor(seconds / 3600)}h`; };
+async function sentinelaPids($: EngineInterface, rows: SentinelaSession[]) {
+  const pids = rows.map((row) => row.pid);
+  if (!pids.length) return new Set<number>();
+  if (await $.env.get("OS") === "Windows_NT") {
+    const command = `@(${pids.join(",")}) | ForEach-Object { if (Get-Process -Id $_ -ErrorAction SilentlyContinue) { $_ } }`;
+    for (const exe of ["pwsh", "powershell"]) {
+      const result = await $.process.run([exe, "-NoProfile", "-NonInteractive", "-Command", command]).catch(() => null);
+      if (result) return new Set(result.stdout.split(/\s+/).map(Number).filter(Number.isFinite));
+    }
+    return new Set(pids);
+  }
+  const result = await $.process.run(["ps", "-o", "pid=", "-p", pids.join(",")]).catch(() => null);
+  return new Set(result ? result.stdout.split(/\s+/).map(Number).filter(Number.isFinite) : pids);
+}
+async function refreshSentinela($: EngineInterface) {
+  if (!(await featureEnabled($, "sentinela")) || !sentinelaDir) return;
+  const errors: string[] = [];
+  const rows: SentinelaSession[] = [];
+  const entries = await $.fs.list(sentinelaDir).catch((error) => { errors.push(String(error)); return []; });
+  for (const entry of entries) {
+    if (!entry.name.endsWith(".json")) continue;
+    try {
+      const raw = JSON.parse(await $.fs.read(`${sentinelaDir}/${entry.name}`));
+      if (typeof raw.pid !== "number" || typeof raw.sessionId !== "string") continue;
+      const cwd = typeof raw.cwd === "string" ? raw.cwd : "";
+      rows.push({ pid: raw.pid, id: raw.sessionId, name: raw.nameSource === "derived" ? "" : String(raw.name ?? ""), cwd, project: cwd.split(/[\\/]/).filter(Boolean).pop() ?? cwd, status: raw.status === "waiting" ? "waiting" : raw.status === "busy" ? "working" : "done", waitingFor: String(raw.waitingFor ?? ""), since: Number(raw.statusUpdatedAt ?? raw.updatedAt ?? 0) });
+    } catch (error) { errors.push(`read ${entry.name}: ${String(error)}`); }
+  }
+  const alive = await sentinelaPids($, rows);
+  const next = rows.filter((row) => alive.has(row.pid)).sort((a, b) => sentinelaOrder[a.status] - sentinelaOrder[b.status] || b.since - a.since);
+  const current = await read($, sentinelaSessions);
+  if (JSON.stringify(current) !== JSON.stringify(next)) {
+    await update($, sentinelaSessions, () => next);
+    const target = await read($, sentinelaReplyTo);
+    if (target && !next.some((row) => row.id === target)) await update($, sentinelaReplyTo, () => "");
+  }
+  await update($, sentinelaProblem, () => errors.join("\n"));
+  sentinelaRefreshedAt = await $.clock.now();
+}
+async function registerSentinela($: EngineInterface) {
+  const home = await $.env.get("HOME") ?? await $.env.get("USERPROFILE") ?? "";
+  sentinelaDir = `${home.replace(/[\\/]$/, "")}/.claude/sessions`;
+  sentinelaMe = await $.session.id();
+  await $.command.register({ name: "sentinela", description: "Show sessions across all projects" });
+  $.clock.every(2000, async () => {
+    if (!(await featureEnabled($, "sentinela"))) return;
+    const preferences = await readFeaturePreferences($);
+    if (await $.clock.now() - sentinelaRefreshedAt >= preferences.monitorEveryMs) await refreshSentinela($);
+  });
+  await refreshSentinela($);
+}
+async function sentinelaPaneRows($: EngineInterface) { return Math.max(2, (await read($, sentinelaSessions)).length + 1) + ((await read($, sentinelaReplyTo)) ? 1 : 0); }
+async function resizeSentinela($: EngineInterface) {
+  if ((await $.ui.panes()).some((pane) => pane.id === "sentinela" && pane.isShown)) await $.ui.open({ id: "sentinela", title: "Sentinela", rows: await sentinelaPaneRows($) });
+}
+async function toggleSentinela($: EngineInterface) {
+  if ((await $.ui.panes()).some((pane) => pane.id === "sentinela" && pane.isShown)) return $.ui.close({ id: "sentinela" });
+  await refreshSentinela($);
+  await $.ui.open({ id: "sentinela", title: "Sentinela", rows: await sentinelaPaneRows($), focus: true, closeOnEscape: true });
+}
+async function sendSentinelaReply($: EngineInterface, value: string) {
+  const id = await read($, sentinelaReplyTo);
+  await update($, sentinelaReplyTo, () => "");
+  await resizeSentinela($);
+  if (!id || !value.trim()) return;
+  const row = (await read($, sentinelaSessions)).find((item) => item.id === id);
+  const name = row ? sentinelaLabel(row) : id;
+  const delivered = await $.session.send({ to: { sessionId: id }, text: value.trim() });
+  $.ui.toast(delivered.isDelivered ? `Sent to ${name}.` : `Not sent to ${name}: ${delivered.reason}`);
+}
+async function jumpSentinela($: EngineInterface, row: SentinelaSession, surface: RenderSurface) {
+  const windows = await $.env.get("OS") === "Windows_NT";
+  const command = windows ? `Set-Location -LiteralPath '${row.cwd.replace(/'/g, "''")}'; claude --resume ${row.id}` : `${row.cwd ? `cd '${row.cwd.replace(/'/g, "'\\''")}' && ` : ""}claude --resume ${row.id}`;
+  const copied = await $.ui.copy({ text: command, surface });
+  $.ui.toast(copied.isCopied ? `Copied: ${command}` : `Run: ${command}`, { timeoutMs: 8000 });
+}
+async function sentinelaAbove($: EngineInterface, e: { props: { hasSurvey?: boolean } }, below: RenderChildren): Promise<RenderChildren> {
+  if (e.props.hasSurvey || !(await featureEnabled($, "sentinela"))) return below;
+  const list = await read($, sentinelaSessions);
+  const count = (status: SentinelaSession["status"]) => list.filter((row) => row.status === status).length;
+  const { Box, Button, Text } = renderElements($, e);
+  const locale = (await getSettings($)).locale;
+  return <Box flexDirection="column"><Box><Button key="sessions" label={locale === "pt" ? "Sessões" : "Sessions"} onPress={() => void toggleSentinela($)} /><Text> </Text><Text color="error">? {count("waiting")} {locale === "pt" ? "aguardando" : "waiting"}  </Text><Text color="warning">● {count("working")} {locale === "pt" ? "trabalhando" : "working"}  </Text><Text color="success">✓ {count("done")} {locale === "pt" ? "concluídas" : "done"}</Text></Box>{below}</Box>;
+}
+
+const vigiaFlat = (value: string, max: number) => { const text = value.replace(/\s+/g, " ").trim(); return text.length > max ? `${text.slice(0, max - 1)}…` : text; };
+const vigiaAlive = (record: VigiaSession, now: number) => record.endedAt === undefined && now - record.beatAt < 60000;
+const vigiaAgo = (ms: number) => { const minutes = Math.round(ms / 60000); return minutes < 1 ? "now" : minutes < 60 ? `${minutes}m` : minutes < 1440 ? `${Math.round(minutes / 60)}h` : `${Math.round(minutes / 1440)}d`; };
+const vigiaName = (record: VigiaSession) => record.title ?? (record.lastPrompt ? vigiaFlat(record.lastPrompt, 40) : record.id.slice(0, 8));
+const vigiaDoing = (record: VigiaSession) => record.tasks.find((task) => task.status === "in_progress")?.text ?? record.doing;
+const vigiaNext = (record: VigiaSession) => record.tasks.find((task) => task.status === "pending")?.text ?? record.next;
+const vigiaShared = (a: VigiaSession, b: VigiaSession) => (a.files ?? []).filter((file) => (b.files ?? []).includes(file));
+async function ensureVigia($: EngineInterface) {
+  const id = await $.session.id();
+  const root = await $.session.root();
+  if (vigiaMe?.id === id && vigiaMe.root === root) return vigiaMe;
+  const home = await $.env.get("HOME") ?? await $.env.get("USERPROFILE") ?? "";
+  vigiaDir = `${home.replace(/[\\/]$/, "")}/.claude/jev-vigia/${root.replace(/[^a-zA-Z0-9]/g, "-")}`;
+  const file = `${vigiaDir}/${id}.json`;
+  const now = await $.clock.now();
+  const old = await $.fs.exists(file) ? JSON.parse(await $.fs.read(file)) as VigiaSession : undefined;
+  vigiaMe = old ? { ...old, endedAt: undefined, isBusy: false } : { id, root, startedAt: now, beatAt: now, tasks: [] };
+  return vigiaMe;
+}
+async function refreshVigia($: EngineInterface) {
+  if (!(await featureEnabled($, "vigia"))) return;
+  const own = await ensureVigia($);
+  const now = await $.clock.now();
+  const found: VigiaSession[] = [];
+  if (await $.fs.exists(vigiaDir)) for (const entry of await $.fs.list(vigiaDir)) {
+    if (entry.kind !== "file" || !entry.name.endsWith(".json") || now - entry.mtimeMs > 7 * 24 * 3600000) continue;
+    try {
+      const row = JSON.parse(await $.fs.read(`${vigiaDir}/${entry.name}`)) as VigiaSession;
+      if (row.id === own.id || row.lastPrompt) found.push(row);
+    } catch { /* another session may still be writing its record */ }
+  }
+  found.sort((a, b) => (a.id === own.id ? 0 : vigiaAlive(a, now) ? 1 : 2) - (b.id === own.id ? 0 : vigiaAlive(b, now) ? 1 : 2) || b.beatAt - a.beatAt);
+  await update($, vigiaSessions, () => found);
+}
+async function saveVigia($: EngineInterface, change?: (record: VigiaSession) => void) {
+  if (!(await featureEnabled($, "vigia"))) return;
+  const record = await ensureVigia($);
+  change?.(record);
+  record.beatAt = await $.clock.now();
+  await $.fs.write(`${vigiaDir}/${record.id}.json`, JSON.stringify(record, null, 2));
+  await refreshVigia($);
+}
+type VigiaClash = { file: string; other: VigiaSession; at: number };
+async function vigiaClashes($: EngineInterface, now: number): Promise<VigiaClash[]> {
+  const own = await ensureVigia($);
+  const window = (await readFeaturePreferences($)).clashMinutes * 60000;
+  return (await read($, vigiaSessions)).filter((other) => other.id !== own.id && vigiaAlive(other, now)).flatMap((other) => Object.entries(other.edits ?? {})
+    .filter(([file, at]) => now - at < window && now - (own.edits?.[file] ?? 0) < window)
+    .map(([file, at]) => ({ file, other, at }))).sort((a, b) => b.at - a.at);
+}
+async function trackVigiaFile($: EngineInterface, path: string): Promise<string | undefined> {
+  const own = await ensureVigia($);
+  const root = own.root.replace(/\\/g, "/").replace(/\/$/, "");
+  const candidate = path.replace(/\\/g, "/");
+  const relative = candidate.toLowerCase().startsWith(`${root.toLowerCase()}/`) ? candidate.slice(root.length + 1) : candidate;
+  await refreshVigia($);
+  const now = await $.clock.now();
+  const window = (await readFeaturePreferences($)).clashMinutes * 60000;
+  const prior = own.edits?.[relative] ?? 0;
+  const other = (await read($, vigiaSessions)).find((row) => row.id !== own.id && vigiaAlive(row, now) && (row.edits?.[relative] ?? 0) > Math.max(prior, now - window));
+  await saveVigia($, (record) => {
+    record.edits = Object.fromEntries(Object.entries({ ...record.edits, [relative]: now }).filter(([, at]) => now - Number(at) < window));
+    if (!record.files?.includes(relative)) record.files = [relative, ...(record.files ?? [])].slice(0, 12);
+  });
+  if (!other) return;
+  const when = vigiaAgo(now - (other.edits?.[relative] ?? now));
+  const task = vigiaDoing(other) ?? other.lastPrompt;
+  $.ui.toast(`⚠ ${relative} was edited ${when} by "${vigiaName(other)}"${task ? ` (${vigiaFlat(task, 60)})` : ""}`, { timeoutMs: 8000 });
+  return `Vigia: another live session ("${vigiaName(other)}"${task ? `, working on: ${vigiaFlat(task, 120)}` : ""}) edited ${relative} ${when}. Re-read it before editing and preserve its changes.`;
+}
+async function summarizeVigia($: EngineInterface, answer: string) {
+  if (!(await readFeaturePreferences($)).trackerSummary || !(await featureEnabled($, "vigia"))) return;
+  const own = await ensureVigia($);
+  const prompt = ["Summarize where this coding session stands for a teammate.", "Reply with exactly four lines, no markdown:", "TITLE: <2-5 word name for the work>", "DONE: <what is done, under 100 chars>", "DOING: <what is in progress or waiting, under 100 chars>", "NEXT: <concrete next step, under 100 chars>", `Previous: ${own.title ?? "-"} | ${own.done ?? "-"} | ${own.doing ?? "-"} | ${own.next ?? "-"}`, `Tasks: ${own.tasks.map((task) => `[${task.status}] ${task.text}`).join("; ") || "none"}`, `Files: ${(own.files ?? []).join(", ") || "none"}`, `Latest prompt: ${own.lastPrompt ?? "-"}`, `Latest answer:\n${answer.slice(-6000)}`].join("\n");
+  const result = await $.model.complete({ model: "haiku", prompt, maxTokens: 300, timeoutMs: 30000 });
+  if (!result.isAnswered) return;
+  const pick = (label: string) => result.text.match(new RegExp(`^\\s*${label}:\\s*(.+)$`, "mi"))?.[1]?.trim();
+  await saveVigia($, (record) => { record.title = pick("TITLE") ?? record.title; record.done = pick("DONE") ?? record.done; record.doing = pick("DOING") ?? record.doing; record.next = pick("NEXT") ?? record.next; });
+}
+async function vigiaPromptSubmit($: EngineInterface, e: Pick<PromptSubmitInput, "text">) {
+  if (await featureEnabled($, "vigia")) await saveVigia($, (record) => { record.lastPrompt = vigiaFlat(e.text, 300); record.isBusy = true; record.turns = (record.turns ?? 0) + 1; });
+}
+async function vigiaTrackFile($: EngineInterface, path: string) { return await featureEnabled($, "vigia") ? trackVigiaFile($, path) : undefined; }
+async function vigiaTurnCompleted($: EngineInterface, e: { agentId?: string; answer?: string }) {
+  if (e.agentId !== undefined || !(await featureEnabled($, "vigia"))) return;
+  await saveVigia($, (record) => { record.isBusy = false; if (e.answer) record.lastAnswer = vigiaFlat(e.answer.trim().split(/\n\s*\n/).at(-1) ?? "", 300); });
+  if (e.answer) void summarizeVigia($, e.answer).catch(() => {});
+}
+async function registerVigia($: EngineInterface) {
+  await $.command.register({ name: "vigia", description: "Show other sessions working in this project" });
+  $.clock.every(15000, async () => { if (await featureEnabled($, "vigia")) await saveVigia($); });
+  if (await featureEnabled($, "vigia")) {
+    await saveVigia($);
+    const now = await $.clock.now();
+    const others = (await read($, vigiaSessions)).filter((row) => row.id !== vigiaMe?.id && vigiaAlive(row, now));
+    if (others.length) void $.ui.open({ id: "vigia", title: "Vigia" });
+  }
+}
+async function vigiaSessionEnd($: EngineInterface) {
+  const now = await $.clock.now();
+  if (await featureEnabled($, "vigia")) await saveVigia($, (record) => { record.endedAt = now; record.isBusy = false; });
+  vigiaMe = undefined;
+}
+async function vigiaAbove($: EngineInterface, e: { props: { hasSurvey?: boolean } }, below: RenderChildren): Promise<RenderChildren> {
+  if (e.props.hasSurvey || !(await featureEnabled($, "vigia"))) return below;
+  const list = await read($, vigiaSessions);
+  const now = await $.clock.now();
+  const others = list.filter((record) => record.id !== vigiaMe?.id && vigiaAlive(record, now));
+  if (!others.length) return below;
+  const conflicts = await vigiaClashes($, now);
+  const { Box, Button, Text } = renderElements($, e);
+  const pt = (await getSettings($)).locale === "pt";
+  const collapsed = await read($, vigiaCollapsed);
+  const toggle = <Button key="vigia-toggle" label={collapsed ? (pt ? "exibir" : "show") : (pt ? "ocultar" : "hide")} plain dimColor onPress={async () => { const value = !await read($, vigiaCollapsed); await update($, vigiaCollapsed, () => value); await $.store.set("vigia:collapsed", value); }} />;
+  if (collapsed) return <Box flexDirection="column"><Box gap={1}><Text dimColor>👥 {others.length} {pt ? "outras sessões neste projeto" : `other session${others.length === 1 ? "" : "s"} here`} ·</Text>{conflicts.length > 0 && <Text color="error">⚠ {conflicts.length} {pt ? "conflitos" : `file clash${conflicts.length === 1 ? "" : "es"}`} ·</Text>}{toggle}</Box>{below}</Box>;
+  return <Box flexDirection="column"><Box flexDirection="column" borderStyle="round" borderColor="gray" paddingX={1}><Box justifyContent="space-between"><Text dimColor>{pt ? "👥 Também trabalhando neste projeto · /vigia" : "👥 Also working in this project · /vigia"}</Text>{toggle}</Box>{conflicts.slice(0, 2).map((conflict) => <Text key={`${conflict.other.id}-${conflict.file}`} color="error" wrap="truncate">⚠ {pt ? "Conflito" : "Clash"}: {conflict.file} · {vigiaName(conflict.other)} · {vigiaAgo(now - conflict.at)}</Text>)}{others.slice(0, 3).map((record) => <Box key={record.id} flexDirection="column"><Text wrap="truncate"><Text color={record.isBusy ? "warning" : "success"}>{record.isBusy ? "● " : "◐ "}</Text><Text bold>{vigiaName(record)}</Text><Text dimColor> · {record.isBusy ? (pt ? "trabalhando" : "working") : (pt ? "aguardando" : "waiting")}</Text></Text>{(vigiaDoing(record) ?? record.lastPrompt) && <Text wrap="truncate">◆ {vigiaDoing(record) ?? record.lastPrompt}{vigiaNext(record) ? ` → ${vigiaNext(record)}` : ""}</Text>}</Box>)}</Box>{below}</Box>;
+}
+
 export function normalizeTab(value: unknown): JevTab {
   switch (value) {
     case "overview":
@@ -1261,6 +2112,7 @@ export function normalizeTab(value: unknown): JevTab {
     case "logs":
     case "configuration":
     case "deck":
+    case "features":
       return value;
     case "flow":
       return "live";
@@ -1268,7 +2120,6 @@ export function normalizeTab(value: unknown): JevTab {
     case "baseline":
     case "log":
       return "logs";
-    case "features":
     case "setup":
       return "configuration";
     default:
@@ -1360,14 +2211,8 @@ async function saveKey($: EngineInterface, key: string): Promise<string | undefi
 
 async function setLocale($: EngineInterface, locale: LocaleOption): Promise<void> {
   const current = await getSettings($);
-  const row = await optionRow($, "locale");
-  if (!row) {
-    await update($, setup, (draft) => ({ ...draft, message: text("ui.setup.languageOptionUnavailable", current.locale), isOk: false }));
-    return;
-  }
   try {
-    const result = await $.config.set({ key: row, value: locale });
-    if (result.deny) throw new Error(result.deny);
+    await $.store.set(STORE_LOCALE, locale);
     options = { ...options, locale };
     settings = undefined;
     const updated = await getSettings($);
@@ -1531,17 +2376,22 @@ async function submitKey($: EngineInterface, provider: string): Promise<void> {
   }));
 }
 
-function actions($: EngineInterface, scrollKey = ""): Actions {
+function actions($: EngineInterface, requestId = PANE): Actions {
+  const resetScroll = () => $.ui.scroll({ in: requestId, to: "start" }).catch(() => undefined);
   return {
-    layout: (max, fromEnd) => void scrollRoom.set(scrollKey, { max, fromEnd }),
-    tab: (which) => void update($, tab, () => which),
+    layout: () => undefined,
+    tab: async (which) => { await update($, tab, () => which); await resetScroll(); },
     range: (ms) => void update($, range, () => ms),
-    flowDetails: (open) => {
-      void update($, flowDetails, () => open);
-      if (scrollKey) void update($, scroll, (all) => ({ ...all, [scrollKey]: 0 }));
-    },
+    flowDetails: async (open) => { await update($, flowDetails, () => open); await resetScroll(); },
     routing: (enabled) => void setRouting($, enabled),
     feature: (id, enabled) => void setFeature($, id, enabled),
+    preference: (key, value) => {
+      if (key === "petHat") {
+        petHatOverride = undefined;
+        if (value === "random") sessionPetHat = randomPetHat();
+      }
+      void setFeaturePreference($, key, value);
+    },
     provider: (id) => void update($, setup, (draft) => ({ ...draft, provider: id, message: "" })),
     locale: (value) => void setLocale($, value),
     clear: () => void clearHistory($),
@@ -1592,8 +2442,8 @@ async function view($: EngineInterface, width: number, rows: number, surface: st
     locale: config.locale,
     localeOption: config.localeOption,
     scroll: scrollKey ? ((await read($, scroll))[scrollKey] ?? 0) : 0,
-    // The terminal draws the header fixed and the body scrolled by the mod; other surfaces flow.
-    fixed: Boolean(scrollKey) && surface === "terminal",
+    // The host needs the full tree to measure and scroll the pane on both surfaces.
+    fixed: false,
     events: await read($, events),
     routing: await read($, routing),
     tab: normalized,
@@ -1601,6 +2451,7 @@ async function view($: EngineInterface, width: number, rows: number, surface: st
     flowDetails: await read($, flowDetails),
     setup: await read($, setup),
     features: await read($, features),
+    preferences: await read($, featurePreferences),
     feed: await read($, feed),
     live: await read($, live),
     agents: await read($, agents),
@@ -1630,6 +2481,8 @@ export const register: Register = (on, given) => {
   deckNote = null;
   deckDraft = "";
   deckLanes.clear();
+  deckPetLoop?.cancel();
+  deckPetLoop = undefined;
   blitBroken = false;
   deckShownTerminalAt = deckShownDesktopAt = paneShownAt = rowsRedrawnAt = Number.NEGATIVE_INFINITY;
   sessionKey = "";
@@ -1646,6 +2499,13 @@ export const register: Register = (on, given) => {
     sessionId = deckSessionId.slice(0, 8);
     const config = await getSettings($);
     await restoreStoredState($);
+    await registerFarol($);
+    await clarezaStart($);
+    await $.command.register({ name: "prisma-decisions", description: "List or clear remembered design choices", argumentHint: "[clear]" });
+    await sementeStart($);
+    await lapidaStart($);
+    await registerSentinela($);
+    await registerVigia($);
     mainModel = await $.session.model();
     await setLive($, { model: mainModel });
     const advisor = await advisorInfo($);
@@ -1656,6 +2516,11 @@ export const register: Register = (on, given) => {
     const savedSpend = await $.store.get(STORE_DECK_SPEND).catch(() => undefined);
     const savedHist = await $.store.get(STORE_DECK_HIST).catch(() => undefined);
     deck = createDeckState(now, deckSessionId, new Date(now));
+    deckPet = createPet(now);
+    sessionPetHat = randomPetHat();
+    petHatOverride = undefined;
+    petHatOverrideUntil = 0;
+    await styledPet($, now);
     deck.spend = spendFrom(fieldOf(savedSpend, "spend"), new Date(now));
     deck.costSeen = costSeenFrom(savedSpend, deckSessionId);
     deck.hist = histFrom(savedHist, now);
@@ -1668,7 +2533,12 @@ export const register: Register = (on, given) => {
     void refreshWeather($);
     startDeckClock($);
     // "Idle" and the 5-minute windows move with the clock, not only with events.
-    $.clock.every(1000, () => $.ui.invalidate("ui.render"));
+    $.clock.every(1000, async () => {
+      const tick = await $.clock.now();
+      if (tick - deckShownTerminalAt < ON_SCREEN_MS || tick - deckShownDesktopAt < ON_SCREEN_MS || tick - paneShownAt < ON_SCREEN_MS) {
+        $.ui.invalidate("ui.render");
+      }
+    });
     await $.command.register({
       name: "jev",
       description: text("ui.command.description", config.locale),
@@ -1681,13 +2551,67 @@ export const register: Register = (on, given) => {
       argumentHint: text("deck.command.argumentHint", config.locale),
       immediate: true,
     });
+    await $.command.register({ name: "pingo", description: "Change Pingo's hat, react, dance, hide, or show", argumentHint: "[hat <name|random>|hats|pet|dance|party|shades|hide|show]" });
     return next(e);
+  });
+
+  on("prompt.compose", async ($, e, next) => {
+    let result = await next(e);
+    result = await farolCompose($, e, result);
+    result = await clarezaCompose($, result);
+    result = await sementeCompose($, e, result);
+    return prismaCompose($, e, result);
+  });
+
+  on("classic.CwdChanged", async ($, e, next) => {
+    const result = await next(e);
+    await syncFarol($);
+    const savedIdeas = await $.store.get(await sementeKey($));
+    await update($, sementeIdeas, () => Array.isArray(savedIdeas) ? savedIdeas as SementeIdea[] : []);
+    sementeTopics.clear();
+    sementeShelvedThisTurn = new Set();
+    await refreshSentinela($);
+    if (await featureEnabled($, "vigia")) await saveVigia($);
+    return result;
+  }).catch(($, e, next) => next(e));
+
+  on("prompt.attachment", async ($, e, next) => {
+    const result = await next(e);
+    const fromChisle = e.origin.kind === "hook" && result.text !== null && result.text.includes("CHISLE");
+    return fromChisle && await featureEnabled($, "clareza") ? { text: null } : result;
   });
 
   on("classic.SessionStart", async ($, e, next) => {
     if (e.source === "clear" || e.source === "resume" || e.source === "fork") {
       await restoreStoredState($);
       mainModel = await $.session.model();
+      await syncFarol($);
+      const savedIdeas = await $.store.get(await sementeKey($));
+      await update($, sementeIdeas, () => Array.isArray(savedIdeas) ? savedIdeas as SementeIdea[] : []);
+      await update($, sementeNudges, () => []);
+      sementeTopics.clear();
+      sementeShelvedThisTurn = new Set();
+      clarityLastAsk = "";
+      await update($, clarezaGrade, () => null);
+      await update($, clarezaRewrite, () => false);
+      await update($, clarezaStatus, () => "");
+      await update($, farolBusy, () => false);
+      await update($, lapidaPhase, () => "idle");
+      await update($, lapidaEnhanced, () => "");
+      await update($, lapidaChanges, () => []);
+      await update($, prismaPending, () => null);
+      await update($, sentinelaReplyTo, () => "");
+      const now = await $.clock.now();
+      sentinelaMe = await $.session.id();
+      await refreshSentinela($);
+      deckSessionId = sentinelaMe;
+      sessionId = deckSessionId.slice(0, 8);
+      deckPet = createPet(now);
+      sessionPetHat = randomPetHat();
+      petHatOverride = undefined;
+      petHatOverrideUntil = 0;
+      await styledPet($, now);
+      if (await featureEnabled($, "vigia")) await saveVigia($);
     }
     return next(e);
   }).catch((_$, e, next) => next(e));
@@ -1709,11 +2633,14 @@ export const register: Register = (on, given) => {
 
   // Record prompt timing and whether the engine accepted it; Jev does not plan main turns.
   on("prompt.submit", async ($, e, next) => {
+    const enriched = await clarezaPromptSubmit($, e);
+    await lapidaPromptSubmit($, enriched);
+    await vigiaPromptSubmit($, enriched);
     const submittedAt = await $.clock.now();
-    promptSubmitted(deckOf(submittedAt), e.text, submittedAt);
+    promptSubmitted(deckOf(submittedAt), enriched.text, submittedAt);
     let messageId = "";
     await updateTrace($, (s) => {
-      const [nextState, id] = submitPrompt(s, { text: e.text, at: submittedAt, origin: e.origin.kind, ...(e.turnId ? { during: e.turnId } : {}) });
+      const [nextState, id] = submitPrompt(s, { text: enriched.text, at: submittedAt, origin: e.origin.kind, ...(e.turnId ? { during: e.turnId } : {}) });
       messageId = id;
       return nextState;
     });
@@ -1724,7 +2651,7 @@ export const register: Register = (on, given) => {
       await updateTrace($, (s) => promptEntered(s, messageId, dropped)).catch(() => undefined);
       return result;
     };
-    return entered(await next(e));
+    return entered(await next(enriched));
   }).catch((_$, e, next) => next(e));
 
   on("turn.start", async ($, e, next) => {
@@ -1737,6 +2664,9 @@ export const register: Register = (on, given) => {
     await updateTrace($, (s) => startTurn(s, e.turnId, e.text, at));
     turnStarted(deckOf(at), e.text, at, locale);
     redrawDeck($);
+    await farolTurnStarted($);
+    await clarezaTurnStarted($, e);
+    await sementeTurnStarted($, e);
     return next(e);
   });
 
@@ -1808,6 +2738,10 @@ export const register: Register = (on, given) => {
     await setLive($, { activity: undefined });
     const endedAt = await $.clock.now();
     await updateTrace($, (s) => completeTurn(s, e.turnId, endedAt, e.isAborted ? "aborted" : e.reason));
+    await farolTurnCompleted($, e.agentId);
+    await clarezaTurnCompleted($, e);
+    await sementeTurnCompleted($, e);
+    await vigiaTurnCompleted($, e);
     return next(e);
   });
 
@@ -1816,8 +2750,12 @@ export const register: Register = (on, given) => {
     // Deck tracks every call, another plugin's own included; the Jev path below is Claude's calls only.
     const deckCall = await deckCallOpen($, e);
     // Another plugin's own call ($.tool.call) is no step of Claude's.
-    if (!e.tool_use_id || next.origin.plugin !== "engine") return deckCallClose($, deckCall, next(e));
+    if (!e.tool_use_id || next.origin.plugin !== "engine") return farolAfterTool($, await deckCallClose($, deckCall, next(e)));
     const locale = (await getSettings($)).locale;
+    const input = e as unknown as Record<string, unknown>;
+    const filePath = typeof input.file_path === "string" ? input.file_path : typeof input.notebook_path === "string" ? input.notebook_path : undefined;
+    const trackedEdit = ["Edit", "Write", "NotebookEdit"].includes(e.tool) && filePath ? filePath : undefined;
+    const clashNote = !e.agentId && trackedEdit ? await vigiaTrackFile($, trackedEdit).catch(() => undefined) : undefined;
     const who = actor(e.agentId);
     const summary = toolSummary(e.tool, e as unknown as Record<string, unknown>);
     const startedAt = await $.clock.now();
@@ -1831,7 +2769,6 @@ export const register: Register = (on, given) => {
     }
     await updateTrace($, (s) => toolStart(s, { id: toolUseId, ...(e.agentId ? { agentId: e.agentId } : {}), name: e.tool, at: startedAt }));
     // One line per call: written as it starts, rewritten with its outcome when it ends.
-    const input = e as unknown as Record<string, unknown>;
     const toolDetail = toolDetails(e.tool, input, locale);
     const line = await log($, who, "tool", "info", `▸ ${summary}`, e.agentId, { meta: text("feed.tool.running", locale), ...(toolDetail ? { detail: toolDetail } : {}) });
     if (!e.agentId) await setLive($, { activity: text("feed.activity.running", locale, { activity: short(summary, 40) }) });
@@ -1840,6 +2777,8 @@ export const register: Register = (on, given) => {
     const result = await deckCallClose($, deckCall, next(e).finally(() => {
       if (sift) $.clock.after(1000, () => siftRuns.delete(toolUseId));
     }));
+    if (trackedEdit) sementeFileEdited(trackedEdit, result.deny === undefined && !result.isError);
+    const finalResult = await farolAfterTool($, clashNote && result.deny === undefined ? { ...result, context: [...(result.context ?? []), clashNote] } : result);
     // Reporting or routing may fail after a tool ran; return its result rather than run it again.
     try {
       const endedAt = await $.clock.now();
@@ -1864,11 +2803,31 @@ export const register: Register = (on, given) => {
       }
       if (e.agentId) await updateRun($, e.agentId, (run) => ({ ...run, activity: text("feed.activity.waiting", locale) }));
       if (!e.agentId) await setLive($, { activity: text("feed.activity.waiting", locale) });
-      return result;
+      return finalResult;
     } catch {
-      return result;
+      return finalResult;
     }
   }).catch((_$, e, next) => next(e));
+
+  on("tool.call", { tool: "TodoWrite" }, async ($, e, next) => {
+    if (e.agentId === undefined && await featureEnabled($, "vigia")) await saveVigia($, (record) => { record.tasks = e.todos.map((todo, i) => ({ id: `todo-${i}`, text: todo.content, status: todo.status })); });
+    return next(e);
+  }).catch(($, e, next) => next(e));
+
+  on("tool.call", { tool: "TaskCreate" }, async ($, e, next) => {
+    const result = await next(e);
+    const task = (result.result as { task?: { id: string; subject: string } } | undefined)?.task;
+    if (e.agentId === undefined && task && await featureEnabled($, "vigia")) await saveVigia($, (record) => record.tasks.push({ id: task.id, text: task.subject, status: "pending" }));
+    return result;
+  }).catch(($, e, next) => next(e));
+
+  on("tool.call", { tool: "TaskUpdate" }, async ($, e, next) => {
+    const result = await next(e);
+    if (e.agentId === undefined && await featureEnabled($, "vigia") && (result.result as { success?: boolean } | undefined)?.success) await saveVigia($, (record) => {
+      record.tasks = record.tasks.filter((task) => !(task.id === e.taskId && e.status === "deleted")).map((task) => task.id === e.taskId ? { ...task, text: e.subject ?? task.text, status: e.status && e.status !== "deleted" ? e.status : task.status } : task);
+    });
+    return result;
+  }).catch(($, e, next) => next(e));
 
   // Subagents: Jev picks the model and effort, unless Claude asked for a model itself.
   on("agent.spawn", async ($, e, next) => {
@@ -2075,6 +3034,126 @@ export const register: Register = (on, given) => {
 
   // /deck: the band above the prompt; the dashboard's Deck tab runs the same commands through runDeckCommand
   on("command.run", { command: "deck" }, ($, e) => runDeckCommand($, e.args));
+  on("command.run", { command: "pingo" }, ($, e) => runPingoCommand($, e.args));
+  on("command.run", { command: "farol" }, async ($) => { await $.ui.open({ id: "farol", title: "Farol", focus: true, closeOnEscape: true }); return {}; });
+  on("command.run", { command: "clareza" }, async ($, e) => runClarezaCommand($, e.args));
+  on("command.run", { command: "semente" }, async ($, e) => {
+    const value = e.args.trim();
+    if (!value) { await $.ui.open({ id: "semente", title: "Semente", focus: true, closeOnEscape: true }); return {}; }
+    const id = await addSemente($, value);
+    sementeShelvedThisTurn.add(id);
+    return { text: (await getSettings($)).locale === "pt" ? `Ideia guardada: ${value}` : `Saved for later: ${value}` };
+  });
+  on("command.run", { command: "lapida" }, async ($, e) => {
+    await enhanceLapida($, e.args);
+    return { text: await read($, lapidaNote) || ((await getSettings($)).locale === "pt" ? "Prompt lapidado no campo. Revise e envie quando quiser." : "Enhanced prompt is in the prompt box. Review it, then send when ready.") };
+  });
+  on("command.run", { command: "prisma-decisions" }, async ($, e) => {
+    const decisions = await readPrismaDecisions($);
+    const pt = (await getSettings($)).locale === "pt";
+    if (e.args.trim() === "clear") { await $.store.delete(await prismaDecisionKey($)); return { text: pt ? `${decisions.length} decisões Prisma removidas.` : `Cleared ${decisions.length} Prisma decisions.` }; }
+    if (e.args.trim()) return { text: "Usage: /prisma-decisions [clear]" };
+    return { text: decisions.length ? `${pt ? "Decisões Prisma" : "Prisma decisions"}:\n${decisions.map((item, i) => `${i + 1}. ${item.question} → ${item.choice}${item.description ? ` (${item.description})` : ""}`).join("\n")}` : (pt ? "Nenhuma decisão de design salva para este projeto." : "No design choices remembered for this project.") };
+  });
+  on("command.run", { command: "sentinela" }, async ($) => { await toggleSentinela($); return {}; });
+  on("command.run", { command: "vigia" }, async ($) => { await refreshVigia($); await $.ui.open({ id: "vigia", title: "Vigia", focus: true, closeOnEscape: true }); return {}; });
+
+  on("tool.call", { tool: "mcp__jev__farol_assumption" }, async ($, e) => {
+    const pt = (await getSettings($)).locale === "pt";
+    if (!(await featureEnabled($, "farol"))) return { deny: pt ? "Farol está desligado na Configuração do Jev." : "Farol is disabled in Jev Configuration." };
+    const assumption = typeof e.assumption === "string" ? e.assumption.trim() : "";
+    if (!assumption) return { deny: "assumption is required" };
+    const context = typeof e.context === "string" && e.context.trim() ? e.context.trim() : undefined;
+    let id = 0;
+    await update($, farolSeq, (value) => (id = value + 1));
+    const item: FarolAssumption = { id, text: assumption, ...(context ? { context } : {}), verdict: "open", sent: false };
+    await update($, farolItems, (list) => [...list, item]);
+    return { result: pt ? `Farol registrou a suposição #${id}. Continue trabalhando.` : `Farol recorded assumption #${id}. Continue working.` };
+  }).catch(() => ({ deny: "Farol could not record that assumption." }));
+
+  on("tool.call", { tool: "mcp__jev__semente_shelve" }, async ($, e) => {
+    const pt = (await getSettings($)).locale === "pt";
+    if (!(await featureEnabled($, "semente"))) return { deny: pt ? "Semente está desligada na Configuração do Jev." : "Semente is disabled in Jev Configuration." };
+    const value = typeof e.text === "string" ? e.text.trim() : "";
+    if (!value) return { deny: "Semente needs a non-empty idea." };
+    const id = await addSemente($, value, "claude");
+    sementeShelvedThisTurn.add(id);
+    $.ui.toast(pt ? `Claude guardou uma ideia: ${value}` : `Claude saved an idea: ${value}`);
+    return { result: pt ? `Ideia guardada para depois: ${value}` : `Saved for later: ${value}` };
+  }).catch(() => ({ deny: "Semente could not save that idea." }));
+
+  on("tool.call", { tool: "AskUserQuestion" }, async ($, e, next) => {
+    if (!(await featureEnabled($, "prisma")) || !e.questions.some((question) => question.options?.some((option) => prismaIsSvg(option.preview)))) return next(e);
+    const preferences = await readFeaturePreferences($);
+    const tmp = await $.env.get("TEMP") ?? await $.env.get("TMP") ?? await $.env.get("TMPDIR") ?? "/tmp";
+    const id = String(e.tool_use_id ?? Math.random().toString(36).slice(2)).replace(/[^a-zA-Z0-9-]/g, "");
+    const dir = `${tmp.replace(/[\\/]$/, "")}/jev-prisma/${id}`;
+    const questions: PrismaQuestion[] = await Promise.all(e.questions.map(async (question, qi) => ({
+      question: question.question, header: question.header, multiSelect: question.multiSelect,
+      options: await Promise.all((question.options ?? []).map(async (option, oi) => {
+        if (!prismaIsSvg(option.preview)) return { label: option.label, description: option.description };
+        const svg = prismaSafeSvg(option.preview!);
+        await $.fs.write(`${dir}/${qi}-${oi}.svg`, svg);
+        return { label: option.label, description: option.description, svg, file: `${qi}-${oi}.svg` };
+      })),
+    })));
+    const token = crypto.randomUUID();
+    const pt = (await getSettings($)).locale === "pt";
+    const gallery = `${dir}/index.html`;
+    const answerFile = `${dir}/answer.json`;
+    await $.fs.write(gallery, prismaGallery(questions, token, pt));
+    await $.fs.write(`${dir}/serve.py`, PRISMA_SERVE_PY);
+    await update($, prismaPending, () => ({ id, questions, picks: questions.map(() => []), others: questions.map(() => null), mix: questions.map(() => false), gallery, answerFile }));
+    if (preferences.designSurface !== "browser") await $.ui.open({ id: "prisma", title: "Prisma", focus: true, closeOnEscape: true, holdToasts: true });
+    const windows = await $.env.get("OS") === "Windows_NT";
+    const commands = windows ? [["python", "-I"], ["py", "-3", "-I"]] : [["python3", "-I"], ["python", "-I"]];
+    let answers: Record<string, string> | null = null;
+    let cancelled = false;
+    let failed = false;
+    let ran: { exitCode: number; stdout: string; stderr: string } | null = null;
+    while (!answers && !cancelled && !failed) {
+      const started = await $.clock.now();
+      ran = null;
+      for (const command of commands) {
+        ran = await $.process.run([...command, `${dir}/serve.py`, dir, token, preferences.designSurface === "pane" ? "0" : "1"], { timeoutMs: 600000 }).catch(() => null);
+        if (ran) break;
+      }
+      if (ran) {
+        if (ran.exitCode !== 0) failed = true;
+        else try {
+          const value: unknown = JSON.parse(ran.stdout);
+          if (value === null) cancelled = true;
+          else if (value && typeof value === "object" && !Array.isArray(value)) answers = value as Record<string, string>;
+          else failed = true;
+        } catch { failed = true; }
+      } else if (next.signal.aborted || await $.clock.now() - started < 60000) failed = true;
+    }
+    await update($, prismaPending, () => null);
+    if (preferences.designSurface !== "browser") await $.ui.close({ id: "prisma" });
+    if (cancelled) return { deny: "The Prisma picker closed without an answer. Ask the user what they want instead." };
+    if (failed || !ran) { $.ui.log("Prisma picker could not start its local preview server; falling back to the normal question dialog."); return next(e); }
+    if (!answers) return { deny: "Prisma returned no answer." };
+    await rememberPrisma($, questions, answers).catch(() => {});
+    return { result: { questions: e.questions, answers } };
+  }).catch(async ($, e, next) => {
+    await update($, prismaPending, () => null);
+    await $.ui.close({ id: "prisma" }).catch(() => {});
+    $.ui.log(`Prisma picker failed: ${next.error.message ?? next.error.kind}; using the normal question dialog.`);
+    return next(e);
+  });
+
+  on("ui.render", { component: "AskUserQuestion" }, async ($, e, next) => {
+    const questions = e.props.questions as { options?: { label: string; preview?: string }[] }[];
+    if (!questions.some((question) => question.options?.some((option) => prismaIsSvg(option.preview)))) return next(e);
+    const plain = questions.map((question) => ({ ...question, options: question.options?.map(({ preview, ...option }) => prismaIsSvg(preview) ? option : { ...option, preview }) }));
+    return next({ ...e, props: { ...e.props, questions: plain } });
+  });
+
+  on("ui.close", async ($, e, next) => {
+    const picker = await read($, prismaPending);
+    if (e.id === "prisma" && picker && e.origin.kind !== "plugin") await $.fs.write(picker.answerFile, "null");
+    return next(e);
+  }).catch(($, e, next) => next(e));
 
   on("command.run", { command: "jev" }, async ($, e) => {
     const locale = (await getSettings($)).locale;
@@ -2159,7 +3238,148 @@ export const register: Register = (on, given) => {
     paneShownAt = shown.now;
     // Deck's state is read for its own tab only: no other tab, band or agent pane subscribes to it
     const panel = shown.tab === "deck" ? await deckPanelOf($, shown.locale) : null;
-    return renderPane(els, { ...shown, deck: panel }, actions($, key));
+    return renderPane(els, { ...shown, deck: panel }, actions($));
+  });
+
+  on("ui.render", { component: "Pane", requestId: "farol" }, async ($, e) => {
+    const ui = $.ui.resolve(e);
+    const { Box, Text, Button } = ui;
+    const Input = "Input" in ui ? ui.Input : undefined;
+    const pt = (await getSettings($)).locale === "pt";
+    if (!(await featureEnabled($, "farol"))) return <Text dimColor>{pt ? "Farol está desligado na Configuração do Jev." : "Farol is disabled in Jev Configuration."}</Text>;
+    const list = await read($, farolItems);
+    const rules = await read($, farolRules);
+    const newest = [...list].reverse().find((item) => item.verdict === "open");
+    if (!list.length && !rules.length) return <Text dimColor>{pt ? "Nenhuma suposição registrada nesta sessão." : "No assumptions logged in this session."}</Text>;
+    return <Box flexDirection="column" gap={1}>
+      <Text bold>{list.length} {pt ? "suposições" : "assumptions"} · {rules.length} {pt ? "regras do projeto" : "project rules"}</Text>
+      {rules.map((rule, i) => <Box key={`rule-${i}`}><Text>• {rule.correction} <Text dimColor>({pt ? "não" : "not"}: {rule.assumption})</Text></Text><Button key={`delete-rule-${i}`} label={pt ? "Excluir" : "Delete"} dimColor onPress={() => void saveFarolRules($, (all) => all.filter((item) => item !== rule))} /></Box>)}
+      <Text dimColor>{pt ? "Marque a suposição aberta mais recente como certa ou errada. Uma correção vira regra do projeto." : "Mark the newest open assumption right or wrong. A correction becomes a project rule."}</Text>
+      {[...list].reverse().map((item) => <Box key={`assumption-${item.id}`} flexDirection="column">
+        <Text bold>{item.verdict === "right" ? "✓" : item.verdict === "wrong" ? "✗" : "?"} #{item.id} {item.text}</Text>
+        {item.context && <Text dimColor>{item.context}</Text>}{item.note && <Text>→ {item.note}</Text>}
+        <Box flexDirection="row" gap={1}><Button key={`right-${item.id}`} label={pt ? "✓ Certa" : "✓ Right"} hotkey={item === newest ? "y" : undefined} onPress={() => void farolJudge($, item.id, "right")} /><Button key={`wrong-${item.id}`} label={pt ? "✗ Errada" : "✗ Wrong"} hotkey={item === newest ? "n" : undefined} onPress={() => void farolJudge($, item.id, "wrong", item.note)} />{item.verdict !== "open" && <Text dimColor>{item.sent ? (pt ? "enviada ao Claude" : "sent to Claude") : (pt ? "pendente" : "pending")}</Text>}</Box>
+        {Input && item.verdict !== "right" && <Input key={`fix-${item.id}`} placeholder={pt ? "O que deveria ser?" : "What should it be instead?"} value={item.note ?? ""} onSubmit={(value) => { if (value.trim()) void farolJudge($, item.id, "wrong", value.trim()); }} />}
+      </Box>)}
+      {list.some((item) => item.sent) && <Button key="clear-reviewed" label={pt ? "Limpar revisadas" : "Clear reviewed"} dimColor onPress={() => void update($, farolItems, (all) => all.filter((item) => item.verdict === "open" || !item.sent))} />}
+    </Box>;
+  });
+
+  on("ui.render", { component: "Pane", requestId: "semente" }, async ($, e) => {
+    const ui = $.ui.resolve(e);
+    const { Box, Text, Button } = ui;
+    const Input = "Input" in ui ? ui.Input : undefined;
+    const pt = (await getSettings($)).locale === "pt";
+    if (!(await featureEnabled($, "semente"))) return <Text dimColor>{pt ? "Semente está desligada na Configuração do Jev." : "Semente is disabled in Jev Configuration."}</Text>;
+    const list = await read($, sementeIdeas);
+    return <Box flexDirection="column">
+      {Input && <Input key="new-idea" label="+ " placeholder={pt ? "Nova ideia…" : "New idea…"} submitLabel={pt ? "Salvar" : "Save"} onSubmit={(value) => { if (value.trim()) void addSemente($, value); }} />}
+      {!list.length && <Text dimColor>{pt ? "Prateleira vazia. Use /semente &lt;ideia&gt; para adicionar." : "Shelf empty. Use /semente &lt;idea&gt; to add one."}</Text>}
+      {list.map((idea) => <Box key={idea.id} flexDirection="row" gap={1}><Button key={`send-${idea.id}`} label={pt ? "Enviar" : "Send"} onPress={() => void sendSemente($, [idea])} /><Button key={`delete-${idea.id}`} label="×" dimColor onPress={() => void saveSemente($, (all) => all.filter((item) => item.id !== idea.id))} /><Text dimColor>{idea.source === "claude" ? "Claude" : pt ? "você" : "you"}:</Text><Text>{idea.text}</Text></Box>)}
+    </Box>;
+  });
+
+  on("ui.render", { component: "Pane", requestId: "prisma" }, async ($, e) => {
+    const ui = $.ui.resolve(e);
+    const { Box, Text, Button } = ui;
+    const Svg = "Svg" in ui ? ui.Svg : undefined;
+    const Input = "Input" in ui ? ui.Input : undefined;
+    const pt = (await getSettings($)).locale === "pt";
+    if (!(await featureEnabled($, "prisma"))) return <Text dimColor>{pt ? "Prisma está desligado na Configuração do Jev." : "Prisma is disabled in Jev Configuration."}</Text>;
+    const picker = await read($, prismaPending);
+    if (!picker) return <Text dimColor>{pt ? "Nenhum seletor de design está aberto." : "No design picker is open."}</Text>;
+    const finish = (value: PrismaPicker) => void $.fs.write(value.answerFile, JSON.stringify(prismaAnswers(value)));
+    const choose = async (qi: number, label: string) => {
+      const current = await read($, prismaPending) ?? picker;
+      const next = prismaPick(current, qi, label);
+      await update($, prismaPending, () => next);
+      if (next.questions.length === 1 && !next.questions[0]!.multiSelect && !prismaMixing(next, qi)) finish(next);
+    };
+    const chooseOther = async (qi: number, value: string) => {
+      if (!value.trim()) return;
+      const current = await read($, prismaPending) ?? picker;
+      const next = { ...current, others: current.others.map((old, i) => i === qi ? value.trim() : old) };
+      await update($, prismaPending, () => next);
+      if (next.questions.length === 1) finish(next);
+    };
+    const prefs = await readFeaturePreferences($);
+    return <Box flexDirection="column" gap={1}>
+      {picker.questions.map((question, qi) => <Box key={`question-${qi}`} flexDirection="column">
+        <Text bold>{question.header}: {question.question}{question.multiSelect ? (pt ? " (escolha várias)" : " (pick any)") : prismaMixing(picker, qi) ? (pt ? " (misture duas)" : " (mix two)") : ""}</Text>
+        <Box flexDirection="row" flexWrap="wrap" gap={1}>{question.options.map((option, oi) => {
+          const selected = picker.picks[qi]?.includes(option.label) ?? false;
+          const hotkey = qi + oi < 9 ? String(qi + oi + 1) : undefined;
+          return <Box key={`option-${qi}-${oi}`} flexDirection="column" width={e.surface === "terminal" ? 30 : undefined} borderStyle="round" borderColor={selected ? "green" : undefined} borderDimColor={!selected} paddingX={1}>
+            {Svg && option.svg && <Svg source={option.svg} alt={option.label} width={300} />}
+            {!Svg && option.svg && <Text dimColor>{prefs.designSurface === "pane" ? (pt ? "A prévia SVG está disponível no navegador." : "SVG preview is available in browser mode.") : (pt ? "Abra o seletor no navegador para ver a prévia." : "Open the browser picker to see the preview.")}</Text>}
+            <Button key={`pick-${qi}-${oi}`} hotkey={hotkey} label={`${selected ? "✓ " : ""}${option.label}`} onPress={() => void choose(qi, option.label)} />
+            {option.description && <Text dimColor>{option.description}</Text>}
+          </Box>;
+        })}</Box>
+        {!question.multiSelect && question.options.length > 1 && <Button key={`mix-${qi}`} hotkey={picker.questions.length === 1 ? "m" : undefined} label={prismaMixing(picker, qi) ? (pt ? "Misturar duas · ligado" : "Mix two · on") : (pt ? "Misture duas opções" : "Mix two of these")} onPress={() => void update($, prismaPending, (current) => current ? prismaToggleMix(current, qi) : current)} />}
+        {Input && <Input key={`custom-${qi}`} label={pt ? "Ou descreva sua opção" : "Or describe your own"} placeholder={pt ? "digite e pressione Enter" : "type and press Enter"} value={picker.others[qi] ?? ""} onSubmit={(value) => void chooseOther(qi, value)} />}
+      </Box>)}
+      <Box flexDirection="row" gap={1}>
+        {(picker.questions.length > 1 || picker.questions.some((question) => question.multiSelect) || picker.mix.some(Boolean)) && prismaComplete(picker) && <Button key="submit" hotkey="s" variant="primary" label={pt ? "Enviar" : "Submit"} onPress={() => finish(picker)} />}
+        {(prefs.designSurface !== "pane" || !Svg) && <Button key="browser" label={pt ? "Abrir no navegador" : "Open in browser"} dimColor onPress={async () => { const port = await $.fs.read(picker.gallery.replace(/index\.html$/, "port")); const url = `http://127.0.0.1:${String(port).trim()}/index.html`; const windows = await $.env.get("OS") === "Windows_NT"; const command = windows ? ["python", "-c", "import webbrowser,sys;webbrowser.open(sys.argv[1])", url] : ["python3", "-c", "import webbrowser,sys;webbrowser.open(sys.argv[1])", url]; void $.process.run(command).catch(() => {}); }} />}
+      </Box>
+    </Box>;
+  });
+
+  on("ui.render", { component: "Pane", requestId: "sentinela" }, async ($, e) => {
+    const ui = $.ui.resolve(e);
+    const { Box, Text, Button } = ui;
+    const Input = "Input" in ui ? ui.Input : undefined;
+    if (!(await featureEnabled($, "sentinela"))) return <Text dimColor>Sentinela is disabled in Jev Configuration.</Text>;
+    const list = await read($, sentinelaSessions);
+    const now = await $.clock.now();
+    const target = await read($, sentinelaReplyTo);
+    const replying = list.find((row) => row.id === target);
+    const trouble = await read($, sentinelaProblem);
+    const pt = (await getSettings($)).locale === "pt";
+    return <Box flexDirection="column">
+      <Text dimColor>{list.length} {pt ? "sessões em todos os projetos" : "sessions across projects"} · {pt ? "atualiza automaticamente" : "auto-refreshes"}</Text>
+      {trouble && <Text color="error">{trouble}</Text>}{!list.length && <Text dimColor>{pt ? "Nenhuma sessão encontrada." : "No sessions found."}</Text>}
+      {list.map((row) => {
+        const isMe = row.id === sentinelaMe;
+        const state = row.waitingFor || (row.status === "waiting" ? (pt ? "precisa de você" : "needs you") : row.status === "working" ? (pt ? "trabalhando" : "working") : (pt ? "concluída" : "done"));
+        return <Box key={row.id} flexDirection="row" gap={1}><Box flexGrow={1} flexShrink={1}><Text wrap="truncate-end"><Text color={row.status === "waiting" ? "error" : row.status === "working" ? "warning" : "success"}>{row.status === "waiting" ? "? " : row.status === "working" ? "● " : "✓ "}</Text><Text bold>{sentinelaLabel(row)}</Text>{isMe && <Text dimColor>{pt ? " (esta)" : " (this)"}</Text>}<Text> · {state}</Text><Text dimColor> · {sentinelaAge(now - row.since)} · {row.project}</Text></Text></Box>
+          {Input && !isMe && row.status === "waiting" && <Button key={`reply-${row.id}`} label={pt ? "responder" : "reply"} plain onPress={async () => { await update($, sentinelaReplyTo, (value) => value === row.id ? "" : row.id); await resizeSentinela($); await $.ui.focus({ requestId: "sentinela", key: "reply-text" }).catch(() => {}); }} />}
+          {!isMe && <Button key={`jump-${row.id}`} label="jump" plain dimColor onPress={(surface) => void jumpSentinela($, row, surface.surface)} />}
+        </Box>;
+      })}
+      {Input && replying && <Input key="reply-text" label={`→ ${sentinelaLabel(replying)}`} placeholder={pt ? "uma linha; Enter envia; vazio cancela" : "one line; Enter sends; empty cancels"} submitLabel={pt ? "enviar" : "send"} autoFocus onSubmit={(value) => void sendSentinelaReply($, value)} />}
+    </Box>;
+  });
+
+  on("ui.render", { component: "Pane", requestId: "vigia" }, async ($, e) => {
+    const { Box, Text } = $.ui.resolve(e);
+    const pt = (await getSettings($)).locale === "pt";
+    if (!(await featureEnabled($, "vigia"))) return <Text dimColor>{pt ? "Vigia está desligado na Configuração do Jev." : "Vigia is disabled in Jev Configuration."}</Text>;
+    await refreshVigia($);
+    const list = await read($, vigiaSessions);
+    const now = await $.clock.now();
+    const conflicts = await vigiaClashes($, now);
+    const own = await ensureVigia($);
+    const taskBar = (tasks: VigiaTask[]) => { const done = tasks.filter((task) => task.status === "completed").length; const cells = Math.min(10, tasks.length); const filled = Math.round((done / tasks.length) * cells); return `${"▰".repeat(filled)}${"▱".repeat(cells - filled)} ${done}/${tasks.length}`; };
+    return <Box flexDirection="column" gap={1}>
+      {!list.length && <Text dimColor>{pt ? "Nenhuma sessão do projeto acompanhada ainda." : "No project sessions tracked yet."}</Text>}
+      {conflicts.length > 0 && <Box flexDirection="column" borderStyle="round" borderColor="red" paddingX={1}><Text bold color="red">⚠ {pt ? "Conflitos de arquivo" : "File clashes"} · {pt ? `últimos ${(await readFeaturePreferences($)).clashMinutes} min` : `last ${(await readFeaturePreferences($)).clashMinutes}m`}</Text>{conflicts.slice(0, 6).map((conflict) => <Text key={`${conflict.other.id}-${conflict.file}`} wrap="truncate">{conflict.file} · {vigiaName(conflict.other)} · {vigiaAgo(now - conflict.at)}</Text>)}</Box>}
+      {list.slice(0, 8).map((record) => {
+        const isMe = record.id === own.id;
+        const current = vigiaAlive(record, now);
+        const overlap = isMe || !current ? [] : vigiaShared(own, record);
+        const doing = vigiaDoing(record);
+        const next = vigiaNext(record);
+        return <Box key={record.id} flexDirection="column" borderStyle="round" borderColor={isMe ? "cyan" : current ? "yellow" : "gray"} borderDimColor={!current} paddingX={1}>
+          <Box justifyContent="space-between"><Text bold wrap="truncate">{isMe ? "★ " : ""}{vigiaName(record)}</Text><Text color={current ? record.isBusy ? "warning" : "success" : "gray"}>{current ? record.isBusy ? `● ${pt ? "trabalhando" : "working"}` : `◐ ${pt ? "aguardando" : "waiting"}` : `○ ${pt ? "encerrada" : "ended"} ${vigiaAgo(now - record.beatAt)}`}</Text></Box>
+          <Text dimColor>{isMe ? (pt ? "esta sessão" : "this session") : record.id.slice(0, 8)} · {record.turns ?? 0} {pt ? "turnos" : "turns"} · {vigiaAgo(now - record.startedAt)}</Text>
+          {record.done && <Text wrap="wrap"><Text color="success">✓ {pt ? "Feito" : "Done"}  </Text>{record.done}</Text>}{doing && <Text wrap="wrap"><Text color="warning">◆ {pt ? "Fazendo" : "Doing"} </Text>{doing}</Text>}{next && <Text wrap="wrap"><Text color="cyan">→ {pt ? "Próximo" : "Next"}  </Text>{next}</Text>}
+          {record.tasks.length > 0 && <Text color="magenta">☰ {pt ? "Tarefas" : "Tasks"} {taskBar(record.tasks)}</Text>}{!!record.files?.length && <Text dimColor wrap="truncate">✎ {pt ? "Arquivos" : "Files"} {record.files.slice(0, 5).join(", ")}</Text>}{!!overlap.length && <Text color="error" wrap="truncate">⚠ {pt ? "Também alterados" : "Also edited"}: {overlap.join(", ")}</Text>}
+          {!current && <Text dimColor>↺ claude --resume {record.id}</Text>}
+        </Box>;
+      })}
+    </Box>;
   });
 
   // Each subagent's own live pane, `jev-agent-<n>`: its task, its numbers and its lines only.
@@ -2179,21 +3399,6 @@ export const register: Register = (on, given) => {
     return renderAgentPane($.ui.resolve(e), shown, run, n, actions($, e.requestId));
   });
 
-  // The panes scroll their own bodies so the header stays: the engine's window never moves, the
-  // offset kept in state does, and its write redraws the pane.
-  on("ui.scroll", { component: "Pane" }, async ($, e, next) => {
-    if (e.requestId !== PANE && !e.requestId.startsWith(AGENT_PANE)) return next(e);
-    const key = await scrollKeyOf($, e.requestId);
-    const room = scrollRoom.get(key);
-    if (!room) return next(e);
-    await update($, scroll, (all) => {
-      const now = all[key] ?? 0;
-      const moved = Math.max(0, Math.min(room.max, room.fromEnd ? now - e.by : now + e.by));
-      return moved === now ? all : { ...all, [key]: moved };
-    });
-    return {};
-  }).catch((_$, e, next) => next(e));
-
   // --- Deck's hooks: events no pingo hook above takes; the events pingo already hooks carry Deck's calls inside them ---
 
   // a session cleared empties the rows; the rest of the state stays
@@ -2202,6 +3407,7 @@ export const register: Register = (on, given) => {
       clearRows(deckOf(await $.clock.now()));
       redrawDeck($);
     }
+    await vigiaSessionEnd($);
     return next(e);
   });
 
@@ -2244,7 +3450,7 @@ export const register: Register = (on, given) => {
     try {
       if (/\?\s*$/.test(e.last_assistant_message ?? "") && askedQuestion(deckOf(await $.clock.now()))) redrawDeck($);
     } catch {}
-    return result;
+    return farolAfterStop($, result);
   }).catch((_$, e, next) => next(e));
 
   // a subagent the runtime reports as stopped
@@ -2322,17 +3528,25 @@ export const register: Register = (on, given) => {
   on("ui.render", { component: "Pane", requestId: "deck-panel" }, async ($, e) => {
     const surface = deckSurface(e.surface);
     const band = await deckBandOf($, Math.max(40, e.props.bodyColumns ?? 100), surface, undefined, false);
-    noteLane(e.requestId, band, surface);
+    noteLane($, e.requestId, band, surface);
     return renderDeck($.ui.resolve(e), { ...band, expanded: true }, surface);
   });
 
   on("ui.render", { component: "AbovePrompt" }, async ($, e, next) => {
     if (e.props.hasSurvey) return next(e);
     const els = $.ui.resolve(e);
+    const { Box } = els;
     const cols = e.props.bodyColumns ?? 80;
     const surface = deckSurface(e.surface);
     const band = await deckBandOf($, cols, surface, e.props.maxRows);
-    noteLane(e.requestId, band, surface);
-    return renderAbove(els, await view($, cols, 2, e.surface), band, surface);
+    noteLane($, e.requestId, band, surface);
+    let below: RenderChildren = renderAbove(els, await view($, cols, 2, e.surface), band, surface);
+    below = await farolAbove($, e, below);
+    below = await clarezaAbove($, e, below);
+    below = await sementeAbove($, e, below);
+    below = await lapidaAbove($, e, below);
+    below = await sentinelaAbove($, e, below);
+    below = await vigiaAbove($, e, below);
+    return <Box flexDirection="column">{below}</Box>;
   });
 };

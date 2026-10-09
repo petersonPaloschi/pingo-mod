@@ -28,6 +28,13 @@ export function successfulFetches(on: On) {
   return authorization;
 }
 
+export function mockEngineServices(on: On): void {
+  on("session.root", async () => ({ value: "/workspace" }));
+  on("tool.register", async (_$, e) => ({ value: { tool: `mcp__jev__${e.name}` } }));
+  on("fs.exists", async () => ({ value: false }));
+  on("fs.write", async () => ({ value: undefined }));
+}
+
 export const pick = (choice: string, confidence: number): ChoiceAnswer => ({
   type: "choice",
   choice,
@@ -83,6 +90,7 @@ export function world(
   { empty = () => false }: WorldOptions = {},
 ) {
   mock.clock(on, { now: Date.parse("2026-10-07T12:00:00Z") });
+  mockEngineServices(on);
 
   const store: MutableStore = {
     provider: "typesafe",

@@ -40,20 +40,23 @@ const fail = (message: string, code = 1): never => { throw new Exit(message, cod
 const configDir = () => process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), ".claude");
 
 /** The newest Pingo store holding Setup's key: `jev_inline-<hash>.json` under --plugin-dir, `jev_<source>…` when installed. */
-function pingoStore(): { credentials?: { apiKey?: unknown; provider?: unknown }; provider?: unknown } {
+function pingoStore(): { credentials?: { apiKey?: unknown; provider?: unknown }; provider?: unknown; locale?: unknown } {
   const dir = path.join(configDir(), "plugins", "store");
   let names: string[] = [];
   try { names = fs.readdirSync(dir).filter((name) => /^jev[_-].*\.json$/i.test(name)); } catch { return {}; }
   const stores = names
     .map((name) => ({ file: path.join(dir, name), mtime: fs.statSync(path.join(dir, name)).mtimeMs }))
     .sort((a, b) => b.mtime - a.mtime);
+  const saved: { credentials?: { apiKey?: unknown; provider?: unknown }; provider?: unknown; locale?: unknown } = {};
   for (const { file } of stores) {
     try {
       const data = JSON.parse(fs.readFileSync(file, "utf8"));
-      if (typeof data?.credentials?.apiKey === "string" && data.credentials.apiKey.trim()) return data;
+      if (!saved.credentials && typeof data?.credentials?.apiKey === "string" && data.credentials.apiKey.trim()) saved.credentials = data.credentials;
+      if (saved.provider === undefined && data?.provider !== undefined) saved.provider = data.provider;
+      if (saved.locale === undefined && (data?.locale === "auto" || data?.locale === "en" || data?.locale === "pt")) saved.locale = data.locale;
     } catch {}
   }
-  return {};
+  return saved;
 }
 
 function settings(flags: Flags) {
@@ -70,6 +73,7 @@ function settings(flags: Flags) {
     locale: process.env.CLAUDE_PLUGIN_OPTION_LOCALE,
   };
   const store = pingoStore();
+  if (store.locale === "auto" || store.locale === "en" || store.locale === "pt") options.locale = store.locale;
   let fromSetup = false;
   const saved = store.credentials;
   if (!options.api_key?.trim() && typeof saved?.apiKey === "string") {

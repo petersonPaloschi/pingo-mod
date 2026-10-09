@@ -4,6 +4,7 @@ import type { On, RenderPropsOf } from "claude-code";
 import { expect, mock, test } from "claude-code/testing";
 
 import type { FeedEntry, RouteEvent } from "../types";
+import { DEFAULT_FEATURES } from "../hooks/core/plan.ts";
 import { prettyModel } from "../hooks/flow.ts";
 import { emptyTrace } from "../hooks/trace.ts";
 import { formatClock, type Locale } from "../hooks/i18n.ts";
@@ -11,7 +12,7 @@ import { displayWidth, rowsOf } from "../hooks/layout.ts";
 import { clip, clockWidth, oneLine, renderPane, shares, type Actions, type Els, type View } from "../hooks/ui.tsx";
 import { normalizeTab } from "../hooks/register.tsx";
 import { en } from "../hooks/strings/en.ts";
-import { PANE_PROPS } from "./helpers.ts";
+import { PANE_PROPS, mockEngineServices } from "./helpers.ts";
 
 const NOW = Date.parse("2026-10-07T12:00:00Z");
 const ASK = { origin: { kind: "composer" }, presentation: { isFullscreen: true, columns: 160 } } as const;
@@ -20,6 +21,7 @@ const BAND_PROPS = { hasSurvey: false, isWorking: false, maxRows: 3, bodyColumns
 /** A session with no key: Jev is never asked, so every prompt passes it by. */
 function noKey(on: On) {
   mock.clock(on, { now: NOW });
+  mockEngineServices(on);
   mock.store(on);
   mock.env(on, {});
   on("command.register", async () => ({ value: { command: "jev" } }));
@@ -124,7 +126,8 @@ function harness() {
     tab: "live",
     range: 0,
     setup: { provider: "typesafe", message: "", isOk: true },
-    features: { agents: true },
+    features: { ...DEFAULT_FEATURES, agents: true },
+    preferences: { assumptionScope: "all", plainLevel: "beginner", plainReview: true, plainSound: true, petHat: "random", petShades: false, designSurface: "auto", ideaNudges: true, promptLearning: true, monitorEveryMs: 5000, trackerSummary: false, clashMinutes: 30 },
     flowDetails: false,
     feed: [],
     live: {},
@@ -149,7 +152,7 @@ test("persisted legacy tabs resolve to valid screens on both surfaces", () => {
   const retired = [
     ["baseline", "logs", "Request log"],
     ["flow", "live", "Live"],
-    ["features", "configuration", "Provider and language"],
+    ["features", "features", "Integrated features"],
     ["reasons", "logs", "Request log"],
     ["setup", "configuration", "Provider and language"],
     ["log", "logs", "Request log"],
@@ -183,6 +186,16 @@ test("the live log has no time column: the time sits faint under the text and th
   expect(texts(tree).some((one) => one.startsWith(time))).toBe(true);
   const gutter = elements(tree).find((el) => typeof el.props?.width === "number" && texts(el).join("").includes("You"));
   expect(gutter!.props!.width).toBeGreaterThanOrEqual(6 + 7);
+});
+
+test("the request log draws newest first", () => {
+  const { els, act, event, view } = harness();
+  const events = [event(1), { ...event(2), tool: "Edit" }];
+  const lines = texts(renderPane(els, view({ tab: "logs", events, fixed: false }), act)).join("\n");
+  const newest = lines.indexOf("Edit");
+  const older = lines.indexOf("Read");
+  expect(newest).toBeGreaterThanOrEqual(0);
+  expect(older).toBeGreaterThan(newest);
 });
 
 test("a scrolled-back live log stays on the lines it showed as new ones arrive", () => {
@@ -241,7 +254,8 @@ for (const width of [50, 140]) {
     const events = Array.from({ length: 40 }, (_, i) => event(i + 1));
     expect(offset(events, 0)).toBe(0);
     expect(offset(events, 6)).toBe(6);
-    expect(offset([...events, event(41), event(42)], 6)).toBe(10);
+    const newRows = width === 50 ? 3 : 2;
+    expect(offset([...events, event(41), event(42)], 6)).toBe(6 + newRows * 2);
     expect(offset([...events, event(41), event(42)], 0)).toBe(0);
   });
 }

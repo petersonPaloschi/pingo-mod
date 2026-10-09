@@ -1,5 +1,7 @@
 import { expect, test } from "claude-code/testing";
 
+import { brailleBit } from "../../hooks/dots.ts";
+import { displayWidth } from "../../hooks/layout.ts";
 import { MOODS, pingoSvg } from "../../hooks/mascots/pingo.ts";
 import {
   PET_ACTS,
@@ -22,7 +24,14 @@ const changed = (a: Frame, b: Frame) => {
   return a.flat().filter(([char, color], i) => char !== right[i]![0] || color !== right[i]![1]).length;
 };
 const dots = (char: string) => (char === " " ? 0 : [...Array(8).keys()].filter((bit) => (char.codePointAt(0)! - 0x2800) & (1 << bit)).length);
+const pixels = (frame: Frame) => Array.from({ length: frame.length * 4 }, (_, y) =>
+  Array.from({ length: frame[0]!.length * 2 }, (_, x) => {
+    const [char] = frame[y >> 2]![x >> 1]!;
+    return char !== " " && ((char.codePointAt(0)! - 0x2800) & brailleBit(x & 1, y & 3)) ? 1 : 0;
+  }),
+);
 const circles = (svg: string) => (svg.match(/<circle/g) ?? []).length;
+const coloredDots = (frame: Frame, color: number) => frame.flat().reduce((sum, [char, ink]) => sum + (ink === color ? dots(char) : 0), 0);
 
 test("a still pet is a still picture: the idle sprite changes a couple of cells a tenth of a second, not a third of them", () => {
   const steps = Array.from({ length: 30 }, (_, i) => changed(petFrame("idle", i * 100, 1), petFrame("idle", i * 100 + 100, 1)));
@@ -40,6 +49,7 @@ test("every act is a 12 by 4 braille frame, and the eyes show in the mood's own 
       expect(frame).toHaveLength(PET_BRAILLE.rows);
       for (const row of frame) {
         expect(row).toHaveLength(PET_BRAILLE.columns);
+        expect(displayWidth(row.map(([char]) => char).join(""))).toBe(PET_BRAILLE.columns);
         for (const [char, color] of row) {
           expect(char).toMatch(/^[⠀-⣿ ]$/);
           expect(Number.isInteger(color) && color >= 0 && color <= 0xffffff).toBe(true);
@@ -76,6 +86,7 @@ test("facing left is facing right, mirrored", () => {
     for (const ms of [0, 400, 1300]) {
       const right = petFrame(act, ms, 1);
       const left = petFrame(act, ms, -1);
+      expect(pixels(left)).toEqual(pixels(right).map((row) => [...row].reverse()));
       right.forEach((row, r) =>
         row.forEach(([char, color], c) => {
           const [mirrored, mirroredColor] = left[r]![PET_BRAILLE.columns - 1 - c]!;
@@ -85,6 +96,38 @@ test("facing left is facing right, mirrored", () => {
       );
     }
   }
+});
+
+test("every hat and the sunglasses keep their exact shape when the pet turns", () => {
+  for (const hat of ["none", "tophat", "party", "crown", "wizard", "cowboy", "propeller", "chef", "viking", "halo", "santa", "nightcap"]) {
+    const right = petFrame("walk", 500, 1, hat, true);
+    const left = petFrame("walk", 500, -1, hat, true);
+    expect(pixels(left)).toEqual(pixels(right).map((row) => [...row].reverse()));
+    right.forEach((row, r) => row.forEach(([, color], c) => {
+      expect(left[r]![PET_BRAILLE.columns - 1 - c]![1]).toBe(color);
+    }));
+  }
+});
+
+test("hats stay above the face in every act", () => {
+  for (const act of PET_ACTS) for (const ms of [0, 300, 700, 1300]) {
+    const eyeColor = MOODS[petMoodFor(act)].color;
+    const plain = petFrame(act, ms, 1);
+    const eyes = coloredDots(plain, eyeColor);
+    for (const hat of ["tophat", "party", "crown", "wizard", "cowboy", "propeller", "chef", "viking", "halo", "santa", "nightcap"]) {
+      const frame = petFrame(act, ms, 1, hat);
+      expect(changed(frame, plain)).toBeGreaterThan(0);
+      expect(coloredDots(frame, eyeColor)).toBe(eyes);
+    }
+  }
+});
+
+test("terminal frames reuse cells inside the same tenth and separate acts, hats, and directions", () => {
+  const first = petFrame("walk", 700, 1);
+  expect(petFrame("walk", 799, 1)).toBe(first);
+  expect(petFrame("walk", 800, 1)).not.toBe(first);
+  expect(petFrame("walk", 700, 1, "tophat")).not.toBe(first);
+  expect(petFrame("walk", 700, -1)).not.toBe(first);
 });
 
 test("the terminal lane is as wide as the band less a margin, and the sprite stands where the pet has walked to", () => {

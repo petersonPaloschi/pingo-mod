@@ -2,7 +2,7 @@
 // top when the pane is narrow), and the open screen beside it, built of framed cards, colored pills and block bars.
 import type { ElementTable, RenderChildren } from "claude-code";
 
-import type { AgentRun, AgentState, FeatureFlags, FeatureId, FeedEntry, FeedTone, JevTab, LiveNow, RouteEvent, SetupDraft, TraceState, TraceStep } from "../types";
+import type { AgentRun, AgentState, FeatureFlags, FeatureId, FeaturePreferences, FeedEntry, FeedTone, JevTab, LiveNow, RouteEvent, SetupDraft, TraceState, TraceStep } from "../types";
 import { features, modelName } from "./feed.ts";
 import { PROVIDER_IDS, PROVIDERS } from "./core/jev.ts";
 import {
@@ -34,12 +34,11 @@ import { renderDeck, type DeckBand, type Surface } from "./deck/band.tsx";
 import { COLLAPSED, SECTIONS, SIZES, type DeckSettings } from "./deck/settings.ts";
 import { DESKTOP_STYLE_NAMES, DESKTOP_STYLES } from "./deck/styles-desktop.ts";
 import { TERMINAL_STYLE_NAMES, TERMINAL_STYLES } from "./deck/styles-terminal.ts";
-import { deckHelp } from "./deck/wire.ts";
 
 /** The pane needs Select and Input, which the terminal and the desktop app draw. */
 export type Els = ElementTable<"terminal" | "desktop">;
 
-/** The seven screens, in the order the rail lists them, with their number keys. */
+/** The eight screens, in the order the rail lists them, with their number keys. */
 export const TABS: readonly (readonly (readonly [JevTab, string, string])[])[] = [
   [
     ["overview", "ui.tab.overview", "1"],
@@ -51,6 +50,7 @@ export const TABS: readonly (readonly (readonly [JevTab, string, string])[])[] =
     ["logs", "ui.tab.logs", "5"],
     ["configuration", "ui.tab.configuration", "6"],
     ["deck", "ui.tab.deck", "7"],
+    ["features", "ui.tab.features", "8"],
   ],
 ];
 
@@ -58,7 +58,8 @@ export const TABS: readonly (readonly (readonly [JevTab, string, string])[])[] =
 const INK = {
   ink: hex(DOT.ink),
   dim: hex(DOT.dim),
-  faint: hex(DOT.faint),
+  faint: "#929baa",
+  border: "#596273",
   route: hex(DOT.route),
   pass: hex(DOT.pass),
   fail: hex(DOT.fail),
@@ -102,6 +103,7 @@ export interface View {
   range: number;
   setup: SetupDraft;
   features: FeatureFlags;
+  preferences: FeaturePreferences;
   feed: readonly FeedEntry[];
   live: LiveNow;
   now: number;
@@ -132,6 +134,7 @@ export interface Actions {
   range: (range: number) => void;
   routing: (on: boolean) => void;
   feature: (id: FeatureId, on: boolean) => void;
+  preference: (key: keyof FeaturePreferences, value: FeaturePreferences[keyof FeaturePreferences]) => void;
   provider: (id: string) => void;
   locale: (value: LocaleOption) => void;
   validate: () => void;
@@ -305,7 +308,7 @@ export function railWidth(width: number): number {
 
 /** Pingo's size in cells for a pane `width` wide: the large sphere in the rail, the small one in the bar on top. */
 export function pingoSize(width: number): { columns: number; rows: number } {
-  return railWidth(width) ? { columns: 18, rows: 8 } : { columns: 14, rows: 6 };
+  return railWidth(width) ? { columns: 18, rows: 8 } : width < 60 ? { columns: 8, rows: 4 } : { columns: 12, rows: 5 };
 }
 
 /** Pingo: braille in the terminal, SVG circles on the desktop. */
@@ -339,8 +342,8 @@ function pill(els: Els, label: string, ground: string) {
 function card(els: Els, title: string, body: RenderChildren, opts: { color?: string; width?: number; note?: string } = {}) {
   const { Box, Text } = els;
   return (
-    <Box flexDirection="column" borderStyle="round" borderColor={opts.color ?? INK.faint} paddingX={1} flexShrink={0} {...(opts.width === undefined ? {} : { width: opts.width })}>
-      <Text bold color={INK.ink} wrap="truncate">{title}</Text>
+    <Box flexDirection="column" borderStyle="round" borderColor={opts.color ?? INK.border} paddingX={1} flexShrink={0} {...(opts.width === undefined ? {} : { width: opts.width })}>
+      <Text bold color={opts.color ?? INK.ink} wrap="wrap">{title}</Text>
       {opts.note ? <Text color={INK.faint} wrap="wrap">{opts.note}</Text> : null}
       <Box flexDirection="column" marginTop={1}>
         {body}
@@ -350,11 +353,12 @@ function card(els: Els, title: string, body: RenderChildren, opts: { color?: str
 }
 
 /** Cards side by side, two to a row where `width` holds two of at least `min` columns, one to a row otherwise. */
-function grid(els: Els, width: number, cards: readonly ((width: number) => RenderChildren)[], min = 34) {
+function grid(els: Els, width: number, cards: readonly ((width: number) => RenderChildren)[], min = 34, maxColumns = 2) {
   const { Box } = els;
-  const each = width >= min * 2 + 1 ? Math.floor((width - 1) / 2) : width;
+  const columns = Math.max(1, Math.min(maxColumns, Math.floor((width + 1) / (min + 1))));
+  const each = Math.floor((width - columns + 1) / columns);
   return (
-    <Box flexDirection="row" flexWrap="wrap" columnGap={1}>
+    <Box flexDirection="row" flexWrap="wrap" columnGap={1} rowGap={1}>
       {cards.map((make) => make(each))}
     </Box>
   );
@@ -388,7 +392,7 @@ function navButtons(els: Els, view: View, act: Actions, upright: boolean) {
 
 function routingButton(els: Els, view: View, act: Actions) {
   const { Button } = els;
-  return <Button key="routing" label={text(view.routing ? "ui.header.turnOff" : "ui.header.turnOn", view.locale)} hotkey="r" onPress={() => act.routing(!view.routing)} />;
+  return <Button key="routing" plain label={text(view.routing ? "ui.header.turnOff" : "ui.header.turnOn", view.locale)} {...(view.tab === "features" ? {} : { hotkey: "r" })} onPress={() => act.routing(!view.routing)} />;
 }
 
 /**
@@ -428,17 +432,18 @@ function topBar(els: Els, view: View, act: Actions) {
   const state = status(view.events, view.routing, view.now, view.locale);
   const mood = moodOf(view);
   const ink = hex(MOODS[mood].color);
+  const compact = view.surface === "terminal" && view.rows < 24;
   return (
     <Box flexDirection="column" borderStyle="round" borderColor={ink} paddingX={1}>
       <Box flexDirection="row" columnGap={2}>
-        {pingoArt(els, view, mood)}
+        {compact ? null : pingoArt(els, view, mood)}
         <Box flexDirection="column" flexGrow={1} flexShrink={1}>
           <Text bold color={INK.ink} wrap="truncate">⠿ jev</Text>
-          <Text wrap="truncate">
+          {compact ? null : <Text wrap="truncate">
             {pill(els, MOODS[mood].face, ink)}
             <Text bold color={ink}>{` ${view.live.asking ? text("ui.header.asking", view.locale) : state.title}`}</Text>
-          </Text>
-          <Text color={INK.dim} wrap="wrap">{statsLine(recentStats(view), view.locale)}</Text>
+          </Text>}
+          {!compact && view.width >= 70 ? <Text color={INK.dim} wrap="wrap">{statsLine(recentStats(view), view.locale)}</Text> : null}
           {routingButton(els, view, act)}
         </Box>
       </Box>
@@ -455,11 +460,9 @@ function titleBar(els: Els, view: View) {
   const entry = TABS.flat().find(([id]) => id === view.tab) ?? TABS[0]![0]!;
   return (
     <Box flexDirection="column">
-      <Text wrap="truncate">
-        <Text bold color={INK.ink}>{text(entry[1] as LocaleKey, view.locale)}</Text>
-        <Text color={INK.faint}>{`  ${text(`ui.purpose.${view.tab}` as LocaleKey, view.locale)}`}</Text>
-      </Text>
-      <Text color={hex(MOODS[moodOf(view)].color)} wrap="truncate">{"━".repeat(Math.max(1, view.width))}</Text>
+      <Text bold color={hex(MOODS[moodOf(view)].color)}>{text(entry[1] as LocaleKey, view.locale)}</Text>
+      <Text color={INK.dim} wrap="wrap">{text(`ui.purpose.${view.tab}` as LocaleKey, view.locale)}</Text>
+      <Text color={INK.border} wrap="truncate">{"─".repeat(Math.max(1, view.width))}</Text>
     </Box>
   );
 }
@@ -650,7 +653,7 @@ function overview(els: Els, view: View, act: Actions) {
   return (
     <Box flexDirection="column" rowGap={1}>
       {head}
-      {grid(els, view.width, cards, 46)}
+      {grid(els, view.width, cards, 28)}
       {events.length ? card(els, text("ui.overview.timeline", view.locale), sparkline(els, view, events, view.width - 4)) : null}
     </Box>
   );
@@ -662,13 +665,12 @@ function overview(els: Els, view: View, act: Actions) {
  */
 function logView(els: Els, view: View) {
   const { Box, Text } = els;
-  const room = view.fixed ? 200 : Math.max(3, view.rows - 18);
-  const rows = view.events.slice(-room).reverse();
   const grouped = reasons(view.events, view.locale);
   const unhandled = view.events.filter((event) => !routed(event)).length;
   const colorFor = (who: string) => (who === text("reason.who.failed", view.locale) ? INK.fail : who === text("reason.who.asked", view.locale) ? INK.pass : INK.dim);
   const most = Math.max(1, ...grouped.map((reason) => reason.count));
-  const barRoom = Math.max(6, view.width - 6);
+  const reasonsShown = grouped.slice(0, 6);
+  const rows = [...view.events].reverse();
   return (
     <Box flexDirection="column" rowGap={1}>
       {card(
@@ -676,25 +678,18 @@ function logView(els: Els, view: View) {
         text("ui.log.reasons", view.locale),
         grouped.length === 0
           ? <Text color={INK.faint}>{text("ui.log.noReasons", view.locale)}</Text>
-          : grouped.map((reason) => (
-              <Box flexDirection="column" marginTop={1}>
-                <Text wrap="wrap">
-                  <Text bold color={colorFor(reason.who)}>{reasonTitle(reason.name, view.locale)}</Text>
-                  <Text color={INK.ink}>{` · ${int(reason.count, view.locale)} · ${pct(reason.count, unhandled, view.locale)}`}</Text>
-                </Text>
-                <Text color={colorFor(reason.who)}>{"▬".repeat(Math.max(1, Math.round((barRoom * reason.count) / most)))}</Text>
-                <Text color={INK.dim} wrap="wrap">{reason.meaning}</Text>
-              </Box>
-            )),
+          : grid(els, view.width - 4, reasonsShown.map((reason) => (reasonWidth) => (
+                <Box width={reasonWidth} flexShrink={0}>
+                  <Text bold color={colorFor(reason.who)} wrap="wrap">{`${reasonTitle(reason.name, view.locale)} · ${int(reason.count, view.locale)} · ${pct(reason.count, unhandled, view.locale)}`}</Text>
+                  <Text color={colorFor(reason.who)} wrap="truncate">{"▬".repeat(Math.max(1, Math.round((Math.max(6, reasonWidth - 2) * reason.count) / most)))}</Text>
+                </Box>
+              )), 28),
+        { width: view.width, note: grouped.length > reasonsShown.length ? text("ui.log.moreReasons", view.locale, { hidden: formatNumber(grouped.length - reasonsShown.length, view.locale) }) : undefined },
       )}
-      <Box flexDirection="column">
-        {section(els, text("ui.log.title", view.locale))}
-        <Text color={INK.faint} wrap="wrap">{text("ui.log.footer", view.locale)}</Text>
-        <Box flexDirection="column" marginTop={1}>
-          {rows.length === 0 ? <Text color={INK.dim}>{text("ui.log.empty", view.locale)}</Text> : null}
-          {rows.map((event) => logEntry(els, view, event))}
-        </Box>
-      </Box>
+      {card(els, text("ui.log.title", view.locale), rows.length ? rows.map((event) => logEntry(els, { ...view, width: view.width - 4 }, event)) : <Text color={INK.dim}>{text("ui.log.empty", view.locale)}</Text>, {
+        width: view.width,
+        note: text("ui.log.recent", view.locale, { shown: formatNumber(rows.length, view.locale), total: formatNumber(view.events.length, view.locale) }),
+      })}
     </Box>
   );
 }
@@ -791,10 +786,94 @@ function step(els: Els, n: number, label: string, done: boolean, body: RenderChi
   );
 }
 
-/**
- * The Configuration screen as three cards: the provider and language (with the three steps of the key), the
- * subagents' planning, and the history kept on disk.
- */
+/** Feature switches and the preferences that control their behavior. */
+function featuresView(els: Els, view: View, act: Actions) {
+  const { Box, Text, Button, Select } = els;
+  const state = `● ${text("ui.configuration.enabledValue", view.locale)}  ○ ${text("ui.configuration.disabledValue", view.locale)}`;
+  const summaryKeys: Record<FeatureId, LocaleKey> = {
+    agents: "ui.features.summary.agents",
+    farol: "ui.features.summary.farol",
+    clareza: "ui.features.summary.clareza",
+    pingoVivo: "ui.features.summary.pingoVivo",
+    prisma: "ui.features.summary.prisma",
+    semente: "ui.features.summary.semente",
+    lapida: "ui.features.summary.lapida",
+    sentinela: "ui.features.summary.sentinela",
+    vigia: "ui.features.summary.vigia",
+  };
+  const preferenceToggle = (key: keyof FeaturePreferences, label: string, on: boolean) => () => (
+    <Button
+      key={key}
+      label={`${on ? "●" : "○"} ${label}`}
+      plain
+      dimColor={!on}
+      onPress={() => act.preference(key, !on)}
+    />
+  );
+  const locale = view.locale;
+  const preferences = view.preferences;
+  const featuresList = features(locale).map((feature) => (cellWidth: number) => {
+    const on = view.features[feature.id];
+    const name = feature.id === "agents" ? text("ui.features.agentsShort", locale) : feature.name;
+    return (
+      <Box flexDirection="column" width={cellWidth} flexShrink={0}>
+        <Button
+          key={"feature-" + feature.id}
+          label={`${on ? "●" : "○"} ${name}`}
+          plain
+          hotkey={feature.hotkey}
+          dimColor={!on}
+          onPress={() => act.feature(feature.id, !on)}
+        />
+        <Text color={INK.dim} wrap="wrap">{text(summaryKeys[feature.id], locale)}</Text>
+      </Box>
+    );
+  });
+  const preferenceGroups: [LocaleKey, readonly (() => RenderChildren)[]][] = [
+    ["ui.features.replyGroup", [
+    () => <Select key="assumption-scope" label={text("ui.features.scope", locale)} value={preferences.assumptionScope} options={[
+      { value: "all", label: text("ui.features.scopeAll", locale) },
+      { value: "important", label: text("ui.features.scopeImportant", locale) },
+    ]} onSelect={(value) => act.preference("assumptionScope", value as FeaturePreferences["assumptionScope"])} />,
+    () => <Select key="plain-level" label={text("ui.features.style", locale)} value={preferences.plainLevel} options={[
+      { value: "beginner", label: text("ui.features.beginner", locale) },
+      { value: "expert", label: text("ui.features.expert", locale) },
+    ]} onSelect={(value) => act.preference("plainLevel", value as FeaturePreferences["plainLevel"])} />,
+    preferenceToggle("plainReview", text("ui.features.answerReview", locale), preferences.plainReview),
+    preferenceToggle("plainSound", text("ui.features.completionSound", locale), preferences.plainSound),
+    ]],
+    ["ui.features.mascotGroup", [
+    () => <Select key="pet-hat" label={text("ui.features.hat", locale)} value={preferences.petHat} options={[
+      { value: "random", label: text("ui.features.randomHat", locale) },
+      ...["tophat", "party", "crown", "wizard", "cowboy", "propeller", "chef", "viking", "halo", "santa", "nightcap"].map((hat) => ({ value: hat, label: text(`deck.pet.hat.${hat}` as LocaleKey, locale) })),
+    ]} onSelect={(value) => act.preference("petHat", String(value))} />,
+    preferenceToggle("petShades", text("ui.features.petShades", locale), preferences.petShades),
+    ]],
+    ["ui.features.workflowGroup", [
+    () => <Select key="design-surface" label={text("ui.features.surface", locale)} value={preferences.designSurface} options={[
+      { value: "auto", label: text("ui.configuration.surfaceAuto", locale) },
+      { value: "pane", label: text("ui.configuration.surfacePane", locale) },
+      { value: "browser", label: text("ui.configuration.surfaceBrowser", locale) },
+    ]} onSelect={(value) => act.preference("designSurface", value as FeaturePreferences["designSurface"])} />,
+    preferenceToggle("ideaNudges", text("ui.features.ideaNudges", locale), preferences.ideaNudges),
+    preferenceToggle("promptLearning", text("ui.features.promptLearning", locale), preferences.promptLearning),
+    preferenceToggle("trackerSummary", text("ui.features.trackerSummary", locale), preferences.trackerSummary),
+    ]],
+    ["ui.features.monitorGroup", [
+    () => <Select key="monitor-interval" label={text("ui.features.monitor", locale)} value={String(preferences.monitorEveryMs)} options={[2000, 5000, 10000].map((ms) => ({ value: String(ms), label: `${ms / 1000}s` }))} onSelect={(value) => act.preference("monitorEveryMs", Number(value) as FeaturePreferences["monitorEveryMs"])} />,
+    () => <Select key="clash-window" label={text("ui.features.clashWindow", locale)} value={String(preferences.clashMinutes)} options={[15, 30, 60].map((minutes) => ({ value: String(minutes), label: `${minutes} min` }))} onSelect={(value) => act.preference("clashMinutes", Number(value) as FeaturePreferences["clashMinutes"])} />,
+    ]],
+  ];
+  return (
+    <Box flexDirection="column" rowGap={1} width={view.width}>
+      {card(els, text("ui.configuration.features", locale), grid(els, view.width - 4, featuresList, 32), { width: view.width, note: `${state} · ${text("ui.features.clickToChange", locale)}` })}
+      {section(els, text("ui.features.preferencesTitle", locale))}
+      {grid(els, view.width, preferenceGroups.map(([title, controls]) => (width) => card(els, text(title, locale), <Box flexDirection="column" rowGap={1}>{controls.map((make) => make())}</Box>, { width })), 38)}
+    </Box>
+  );
+}
+
+/** Provider and language setup, saved credentials, and history controls. */
 function configurationView(els: Els, view: View, act: Actions) {
   const { Box, Text, Button, Select, Input } = els;
   const chosen = PROVIDER_IDS.includes(view.setup.provider as never) ? view.setup.provider : PROVIDER_IDS.includes(view.key.provider as never) ? view.key.provider : "typesafe";
@@ -803,16 +882,18 @@ function configurationView(els: Els, view: View, act: Actions) {
   const typed = view.setup.typed ?? "";
   const message = view.setup.message;
   const connected = view.setup.isOk && Boolean(message) && !view.setup.busy;
+  const cardWidth = view.width >= 101 ? Math.floor((view.width - 1) / 2) : view.width;
   return (
     <Box flexDirection="column" rowGap={1}>
       <Box flexDirection="column">
         <Text color={INK.dim} wrap="wrap">{text("ui.setup.intro", view.locale)}</Text>
         {!view.routing ? <Text color={INK.pass} wrap="wrap">{text("ui.configuration.routingOff", view.locale)}</Text> : null}
       </Box>
-      {card(
-        els,
-        text("ui.configuration.provider", view.locale),
-        [
+      <Box flexDirection="row" flexWrap="wrap" columnGap={1} rowGap={1}>
+        {card(
+          els,
+          text("ui.configuration.provider", view.locale),
+          [
           <Select
             key="language"
             label={text("ui.setup.language", view.locale)}
@@ -842,12 +923,12 @@ function configurationView(els: Els, view: View, act: Actions) {
             saved && !typed,
             <Box flexDirection="column">
               {saved ? (
-                <Text wrap="wrap">
+                <Text wrap="truncate">
                   <Text color={INK.route}>{`••••${view.key.tail}`}</Text>
                   <Text color={INK.dim}>{text("ui.setup.keyInUse", view.locale, { source: text(`source.${view.key.source}` as LocaleKey, view.locale) })}</Text>
                 </Text>
               ) : (
-                <Text color={INK.pass} wrap="wrap">{text("ui.setup.noKeyYet", view.locale, { env: info.keyEnv })}</Text>
+                <Text color={INK.pass} wrap="truncate">{text("ui.setup.noKeyYet", view.locale, { env: info.keyEnv })}</Text>
               )}
               <Input
                 key="api-key"
@@ -871,7 +952,7 @@ function configurationView(els: Els, view: View, act: Actions) {
                 {saved && view.key.source === "plugin" ? <Button key="forget" label={`${text("ui.setup.removeKey", view.locale)} (f)`} hotkey="f" onPress={() => act.forgetKey()} /> : null}
               </Box>
               {message ? (
-                <Text bold color={view.setup.busy ? INK.dim : view.setup.isOk ? INK.route : INK.fail} wrap="wrap">
+                <Text bold color={view.setup.busy ? INK.dim : view.setup.isOk ? INK.route : INK.fail} wrap="truncate">
                   {`${view.setup.busy ? "◌" : view.setup.isOk ? "●" : "×"} ${message}`}
                 </Text>
               ) : null}
@@ -880,33 +961,16 @@ function configurationView(els: Els, view: View, act: Actions) {
           <Box marginTop={1}>
             <Text color={INK.pass} wrap="wrap">{text("ui.setup.privacy", view.locale)}</Text>
           </Box>,
-        ],
-        { color: connected ? INK.route : INK.faint },
-      )}
-      {card(
-        els,
-        text("ui.configuration.agents", view.locale),
-        features(view.locale).map((feature) => {
-          const on = view.features[feature.id];
-          return (
-            <Box flexDirection="column" marginTop={1}>
-              <Button
-                key={"feature-" + feature.id}
-                label={on ? `● ${text("ui.configuration.enabled", view.locale, { hotkey: feature.hotkey })}` : `○ ${text("ui.configuration.disabled", view.locale, { hotkey: feature.hotkey })}`}
-                hotkey={feature.hotkey}
-                onPress={() => act.feature(feature.id, !on)}
-              />
-              <Text color={INK.dim} wrap="wrap">{feature.description}</Text>
-            </Box>
-          );
-        }),
-      )}
-      {card(els, text("ui.configuration.history", view.locale), [
-        <Text color={INK.faint} wrap="wrap">{view.meta}</Text>,
-        <Box flexDirection="row">
-          <Button key="clear" label={`${text("ui.setup.clearHistory", view.locale)} (c)`} hotkey="c" onPress={() => act.clear()} />
-        </Box>,
-      ])}
+          ],
+          { width: cardWidth, color: connected ? INK.route : INK.border },
+        )}
+        {card(els, text("ui.configuration.history", view.locale), [
+          <Text color={INK.faint} wrap="truncate">{view.meta}</Text>,
+          <Box flexDirection="row">
+            <Button key="clear" label={`${text("ui.setup.clearHistory", view.locale)} (c)`} hotkey="c" onPress={() => act.clear()} />
+          </Box>,
+        ], { width: cardWidth })}
+      </Box>
     </Box>
   );
 }
@@ -920,130 +984,64 @@ function deckView(els: Els, view: View, act: Actions) {
   const { locale, deck } = view;
   if (!deck) return <Text color={INK.faint} wrap="wrap">{text("ui.deck.intro", locale)}</Text>;
   const { settings } = deck;
-  // a command's help line, its alignment padding folded into a dash
-  const tip = (key: LocaleKey) => <Text color={INK.faint} wrap="wrap">{deckHelp(key, settings, locale).replace(/ {2,}/, " — ")}</Text>;
-  // the reply a control got, under the card that owns the command
-  const reply = (...verbs: string[]) =>
-    deck.note && verbs.includes(deck.note.verb) ? (
-      <Text bold color={INK.route} wrap="wrap">{`● ${deck.note.text}`}</Text>
-    ) : null;
-  // an on/off setting as a toggle: ● when on, a dim ○ when off; pressing it sends the opposite
   const toggle = (key: string, on: boolean, label: string, command: string) => (
-    <Button key={key} label={`${on ? "●" : "○"} ${label}`} plain {...(on ? {} : { dimColor: true })} onPress={() => act.deck(`${command} ${on ? "off" : "on"}`)} />
+    <Button key={key} plain label={`${on ? "●" : "○"} ${label}`} dimColor={!on} onPress={() => act.deck(`${command} ${on ? "off" : "on"}`)} />
   );
   const choices = (names: Record<string, string>, list: readonly string[]) => list.map((value) => ({ value, label: names[value] ?? value }));
+  const verb = deck.note?.verb;
+  const noteGroup = !verb ? undefined
+    : ["expand", "collapse", "style", "collapsed", "size"].includes(verb) ? "ui.deck.band"
+    : verb === "all" || (SECTIONS as readonly string[]).includes(verb) ? "ui.deck.show"
+    : ["auto", "sound", "quiet", "cost"].includes(verb) ? "ui.deck.extras"
+    : verb === "city" ? "ui.deck.city"
+    : ["panel", "demo", "clear"].includes(verb) ? "ui.deck.tools"
+    : "ui.deck.status";
+  const groups: [LocaleKey, RenderChildren][] = [
+    ["ui.deck.band", <Box flexDirection="column" rowGap={1}>
+      <Button key="deck-band" plain label={`${deck.open ? "●" : "○"} ${text(deck.open ? "ui.deck.bandOpen" : "ui.deck.bandShut", locale, { hotkey: "e" })}`} hotkey="e" onPress={() => act.deck(deck.open ? "collapse" : "expand")} />
+      <Box flexDirection="column">
+        <Text color={INK.dim}>{text("ui.deck.look", locale)}</Text>
+        <Select key="deck-look" value={settings.collapsed} options={COLLAPSED.map((value) => ({ value, label: text(`ui.deck.look.${value}`, locale) }))} onSelect={(value) => act.deck(`collapsed ${value}`)} />
+      </Box>
+      <Select key="deck-size" label={text("ui.deck.size", locale)} value={settings.size} options={SIZES.map((value) => ({ value, label: text(`ui.deck.size.${value}`, locale) }))} onSelect={(value) => act.deck(`size ${value}`)} />
+      <Select key="deck-style-cli" label={text("ui.deck.styleCli", locale)} value={settings.style.terminal} options={choices(TERMINAL_STYLE_NAMES, TERMINAL_STYLES)} onSelect={(value) => act.deckStyle("terminal", value)} />
+      <Select key="deck-style-desktop" label={text("ui.deck.styleDesktop", locale)} value={settings.style.desktop} options={choices(DESKTOP_STYLE_NAMES, DESKTOP_STYLES)} onSelect={(value) => act.deckStyle("desktop", value)} />
+      <Button key="deck-style-pick" plain label={text("ui.deck.stylePick", locale, { hotkey: "s" })} hotkey="s" onPress={() => act.deck("style")} />
+    </Box>],
+    ["ui.deck.show", <Box flexDirection="column" rowGap={1}>
+      {SECTIONS.map((id) => toggle(`deck-show-${id}`, settings.show[id], text(`deck.section.${id}`, locale), id))}
+      <Box flexDirection="row" flexWrap="wrap" columnGap={2} rowGap={1}>
+        <Button key="deck-all-on" plain label={text("ui.deck.showAll", locale)} onPress={() => act.deck("all on")} />
+        <Button key="deck-all-off" plain label={text("ui.deck.hideAll", locale)} dimColor onPress={() => act.deck("all off")} />
+      </Box>
+    </Box>],
+    ["ui.deck.extras", <Box flexDirection="column" rowGap={1}>
+      {toggle("deck-auto", settings.auto, text("ui.deck.auto", locale), "auto")}
+      {toggle("deck-sound", settings.sound, text("ui.deck.sound", locale), "sound")}
+      {toggle("deck-quiet", settings.quiet, text("ui.deck.quiet", locale), "quiet")}
+      {toggle("deck-cost", settings.cost, text("ui.deck.cost", locale), "cost")}
+    </Box>],
+    ["ui.deck.city", <Box flexDirection="column" rowGap={1}>
+      <Text color={INK.dim} wrap="wrap">{settings.city ? text("ui.deck.cityNow", locale, { city: settings.city.name }) : text("ui.deck.cityNone", locale)}</Text>
+      <Input key="deck-city" value={deck.draft} placeholder={text("ui.deck.cityPlaceholder", locale)} submitLabel={text("ui.deck.citySet", locale)} onInput={(value) => act.deckType(value)} onSubmit={(value) => act.deckCity(value)} />
+    </Box>],
+    ["ui.deck.tools", <Box flexDirection="column" rowGap={1}>
+      <Button key="deck-panel-open" plain label={text("ui.deck.panelOpen", locale, { hotkey: "p" })} hotkey="p" onPress={() => act.deck("panel")} />
+      <Button key="deck-panel-close" plain label={text("ui.deck.panelClose", locale)} onPress={() => act.deck("panel off")} />
+      <Button key="deck-demo" plain label={text("ui.deck.demo", locale)} onPress={() => act.deck("demo")} />
+      <Button key="deck-clear" plain label={text("ui.deck.clear", locale)} onPress={() => act.deck("clear")} />
+    </Box>],
+    ["ui.deck.status", <Box flexDirection="column" rowGap={1}>
+      <Text color={INK.dim} wrap="wrap">{deck.status}</Text>
+      <Text color={INK.faint}>{text("deck.reply.version", locale, { version: deck.version })}</Text>
+    </Box>],
+  ];
   return (
-    <Box flexDirection="column" rowGap={1}>
-      <Text color={INK.dim} wrap="wrap">{text("ui.deck.intro", locale)}</Text>
-      {card(els, text("ui.deck.band", locale), [
-        <Box flexDirection="row">
-          <Button
-            key="deck-band"
-            label={`${deck.open ? "●" : "○"} ${text(deck.open ? "ui.deck.bandOpen" : "ui.deck.bandShut", locale, { hotkey: "e" })}`}
-            hotkey="e"
-            onPress={() => act.deck(deck.open ? "collapse" : "expand")}
-          />
-        </Box>,
-        tip("deck.help.toggle"),
-        tip("deck.help.expand"),
-        <Select
-          key="deck-look"
-          label={text("ui.deck.look", locale)}
-          value={settings.collapsed}
-          options={COLLAPSED.map((value) => ({ value, label: text(`ui.deck.look.${value}`, locale) }))}
-          onSelect={(value) => act.deck(`collapsed ${value}`)}
-        />,
-        tip("deck.help.collapsed"),
-        <Select
-          key="deck-size"
-          label={text("ui.deck.size", locale)}
-          value={settings.size}
-          options={SIZES.map((value) => ({ value, label: text(`ui.deck.size.${value}`, locale) }))}
-          onSelect={(value) => act.deck(`size ${value}`)}
-        />,
-        tip("deck.help.size"),
-        reply("", "expand", "collapse", "collapsed", "size"),
-      ])}
-      {card(els, text("ui.deck.style", locale), [
-        <Select
-          key="deck-style-cli"
-          label={text("ui.deck.styleCli", locale)}
-          value={settings.style.terminal}
-          options={choices(TERMINAL_STYLE_NAMES, TERMINAL_STYLES)}
-          onSelect={(value) => act.deckStyle("terminal", value)}
-        />,
-        <Select
-          key="deck-style-desktop"
-          label={text("ui.deck.styleDesktop", locale)}
-          value={settings.style.desktop}
-          options={choices(DESKTOP_STYLE_NAMES, DESKTOP_STYLES)}
-          onSelect={(value) => act.deckStyle("desktop", value)}
-        />,
-        <Text color={INK.faint} wrap="wrap">{text("ui.deck.styleNote", locale)}</Text>,
-        <Box flexDirection="row">
-          <Button key="deck-style-pick" label={text("ui.deck.stylePick", locale, { hotkey: "s" })} hotkey="s" onPress={() => act.deck("style")} />
-        </Box>,
-        tip("deck.help.style"),
-        tip("deck.help.styleName"),
-        reply("style"),
-      ])}
-      {card(els, text("ui.deck.show", locale), [
-        <Box flexDirection="row" flexWrap="wrap" columnGap={2}>
-          {SECTIONS.map((id) => toggle(`deck-show-${id}`, settings.show[id], text(`deck.section.${id}`, locale), id))}
-        </Box>,
-        <Box flexDirection="row" flexWrap="wrap" columnGap={2}>
-          <Button key="deck-all-on" label={text("ui.deck.showAll", locale)} plain onPress={() => act.deck("all on")} />
-          <Button key="deck-all-off" label={text("ui.deck.hideAll", locale)} plain dimColor onPress={() => act.deck("all off")} />
-        </Box>,
-        tip("deck.help.section"),
-        reply("all", ...SECTIONS),
-      ])}
-      {card(els, text("ui.deck.extras", locale), [
-        <Box flexDirection="row" flexWrap="wrap" columnGap={2}>
-          {toggle("deck-auto", settings.auto, text("ui.deck.auto", locale), "auto")}
-          {toggle("deck-sound", settings.sound, text("ui.deck.sound", locale), "sound")}
-          {toggle("deck-quiet", settings.quiet, text("ui.deck.quiet", locale), "quiet")}
-          {toggle("deck-cost", settings.cost, text("ui.deck.cost", locale), "cost")}
-        </Box>,
-        tip("deck.help.auto"),
-        tip("deck.help.sound"),
-        tip("deck.help.quiet"),
-        tip("deck.help.cost"),
-        reply("auto", "sound", "quiet", "cost"),
-      ])}
-      {card(els, text("ui.deck.city", locale), [
-        <Text color={settings.city ? INK.ink : INK.dim} wrap="wrap">
-          {settings.city ? text("ui.deck.cityNow", locale, { city: settings.city.name }) : text("ui.deck.cityNone", locale)}
-        </Text>,
-        <Input
-          key="deck-city"
-          value={deck.draft}
-          placeholder={text("ui.deck.cityPlaceholder", locale)}
-          submitLabel={text("ui.deck.citySet", locale)}
-          onInput={(value) => act.deckType(value)}
-          onSubmit={(value) => act.deckCity(value)}
-        />,
-        tip("deck.help.city"),
-        reply("city"),
-      ])}
-      {card(els, text("ui.deck.tools", locale), [
-        <Box flexDirection="row" flexWrap="wrap" columnGap={2}>
-          <Button key="deck-panel-open" label={text("ui.deck.panelOpen", locale, { hotkey: "p" })} hotkey="p" onPress={() => act.deck("panel")} />
-          <Button key="deck-panel-close" label={text("ui.deck.panelClose", locale)} onPress={() => act.deck("panel off")} />
-          <Button key="deck-demo" label={text("ui.deck.demo", locale)} onPress={() => act.deck("demo")} />
-          <Button key="deck-clear" label={text("ui.deck.clear", locale)} onPress={() => act.deck("clear")} />
-        </Box>,
-        tip("deck.help.panel"),
-        tip("deck.help.demo"),
-        tip("deck.help.clear"),
-        reply("panel", "demo", "clear"),
-      ])}
-      {card(els, text("ui.deck.status", locale), [
-        <Text color={INK.ink} wrap="wrap">{deck.status}</Text>,
-        tip("deck.help.status"),
-        <Text color={INK.faint} wrap="wrap">{text("deck.reply.version", locale, { version: deck.version })}</Text>,
-        tip("deck.help.version"),
-      ])}
+    <Box flexDirection="column" rowGap={1} width={view.width}>
+      {grid(els, view.width, groups.map(([title, body]) => (width) => card(els, text(title, locale), <Box flexDirection="column" rowGap={1}>
+        {body}
+        {deck.note && noteGroup === title ? <Text color={INK.route} wrap="wrap">{deck.note.text}</Text> : null}
+      </Box>, { width })), 38)}
     </Box>
   );
 }
@@ -1234,47 +1232,41 @@ function logRule(els: Els, view: View, title: string) {
 
 /** The live log: who speaks, then every observable event, newest last. */
 function liveView(els: Els, view: View, act: Actions, rows: number) {
-  const { Box, Text } = els;
-  const top = liveTop(els, view, act);
-  const flow = runFlow(els, view);
+  const { Box, Text, Button } = els;
   const empty = text("ui.live.emptyFeed", view.locale);
-  if (!view.fixed) {
-    return (
-      <Box flexDirection="column" rowGap={1}>
-        {top}
-        {flow}
-        {conversation(els, view, view.feed.slice(-Math.max(5, view.rows - 20)), empty)}
-      </Box>
-    );
-  }
-  if (view.flowDetails) {
-    const bodyRows = Math.max(4, rows - rowsOf(top, view.width));
-    const total = rowsOf(flow, view.width);
-    const max = Math.max(0, total - bodyRows + 1);
+  if (view.fixed && view.flowDetails) {
+    const top = <Box marginBottom={1}><Button key="flow-details" label={text("ui.flow.backToLive", view.locale)} hotkey="b" onPress={() => act.flowDetails(false)} /></Box>;
+    const flow = runFlow(els, view);
+    const topRows = Math.min(rowsOf(top, view.width), Math.max(1, rows - 3));
+    const room = Math.max(1, rows - topRows);
+    const max = Math.max(0, rowsOf(flow, view.width) - room + 1);
     const offset = Math.min(view.scroll, max);
     act.layout(max, false);
-    return (
-      <Box flexDirection="column" height={rows} overflow="hidden">
-        {top}
-        <Box flexDirection="column" height={bodyRows - (max ? 1 : 0)} overflow="hidden" flexShrink={0}>
-          <Box flexDirection="column" flexShrink={0} marginTop={-offset}>{flow}</Box>
-        </Box>
-        {max ? <Text color={INK.faint} wrap="truncate">{text("ui.scroll.footer", view.locale, { up: offset > 0 ? "▲" : " ", down: total - offset > bodyRows - 1 ? "▼" : " ", percent: formatNumber((100 * offset) / max, view.locale) })}</Text> : null}
+    return <Box flexDirection="column" height={rows} overflow="hidden">
+      <Box flexDirection="column" height={topRows} overflow="hidden" flexShrink={0}>{top}</Box>
+      <Box flexDirection="column" height={room - (max ? 1 : 0)} overflow="hidden" flexShrink={0}>
+        <Box flexDirection="column" marginTop={-offset} flexShrink={0}>{flow}</Box>
       </Box>
-    );
+      {max ? <Text color={INK.dim} wrap="truncate">{text("ui.scroll.footer", view.locale, { up: offset ? "▲" : " ", down: offset < max ? "▼" : " ", percent: formatNumber(100 * offset / max, view.locale) })}</Text> : null}
+    </Box>;
   }
-  // Pingo and the run sequence stay visible; the live log below scrolls newest-last.
-  const logRows = Math.max(3, rows - rowsOf(top, view.width) - rowsOf(flow, view.width) - 1);
-  const { back, max } = feedBack("live", view, view.feed);
-  act.layout(max, true);
-  return (
-    <Box flexDirection="column" height={rows} overflow="hidden">
-      {top}
-      {flow}
+  const head = (
+    <Box flexDirection="column" rowGap={1}>
+      {view.flowDetails ? <Box flexDirection="column" rowGap={1}>{liveTop(els, view, act)}{runFlow(els, view)}</Box> : grid(els, view.width, [
+        (width) => <Box width={width} flexShrink={0}>{liveTop(els, { ...view, width }, act)}</Box>,
+        (width) => <Box width={width} flexShrink={0}>{runFlow(els, { ...view, width })}</Box>,
+      ], 38)}
       {logRule(els, view, text("ui.live.title", view.locale))}
-      {stuckLog(els, view, view.feed, logRows, empty, back)}
     </Box>
   );
+  if (!view.fixed) return <Box flexDirection="column" rowGap={1}>{head}{conversation(els, view, view.feed, empty)}</Box>;
+  const { back, max } = feedBack("live", view, view.feed);
+  act.layout(max, true);
+  const headRows = Math.min(rowsOf(head, view.width), Math.max(2, rows - 4));
+  return <Box flexDirection="column" height={rows} overflow="hidden">
+    <Box flexDirection="column" height={headRows} overflow="hidden" flexShrink={0}>{head}</Box>
+    {stuckLog(els, view, view.feed, Math.max(1, rows - headRows), empty, back)}
+  </Box>;
 }
 
 /** Jev calls observed in this session; token counts stay unknown when a response did not report them. */
@@ -1315,6 +1307,9 @@ function liveTop(els: Els, view: View, act: Actions) {
   const tally = jevTally(view.trace, view.events);
   return (
     <Box flexDirection="column" flexShrink={0}>
+      <Box flexDirection="row" marginBottom={1}>
+        <Button key="flow-details" label={text(view.flowDetails ? "ui.flow.backToLive" : "ui.flow.details", view.locale)} hotkey={view.flowDetails ? "b" : "f"} onPress={() => act.flowDetails(!view.flowDetails)} />
+      </Box>
       <Text wrap="wrap">
         {pill(els, `${mood.face} ${text("ui.live.jev", view.locale)}`, hex(mood.color))}
         <Text color={now.asking ? INK.route : INK.dim}>{` ${now.asking ? text("ui.live.asking", view.locale) : state.title}  `}</Text>
@@ -1340,14 +1335,6 @@ function liveTop(els: Els, view: View, act: Actions) {
       {tally.reported < tally.calls ? <Text color={INK.faint} wrap="truncate">{text("ui.live.sessionTokensPartial", view.locale, { reported: formatNumber(tally.reported, view.locale), total: formatNumber(tally.calls, view.locale) })}</Text> : null}
       {tally.retained ? <Text color={INK.faint} wrap="truncate">{text("ui.live.sessionRetained", view.locale)}</Text> : null}
       {running.length ? <Text color={INK.route} wrap="wrap">{text("ui.live.runningAgents", view.locale, { count: formatNumber(running.length, view.locale), unit: text(running.length === 1 ? "unit.agent" : "unit.agents", view.locale) })}</Text> : null}
-      <Box flexDirection="row" marginBottom={1}>
-        <Button
-          key="flow-details"
-          label={text(view.flowDetails ? "ui.flow.backToLive" : "ui.flow.details", view.locale)}
-          hotkey={view.flowDetails ? "b" : "f"}
-          onPress={() => act.flowDetails(!view.flowDetails)}
-        />
-      </Box>
     </Box>
   );
 }
@@ -1415,19 +1402,20 @@ function agentCard(els: Els, view: View, act: Actions, run: AgentRun, width: num
   const { Box, Text, Button } = els;
   const mascot = mascotOf(run);
   const frame = run.state === "running" ? (mascot ? hex(mascot.color) : INK.route) : run.state === "error" ? INK.fail : INK.faint;
+  const lineWidth = Math.max(1, width - 4);
   return (
     <Box flexDirection="column" width={width} flexShrink={0} borderStyle="round" borderColor={frame} paddingX={1}>
-      <Text wrap="truncate">{agentName(els, run, view.locale)}</Text>
-      {agentState(els, view, run)}
-      <Text bold color={INK.ink} wrap="wrap">{run.description}</Text>
-      <Text color={INK.dim} wrap="wrap">{agentModel(run, view.locale)}</Text>
+      <Box flexDirection="row" flexWrap="wrap" columnGap={1}>
+        {agentName(els, run, view.locale)}
+        {agentState(els, view, run)}
+      </Box>
+      <Text bold color={INK.ink} wrap="truncate">{oneLine(run.description, lineWidth)}</Text>
+      <Text color={INK.dim} wrap="truncate">{oneLine(`${agentModel(run, view.locale)} · ${agentNumbers(run, view.locale)}`, lineWidth)}</Text>
       <Text color={run.state === "running" ? INK.ink : INK.dim} wrap="wrap">
-        {run.state === "running" ? `▶ ${run.activity ?? text("ui.agent.running", view.locale)}` : run.text ? `“${oneLine(run.text, 121)}”` : text("ui.agent.noResponse", view.locale)}
+        {oneLine(run.state === "running" ? `▶ ${run.activity ?? text("ui.agent.running", view.locale)}` : run.text ? `“${run.text}”` : text("ui.agent.noResponse", view.locale), lineWidth)}
       </Text>
-      <Text color={INK.faint} wrap="wrap">{agentNumbers(run, view.locale)}</Text>
-      <Box flexDirection="row" columnGap={2} flexWrap="wrap">
+      <Box flexDirection="row" columnGap={1} flexWrap="wrap">
         <Button key={`agent-open-${run.n}`} label={text("ui.agent.liveOpen", view.locale, { number: formatNumber(run.n, view.locale) })} onPress={() => act.openAgent(run.n)} />
-        {run.state === "running" ? null : <Button key={`agent-remove-${run.n}`} label={text("ui.agent.remove", view.locale)} onPress={() => act.removeAgent(run.n)} />}
       </Box>
     </Box>
   );
@@ -1439,6 +1427,8 @@ function agentsView(els: Els, view: View, act: Actions) {
   const list = [...view.agents].sort((a, b) => Number(b.state === "running") - Number(a.state === "running") || b.n - a.n);
   const running = list.filter((run) => run.state === "running").length;
   const finished = list.length - running;
+  const shown = list.slice(0, view.width >= 70 ? 6 : 4);
+  const hidden = list.length - shown.length;
   return (
     <Box flexDirection="column" rowGap={1}>
       <Box flexDirection="row" flexWrap="wrap" columnGap={2}>
@@ -1451,9 +1441,9 @@ function agentsView(els: Els, view: View, act: Actions) {
           <Text color={INK.dim} wrap="wrap">{text("ui.agents.emptyDescription", view.locale)}</Text>
         </Box>
       ) : (
-        grid(els, view.width, list.map((run) => (width: number) => agentCard(els, view, act, run, width)), 44)
+        grid(els, view.width, shown.map((run) => (width: number) => agentCard(els, view, act, run, width)), 24, 3)
       )}
-      <Text color={INK.faint} wrap="wrap">{text("ui.agent.instructions", view.locale)}</Text>
+      {hidden ? <Text color={INK.faint} wrap="truncate">{text("ui.agents.more", view.locale, { hidden: formatNumber(hidden, view.locale) })}</Text> : null}
     </Box>
   );
 }
@@ -1555,16 +1545,17 @@ function runFlow(els: Els, view: View) {
   const run = view.trace.runs.find((candidate) => candidate.id === view.trace.active) ?? view.trace.runs.at(-1);
   const timing = run ? runTiming(run, view.now) : undefined;
   const scene = flowScene(view.trace, view.now, view.locale);
-  const compact = view.fixed && !view.flowDetails && scene.nodes.length > 0;
+  const compact = view.surface === "terminal" && !view.flowDetails && scene.nodes.length > 0;
   const times = timing ? [
     <Text color={INK.ink} wrap="wrap">{text("ui.flow.timing.main", view.locale, { duration: timing.mainResponseMs === undefined ? text("ui.flow.timing.pending", view.locale) : formatDuration(timing.mainResponseMs, view.locale) })}</Text>,
     <Text color={INK.dim} wrap="wrap">{text("ui.flow.timing.total", view.locale, { duration: formatDuration(timing.totalMs, view.locale), state: text(timing.complete ? "ui.flow.timing.complete" : "ui.flow.timing.active", view.locale) })}</Text>,
   ] : [];
   if (compact) {
     const details = [
-      ...(scene.nodes.find((node) => node.id === "message")?.details.slice(-2) ?? []),
+      ...(scene.nodes.find((node) => node.id === "message")?.details ?? []),
+      ...(scene.nodes.find((node) => node.id === "tools")?.details ?? []),
       ...(scene.nodes.find((node) => node.id === "agents")?.details.slice(-2) ?? []),
-      ...(scene.nodes.find((node) => node.id === "answer")?.details.slice(0, 2) ?? []),
+      ...(scene.nodes.find((node) => node.id === "answer")?.details ?? []),
     ];
     return card(els, text("ui.flow.sequence", view.locale), [
       <Text wrap="wrap">
@@ -1664,74 +1655,31 @@ function modelsView(els: Els, view: View) {
   const { Box, Text } = els;
   const run = view.trace.runs.find((candidate) => candidate.id === view.trace.active) ?? view.trace.runs.at(-1);
   const steps = run?.steps.filter((step) => !step.agentId) ?? [];
-  const jevGroups = jevUsageGroups(view.trace);
-  const shown = steps.slice(-12);
+  const jevGroups = jevUsageGroups(view.trace).slice(-2);
+  const shown = steps.slice(-5);
   return (
     <Box flexDirection="column" rowGap={1}>
-      {card(
-        els,
-        text("ui.models.now", view.locale),
-        <Text wrap="wrap">
-          {pill(els, `◆ ${modelName(view.live.model)}`, INK.claude)}
-          {view.live.effort ? <Text color={INK.ink}>{`  ${text("ui.models.effort", view.locale, { effort: view.live.effort })}`}</Text> : null}
-        </Text>,
-        { color: INK.claude },
-      )}
-      {card(
-        els,
-        text("ui.models.requests", view.locale),
-        [
-          ...(shown.length
-            ? shown.map((step, index) => {
-                const actual = step.observed ?? step.sent;
-                const previous = shown[index - 1];
-                const priorModel = previous ? previous.observed ?? previous.sent : undefined;
-                const changed = Boolean(priorModel && actual !== priorModel);
-                return (
-                  <Box flexDirection="column" marginTop={1}>
-                    <Text wrap="wrap">
-                      <Text bold color={changed ? INK.pass : INK.ink}>{`${changed ? "▲" : "●"} ${text("ui.models.request", view.locale, { number: formatNumber(step.index + 1, view.locale) })}`}</Text>
-                      <Text color={INK.faint}>{`  ${clock(step.startedAt, view.locale)} · ${step.endedAt === undefined ? text("ui.models.inProgress", view.locale) : formatDuration(step.endedAt - step.startedAt, view.locale)}`}</Text>
-                    </Text>
-                    <Text color={INK.ink} wrap="wrap">
-                      {`  ${step.observed ? text("ui.models.responseModel", view.locale, { model: modelName(step.observed) }) : text("ui.models.requestedModel", view.locale, { model: modelName(step.sent) })}`}
-                      {step.effort ? ` · ${text("ui.models.effort", view.locale, { effort: step.effort })}` : ""}
-                    </Text>
-                    {step.observed && step.observed !== step.sent ? (
-                      <Text color={INK.pass} wrap="wrap">{`  ${text("ui.models.requestResponseDiff", view.locale, { requested: modelName(step.sent), observed: modelName(step.observed) })}`}</Text>
-                    ) : null}
-                    {step.original !== step.sent ? (
-                      <Text color={INK.dim} wrap="wrap">{`  ${text("ui.models.engineModelDiff", view.locale, { original: modelName(step.original), sent: modelName(step.sent) })}`}</Text>
-                    ) : null}
-                    {changed && priorModel ? <Text color={INK.pass} wrap="wrap">{`  ${text("ui.models.modelChanged", view.locale, { from: modelName(priorModel), to: modelName(actual) })}`}</Text> : null}
-                    <Text color={INK.faint} wrap="wrap">{`  ${stepUsage(step.usage, view.locale)}`}</Text>
-                  </Box>
-                );
-              })
-            : [<Text color={INK.faint} wrap="wrap">{text("ui.models.empty", view.locale)}</Text>]),
-          <Box flexDirection="column" marginTop={1}>
-            <Text color={INK.faint} wrap="wrap">{text("ui.models.observedNote", view.locale)}</Text>
-            <Text color={INK.faint} wrap="wrap">{text("ui.models.costUnavailable", view.locale)}</Text>
-          </Box>,
-        ],
-      )}
-      {card(
-        els,
-        text("ui.models.jevUsage", view.locale),
-        [
-          ...(jevGroups.length
-            ? jevGroups.map((group) => (
-                <Box flexDirection="column" marginTop={1}>
-                  <Text bold color={INK.ink} wrap="wrap">{text(group.observed ? "ui.models.jevObserved" : "ui.models.jevRequested", view.locale, { model: modelName(group.model), calls: formatNumber(group.calls, view.locale) })}</Text>
-                  {(["input", "output", "cacheRead", "cacheWrite"] as const).map((counter) => (
-                    <Text color={INK.dim} wrap="wrap">{`  ${jevCounterText(group, counter, view.locale)}`}</Text>
-                  ))}
-                </Box>
-              ))
-            : [<Text color={INK.faint} wrap="wrap">{text("ui.models.jevNoUsage", view.locale)}</Text>]),
-          view.trace.turns > view.trace.runs.length ? <Text color={INK.faint} wrap="wrap">{text("ui.models.jevRetained", view.locale)}</Text> : null,
-        ],
-      )}
+      {grid(els, view.width, [
+        (width) => card(els, text("ui.models.now", view.locale), <Text wrap="truncate">{pill(els, `◆ ${modelName(view.live.model)}`, INK.claude)}{view.live.effort ? <Text color={INK.ink}>{` ${text("ui.models.effort", view.locale, { effort: view.live.effort })}`}</Text> : null}</Text>, { color: INK.claude, width }),
+        (width) => card(els, text("ui.models.jevUsage", view.locale), jevGroups.length
+          ? jevGroups.map((group) => {
+              const counters = (["input", "output", "cacheRead", "cacheWrite"] as const).filter((counter) => group.sums[counter] !== undefined).map((counter) => jevCounterText(group, counter, view.locale));
+              return <Box flexDirection="column"><Text bold color={INK.ink} wrap="truncate">{text(group.observed ? "ui.models.jevObserved" : "ui.models.jevRequested", view.locale, { model: modelName(group.model), calls: formatNumber(group.calls, view.locale) })}</Text><Text color={INK.dim} wrap="truncate">{counters.join(" · ") || text("ui.models.jevNoUsage", view.locale)}</Text></Box>;
+            })
+          : <Text color={INK.faint} wrap="truncate">{text("ui.models.jevNoUsage", view.locale)}</Text>, { width }),
+      ], 18)}
+      {card(els, text("ui.models.requests", view.locale), shown.length
+        ? shown.map((step) => {
+            const model = step.observed && step.observed !== step.sent
+              ? `${modelName(step.sent)} → ${modelName(step.observed)}`
+              : modelName(step.observed ?? step.sent);
+            const elapsed = step.endedAt === undefined ? text("ui.models.inProgress", view.locale) : formatDuration(step.endedAt - step.startedAt, view.locale);
+            return <Text color={INK.ink} wrap="truncate">{`${clock(step.startedAt, view.locale)} · ${model}${step.effort ? ` · ${step.effort}` : ""} · ${elapsed} · ${stepUsage(step.usage, view.locale)}`}</Text>;
+          })
+        : <Text color={INK.faint} wrap="truncate">{text("ui.models.empty", view.locale)}</Text>, {
+          width: view.width,
+          note: text("ui.models.recent", view.locale, { shown: formatNumber(shown.length, view.locale), total: formatNumber(steps.length, view.locale) }),
+        })}
     </Box>
   );
 }
@@ -1744,7 +1692,7 @@ function modelsView(els: Els, view: View) {
 export function renderPane(els: Els, view: View, act: Actions) {
   const { Box, Text } = els;
   // the full run details take the whole width: the drawn run needs every column it can get
-  const side = view.tab === "live" && view.flowDetails ? 0 : railWidth(view.width);
+  const side = !(view.tab === "live" && view.flowDetails) ? railWidth(view.width) : 0;
   const width = side ? Math.max(20, view.width - side - 1) : view.width;
   const inner: View = { ...view, width };
   const top = side ? (
@@ -1779,9 +1727,9 @@ export function renderPane(els: Els, view: View, act: Actions) {
   const newest = view.events.at(-1)?.seq ?? 0;
   const offset =
     view.tab === "logs"
-      ? anchored("log", view.scroll, newest, (since) => view.events.filter((event) => event.seq > since).reduce((s, event) => s + rowsOf(logEntry(els, inner, event), width), 0), max)
+      ? anchored("log", view.scroll, newest, (since) => view.events.filter((event) => event.seq > since).reduce((s, event) => s + rowsOf(logEntry(els, { ...inner, width: width - 4 }, event), width - 4), 0), max)
       : Math.min(view.scroll, max);
-  act.layout(view.tab === "logs" ? view.scroll + max - offset : max, false);
+  act.layout(view.tab === "logs" && max ? view.scroll + max - offset : max, false);
   const more = total - offset > rows - 1;
   return frame([
     top,
@@ -1808,6 +1756,8 @@ function tabBody(els: Els, view: View, act: Actions, rows: number) {
         ? modelsView(els, view)
       : view.tab === "logs"
               ? logView(els, view)
+              : view.tab === "features"
+                ? featuresView(els, view, act)
               : view.tab === "configuration"
                 ? configurationView(els, view, act)
                 : view.tab === "deck"

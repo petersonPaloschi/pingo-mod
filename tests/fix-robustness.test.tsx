@@ -5,7 +5,7 @@ import { describe, expect, mock, test } from "claude-code/testing";
 import { DEFAULT_FEATURES, type Features } from "../hooks/core/plan.ts";
 import type { Answer, SystemOneRequest } from "../hooks/core/types.ts";
 import type { RouteEvent } from "../types";
-import { PANE_PROPS as basePaneProps, pick, step } from "./helpers.ts";
+import { PANE_PROPS as basePaneProps, mockEngineServices, pick, step } from "./helpers.ts";
 
 const ASK = { origin: { kind: "composer" }, presentation: { isFullscreen: true, columns: 160 } } as const;
 const PANE_PROPS = {
@@ -29,6 +29,7 @@ const SPAWN = {
  */
 function world(on: On, features: Partial<Features> = {}, table: Record<string, Answer> = {}) {
   const clock = mock.clock(on, { now: Date.parse("2026-10-07T12:00:00Z") });
+  mockEngineServices(on);
   const store: Record<string, unknown> = { provider: "typesafe", features: { ...DEFAULT_FEATURES, ...features } };
   const tick = async () => {
     await Promise.resolve();
@@ -222,13 +223,8 @@ describe("teammates", () => {
 });
 
 describe("pane scrolling", () => {
-  test("a scroll hook that fails hands the move back to the engine", async ($, on) => {
+  test("dashboard wheel and key scroll moves reach the native engine", async ($, on) => {
     world(on);
-    let broken = false;
-    on("state.set", async (_$, e, next) => {
-      if (broken && e.key === "scroll") return { deny: "state unavailable" } as never;
-      return next(e);
-    });
     const reached: number[] = [];
     on("ui.scroll", async (_$, e) => {
       reached.push(e.by);
@@ -236,11 +232,11 @@ describe("pane scrolling", () => {
     });
     await $.session.start({ cwd: "/workspace" } as never).catch(() => undefined);
     const ui = await $.ui.mount({ plugin: "jev", surface: "terminal", component: "Pane", requestId: "jev", props: PANE_PROPS });
-    // The mod's own scroll state can no longer be written.
-    broken = true;
     const result = await $.ui.scroll({ component: "Pane", requestId: "jev", offset: 0, by: 3, bodyRows: 20, contentRows: 60, origin: { kind: "person" } } as never);
     expect(result.deny).toBeUndefined();
-    expect(reached).toEqual([3]);
+    await $.ui.scroll({ component: "Pane", requestId: "jev", offset: 20, by: 20, bodyRows: 20, contentRows: 60, origin: { kind: "person" } } as never);
+    await $.ui.scroll({ component: "Pane", requestId: "jev", offset: 0, by: -20, bodyRows: 20, contentRows: 60, origin: { kind: "person" } } as never);
+    expect(reached).toEqual([3, 20, -20]);
     await ui.unmount();
   });
 });

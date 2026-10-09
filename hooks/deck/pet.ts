@@ -21,6 +21,8 @@ export interface Pet {
   dur: number;
   mood: DeckMood;
   id: number;
+  hat?: string;
+  shades?: boolean;
 }
 
 const SPEED = { walk: 0.035, run: 0.11 } as const; // lane fractions per second
@@ -147,20 +149,21 @@ const FLOOR_Y = 29.5;
 const BODY = { size: 34, x: 20 };
 const BODY_Y = FLOOR_Y - 0.355 * BODY.size;
 
-const bodies = new Map<PetAct, string>();
+const bodies = new Map<string, string>();
 
 // The pet in its 48x38 box (viewBox -4 -6 48 38), facing right, in the lane's own coordinates. The body is
 // pingo's still sphere from pingoSvg, in its small form; its motion is CSS on that sphere, and walking is the
 // lane's translate. It is the same picture every time for an act, so each act is built once.
-export function petSvgBody(state: PetAct): string {
-  const kept = bodies.get(state);
+export function petSvgBody(state: PetAct, hat = "none", shades = false): string {
+  const key = `${state}|${hat}|${shades}`;
+  const kept = bodies.get(key);
   if (kept !== undefined) return kept;
-  const body = buildSvgBody(state);
-  bodies.set(state, body);
+  const body = buildSvgBody(state, hat, shades);
+  bodies.set(key, body);
   return body;
 }
 
-function buildSvgBody(state: PetAct): string {
+function buildSvgBody(state: PetAct, hat: string, shades: boolean): string {
   const run = state === "run";
   const walk = state === "walk" || run;
   const sleep = state === "sleep";
@@ -176,7 +179,34 @@ function buildSvgBody(state: PetAct): string {
   const sphere = `<g transform="translate(${BODY.x - BODY.size / 2} ${BODY_Y - BODY.size / 2})"><g${ahead}>${pingoSvg(mood, 0, BODY.size, true)}</g></g>`;
   const body = `<g${run ? ' transform="rotate(-7 20 28)"' : ""}><g class="fbot" style="animation:${motion}">${sphere}</g></g>`;
   const shadow = `<ellipse cx="20" cy="${FLOOR_Y}" rx="${state === "jump" ? 8 : 12}" ry="1.6" fill="#000" opacity=".35"/>`;
-  return shadow + body + propsSvg(state);
+  return shadow + body + propsSvg(state) + accessoriesSvg(hat, shades);
+}
+
+const HAT_COLORS: Record<string, string> = {
+  tophat: "#454551", party: "#ff5fa8", crown: "#ffd23f", wizard: "#7a4fd6", cowboy: "#8b5a2b",
+  propeller: "#3c7be0", chef: "#f4f4f4", viking: "#9aa3ad", halo: "#ffc400", santa: "#e03c3c", nightcap: "#3c7be0",
+};
+
+function accessoriesSvg(hat: string, shades: boolean): string {
+  let headwear = "";
+  const color = HAT_COLORS[hat];
+  if (color) {
+    const brim = `<rect x="12" y="7" width="16" height="2.5" rx="1" fill="${color}"/>`;
+    const body = hat === "tophat" ? `<rect x="16" y="0" width="8" height="8" rx="1" fill="${color}"/>`
+      : hat === "party" ? `<path d="M14 8 20 -3 26 8Z" fill="${color}"/><circle cx="20" cy="-3" r="1.3" fill="#ffd23f"/>`
+        : hat === "crown" ? `<path d="M14 8 15 1 18 4 20 -1 22 4 25 1 26 8Z" fill="${color}" stroke="#e0245e" stroke-width=".7"/>`
+          : hat === "wizard" ? `<path d="M14 8 20 -4 26 8Z" fill="${color}"/><path d="M18 5 20 3 22 5" stroke="#ffd23f" stroke-width="1"/>`
+            : hat === "cowboy" ? `<path d="M14 5 Q20 -1 26 5 L28 7 Q20 9 12 7Z" fill="${color}"/><rect x="17" y="2" width="6" height="5" rx="1" fill="${color}"/>`
+              : hat === "propeller" ? `<rect x="16" y="4" width="8" height="4" rx="2" fill="${color}"/><path d="M20 4V1 M13 1H27" stroke="#e03c3c" stroke-width="1.5" stroke-linecap="round"/>`
+                : hat === "chef" ? `<path d="M15 8 Q12 2 16 2 Q17 -2 20 2 Q24 -2 25 3 Q29 4 25 8Z" fill="${color}" stroke="#cfcfcf" stroke-width=".7"/>`
+                  : hat === "viking" ? `<rect x="15" y="4" width="10" height="4" rx="2" fill="${color}"/><path d="M16 5 Q12 0 12 2 L15 7 M24 5 Q28 0 28 2 L25 7" fill="#f4f4f4" stroke="#9aa3ad" stroke-width="1"/>`
+                    : hat === "halo" ? `<ellipse cx="20" cy="1" rx="7" ry="2" fill="none" stroke="${color}" stroke-width="1.5"/>`
+                      : hat === "santa" ? `<path d="M14 8 Q16 2 21 0 L25 7Z" fill="${color}"/><circle cx="21" cy="0" r="1.8" fill="#f4f4f4"/>`
+                        : `<path d="M15 7 Q16 0 24 1 L27 7Z" fill="${color}"/><circle cx="25" cy="1" r="1.5" fill="#f4f4f4"/>`;
+    headwear = brim + body;
+  }
+  const glasses = shades ? `<g fill="#17171d" stroke="#ffe66d" stroke-width=".6"><rect x="12.5" y="13" width="6.5" height="4.2" rx="1.4"/><rect x="21" y="13" width="6.5" height="4.2" rx="1.4"/><path d="M19 14.5h2M12.5 14 10.5 13M27.5 14l2-1"/></g>` : "";
+  return headwear + glasses;
 }
 
 /** The props around the body: the desk for console and read, the alert badge, confetti, z's and dust. */
@@ -224,7 +254,7 @@ const LANES_KEPT = 8;
 // is one picture for as long as it runs, so the lane's text is made once, at the scene's first draw, and handed back
 // as it was: the app sees the same source and keeps the animation going, and nothing is built again.
 export function petLaneSvg(pet: Pet, now: number, W: number, H = 62, scale = 1.05): string {
-  const key = [pet.id, pet.act, pet.dir, pet.x0, pet.x1, pet.dur, pet.start, W, H, scale].join("|");
+  const key = [pet.id, pet.act, pet.dir, pet.hat, pet.shades, pet.x0, pet.x1, pet.dur, pet.start, W, H, scale].join("|");
   const kept = lanes.get(key);
   if (kept !== undefined) return kept;
   const lane = buildLaneSvg(pet, now, W, H, scale);
@@ -249,7 +279,7 @@ function buildLaneSvg(pet: Pet, now: number, W: number, H: number, scale: number
     `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">` +
     `<style>${PET_CSS}${move}.mv{animation:mv${pet.id} ${dur.toFixed(2)}s linear both;animation-delay:-${Math.min(age, dur).toFixed(2)}s}</style>` +
     dots +
-    `<g class="mv"><g transform="translate(0 ${H - PH - 2})"><g transform="${flip}"><svg width="${PW}" height="${PH}" viewBox="${PET_VIEW}" overflow="visible">${petSvgBody(pet.act)}</svg></g></g></g>` +
+    `<g class="mv"><g transform="translate(0 ${H - PH - 2})"><g transform="${flip}"><svg width="${PW}" height="${PH}" viewBox="${PET_VIEW}" overflow="visible">${petSvgBody(pet.act, pet.hat, pet.shades)}</svg></g></g></g>` +
     "</svg>"
   );
 }
@@ -510,16 +540,72 @@ function mirrorChar(char: string): string {
  * The pet as a braille grid for `act` at `tMs`, facing `dir`. Time is quantized to a tenth of a second,
  * so two redraws inside the same tenth produce the same cells.
  */
-export function petFrame(act: PetAct, tMs: number, dir: 1 | -1): BrailleCell[][] {
-  const t = Math.floor(tMs / 100) / 10;
+function terminalAccessories(grid: Grid, hat: string, shades: boolean) {
+  const color = hat === "tophat" ? 0x858c99 : HAT_COLORS[hat] ? Number.parseInt(HAT_COLORS[hat]!.slice(1), 16) : 0;
+  if (color) {
+    if (hat === "tophat") {
+      fill(grid, 9, 0, 15, 3, color); fill(grid, 6, 3, 18, 4, color);
+    } else if (hat === "party" || hat === "wizard") {
+      fill(grid, 7, 3, 18, 4, color); fill(grid, 9, 2, 16, 3, color);
+      fill(grid, 10, 1, 15, 2, color); fill(grid, 11, 0, 14, 1, color); paint(grid, 12, 0, hat === "party" ? 0xffd23f : color);
+      if (hat === "wizard") paint(grid, 13, 1, 0xffd23f);
+    } else if (hat === "crown") {
+      fill(grid, 7, 3, 18, 4, color); fill(grid, 8, 1, 17, 3, color);
+      paint(grid, 8, 0, color); paint(grid, 12, 0, color); paint(grid, 16, 0, color);
+      paint(grid, 9, 2, 0xe03c3c); paint(grid, 12, 1, 0xe03c3c); paint(grid, 15, 2, 0xe03c3c);
+    } else if (hat === "cowboy") {
+      fill(grid, 5, 3, 19, 4, color); fill(grid, 8, 2, 16, 3, color); fill(grid, 9, 1, 15, 2, color); fill(grid, 10, 0, 14, 1, color);
+      fill(grid, 9, 2, 15, 3, 0xc48743);
+    } else if (hat === "propeller") {
+      fill(grid, 8, 3, 16, 4, color); fill(grid, 9, 1, 15, 3, color); fill(grid, 10, 0, 14, 1, color);
+      fill(grid, 6, 0, 19, 1, 0xe03c3c); paint(grid, 12, 0, 0xffd23f);
+    } else if (hat === "chef") {
+      fill(grid, 8, 3, 16, 4, 0xcfcfcf); fill(grid, 9, 2, 15, 3, color);
+      fill(grid, 10, 1, 12, 2, color); fill(grid, 13, 0, 15, 2, color);
+    } else if (hat === "viking") {
+      fill(grid, 8, 3, 16, 4, color); fill(grid, 9, 1, 15, 3, color);
+      paint(grid, 7, 0, 0xf4f4f4); fill(grid, 6, 1, 8, 3, 0xf4f4f4);
+      paint(grid, 16, 0, 0xf4f4f4); fill(grid, 16, 1, 18, 3, 0xf4f4f4);
+    } else if (hat === "halo") {
+      fill(grid, 10, 0, 14, 1, color); fill(grid, 8, 1, 10, 2, color); fill(grid, 14, 1, 16, 2, color);
+      paint(grid, 7, 2, color); paint(grid, 16, 2, color); fill(grid, 8, 3, 16, 4, color);
+    } else if (hat === "santa") {
+      fill(grid, 8, 3, 18, 4, 0xf4f4f4); fill(grid, 10, 2, 16, 3, color); fill(grid, 11, 1, 17, 2, color);
+      fill(grid, 14, 0, 19, 1, color); paint(grid, 19, 0, 0xf4f4f4);
+    } else {
+      fill(grid, 8, 3, 17, 4, color); fill(grid, 10, 2, 16, 3, color); fill(grid, 13, 1, 18, 2, color);
+      fill(grid, 16, 0, 20, 1, color); paint(grid, 20, 0, 0xf4f4f4);
+    }
+  }
+  if (shades) {
+    fill(grid, 6, 5, 11, 7, 0x17171d);
+    fill(grid, 13, 5, 18, 7, 0x17171d);
+    fill(grid, 10, 5, 14, 6, 0xffe66d);
+    paint(grid, 8, 5, 0xffffff);
+    paint(grid, 15, 5, 0xffffff);
+  }
+}
+
+const PET_FRAME_CACHE_LIMIT = 24;
+const petFrames = new Map<string, BrailleCell[][]>();
+
+export function petFrame(act: PetAct, tMs: number, dir: 1 | -1, hat = "none", shades = false): BrailleCell[][] {
+  const tick = Math.floor(tMs / 100);
+  const key = `${act}|${tick}|${dir}|${hat}|${shades ? 1 : 0}`;
+  const kept = petFrames.get(key);
+  if (kept !== undefined) return kept;
+  const t = tick / 10;
   const grid = blankGrid();
   const half = act === "jump" ? 5 : 7;
   fill(grid, 12 - half, FLOOR, 12 + half, FLOOR + 1, PROP.dark, -1);
   sphere(grid, act, t);
   props(grid, act, t);
+  terminalAccessories(grid, hat, shades);
   const frame = toCells(grid);
-  if (dir > 0) return frame;
-  return frame.map((row) => row.map(([char, color]): BrailleCell => [mirrorChar(char), color]).reverse());
+  const result = dir > 0 ? frame : frame.map((row) => row.map(([char, color]): BrailleCell => [mirrorChar(char), color]).reverse());
+  if (petFrames.size >= PET_FRAME_CACHE_LIMIT) petFrames.delete(petFrames.keys().next().value!);
+  petFrames.set(key, result);
+  return result;
 }
 
 // ---------- the terminal lane: the sprite laid along a row as wide as the band ----------
@@ -534,7 +620,7 @@ const BLANK: BrailleCell = [" ", DEPTH[0]];
  * The Raster that shows it keeps one size, so the walk is a change of cells, which the host repaints in place.
  */
 export function petLaneCells(pet: Pet, now: number, columns: number): BrailleCell[][] {
-  const sprite = petFrame(pet.act, Math.max(0, now - pet.start), pet.dir);
+  const sprite = petFrame(pet.act, Math.max(0, now - pet.start), pet.dir, pet.hat, pet.shades);
   const room = Math.max(0, columns - PET_BRAILLE.columns);
   const left = Math.round(petX(pet, now) * room);
   const blank = (n: number) => Array.from({ length: n }, () => BLANK);

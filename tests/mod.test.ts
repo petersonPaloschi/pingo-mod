@@ -2,12 +2,13 @@ import type { On } from "claude-code";
 import { describe, expect, mock, test } from "claude-code/testing";
 
 import { DEFAULT_FEATURES } from "../hooks/core/plan.ts";
-import { mockStore, step } from "./helpers.ts";
+import { mockEngineServices, mockStore, step } from "./helpers.ts";
 
 const ORIGIN = { kind: "composer" } as const;
 
 function world(on: On) {
   mock.clock(on, { now: Date.parse("2026-10-06T12:00:00Z") });
+  mockEngineServices(on);
   const store: Record<string, unknown> = { provider: "typesafe", features: { ...DEFAULT_FEATURES }, routing: true };
   mockStore(on, store);
   mock.env(on, { TYPESAFE_API_KEY: "test-key" });

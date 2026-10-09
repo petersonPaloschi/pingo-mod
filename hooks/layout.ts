@@ -90,7 +90,12 @@ function widthOf(node: Element | string): number {
   const props = node.props ?? {};
   if (typeof props.width === "number") return props.width;
   if (node.type === "Text") return Math.max(...textOf(node).split("\n").map(displayWidth));
-  if (node.type === "Button") return displayWidth(String(props.label ?? "")) + 4;
+  if (node.type === "Button") return displayWidth(String(props.label ?? textOf(node))) + (props.plain ? (props.hotkey ? 3 : 0) : 4);
+  if (node.type === "Select") {
+    const options = props.options as { value: string; label: string }[] | undefined;
+    const selected = options?.find((option) => option.value === props.value) ?? options?.[0];
+    return displayWidth(`${props.label ? `${props.label}: ` : ""}${selected?.label ?? ""}`) + 2;
+  }
   if (node.type === "Raster") return num(props.columns);
   const kids = flat(node.children);
   if (props.flexDirection === "row") return kids.reduce((s, kid) => s + widthOf(kid), 0) + num(props.columnGap ?? props.gap) * Math.max(0, kids.length - 1);

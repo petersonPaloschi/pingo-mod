@@ -14,6 +14,14 @@ const FEATURE_KEYS: readonly { id: FeatureId; name: LocaleKey; hotkey: string; d
     hotkey: "g",
     description: "feature.agents.description",
   },
+  { id: "farol", name: "feature.farol.name", hotkey: "f", description: "feature.farol.description" },
+  { id: "clareza", name: "feature.clareza.name", hotkey: "c", description: "feature.clareza.description" },
+  { id: "pingoVivo", name: "feature.pingoVivo.name", hotkey: "p", description: "feature.pingoVivo.description" },
+  { id: "prisma", name: "feature.prisma.name", hotkey: "r", description: "feature.prisma.description" },
+  { id: "semente", name: "feature.semente.name", hotkey: "i", description: "feature.semente.description" },
+  { id: "lapida", name: "feature.lapida.name", hotkey: "l", description: "feature.lapida.description" },
+  { id: "sentinela", name: "feature.sentinela.name", hotkey: "s", description: "feature.sentinela.description" },
+  { id: "vigia", name: "feature.vigia.name", hotkey: "v", description: "feature.vigia.description" },
 ];
 
 export const features = (locale: Locale = localeFor()) => FEATURE_KEYS.map((feature) => ({

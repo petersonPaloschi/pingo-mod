@@ -1,7 +1,7 @@
 import { expect, test } from "claude-code/testing";
 import { resolveSettings } from "../hooks/config.ts";
 import { createAskJev, normalize, type Transport } from "../hooks/core/jev.ts";
-import { agentQuestions } from "../hooks/core/plan.ts";
+import { DEFAULT_FEATURES, agentQuestions } from "../hooks/core/plan.ts";
 import { pick } from "./helpers.ts";
 
 test("provider confidence and probabilities stay separate, and malformed distributions are discarded", () => {
@@ -36,11 +36,11 @@ test("a provider cannot inject unoffered choices or probability keys into an acc
 });
 
 test("agent questions ask only for model and effort when enabled", () => {
-  const questions = agentQuestions({ agents: true }, "en", { availableModels: ["sonnet"] });
+  const questions = agentQuestions({ ...DEFAULT_FEATURES, agents: true }, "en", { availableModels: ["sonnet"] });
   expect(Object.keys(questions)).toEqual(["model", "effort"]);
   expect(questions.model?.type).toBe("choice");
   expect(questions.effort?.type).toBe("choice");
-  expect(agentQuestions({ agents: false })).toEqual({});
+  expect(agentQuestions({ ...DEFAULT_FEATURES, agents: false })).toEqual({});
 });
 
 test("routing language is independent of the interface and configured candidates are bounded", () => {

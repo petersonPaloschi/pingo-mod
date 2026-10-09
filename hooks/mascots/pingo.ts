@@ -176,6 +176,8 @@ const BAYER = [0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5];
 export const bayer = (x: number, y: number) => (BAYER[(y & 3) * 4 + (x & 3)]! + 0.5) / 16;
 /** Braille eyes are enlarged: at a few cells across, the desktop's eye shapes are a single dot. */
 const BRAILLE_EYE_SCALE = 1.5;
+const BRAILLE_FRAME_CACHE_LIMIT = 24;
+const brailleFrames = new Map<string, { tick: number; frame: BrailleCell[][] }>();
 
 /**
  * Pingo in braille, `columns` × `rows` cells: a halftone sphere drawn dot by dot, so its face reads at this size.
@@ -183,6 +185,13 @@ const BRAILLE_EYE_SCALE = 1.5;
  * light that turns with the sphere's slow spin. Every dot is a pure function of (mood, t, size).
  */
 export function brailleFrame(mood: Mood, t: number, columns: number, rows: number): BrailleCell[][] {
+  const tick = Math.floor(t * 10);
+  const time = tick / 10;
+  const key = `${mood}|${columns}|${rows}`;
+  const kept = brailleFrames.get(key);
+  if (kept?.tick === tick) return kept.frame;
+  if (kept !== undefined) brailleFrames.delete(key);
+
   const width = columns * 2;
   const height = rows * 4;
   const bits = new Uint8Array(columns * rows);
@@ -200,14 +209,14 @@ export function brailleFrame(mood: Mood, t: number, columns: number, rows: numbe
 
   const { eyes } = MOODS[mood];
   const sleepy = mood === "idle" || mood === "baseline";
-  const spin = t * 0.12 * (sleepy ? 0.35 : mood === "thinking" ? 1.6 : 1);
+  const spin = time * 0.12 * (sleepy ? 0.35 : mood === "thinking" ? 1.6 : 1);
   const lookX = mood === "passthrough" ? 0.07 : 0;
-  const blink = (t * 0.9) % 4.2;
+  const blink = (time * 0.9) % 4.2;
   const open = eyes === "pill" && blink < 0.14 ? Math.abs(blink - 0.07) / 0.07 : 1;
   const dim = mood === "baseline" ? 1 : 0;
   // the whole sphere fits the grid with a dot to spare, and breathes a little
-  const radius = (Math.min(width, height - 2) / 2) * (1 + Math.sin(t * (sleepy ? 1.2 : 2.2)) * 0.015);
-  const shake = mood === "failing" && Math.floor(t * 10) % 2 === 1 ? 1 : 0;
+  const radius = (Math.min(width, height - 2) / 2) * (1 + Math.sin(time * (sleepy ? 1.2 : 2.2)) * 0.015);
+  const shake = mood === "failing" && tick % 2 === 1 ? 1 : 0;
   const cx = width / 2 + shake;
   const cy = height / 2;
   const accent = MOODS[mood].color;
@@ -220,7 +229,7 @@ export function brailleFrame(mood: Mood, t: number, columns: number, rows: numbe
       const d2 = u * u + v * v;
       if (d2 > 1) continue;
       const nz = Math.sqrt(1 - d2);
-      if (nz > 0.2 && eyeAt(eyes, u, v, t, lookX, open, BRAILLE_EYE_SCALE)) {
+      if (nz > 0.2 && eyeAt(eyes, u, v, time, lookX, open, BRAILLE_EYE_SCALE)) {
         eyeDots.push([x, y]);
         continue;
       }
@@ -245,15 +254,18 @@ export function brailleFrame(mood: Mood, t: number, columns: number, rows: numbe
   if (mood === "thinking") {
     // the ring of the spinner's orbit, drawn only where it passes in front of the sphere
     for (let i = 0; i < 64; i++) {
-      const a = (i / 64) * Math.PI * 2 + t * 1.4;
+      const a = (i / 64) * Math.PI * 2 + time * 1.4;
       if (Math.sin(a) < -0.25) continue;
       put(Math.floor(cx + Math.cos(a) * 1.42 * radius), Math.floor(cy - (Math.sin(a) * 0.21 - 0.05) * radius), accent, 0.5);
     }
   }
 
-  return Array.from({ length: rows }, (_, r) =>
+  const frame = Array.from({ length: rows }, (_, r) =>
     Array.from({ length: columns }, (_, c): BrailleCell => [brailleChar(bits[r * columns + c]!), color[r * columns + c]!]),
   );
+  if (brailleFrames.size >= BRAILLE_FRAME_CACHE_LIMIT) brailleFrames.delete(brailleFrames.keys().next().value!);
+  brailleFrames.set(key, { tick, frame });
+  return frame;
 }
 
 /** The braille frame as plain lines, for logs and tests. */

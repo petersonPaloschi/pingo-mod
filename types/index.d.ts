@@ -25,7 +25,7 @@ export type RouteEvent = {
   jevRaw?: string[];
 };
 
-export type JevTab = "overview" | "live" | "models" | "agents" | "logs" | "configuration" | "deck";
+export type JevTab = "overview" | "live" | "models" | "agents" | "logs" | "configuration" | "deck" | "features";
 
 /**
  * A message as the Live run view records it. Its run is tied only when the engine confirms it: the turn
@@ -219,9 +219,47 @@ export type SetupDraft = {
   busy?: boolean;
 };
 
-/** The one remaining feature toggle: model and effort planning for native agent spawns. */
-export type FeatureFlags = { agents: boolean };
+/** Dashboard switches for Jev and its integrated modules. */
+export type FeatureFlags = {
+  agents: boolean;
+  farol: boolean;
+  clareza: boolean;
+  pingoVivo: boolean;
+  prisma: boolean;
+  semente: boolean;
+  lapida: boolean;
+  sentinela: boolean;
+  vigia: boolean;
+};
 export type FeatureId = keyof FeatureFlags;
+
+/** Preferences for the modules surfaced in Jev's Configuration dashboard. */
+export type FeaturePreferences = {
+  assumptionScope: "all" | "important";
+  plainLevel: "beginner" | "expert";
+  plainReview: boolean;
+  plainSound: boolean;
+  petHat: string;
+  petShades: boolean;
+  designSurface: "auto" | "pane" | "browser";
+  ideaNudges: boolean;
+  promptLearning: boolean;
+  monitorEveryMs: 2000 | 5000 | 10000;
+  trackerSummary: boolean;
+  clashMinutes: 15 | 30 | 60;
+};
+
+export type FarolAssumption = { id: number; text: string; context?: string; verdict: "open" | "right" | "wrong"; note?: string; sent: boolean };
+export type FarolRule = { assumption: string; correction: string };
+export type ClarezaGrade = { pass: boolean; problems: string[]; offered: string[]; fixing: boolean };
+export type SementeIdea = { id: string; text: string; source: "you" | "claude" };
+export type LapidaPhase = "idle" | "enhancing" | "ready" | "error";
+export type PrismaOption = { label: string; description?: string; svg?: string; file?: string };
+export type PrismaQuestion = { question: string; header: string; multiSelect?: boolean; options: PrismaOption[] };
+export type PrismaPicker = { id: string; questions: PrismaQuestion[]; picks: string[][]; others: (string | null)[]; mix: boolean[]; answerFile: string; gallery: string };
+export type SentinelaSession = { pid: number; id: string; name: string; cwd: string; project: string; status: "working" | "waiting" | "done"; waitingFor: string; since: number };
+export type VigiaTask = { id: string; text: string; status: "pending" | "in_progress" | "completed" };
+export type VigiaSession = { id: string; root: string; startedAt: number; beatAt: number; endedAt?: number; isBusy?: boolean; turns?: number; lastPrompt?: string; lastAnswer?: string; title?: string; done?: string; doing?: string; next?: string; tasks: VigiaTask[]; files?: string[]; edits?: Record<string, number> };
 
 export type FeedKind = "turn" | "step" | "jev" | "tool" | "agent" | "message" | "feature" | "error";
 export type FeedTone = "info" | "good" | "warn" | "bad" | "muted";
@@ -308,6 +346,27 @@ declare module "claude-code" {
       range: number;
       setup: SetupDraft;
       features: FeatureFlags;
+      featurePreferences: FeaturePreferences;
+      farolItems: FarolAssumption[];
+      farolRules: FarolRule[];
+      farolBusy: boolean;
+      farolSeq: number;
+      clarezaStatus: string;
+      clarezaGrade: ClarezaGrade | null;
+      clarezaRewrite: boolean;
+      clarezaToldTerms: number;
+      sementeIdeas: SementeIdea[];
+      sementeNudges: string[];
+      lapidaPhase: LapidaPhase;
+      lapidaNote: string;
+      lapidaEnhanced: string;
+      lapidaChanges: string[];
+      prismaPending: PrismaPicker | null;
+      sentinelaSessions: SentinelaSession[];
+      sentinelaProblem: string;
+      sentinelaReplyTo: string;
+      vigiaSessions: VigiaSession[];
+      vigiaCollapsed: boolean;
       flowDetails: boolean;
       feed: FeedEntry[];
       now: LiveNow;

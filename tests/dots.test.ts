@@ -2,6 +2,7 @@
 import { describe, expect, test } from "claude-code/testing";
 
 import { brailleBit, brailleChar, constellation, DOT } from "../hooks/dots.ts";
+import { displayWidth } from "../hooks/layout.ts";
 import { brailleFrame, brailleText, eyeAt, MOODS, pingoLiveSvg, pingoSvg, type Mood } from "../hooks/mascots/pingo.ts";
 import { AGENT_MASCOTS, MASCOT_ORDER, pickMascot } from "../hooks/mascots/agents.ts";
 
@@ -40,9 +41,16 @@ describe("Pingo", () => {
       const frame = brailleFrame(mood, 1, 18, 8);
       expect(frame).toHaveLength(8);
       for (const row of frame) expect(row).toHaveLength(18);
+      for (const line of brailleText(frame).split("\n")) expect(displayWidth(line)).toBe(18);
       expect(frame.flat().some(([, color]) => color === MOODS[mood].color)).toBe(true);
       expect(brailleText(frame).trim().length > 0).toBe(true);
     }
+  });
+
+  test("terminal frames stay still within each tenth and reuse their raster cells", () => {
+    const frame = brailleFrame("thinking", 1, 18, 8);
+    expect(brailleFrame("thinking", 1.05, 18, 8)).toBe(frame);
+    expect(brailleFrame("thinking", 1.1, 18, 8)).not.toBe(frame);
   });
 
   test("the eyes change shape with the mood", () => {
