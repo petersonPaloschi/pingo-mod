@@ -224,7 +224,7 @@ function propsSvg(state: PetAct): string {
   if (state === "alert")
     return (
       `<g style="animation:shake ${PET_MOTION.shakeSeconds}s infinite"><circle cx="33.5" cy="1.5" r="4.5" fill="${hex(PROP.amber)}"/>` +
-      `<text x="33.5" y="4.3" font-size="${DECK_DESIGN.pet.props.alertMarkFontPixels}" font-weight="600" text-anchor="middle" fill="${hex(PROP.mark)}" font-family="${DECK_DESIGN.type.svg}">!</text></g>`
+      `<text x="33.5" y="4.3" font-size="${DECK_DESIGN.pet.props.alertMarkFontPixels}" font-weight="${DECK_DESIGN.type.svgWeights.semibold}" text-anchor="middle" fill="${hex(PROP.mark)}" font-family="${DECK_DESIGN.type.svg}">!</text></g>`
     );
   if (state === "celebrate")
     return CONFETTI.map(
