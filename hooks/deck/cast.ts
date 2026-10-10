@@ -342,7 +342,7 @@ function buildCastSvg(pet: Pet, cast: readonly CastMember[], now: number, W: num
   const PH = body.height * scale;
   const MW = MEMBER_PX * scale;
   const gap = DECK_DESIGN.pet.lane.bodyGap;
-  const { memberPaddingPixels, labelPaddingPixels } = DECK_DESIGN.cast.desktop;
+  const { memberPaddingPixels, labelPaddingPixels, memberShadow } = DECK_DESIGN.cast.desktop;
   // the same group as the terminal's, a column being NAME_PX pixels: who fits, and how many are left out
   const { slots, hidden } = castLayout(cast, Math.floor(W / NAME_PX));
   const widthOf = (slot: CastSlot) => Math.max(slot.member ? MW + memberPaddingPixels : PW, [...clipName(slot.label, SLOT_MAX)].length * NAME_PX + labelPaddingPixels);
@@ -363,7 +363,7 @@ function buildCastSvg(pet: Pet, cast: readonly CastMember[], now: number, W: num
       const top = H - MW - gap;
       const fill = hex(castColor(slot.member.kind));
       group +=
-        `<ellipse cx="${(x + w / 2).toFixed(1)}" cy="${H - gap}" rx="${(MW * 0.32).toFixed(1)}" ry="1.4" fill="${PET_PALETTE.shadow}" opacity=".3"/>` +
+        `<ellipse cx="${(x + w / 2).toFixed(1)}" cy="${H - gap}" rx="${(MW * memberShadow.radiusRatio).toFixed(1)}" ry="${memberShadow.radiusYPixels}" fill="${PET_PALETTE.shadow}" opacity="${memberShadow.opacity}"/>` +
         `<g transform="translate(${left.toFixed(1)} ${top.toFixed(1)}) scale(${(MW / DOTS_W).toFixed(3)})"><g class="fbot" style="animation:${motionOf(slot.member.state, walking)}">` +
         SHAPE_SVG[slot.member.kind](fill) + eyesSvg(slot.member.kind, slot.member.state, slot.dir) +
         "</g></g>";
@@ -376,7 +376,8 @@ function buildCastSvg(pet: Pet, cast: readonly CastMember[], now: number, W: num
   }
   if (hidden) group += `<text x="${x + NAME_PX}" y="${CAST_LABEL_PX - DECK_DESIGN.cast.lane.labelBaselineInsetPixels}" style="font:${DECK_DESIGN.type.svgWeights.semibold} ${DECK_DESIGN.type.svgTinyPixels}px ${DECK_DESIGN.type.svg};fill:${hex(HUE.neutral)}">+${hidden}</text>`;
   let dots = "";
-  if (scale >= 1) for (let d = 4; d < W; d += DECK_DESIGN.pet.lane.backgroundSpacing) dots += `<rect x="${d}" y="${H - 4}" width="4" height="1" fill="${PET_PALETTE.laneLight}" opacity=".07"/>`;
+  const backgroundDots = DECK_DESIGN.pet.lane.backgroundDots;
+  if (scale >= backgroundDots.minimumScale) for (let d = backgroundDots.startX; d < W; d += DECK_DESIGN.pet.lane.backgroundSpacing) dots += `<rect x="${d}" y="${H - backgroundDots.yInsetPixels}" width="${backgroundDots.widthPixels}" height="${backgroundDots.heightPixels}" fill="${PET_PALETTE.laneLight}" opacity="${backgroundDots.opacity}"/>`;
   return (
     `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">` +
     `<style>${PET_CSS}@keyframes spin{to{transform:rotate(360deg)}}${move}.mv{animation:mv${pet.id} ${dur.toFixed(2)}s linear both;animation-delay:-${Math.min(age, dur).toFixed(2)}s}</style>` +

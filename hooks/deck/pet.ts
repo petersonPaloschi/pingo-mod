@@ -170,7 +170,8 @@ function buildSvgBody(state: PetAct, hat: string, shades: boolean): string {
   const ahead = mood === "passthrough" ? ` transform="translate(${BODY.size} 0) scale(-1 1)"` : "";
   const sphere = `<g transform="translate(${BODY.x - BODY.size / 2} ${BODY_Y - BODY.size / 2})"><g${ahead}>${pingoSvg(mood, 0, BODY.size, true)}</g></g>`;
   const body = `<g${run ? ' transform="rotate(-7 20 28)"' : ""}><g class="fbot" style="animation:${motion}">${sphere}</g></g>`;
-  const shadow = `<ellipse cx="20" cy="${FLOOR_Y}" rx="${state === "jump" ? 8 : 12}" ry="1.6" fill="${PET_PALETTE.shadow}" opacity=".35"/>`;
+  const shadowDesign = DECK_DESIGN.pet.body.shadow;
+  const shadow = `<ellipse cx="${BODY.x}" cy="${FLOOR_Y}" rx="${state === "jump" ? shadowDesign.jumpRadiusPixels : shadowDesign.restRadiusPixels}" ry="${shadowDesign.radiusYPixels}" fill="${PET_PALETTE.shadow}" opacity="${shadowDesign.opacity}"/>`;
   return shadow + body + propsSvg(state) + accessoriesSvg(hat, shades);
 }
 
@@ -265,7 +266,8 @@ function buildLaneSvg(pet: Pet, now: number, W: number, H: number, scale: number
   const move = `@keyframes mv${pet.id}{from{transform:translateX(${a.toFixed(1)}px)}to{transform:translateX(${b.toFixed(1)}px)}}`;
   const flip = pet.dir < 0 ? `translate(${PW} 0) scale(-1 1)` : "";
   let dots = "";
-  if (scale >= 1) for (let x = 4; x < W; x += DECK_DESIGN.pet.lane.backgroundSpacing) dots += `<rect x="${x}" y="${H - 4}" width="4" height="1" fill="${PET_PALETTE.laneLight}" opacity=".07"/>`;
+  const backgroundDots = DECK_DESIGN.pet.lane.backgroundDots;
+  if (scale >= backgroundDots.minimumScale) for (let x = backgroundDots.startX; x < W; x += DECK_DESIGN.pet.lane.backgroundSpacing) dots += `<rect x="${x}" y="${H - backgroundDots.yInsetPixels}" width="${backgroundDots.widthPixels}" height="${backgroundDots.heightPixels}" fill="${PET_PALETTE.laneLight}" opacity="${backgroundDots.opacity}"/>`;
   return (
     `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">` +
     `<style>${PET_CSS}${move}.mv{animation:mv${pet.id} ${dur.toFixed(2)}s linear both;animation-delay:-${Math.min(age, dur).toFixed(2)}s}</style>` +

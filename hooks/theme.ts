@@ -368,10 +368,27 @@ export const DECK_DESIGN = {
   },
   pet: {
     speed: { walk: 0.035, run: 0.11 },
-    body: { width: 48, height: 38, viewBox: "-4 -6 48 38", size: 34, x: 20, floorY: 29.5 },
+    body: {
+      width: 48,
+      height: 38,
+      viewBox: "-4 -6 48 38",
+      size: 34,
+      x: 20,
+      floorY: 29.5,
+      shadow: { jumpRadiusPixels: 8, restRadiusPixels: 12, radiusYPixels: 1.6, opacity: 0.35 },
+    },
     braille: { columns: 12, rows: 4 },
     props: { sleepZFontPixels: 6, sleepZSmallFontPixels: 4.5, alertMarkFontPixels: 7 },
-    lane: { desktopHeight: 62, desktopBandHeight: { compact: 44, roomy: 54 }, desktopScale: 1.05, bodyGap: 2, backgroundSpacing: 12, sidePadding: 2, maximumColumns: 512 },
+    lane: {
+      desktopHeight: 62,
+      desktopBandHeight: { compact: 44, roomy: 54 },
+      desktopScale: 1.05,
+      bodyGap: 2,
+      backgroundSpacing: 12,
+      backgroundDots: { minimumScale: 1, startX: 4, yInsetPixels: 4, widthPixels: 4, heightPixels: 1, opacity: 0.07 },
+      sidePadding: 2,
+      maximumColumns: 512,
+    },
     motion: {
       breatheSeconds: 2.4,
       sleepSeconds: 3,
@@ -411,7 +428,11 @@ export const DECK_DESIGN = {
       labelPaddingColumns: 1,
       maximumLabelColumns: 16,
     },
-    desktop: { memberPaddingPixels: 10, labelPaddingPixels: 8 },
+    desktop: {
+      memberPaddingPixels: 10,
+      labelPaddingPixels: 8,
+      memberShadow: { radiusRatio: 0.32, radiusYPixels: 1.4, opacity: 0.3 },
+    },
     motion: { hopSeconds: 0.6, askingSeconds: 0.5, eyeSpinSeconds: 0.8, hopEasing: "cubic-bezier(.3,.6,.4,1)" },
   },
 } as const;
