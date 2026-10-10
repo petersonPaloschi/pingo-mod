@@ -10,6 +10,13 @@ export { CLAUDE_MODELS, EFFORTS as PROFILE_EFFORTS, MODEL_HANDLE, MODEL_LABEL, R
 
 export const ORCHESTRATION_STORE = "orchestration.v1";
 export const OBJECTIVE_STORE = "orchestration.objective";
+/**
+ * Each session keeps its objective under a key of its own, so two sessions (in this project or another) never share
+ * one objective or its advice count. With no session id the old shared key stands in.
+ */
+export const objectiveStoreKey = (sessionId?: string) => (sessionId ? `${OBJECTIVE_STORE}:${sessionId}` : OBJECTIVE_STORE);
+/** Another session's objective that started longer ago than this is dropped when a session starts: an objective has no later clock than its start. */
+export const OBJECTIVE_KEEP_MS = 7 * 24 * 60 * 60 * 1000;
 /** Which native advisors each executor accepts (validate against the account before use). */
 export const NATIVE_ADVISORS: Readonly<Record<ClaudeModelId, readonly ClaudeModelId[]>> = Object.freeze({
   [CLAUDE_MODEL.HAIKU.id]: CLAUDE_MODELS,

@@ -1,7 +1,7 @@
 import type { On } from "claude-code";
 import { describe, expect, test } from "claude-code/testing";
 
-import { defaultPolicy, editPolicy, ORCHESTRATION_STORE, OBJECTIVE_STORE, type OrchestrationPolicy } from "../hooks/core/orchestration.ts";
+import { defaultPolicy, editPolicy, ORCHESTRATION_STORE, OBJECTIVE_KEEP_MS, OBJECTIVE_STORE, objectiveStoreKey, type OrchestrationPolicy } from "../hooks/core/orchestration.ts";
 import { PANE_PROPS, pick, step, world } from "./helpers.ts";
 
 const enabled = (change: (p: OrchestrationPolicy) => void = () => undefined) => editPolicy({ ...defaultPolicy(), enabled: true }, change);
@@ -38,6 +38,27 @@ const settle = async (until: () => boolean | Promise<boolean>) => {
 };
 
 describe("orchestration in a session", () => {
+  test("each session keeps an objective of its own; a new session drops the old shared one and other sessions' stale ones", async ($, on) => {
+    const setup = world(on, {}, { work_mode: pick("managed", 0.9), objective_executor: pick("opus_high", 0.9), guidance: pick("none", 0.9) });
+    setup.store[ORCHESTRATION_STORE] = enabled();
+    const now = Date.parse("2026-10-07T12:00:00Z");
+    const another = { id: "O-other", startedAt: now - 60_000, policy: enabled(), workMode: "managed", workModeConfident: true, adviceUsed: 2 };
+    setup.store[OBJECTIVE_STORE] = { ...another, id: "O-shared" };
+    setup.store[objectiveStoreKey("session-other")] = another;
+    setup.store[objectiveStoreKey("session-stale")] = { ...another, id: "O-stale", startedAt: now - OBJECTIVE_KEEP_MS - 1 };
+    await $.session.start({ cwd: "/workspace" } as never).catch(() => undefined);
+    // the old shared key and the stale one are gone; the other live session's objective is untouched
+    expect(setup.store[OBJECTIVE_STORE]).toBeUndefined();
+    expect(setup.store[objectiveStoreKey("session-stale")]).toBeUndefined();
+    expect(setup.store[objectiveStoreKey("session-other")]).toEqual(another);
+    await $.prompt.submit({ text: "fix the flaky loader test", wait: false, origin: { kind: "composer" } });
+    // this session's objective lands under its own key, never over the other one
+    const own = setup.store[objectiveStoreKey("session-fix")] as { id: string; adviceUsed: number } | undefined;
+    expect(own?.id).toBeDefined();
+    expect(own?.id).not.toBe(another.id);
+    expect(setup.store[objectiveStoreKey("session-other")]).toEqual(another);
+  });
+
   test("a new request gets one Jev decision, a context note, and the executor profile on the main loop", async ($, on) => {
     const setup = world(on, {}, { work_mode: pick("managed", 0.9), objective_executor: pick("opus_high", 0.9), guidance: pick("none", 0.9) });
     setup.store[ORCHESTRATION_STORE] = enabled();
@@ -49,7 +70,7 @@ describe("orchestration in a session", () => {
     expect(submitted.context?.join("\n")).toMatch(/objective \S+, work mode managed/);
     await step($ as never, { turnId: "t1", index: 0, model: "claude-sonnet-5-5", effort: "low", messageCount: 1 });
     expect(setup.sent).toEqual([{ model: "claude-opus-5-5", effort: "high" }]);
-    const objective = setup.store[OBJECTIVE_STORE] as { executor: unknown; applied: unknown; observed: unknown };
+    const objective = setup.store[objectiveStoreKey("session-fix")] as { executor: unknown; applied: unknown; observed: unknown };
     expect(objective.executor).toEqual({ model: "claude-opus-5-5", effort: "high" });
     expect(objective.applied).toEqual({ model: "claude-opus-5-5", effort: "high" });
     expect(objective.observed).toEqual({ model: "claude-opus-5-5" });
@@ -68,7 +89,7 @@ describe("orchestration in a session", () => {
     await $.classic.PostModelSwitch({ from_model: "claude-opus-5-5", to_model: "claude-haiku-5-5", requested_model: "haiku", source: "command", context_tokens: 0, prompt_cache_warm: false, cache_ttl: "5m", estimated_cache_write_usd: 0, pricing: "catalog" } as never);
     await step($ as never, { turnId: "t1", index: 0, model: "claude-haiku-5-5", effort: "low", messageCount: 1 });
     expect(setup.sent).toEqual([{ model: "claude-haiku-5-5", effort: "low" }]);
-    expect((setup.store[OBJECTIVE_STORE] as { executorWhy?: string }).executorWhy).toBe("user_model_switch");
+    expect((setup.store[objectiveStoreKey("session-fix")] as { executorWhy?: string }).executorWhy).toBe("user_model_switch");
     const before = setup.jev.calls;
     await $.agent.spawn({ tool_use_id: "toolu-mate", prompt: "Help out.", description: "mate", subagentType: "general-purpose", provider: { plugin: "engine", tier: "core" }, parentModel: "claude-opus-5-5", background: true, fork: false, isTeammate: true } as never);
     expect(setup.jev.calls).toBe(before);

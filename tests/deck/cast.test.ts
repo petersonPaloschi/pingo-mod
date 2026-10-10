@@ -4,7 +4,7 @@ import { expect, test } from "claude-code/testing";
 
 import type { AgentRun } from "../../types";
 import { displayWidth } from "../../hooks/layout.ts";
-import { CAST_JOIN_MS, CAST_LEAVE_MS, castLaneCells, castLaneSvg, castLayout, castOf, LANE_ROWS, MEMBER_BRAILLE, memberFrame, type CastKind, type CastState } from "../../hooks/deck/cast.ts";
+import { CAST_JOIN_MS, CAST_LEAVE_MS, castColor, castKey, castLaneCells, castLaneSvg, castLayout, castOf, LANE_ROWS, MEMBER_BRAILLE, memberFrame, SPEAKER_IDS, type CastKind, type CastSpeaker, type CastState } from "../../hooks/deck/cast.ts";
 import { createPet, PET_BRAILLE } from "../../hooks/deck/pet.ts";
 
 const NOW = Date.parse("2026-10-10T12:00:00Z");
@@ -15,7 +15,7 @@ const run = (n: number, over: Partial<AgentRun> = {}): AgentRun => ({
 });
 
 /** The lane's name row as text. */
-const names = (lane: readonly (readonly [string, number])[][]) => lane[0]!.map(([char]) => char).join("");
+const names = (lane: readonly (readonly [string, number, number?])[][]) => lane[0]!.map(([char]) => char).join("");
 
 test("Jev always stands first; a subagent at work joins with its mascot and its type as its name", () => {
   expect(castOf([], false, NOW)).toEqual([{ id: "jev", kind: "jev", label: "Jev", state: "idle", since: 0 }]);
@@ -104,4 +104,51 @@ test("the desktop lane draws the same group with their names, and makes a new pi
   for (const name of ["Jev", "Pingo", "Tetra·a&lt;b"]) expect(svg).toContain(`>${name}</text>`);
   expect(castLaneSvg(pet, cast, NOW + 50, 640, 66)).toBe(svg);
   expect(castLaneSvg(pet, castOf([], true, NOW), NOW, 640, 66)).toContain(">Jev ?</text>");
+});
+
+const speaker = (id: CastSpeaker["id"], over: Partial<CastSpeaker> = {}): CastSpeaker => ({ id, since: NOW - 10_000, busy: false, speaking: false, ...over });
+
+test("a feature with something to say joins as a sphere of its own color, at work it thinks, and newcomers hop", () => {
+  const cast = castOf([run(1)], false, NOW, [speaker("clareza", { speaking: true }), speaker("farol", { busy: true }), speaker("semente", { since: NOW - 100 })]);
+  expect(cast.map((m) => m.label)).toEqual(["Jev", "Clareza", "Farol", "Semente", "Tetra·Explore"]);
+  expect(cast.map((m) => m.state)).toEqual(["idle", "idle", "asking", "join", "idle"]);
+  expect(cast.filter((m) => m.speaking).map((m) => m.label)).toEqual(["Clareza"]);
+  // every feature has a color of its own, apart from Jev's and from each other's
+  const colors = SPEAKER_IDS.map(castColor);
+  expect(new Set(colors).size).toBe(SPEAKER_IDS.length);
+  expect(colors).not.toContain(castColor("jev"));
+  // speaking or not is part of what a cast draws, so the desktop picture changes with it
+  expect(castKey(castOf([], false, NOW, [speaker("farol", { speaking: true })]))).not.toBe(castKey(castOf([], false, NOW, [speaker("farol")])));
+});
+
+test("the features stand left of Jev and Pingo, facing them; the speaker's name sits in a balloon of its color", () => {
+  const pet = createPet(NOW);
+  const cast = castOf([run(1)], false, NOW, [speaker("clareza", { speaking: true }), speaker("farol")]);
+  const { slots } = castLayout(cast, 120);
+  expect(slots.map((slot) => slot.label)).toEqual(["Clareza", "Farol", "Jev", "Pingo", "Tetra·Explore"]);
+  expect(slots.map((slot) => slot.dir)).toEqual([1, 1, 1, 1, -1]);
+  const lane = castLaneCells(pet, cast, NOW, 120);
+  const row = names(lane);
+  const at = row.indexOf("Clareza");
+  // the balloon: a rounded end, the name dark on the speaker's color, the other end
+  expect(row[at - 1]).toBe("▐");
+  expect(row[at + "Clareza".length]).toBe("▌");
+  for (let i = at; i < at + "Clareza".length; i++) expect(lane[0]![i]![2]).toBe(castColor("clareza"));
+  // a feature that is not speaking keeps a plain name
+  const farol = row.indexOf("Farol");
+  expect(lane[0]![farol]![2]).toBeUndefined();
+  expect(lane[0]![farol]![1]).toBe(castColor("farol"));
+  // and the desktop draws the balloon too
+  expect(castLaneSvg(pet, cast, NOW, 900, 80)).toContain(`<rect x=`);
+});
+
+test("on a narrow lane the features give way before Jev and Pingo, counted in the +N", () => {
+  const cast = castOf([run(1)], false, NOW, SPEAKER_IDS.map((id, i) => speaker(id, { speaking: i === 0 })));
+  const { slots, hidden, width } = castLayout(cast, 50);
+  expect(slots.some((slot) => slot.label === "Pingo")).toBe(true);
+  expect(slots.some((slot) => slot.label === "Jev")).toBe(true);
+  expect(hidden).toBe(cast.length - 1 - slots.filter((slot) => slot.member && slot.member.kind !== "jev").length);
+  expect(hidden).toBeGreaterThan(0);
+  expect(width).toBeLessThanOrEqual(50);
+  expect(names(castLaneCells(createPet(NOW), cast, NOW, 50))).toContain(`+${hidden}`);
 });

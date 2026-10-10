@@ -288,6 +288,8 @@ export type FeaturePreferences = {
 export type FarolAssumption = { id: number; text: string; context?: string; verdict: "open" | "right" | "wrong"; note?: string; sent: boolean };
 export type FarolRule = { assumption: string; correction: string };
 export type ClarezaGrade = { pass: boolean; problems: string[]; offered: string[]; fixing: boolean };
+/** Clareza's plan for an unclear answer: what may confuse, and the rewrite request it would send once the person agrees. */
+export type ClarezaProposal = { problems: string[]; prompt: string; at: number };
 export type SementeIdea = { id: string; text: string; source: "you" | "claude" };
 export type LapidaPhase = "idle" | "enhancing" | "ready" | "error";
 export type PrismaOption = { label: string; description?: string; svg?: string; file?: string };
@@ -389,6 +391,11 @@ declare module "claude-code" {
       farolSeq: number;
       clarezaStatus: string;
       clarezaGrade: ClarezaGrade | null;
+      clarezaProposal: ClarezaProposal | null;
+      clarezaReviewing: boolean;
+      contextoBusy: boolean;
+      /** Guidance the local advisor gave this session with orchestration off, counted under limits.adviceCalls. */
+      localAdviceUsed: number;
       clarezaRewrite: boolean;
       clarezaToldTerms: number;
       sementeIdeas: SementeIdea[];

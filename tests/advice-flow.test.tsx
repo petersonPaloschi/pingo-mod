@@ -87,6 +87,36 @@ describe("the advisor decides per prompt while orchestration is off", () => {
     expect(feed().some((entry) => entry.text === "Advisor off · Jev inactive (routing off)")).toBe(true);
   });
 
+  test("guidance stops at the advice limit for the session; a failed consult costs nothing, and /clear starts over", async ($, on) => {
+    const setup = world(on, {});
+    const feed = liveFeed(on);
+    setup.store[ORCHESTRATION_STORE] = editPolicy(defaultPolicy(), (p) => { p.limits.adviceCalls = 2; });
+    on("classic.SessionStart", async () => ({}) as never);
+    let failing = true;
+    let calls = 0;
+    on("model.complete", async () => {
+      calls++;
+      return (failing
+        ? { value: { isAnswered: false, reason: "timeout" } }
+        : { value: { isAnswered: true, text: "Check the loader contract first.", usage: { input_tokens: 40, output_tokens: 20, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } } }) as never;
+    });
+    await $.session.start({ cwd: "/workspace" } as never).catch(() => undefined);
+    const guided = async () => /advisor guidance/.test(((await $.prompt.submit({ text: COMPLEX_PROMPT, wait: false, origin: { kind: "composer" } })) as { context?: string[] }).context?.join("\n") ?? "");
+    // a failed consult is not counted against the limit
+    expect(await guided()).toBe(false);
+    failing = false;
+    expect(await guided()).toBe(true);
+    expect(await guided()).toBe(true);
+    // spent: no call at all, and Live says why
+    const made = calls;
+    expect(await guided()).toBe(false);
+    expect(calls).toBe(made);
+    expect(feed().some((entry) => entry.text.startsWith("Advisor off") && entry.text.includes("allowance is spent"))).toBe(true);
+    // a cleared conversation is a new count
+    await $.classic.SessionStart({ source: "clear" } as never);
+    expect(await guided()).toBe(true);
+  });
+
   test("a failed consult is logged as a failure, not as off, and adds nothing to the prompt", async ($, on) => {
     world(on, {});
     const feed = liveFeed(on);

@@ -38,16 +38,55 @@ Native subagent creation and tracking remain available. The optional `agents` fe
 
 Malformed or unknown choices, low confidence, network failure, and timeouts fail open. The shared transport permits at most one retry for retryable HTTP/network errors within the same budget; timeouts and unreadable responses receive no second attempt.
 
+## What Pingo is, and how agents help
+
+Pingo is a Claude Code plugin that adds a live activity dashboard and optional workflow helpers. It turns events exposed by Claude Code into a readable view of requests, tools, workers, models, timing, errors, and reported token use. Claude Code still runs the main conversation and controls its tools and permissions; Pingo observes that work and adds opt-in assistance. The small Pingo mascot is a visual status indicator for the session.
+
+![Illustration of five agent mascots working in parallel, with a final review step](docs/media/parallel-agents.png)
+
+An agent is a temporary helper worker with its own task. In native delegation, Claude Code decides when to start one; the worker can inspect or change its assigned part of the project and returns a result. Pingo records its task, current activity, model, effort, tools, and duration. The Agents screen gives each worker a live pane, and the Live screen shows active workers alongside the main task.
+
+Pingo can also run managed orchestration when enabled. It takes a plan of work units, waits for prerequisites, starts independent units in parallel through the Claude Code runtime, and asks reviewers to check each result and the final integration. The default worker limit is three at a time, subject to other limits. Issues can trigger repair rounds; an unapproved result remains marked unverified. Both model planning and managed orchestration start off by default.
+
+Jev is a separate AI advisor configured with a provider, key, and model. Pingo asks Jev short, structured questions when an enabled feature needs a semantic judgment. Jev can filter or rank bounded candidates in **Sift**, help select a worker's model and effort, or advise an orchestration decision. Pingo or Claude Code applies the result and performs the work. The five mascot names — Tetra, Gem, Can, Coil, and Top — are visual identifiers for concurrent workers, not fixed job roles or a promise that five workers are always active.
+
 ## Dashboard
 
-The six tabs are **Overview, Live, Models, Agents, Logs, Configuration**, in terminal and desktop, with English and Brazilian Portuguese text.
+The six main tabs are **Overview, Live, Models, Agents, Logs, and Configuration**. Five specialized tabs cover AI, feature controls, execution flow, orchestration, and the Deck. The interface is available in English and Brazilian Portuguese.
 
-- **Overview:** selected time range, state, failures, request timing, and observed consumption. Empty ranges show one empty state. Figures identify their scope.
-- **Live:** visible activity and the execution graph, including tools, worker branches, observable advisor calls, and results. Terminal defaults to a compact sequence; **Full run details (f)** opens the scrollable diagram, and **Back to Live log (b)** returns to the feed. It does not expose private reasoning.
-- **Models:** the main model and effort actually observed, changes, and agent decisions. Confidence and activity are not quality scores.
-- **Agents:** name, color, state, actual model/effort, request/tool counts, and individual live panes.
-- **Logs:** persisted metadata, reasons, latency, usage, and error causes. Routing-disabled requests remain usable for external paired evaluation.
-- **Configuration:** provider, masked credentials, language, routing, and optional agent planning.
+| Tab | What it shows |
+| --- | --- |
+| **Overview** | Choose a time range and see session state, request outcomes, failures, response timing, reported usage, Jev calls, and a timeline chart. Each figure identifies its scope; an empty range has a single empty state. |
+| **Live** | See what is happening now: the main model and effort, active workers, recent tool activity, visible messages, Jev consultations, and results. **Full run details (f)** opens the scrollable execution flow; **Back to Live log (b)** returns to the feed. Private model reasoning is not shown. |
+| **Models** | Review the main model and effort actually observed, recent requests, requested versus observed model IDs, duration, and reported input/output/cache usage. Jev's model and usage are shown separately. Missing provider usage stays unknown or partial. |
+| **Agents** | See running and completed workers, their task and current activity, mascot/color, model and effort, request/tool counts, and reported tokens. Open a worker's individual live pane or clear completed runs; active workers remain. |
+| **Logs** | Read grouped routing reasons and recent requests in time order, including outcome, decision, latency, confidence, reported token usage, failure cause, recovery hint, and available raw Jev replies. The screen also shows recent Jev calls and their answers. |
+| **Configuration** | Set the interface language to automatic, English, or Portuguese; inspect saved history metadata and clear completed history. Provider credentials and AI routing live on the AI screen. |
+
+| Specialized tab | What it shows |
+| --- | --- |
+| **AI** | Select Jev's provider and model, set a masked key, test the connection, control Jev routing, and set AI-backed feature preferences. |
+| **Features** | Toggle Pingo Vivo and Sentinela; set the companion's hat and shades, completion sound, Sentinela's monitoring interval, and the overlap-warning window. |
+| **Flow** | Follow a request from its prompt through any advisor decision and tool activity to the result. `/jev flow` and `/jev fluxo` open this timeline. |
+| **Orchestration** | Control automatic planning, independent review, advice, managed batches, role profiles, model/effort choices, and resource limits; inspect the current objective and batch approval state or cancel an unfinished batch. |
+| **Deck** | Configure the compact status band: visible plan, agent, context, limit, routing, pet, clock, and weather details; size, style, automatic updates, sound, quiet mode, cost display, and weather location. |
+
+### Optional features
+
+Pingo has ten optional features. The eight AI-assisted features are grouped on the AI screen; Pingo Vivo and Sentinela are available in the Features controls. Each feature can be enabled or disabled.
+
+| Feature | Controls | What it does |
+| --- | --- | --- |
+| **Agent planning** | AI | Jev selects a suitable model and effort for an eligible subagent unless a model was already chosen. |
+| **Farol** | AI | Collects Claude's working assumptions, lets you correct them, and carries corrections into later turns for the project. |
+| **Clareza** | AI | Keeps explanations at a chosen technical level and checks completed answers. If something may confuse, it prepares a rewrite proposal for you to review, send, or reject. |
+| **Lapida** | AI | Rewrites a draft prompt using project context and learns from edits made before sending it. |
+| **Prisma** | AI | Turns design questions with SVG previews into visual choices; options can be mixed, and decisions are remembered per project. |
+| **Semente** | AI | Saves side ideas, accepts ideas from Claude, and nudges you when a saved idea matches recent work. |
+| **Vigia** | AI | Tracks sessions in the project, summarizes their work, and warns about overlapping edits that could overwrite newer changes. |
+| **Context** | AI | When conversation history gets long, asks Jev which older tool results can be removed or shortened while keeping recent messages intact. |
+| **Pingo Vivo** | Features | Adds an animated Pingo companion that reacts to session activity. |
+| **Sentinela** | Features | Shows sessions across projects, their status and resume command, and lets you message a session that is waiting. |
 
 Pingo remains a simple state indicator. The user and agents have readable names and colors. Retired dice, solid mascots, and graph pulses do not schedule frames. See [DESIGN.md](DESIGN.md).
 
@@ -58,7 +97,8 @@ Task timing starts at prompt submission. Main-response and background-completion
 | Command | Action |
 | --- | --- |
 | `/jev`, `/jev dashboard`, `/jev overview` | Open Overview. |
-| `/jev live`, `/jev flow` | Open Live and its execution graph. |
+| `/jev live` | Open the live activity feed. |
+| `/jev flow`, `/jev fluxo` | Open the execution-flow timeline. |
 | `/jev models` | Show observed model and effort. |
 | `/jev agents` | List workers and activity. |
 | `/jev agent [number, type, or name]` | Open a worker's live pane. |
@@ -66,10 +106,12 @@ Task timing starts at prompt submission. Main-response and background-completion
 | `/jev agents clear` | Remove finished runs; active workers stay. |
 | `/jev logs`, `/jev log`, `/jev reasons` | Open Logs. |
 | `/jev config`, `/jev features` | Open Configuration (language and history). |
-| `/jev ai`, `/jev ia`, `/jev setup [provider]`, `/jev orch` | Open AI: Jev on/off, provider and key, the features that reach the model, orchestration. |
+| `/jev ai`, `/jev ia`, `/jev setup [provider]` | Open AI settings: Jev routing, provider, key, connection test, and AI feature switches. `setup` can select a provider. |
+| `/jev orch` | Open orchestration settings; `/jev orch <setting>` applies an orchestration command. |
+| `/jev deck` | Open settings for the compact status band. |
 | `/jev status` | Show settings and observed execution. |
-| `/jev routing on|off` | Enable/disable optional agent planning. |
-| `/jev feature agents on|off` | Toggle native-subagent planning. |
+| `/jev routing on|off` | Enable or disable Jev routing for optional AI-assisted features. |
+| `/jev feature <id> on|off` | Enable or disable an optional feature. |
 | `/jev clear` | Clear completed history and retain active work. |
 
 Arguments are case-insensitive; worker numbers are not reused during a session. Useful former commands redirect to consolidated screens. Obsolete features cannot be enabled. Old persisted tabs fall back to a valid screen, and old feature configuration is normalized.

@@ -1,7 +1,7 @@
 import { expect, test } from "claude-code/testing";
 
 import { cellsOf } from "../../hooks/dots.ts";
-import { castLaneCells, castOf } from "../../hooks/deck/cast.ts";
+import { castLaneCells, castOf, SPEAKER_IDS } from "../../hooks/deck/cast.ts";
 import { createPet, petLaneColumns } from "../../hooks/deck/pet.ts";
 import { ASK, NOW, TERMINAL, deckWorld } from "./helpers.ts";
 
@@ -57,8 +57,8 @@ test("the terminal pet blits a styled frame every 100 ms without a UI invalidati
   const lane = await ui.find({ type: "Raster", key: "deck-pet" } as never);
   const columns = petLaneColumns(110);
   const expectedPet = { ...createPet(NOW), act: "jump" as const, dur: 5000, hat: "cowboy", shades: true };
-  // no subagent at work: Jev alone stands with the pet
-  const cast = castOf([], false, NOW);
+  // no subagent at work: Jev and every feature switched on (all, by default) stand with the pet, quiet
+  const cast = castOf([], false, NOW, SPEAKER_IDS.map((id) => ({ id, since: NOW, busy: false, speaking: false })));
   expect(lane?.props.cells).toBe(cellsOf(castLaneCells(expectedPet, cast, NOW, columns)));
   invalidations.length = 0;
 

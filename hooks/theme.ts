@@ -51,6 +51,18 @@ export const AGENT_MASCOT_PALETTE = {
   cone: 0xe9e09a,
 } as const;
 
+/** One sphere color per feature mascot on the Deck lane, apart from Jev's lime and the subagents' accents. */
+export const FEATURE_MASCOT_PALETTE = {
+  clareza: HUE.you,
+  semente: HUE.ok,
+  farol: HUE.warn,
+  vigia: HUE.info,
+  sentinela: HUE.plum,
+  prisma: 0x2f9e9e,
+  lapida: 0xc4553d,
+  contexto: HUE.neutral,
+} as const;
+
 /** Animated Deck fills: a darker moving head and a light sweep of the brand lime, never used for text. */
 export const DECK_ACCENT = {
   headDim: 0x5d7216,
@@ -311,6 +323,8 @@ export const DECK_DESIGN = {
     titleMaxChars: 22,
     titleMaxPixels: 160,
     defaultMaxRows: 14,
+    /** The line under the pet lane where a feature mascot speaks: its words keep at least this many columns. */
+    speech: { minimumTextColumns: 12 },
     defaultPanelColumns: 100,
     headerPetHeight: 28,
     headerPetScale: 0.7,
@@ -444,6 +458,8 @@ export const DECK_DESIGN = {
       memberPaddingPixels: 10,
       labelPaddingPixels: 8,
       memberShadow: { radiusRatio: 0.32, radiusYPixels: 1.4, opacity: 0.3 },
+      /** The speaker's name in a balloon: its padding, corner radius and the tail pointing down at the body. */
+      balloon: { paddingPixels: 3, radiusPixels: 4, tailPixels: 3 },
     },
     motion: { hopSeconds: 0.6, askingSeconds: 0.5, eyeSpinSeconds: 0.8, hopEasing: "cubic-bezier(.3,.6,.4,1)" },
   },
@@ -594,6 +610,8 @@ export const GLYPH = {
   branch: "╰",
   /** Between the screens' names. */
   slash: "/",
+  /** What a mascot on the Deck lane says, on the line under it. */
+  speech: "▸",
 } as const;
 
 /** The Deck's row marks, shared by its model status and renderers: the trail's node for each state. */

@@ -24,6 +24,8 @@ export interface Pet {
   id: number;
   hat?: string;
   shades?: boolean;
+  /** Pingo speaks for Claude's own turn: its name is drawn in a balloon, as a speaking member's is. */
+  speaks?: boolean;
 }
 
 const SPEED = DECK_DESIGN.pet.speed; // lane fractions per second
@@ -101,7 +103,8 @@ export function stepPet(pet: Pet, mood: DeckMood, now: number, rand: () => numbe
   if (mood === "alert") act = "alert";
   else if (mood === "celebrate") act = "celebrate";
   else if (mood === "working") act = pick(["console", "console", "read", "walk", "idle"] as const, rand());
-  else if (mood === "sleepy") act = pick(["sleep", "sleep", "idle"] as const, rand());
+  // Claude idle a while: Pingo sleeps, always, so the lane reads as idle at a glance
+  else if (mood === "sleepy") act = "sleep";
   else act = pick(["idle", "walk", "walk", "run", "jump", "read"] as const, rand());
   pet.act = act;
   if (act === "walk" || act === "run") {

@@ -4,7 +4,7 @@
 import type { ElementTable, RenderNode } from "claude-code";
 
 import type { FeatureId } from "../../types";
-import { cellsOf } from "../dots.ts";
+import { cellsOf, hex } from "../dots.ts";
 import { text, type Locale } from "../i18n.ts";
 import { collapsedOrder, elapsed, stripTool, type Agent, type DeckRow, type Spend } from "./model.ts";
 import { castLaneCells, castLaneSvg, CAST_LABEL_PX, LANE_ROWS, type CastMember } from "./cast.ts";
@@ -40,6 +40,19 @@ const BRANCH = GLYPH.branch;
 
 export type Surface = "terminal" | "desktop";
 
+/**
+ * One on the lane with something to say or at work (a feature, Jev, Pingo for Claude's turn, a subagent): the line
+ * under the lane shows it, and pressing it opens the whole. `id` is the feature's, "jev", "pingo" or the run's.
+ */
+export interface Speech {
+  id: string;
+  name: string;
+  color: number;
+  /** What it says, in one line; its pane shows all of it, with the choices. */
+  text: string;
+  open: () => void;
+}
+
 export type DeckBand = {
   rows: readonly DeckRow[];
   settings: DeckSettings;
@@ -56,6 +69,8 @@ export type DeckBand = {
   pet: Pet;
   /** Who stands with the pet on its lane, each named above it: Jev, then the subagents at work. Pingo alone when absent. */
   cast?: readonly CastMember[];
+  /** The features with something to say, the one speaking first: one line under the lane. */
+  speech?: readonly Speech[];
   toggle: () => void;
   /** Rows drawn so far while the band unfolds; every row when absent. */
   shown?: number;
@@ -105,10 +120,12 @@ export function renderDeck(els: ElementTable, band: DeckBand, surface: Surface) 
   // the header line has no room for names over a cast, so a cast always gets the lane
   const inlinePet = expanded && desktop && band.settings.show.pet && band.settings.size !== "roomy" && !band.cast?.length;
   const lane = band.settings.show.pet && !inlinePet ? petLane(els, band, surface) : null;
+  const said = lane ? speechLine(els, band) : null;
   if (!expanded) {
     return (
       <Box flexDirection="column">
         {lane}
+        {said}
         {collapsedLine(els, band, surface, toggle, extrasEl)}
       </Box>
     );
@@ -130,6 +147,7 @@ export function renderDeck(els: ElementTable, band: DeckBand, surface: Surface) 
   return (
     <Box flexDirection="column" gap={desktop ? (band.settings.size === "roomy" ? UI_DESIGN.space.xs : UI_DESIGN.space.none) : undefined}>
       {lane}
+      {said}
       {header}
       {switches.node}
       {lines}
@@ -170,7 +188,7 @@ function featureSwitches(els: ElementTable, band: DeckBand, desktop: boolean, ha
     };
   }
   const packed = featureLines(band.features, band.cols);
-  const room = (band.maxRows ?? DEFAULT_MAX_ROWS) - 1 - (hasLane ? LANE_ROWS : 0);
+  const room = (band.maxRows ?? DEFAULT_MAX_ROWS) - 1 - laneLines(band, hasLane);
   if (!band.pane && room - 1 - packed.length < Math.min(minimumRows, band.rows.length)) return { node: null, lines: 0 };
   return {
     node: (
@@ -345,7 +363,8 @@ const pctOf = (row: DeckRow) => `${Math.round(Math.max(0, Math.min(100, row.pct)
 function terminalRows(els: ElementTable, band: DeckBand, shown: number, hasLane: boolean, reserved: number) {
   const { Box, Text } = els;
   const layout = DECK_DESIGN.band.terminal;
-  const maxRows = Math.max(layout.minimumRows, (band.maxRows ?? DEFAULT_MAX_ROWS) - 1 - (hasLane ? LANE_ROWS : 0) - reserved);
+  const availableRows = (band.maxRows ?? DEFAULT_MAX_ROWS) - 1 - laneLines(band, hasLane) - reserved;
+  const maxRows = band.pane ? Math.max(0, availableRows) : Math.max(layout.minimumRows, availableRows);
   const labelW = Math.min(layout.labelMaximumColumns, Math.max(layout.labelMinimumColumns, Math.floor(band.cols * layout.labelRatio)));
   const rightW = band.rows.some((row) => row.kind !== "route" && row.right && row.right !== pctOf(row)) ? layout.rightValueColumns : 0;
   const barW = Math.max(1, band.cols - labelW - layout.valueColumns - rightW - layout.barReservedColumns);
@@ -437,6 +456,49 @@ function rowAlt(row: DeckRow, locale: Locale): string {
     return text("deck.route.altLine", locale, { from: row.route.from, to: row.route.to, effort });
   }
   return row.title + ": " + (row.name ?? "") + (row.count ? " " + row.count : "") + ", " + row.right;
+}
+
+/** Terminal lines the lane takes: its rows, and the speech line under it while a feature has something to say. */
+function laneLines(band: DeckBand, hasLane: boolean): number {
+  return hasLane ? LANE_ROWS + (band.speech?.length ? 1 : 0) : 0;
+}
+
+// what the features on the lane say, on one line under it: the one speaking first, its words pressed to open its pane
+// with the whole of it and the choices, then the others' names, each pressed to open its own. The line never wraps
+// out of its budget: the others' names take what the words leave beyond their minimum, those that do not fit are
+// counted as "+N", and the words are cut to what is left.
+function speechLine(els: ElementTable, band: DeckBand) {
+  const { Box, Button, Text } = els;
+  const [lead, ...rest] = band.speech ?? [];
+  if (!lead) return null;
+  const columns = (s: string) => [...s].length;
+  const head = `${GLYPH.speech} ${lead.name}:`;
+  const open = ` ${GLYPH.leader} ${text("deck.speech.open", band.locale)}`;
+  const minimum = DECK_DESIGN.band.speech.minimumTextColumns;
+  const moreWidth = (count: number) => (count ? columns(`+${count}`) + 1 : 0);
+  const budget = band.cols - columns(head) - columns(open) - minimum - 2;
+  const named: Speech[] = [];
+  let used = 0;
+  for (const one of rest) {
+    const width = columns(one.name) + 1;
+    if (used + width + moreWidth(rest.length - named.length - 1) > budget) break;
+    named.push(one);
+    used += width;
+  }
+  const more = rest.length - named.length;
+  const room = Math.max(minimum, band.cols - columns(head) - columns(open) - used - moreWidth(more) - 2);
+  return (
+    <Box key="deck-speech" flexDirection="row" columnGap={UI_DESIGN.space.xs} overflow="hidden">
+      <Box flexShrink={0}>
+        <Text color={hex(lead.color)} bold>{head}</Text>
+      </Box>
+      <Button key={"deck-speech-" + lead.id} label={trunc(lead.text, room) + open} plain onPress={lead.open} />
+      {named.map((one) => (
+        <Button key={"deck-speech-" + one.id} label={one.name} plain dimColor onPress={one.open} />
+      ))}
+      {more ? <Text color={MUTED}>{`+${more}`}</Text> : null}
+    </Box>
+  );
 }
 
 // the pet's lane, with its cast and their names on top: a drawn strip on the desktop; in the terminal, one Raster as

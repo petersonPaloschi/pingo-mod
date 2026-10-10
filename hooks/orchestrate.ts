@@ -13,7 +13,9 @@ import {
   MODEL_LABEL,
   migratePolicy,
   normalizePolicy,
+  OBJECTIVE_KEEP_MS,
   OBJECTIVE_STORE,
+  objectiveStoreKey,
   offeredProfiles,
   ORCHESTRATION_STORE,
   readConcurrency,
@@ -83,6 +85,14 @@ export interface Io {
   setAgentEffort: (agentId: string, effort: Effort) => void;
   /** Records the advisor's decision and outcome for the prompt being entered, for the Flow tab. */
   noteAdvice?: (change: Partial<TraceAdvice>) => Promise<void>;
+  /** Guidance the local advisor gave this session while orchestration was off (no objective to count it on). */
+  localAdviceUsed?: () => Promise<number>;
+  /** Counts one more piece of local guidance for this session. */
+  countLocalAdvice?: () => Promise<void>;
+  /** This session's id: its objective is kept under a key of its own. */
+  sessionId?: () => Promise<string | undefined>;
+  /** Every key in the store, to drop objectives no session will read again. */
+  storeKeys?: () => Promise<string[]>;
 }
 
 /** One writer at a time for the batch and objective records (the store has no compare-and-set). */
@@ -103,12 +113,19 @@ export async function readPolicy(io: Io): Promise<OrchestrationPolicy> {
   return policy;
 }
 
-export async function readObjective(io: Io): Promise<Objective | undefined> {
-  return restoreObjective(await io.storeGet(OBJECTIVE_STORE).catch(() => undefined), normalizePolicy);
+/** Where this session's objective is kept. */
+async function objectiveKey(io: Io): Promise<string> {
+  return objectiveStoreKey(await io.sessionId?.().catch(() => undefined));
 }
 
-const saveObjective = (io: Io, objective: Objective | undefined) =>
-  objective ? io.storeSet(OBJECTIVE_STORE, objective) : io.storeDelete(OBJECTIVE_STORE);
+export async function readObjective(io: Io): Promise<Objective | undefined> {
+  return restoreObjective(await io.storeGet(await objectiveKey(io)).catch(() => undefined), normalizePolicy);
+}
+
+async function saveObjective(io: Io, objective: Objective | undefined) {
+  const key = await objectiveKey(io);
+  return objective ? io.storeSet(key, objective) : io.storeDelete(key);
+}
 
 /** Catalogue models the user limited Claude to; unknown (all four possible) without that option. */
 const capsOf = (config: Settings): Capabilities => (config.catalogue ? { available: config.catalogue } : {});
@@ -159,7 +176,11 @@ export async function onPromptSubmit(io: Io, e: { text: string; attachments?: re
       return notes;
     }
     // Orchestration off decides locally whatever Jev's state; "gate" is only an on policy Jev cannot serve.
-    return [...notes, ...await localAdvice(io, config, policy, e, policy.enabled ? "gate" : "local")];
+    // With no objective to count on, limits.adviceCalls caps the guidance given this session.
+    const used = await io.localAdviceUsed?.() ?? 0;
+    const local = await localAdvice(io, config, policy, e, policy.enabled ? "gate" : "local", used);
+    if (local.length) await io.countLocalAdvice?.();
+    return [...notes, ...local];
   }
   return exclusive(async () => {
     const active = await readObjective(io);
@@ -778,8 +799,25 @@ export async function batchStatus(io: Io, input: { batch?: unknown }): Promise<s
 
 /** Session start: restored queues are reconciled against live agents, so nothing launches twice. */
 export async function restore(io: Io): Promise<void> {
+  await pruneObjectives(io).catch(() => undefined);
   const list = await readBatches(io);
   if (!list.length) return;
   const live = new Set((await io.agents().catch(() => [])).filter((a) => a.status === "running" || a.status === "pending").map((a) => a.id));
   await updateBatches(io, (batches) => batches.map((b) => reconcile(b, live)));
+}
+
+/**
+ * Drops the objectives no session will read again: the old one every session shared, and other sessions' that
+ * started more than OBJECTIVE_KEEP_MS ago. This session's own is never touched; without a session id nothing is.
+ */
+async function pruneObjectives(io: Io): Promise<void> {
+  const sessionId = await io.sessionId?.().catch(() => undefined);
+  if (!sessionId || !io.storeKeys) return;
+  const own = objectiveStoreKey(sessionId);
+  const now = await io.now();
+  for (const key of await io.storeKeys()) {
+    if (key === own || (key !== OBJECTIVE_STORE && !key.startsWith(`${OBJECTIVE_STORE}:`))) continue;
+    const started = key === OBJECTIVE_STORE ? undefined : ((await io.storeGet(key).catch(() => undefined)) as { startedAt?: unknown } | undefined)?.startedAt;
+    if (typeof started !== "number" || now - started > OBJECTIVE_KEEP_MS) await io.storeDelete(key);
+  }
 }

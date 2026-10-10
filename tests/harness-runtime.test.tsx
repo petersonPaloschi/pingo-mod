@@ -2,6 +2,7 @@ import type { On } from "claude-code";
 import { describe, expect, mock, test, type Engine } from "claude-code/testing";
 
 import { DEFAULT_FEATURES, type Features } from "../hooks/core/plan.ts";
+import { text } from "../hooks/i18n.ts";
 import type { Answer, SystemOneRequest } from "../hooks/core/types.ts";
 import { PANE_PROPS as basePaneProps, answerJev, mockEngineServices, mockStore, pick, step } from "./helpers.ts";
 
@@ -173,6 +174,27 @@ describe("runtime without main-turn advice", () => {
       expect(JSON.stringify(await ui.drawn())).toContain(`◉ ${label}`);
     }
     expect(await $.command.run({ command: "jev", args: "baseline", origin: ORIGIN } as never)).toMatchObject({ text: expect.stringContaining("Usage:") });
+    await ui.unmount();
+  });
+
+  test("every alias the /jev description lists opens the tab it names", async ($, on) => {
+    world(on);
+    await $.session.start({ cwd: "/workspace" } as never).catch(() => undefined);
+    const label: Record<string, string> = { overview: "Overview", flow: "Flow", models: "Models", logs: "Logs", configuration: "Configuration", ai: "AI", orchestration: "Orchestration" };
+    // "Aliases: a, b → tab; c → tab." as the help text reads; the Portuguese text lists the very same pairs
+    const pairs = (locale: "en" | "pt", marker: string) => text("ui.command.description", locale).split(marker)[1]!.replace(/\.$/, "").split(";").flatMap((group) => {
+      const [aliases, tab] = group.split("→").map((part) => part.trim());
+      return aliases!.split(",").map((alias) => [alias.trim(), tab!] as const);
+    });
+    const listed = pairs("en", "Aliases:");
+    expect(listed.length).toBeGreaterThan(0);
+    expect(pairs("pt", "Apelidos:")).toEqual(listed);
+    const ui = await $.ui.mount({ plugin: "jev", surface: "terminal", component: "Pane", requestId: "jev", props: PANE_PROPS });
+    for (const [alias, tab] of listed) {
+      expect(label[tab]).toBeDefined();
+      await $.command.run({ command: "jev", args: alias, origin: ORIGIN } as never);
+      expect(JSON.stringify(await ui.drawn())).toContain(`◉ ${label[tab]}`);
+    }
     await ui.unmount();
   });
 });

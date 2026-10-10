@@ -6,7 +6,7 @@
 import { atom, read, update } from "claude-code";
 import type { ElementTable, EngineInterface, PromptComposeInput, PromptSubmitInput, Register, RenderChildren, RenderSurface, Timer } from "claude-code";
 
-import type { AdvisorInfo, AgentRun, FeatureFlags, FeaturePreferences, FarolAssumption, FarolRule, ClarezaGrade, SementeIdea, LapidaPhase, PrismaPicker, PrismaQuestion, PrismaOption, SentinelaSession, VigiaSession, VigiaTask, FeedEntry, PaneScroll, FeedKind, FeedSpeaker, FeedTone, JevTab, LiveNow, RouteEvent, SetupDraft, TraceState } from "../types";
+import type { AdvisorInfo, AgentRun, FeatureFlags, FeaturePreferences, FarolAssumption, FarolRule, ClarezaGrade, ClarezaProposal, SementeIdea, LapidaPhase, PrismaPicker, PrismaQuestion, PrismaOption, SentinelaSession, VigiaSession, VigiaTask, FeedEntry, PaneScroll, FeedKind, FeedSpeaker, FeedTone, JevTab, LiveNow, RouteEvent, SetupDraft, TraceState } from "../types";
 import { keyFor, keyOwner, providerBasis, resolveSettings, storedApplies, type ModOptions, type Settings, type StoredSettings } from "./config.ts";
 import { channelFile, channelReader, FOLLOW_SCRIPT } from "./core/channel.ts";
 import { compactContextSession, contextReductionRatio, resolveContextConfig, type ContextJevAsker, type ContextJevResponse, type ContextResult, type ContextSessionMessage, type ResolvedContextConfig } from "./core/compaction.ts";
@@ -49,7 +49,7 @@ import { flowSummary } from "./flow.ts";
 import * as orch from "./orchestrate.ts";
 import { MODEL_LABEL } from "./core/orchestration.ts";
 import { formatCompact, formatDecimal, formatDuration, formatNumber, formatPercent, localeFor, text, type Locale, type LocaleKey, type LocaleOption } from "./i18n.ts";
-import { renderDeck, FRAME_MS, type DeckBand, type Surface } from "./deck/band.tsx";
+import { renderDeck, FRAME_MS, type DeckBand, type Speech, type Surface } from "./deck/band.tsx";
 import { DEFAULT_SETTINGS, parseSettings, serializeSettings, type DeckSettings } from "./deck/settings.ts";
 import {
   ASK_DELAY_MS,
@@ -97,7 +97,7 @@ import {
   type ToolCall,
 } from "./deck/model.ts";
 import { createPet, petLaneCells, petLaneColumns, PET_BRAILLE, stepPet, type Pet } from "./deck/pet.ts";
-import { castKey, castLaneCells, castOf, LANE_ROWS, type CastMember } from "./deck/cast.ts";
+import { castColor, castKey, castLaneCells, castOf, LANE_ROWS, PINGO_INK, SPEAKER_IDS, SPEAKER_NAMES, type CastMember, type CastSpeaker, type SpeakerId } from "./deck/cast.ts";
 import { cellsOf } from "./dots.ts";
 import { FOLD_FADE, FOLD_STEP, TRACK_H, toTrackRow, type DrawCaches } from "./deck/rows.ts";
 import { DESKTOP_STYLES, DESKTOP_STYLE_NAMES, desktopTrack } from "./deck/styles-desktop.ts";
@@ -131,6 +131,14 @@ const orchMessage = atom({ plugin: "jev", key: "orchMessage" } as const, null as
 const clarezaGrade = atom({ plugin: "jev", key: "clarezaGrade" } as const, null as ClarezaGrade | null);
 const clarezaRewrite = atom({ plugin: "jev", key: "clarezaRewrite" } as const, false);
 const clarezaToldTerms = atom({ plugin: "jev", key: "clarezaToldTerms" } as const, 0);
+/** Clareza's plan for the last answer: the rewrite request, held until the person sends or rejects it. */
+const clarezaProposal = atom({ plugin: "jev", key: "clarezaProposal" } as const, null as ClarezaProposal | null);
+/** Clareza is reviewing the last answer: its mascot is at work on the Deck lane. */
+const clarezaReviewing = atom({ plugin: "jev", key: "clarezaReviewing" } as const, false);
+/** Contexto is cleaning up a long conversation: its mascot is at work on the Deck lane. */
+const contextoBusy = atom({ plugin: "jev", key: "contextoBusy" } as const, false);
+/** Guidance the local advisor gave this session with orchestration off: capped by limits.adviceCalls, as an objective is. */
+const localAdviceUsed = atom({ plugin: "jev", key: "localAdviceUsed" } as const, 0);
 const sementeIdeas = atom({ plugin: "jev", key: "sementeIdeas" } as const, [] as SementeIdea[]);
 const sementeNudges = atom({ plugin: "jev", key: "sementeNudges" } as const, [] as string[]);
 const lapidaPhase = atom({ plugin: "jev", key: "lapidaPhase" } as const, "idle" as LapidaPhase);
@@ -219,6 +227,12 @@ let deckPet: Pet | undefined;
 let deckCast: CastMember[] = [];
 /** The subagent list as last written or read, for the cast: the Deck's clock draws from it without a read. */
 let castRuns: readonly AgentRun[] = [];
+/** The features on the lane as the last band draw found them: the Deck's clock draws from them without a read. */
+let castSpeakers: CastSpeaker[] = [];
+/** Who speaks on the lane as the last band draw found it: "jev", "pingo", a feature's or a run's id; none when quiet. */
+let castLead: string | undefined;
+/** When each feature now on the lane joined it, so it hops once on arrival; a feature that leaves is forgotten. */
+const speakerSince = new Map<SpeakerId, number>();
 let sessionPetHat = "tophat";
 let petHatOverride: string | undefined;
 let petHatOverrideUntil = 0;
@@ -261,6 +275,17 @@ let deckNote: (NonNullable<DeckPanel["note"]> & { key: string }) | null = null;
 let deckDraft = "";
 let orchestrationDraft = "";
 
+/** Resolves work or rejects after the host clock's deadline; the timer is cleared on either outcome. */
+function withClockTimeout<T>($: EngineInterface, ms: number, work: Promise<T>, locale?: Locale): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const timer = $.clock.after(ms, () => reject(new Error(text("provider.timeout", locale, { ms: formatNumber(ms, locale ?? "en") }))));
+    work.then(
+      (value) => { timer.cancel(); resolve(value); },
+      (error: unknown) => { timer.cancel(); reject(error); },
+    );
+  });
+}
+
 function transport($: EngineInterface, locale?: Locale): Transport {
   return {
     post: async (url, headers, body) => {
@@ -268,20 +293,7 @@ function transport($: EngineInterface, locale?: Locale): Transport {
       return { status: reply.status, ok: reply.ok, text: reply.text };
     },
     sleep: (ms) => $.clock.sleep(ms),
-    within: (ms, work) =>
-      new Promise((resolve, reject) => {
-        const timer = $.clock.after(ms, () => reject(new Error(text("provider.timeout", locale, { ms: formatNumber(ms, locale ?? "en") }))));
-        work.then(
-          (value) => {
-            timer.cancel();
-            resolve(value);
-          },
-          (error: unknown) => {
-            timer.cancel();
-            reject(error);
-          },
-        );
-      }),
+    within: (ms, work) => withClockTimeout($, ms, work, locale),
   };
 }
 
@@ -648,13 +660,17 @@ function tracedAskJev($: EngineInterface, config: Settings, where: JevWhere): As
 type ModelCaller = "lapida" | "clareza" | "vigia" | "orchestration";
 type ModelReply = Awaited<ReturnType<EngineInterface["model"]["fork"]>>;
 
+/** How long a model call may take, on the mod's clock, and the language its timeout is told in. */
+type CallLimit = { timeoutMs: number; locale?: Locale };
+
 /**
  * Every model call of the mod's besides Jev's, through one path: the request goes out as given and its reply comes
  * back as it came, while one line of the live log (kind "call", which Logs lists too) says who asked, which model,
- * and how it went. The line is written alongside, so logging never delays the caller.
+ * and how it went. The line is written alongside, so logging never delays the caller. A call given a `limit` gives
+ * up at it: the caller and the line both get the timeout, and a late reply from the abandoned call is dropped.
  */
-function callModel<R extends ModelReply>($: EngineInterface, caller: ModelCaller, model: string | undefined, call: () => Promise<R>): Promise<R> {
-  const reply = call();
+function callModel<R extends ModelReply>($: EngineInterface, caller: ModelCaller, model: string | undefined, call: () => Promise<R>, limit?: CallLimit): Promise<R> {
+  const reply = limit ? withClockTimeout($, limit.timeoutMs, call(), limit.locale) : call();
   void reportCall($, caller, model, reply).catch(() => undefined);
   return reply;
 }
@@ -704,6 +720,10 @@ function orchIo($: EngineInterface): orch.Io {
     storeDelete: (key) => $.store.delete(key),
     now: () => $.clock.now(),
     complete: (request) => completeModel($, "orchestration", request as never) as never,
+    localAdviceUsed: () => read($, localAdviceUsed),
+    sessionId: () => $.session.id(),
+    storeKeys: () => $.store.keys(),
+    countLocalAdvice: async () => { await update($, localAdviceUsed, (n) => n + 1); },
     spawn: (args) => $.agent.spawn(args) as never,
     agents: () => $.agent.list(),
     run: (argv, init) => $.process.run(argv, init),
@@ -895,10 +915,96 @@ function petOf(now: number): Pet {
   return deckPet;
 }
 
-/** The pet's cast at `now`, kept for the lane's repaints: Jev (asked while a request is open), then every subagent at work or just ended. */
+/**
+ * The pet's cast at `now`, kept for the lane's repaints: Jev (asked while a request is open), the features with
+ * something to say or at work, then every subagent at work or just ended.
+ */
 function castNow(now: number): CastMember[] {
-  deckCast = castOf(castRuns, jevOpen.size > 0, now);
+  deckCast = castOf(castRuns, jevOpen.size > 0, now, castSpeakers, castLead);
   return deckCast;
+}
+
+/** Whether the Deck's pet lane is drawn, the feature mascots with it: the same switches the band itself reads. */
+async function castShown($: EngineInterface): Promise<boolean> {
+  return (await read($, deckSettings)).show.pet && await featureEnabled($, "pingoVivo");
+}
+
+/**
+ * Every feature switched on, as it stands on the lane: first the ones with something for the person, in the order
+ * they get to speak (Clareza's plan, sessions waiting, a file clash, a design choice, matching ideas, assumptions to
+ * review, other sessions at work), then the ones at work, then the rest, standing by. A feature switched off is not
+ * there. What is said: the ones for the person, Pingo for Claude's own turn (what it is doing now, from the Deck's
+ * `s`), the features at work in the same order, Jev while asked, each subagent at work. The first speaks: the `lead`.
+ */
+async function speakersOf($: EngineInterface, now: number, locale: Locale, s: DeckState): Promise<{ speakers: CastSpeaker[]; speech: Speech[]; lead?: string }> {
+  const said: { id: SpeakerId; text: string }[] = [];
+  const busy: SpeakerId[] = [];
+  const counted = (key: string, count: number, values: Record<string, string> = {}) =>
+    text(`${key}.${count === 1 ? "one" : "many"}` as LocaleKey, locale, { count: formatNumber(count, locale), ...values });
+  if (await featureEnabled($, "clareza")) {
+    const plan = await read($, clarezaProposal);
+    if (plan) said.push({ id: "clareza", text: text("deck.speech.clareza", locale, { problems: plan.problems.join("; ") }) });
+    else if (await read($, clarezaReviewing)) busy.push("clareza");
+  }
+  if (await featureEnabled($, "sentinela")) {
+    const waiting = (await read($, sentinelaSessions)).filter((row) => row.status === "waiting").length;
+    if (waiting) said.push({ id: "sentinela", text: counted("deck.speech.sentinela", waiting) });
+  }
+  let others = 0;
+  if (await featureEnabled($, "vigia")) {
+    others = (await read($, vigiaSessions)).filter((record) => record.id !== vigiaMe?.id && vigiaAlive(record, now)).length;
+    const clash = others ? (await vigiaClashes($, now))[0] : undefined;
+    if (clash) {
+      said.push({ id: "vigia", text: text("deck.speech.vigia.clash", locale, { file: clash.file, session: vigiaName(clash.other) }) });
+      others = 0;
+    }
+  }
+  if (await featureEnabled($, "prisma") && await read($, prismaPending)) said.push({ id: "prisma", text: text("deck.speech.prisma", locale) });
+  if (await featureEnabled($, "semente") && (await readFeaturePreferences($)).ideaNudges) {
+    const ids = await read($, sementeNudges);
+    const found = (await read($, sementeIdeas)).filter((idea) => ids.includes(idea.id));
+    if (found.length) said.push({ id: "semente", text: counted("deck.speech.semente", found.length, { idea: found[0]!.text }) });
+  }
+  if (await featureEnabled($, "farol")) {
+    const open = (await read($, farolItems)).filter((item) => item.verdict === "open").length;
+    if (open) said.push({ id: "farol", text: counted("deck.speech.farol", open) });
+    else if (await read($, farolBusy)) busy.push("farol");
+  }
+  if (others) said.push({ id: "vigia", text: counted("deck.speech.vigia.others", others) });
+  if (await featureEnabled($, "lapida") && await read($, lapidaPhase) === "enhancing") busy.push("lapida");
+  if (await featureEnabled($, "contexto") && await read($, contextoBusy)) busy.push("contexto");
+  // the rest of the features switched on stand by on the lane, quiet, like Jev between calls
+  const flags = await read($, features);
+  const standing = SPEAKER_IDS.filter((id) => flags[id] && !said.some((one) => one.id === id) && !busy.includes(id));
+  const present = new Set<SpeakerId>([...said.map((one) => one.id), ...busy, ...standing]);
+  for (const id of present) if (!speakerSince.has(id)) speakerSince.set(id, now);
+  for (const id of [...speakerSince.keys()]) if (!present.has(id)) speakerSince.delete(id);
+  const featureSpeech = (one: { id: SpeakerId; text: string }): Speech => ({ id: one.id, name: SPEAKER_NAMES[one.id], color: castColor(one.id), text: one.text, open: () => void openFeaturePane($, one.id) });
+  const speech = said.map(featureSpeech);
+  // Pingo speaks for Claude's own turn right after what is for the person: Farol watches every turn, so a feature
+  // at work first would hold the balloon for the whole turn
+  if (s.turnActive) {
+    const action = s.activity && !s.activity.done ? s.activity.action : text("deck.action.thinking", locale);
+    speech.push({ id: "pingo", name: "Pingo", color: PINGO_INK, text: action, open: () => void openPane($, "live") });
+  }
+  // then the features at work say what they are doing, in the same order, and Jev while asked
+  speech.push(...busy.map((id) => featureSpeech({ id, text: text(`deck.speech.busy.${id}` as LocaleKey, locale) })));
+  if (jevOpen.size > 0) speech.push({ id: "jev", name: "Jev", color: castColor("jev"), text: text("deck.speech.jev", locale), open: () => void openPane($, "live") });
+  // each subagent at work, under the name the lane gives it
+  for (const member of castOf(castRuns, false, now)) {
+    const run = castRuns.find((one) => one.id === member.id);
+    if (run?.state === "running") speech.push({ id: run.id, name: member.label, color: castColor(member.kind), text: run.description.trim() || text("deck.speech.agent", locale), open: () => void openPane($, "agents") });
+  }
+  const lead = speech[0]?.id;
+  return {
+    speakers: [
+      ...said.map((one): CastSpeaker => ({ id: one.id, since: speakerSince.get(one.id)!, busy: false, speaking: one.id === lead })),
+      ...busy.map((id): CastSpeaker => ({ id, since: speakerSince.get(id)!, busy: true, speaking: id === lead })),
+      ...standing.map((id): CastSpeaker => ({ id, since: speakerSince.get(id)!, busy: false, speaking: false })),
+    ],
+    speech,
+    ...(lead === undefined ? {} : { lead }),
+  };
 }
 
 async function styledPet($: EngineInterface, now: number): Promise<Pet> {
@@ -907,6 +1013,8 @@ async function styledPet($: EngineInterface, now: number): Promise<Pet> {
   if (petHatOverride && now >= petHatOverrideUntil) petHatOverride = undefined;
   pet.hat = petHatOverride ?? (preferences.petHat === "random" ? sessionPetHat : preferences.petHat);
   pet.shades = preferences.petShades;
+  // Pingo speaks for Claude's own turn, as the last band draw found it: the clock reads no atom for it
+  pet.speaks = castLead === "pingo";
   return pet;
 }
 
@@ -1414,6 +1522,10 @@ async function deckBandOf($: EngineInterface, cols: number, surface: Surface, ma
   const flags = await read($, features);
   // a draw reads the subagent list itself, so a restored session shows its subagents before any is written
   castRuns = await read($, agents);
+  // and the features with something to say: a draw follows each of them, the clock only walks what it last found
+  const said = await speakersOf($, now, config.locale, s);
+  castSpeakers = said.speakers;
+  castLead = said.lead;
   return {
     rows,
     ...(folding && deckFold ? { shown: foldCount(rows.length, now) } : {}),
@@ -1432,6 +1544,7 @@ async function deckBandOf($: EngineInterface, cols: number, surface: Surface, ma
     ].filter(Boolean),
     pet: await styledPet($, now),
     cast: castNow(now),
+    speech: said.speech,
     toggle: () => void toggleDeck($),
     dismiss: (row) => void dismissDeckRow($, row),
     foldAge: folding && deckFold?.dir === "open" ? foldAgeOf(deckFold, now) : null,
@@ -1858,17 +1971,44 @@ function parseClarezaReview(raw: string) {
 async function reviewClareza($: EngineInterface, ask: string, answer: string, wasRewrite: boolean) {
   const prefs = await readFeaturePreferences($);
   const known = await readClarezaTerms($);
-  const result = await completeModel($, "clareza", { model: CLAUDE_MODEL.HAIKU.name, system: CLAREZA_REVIEW_SYSTEM, prompt: `Reader level: ${prefs.plainLevel}. Known terms: ${known.join(", ") || "none"}.\nUser request:\n<request>${ask || "(none)"}</request>\nFinal answer:\n<answer>${answer}</answer>`, maxTokens: 300, timeoutMs: 15000 });
+  await update($, clarezaReviewing, () => true);
+  let result: Awaited<ReturnType<typeof completeModel>>;
+  try {
+    result = await completeModel($, "clareza", { model: CLAUDE_MODEL.HAIKU.name, system: CLAREZA_REVIEW_SYSTEM, prompt: `Reader level: ${prefs.plainLevel}. Known terms: ${known.join(", ") || "none"}.\nUser request:\n<request>${ask || "(none)"}</request>\nFinal answer:\n<answer>${answer}</answer>`, maxTokens: 300, timeoutMs: 15000 });
+  } finally {
+    await update($, clarezaReviewing, () => false);
+  }
   const review = result.isAnswered ? parseClarezaReview(result.text) : null;
   if (!review) { await update($, clarezaStatus, () => "Answer review unavailable"); return; }
   await update($, clarezaStatus, () => review.status);
   const offered = prefs.plainLevel === "beginner" ? review.explained.filter((term) => !known.includes(term)).slice(0, 6) : [];
-  const fixing = !review.pass && !wasRewrite && answer.trim().length > 0;
-  await update($, clarezaGrade, () => ({ pass: review.pass, problems: review.problems, offered, fixing }));
-  if (fixing) {
-    try { await $.prompt.submit({ text: `[Clareza] Your last answer may confuse the user: ${review.problems.join("; ") || "it was not clear enough"}. Rewrite it as one complete final answer, fixing only that while still answering the request. Do not use tools.` }); }
-    catch { await update($, clarezaGrade, (value) => value && { ...value, fixing: false }); }
+  // An unclear answer gets a plan, not a rewrite: the person reads it on Clareza's pane and sends or rejects it.
+  const proposing = !review.pass && !wasRewrite && answer.trim().length > 0;
+  await update($, clarezaGrade, () => ({ pass: review.pass, problems: review.problems, offered, fixing: false }));
+  if (proposing) {
+    const prompt = `[Clareza] Your last answer may confuse the user: ${review.problems.join("; ") || "it was not clear enough"}. Rewrite it as one complete final answer, fixing only that while still answering the request. Do not use tools.`;
+    const at = await $.clock.now();
+    await update($, clarezaProposal, () => ({ problems: review.problems, prompt, at }));
   }
+}
+/** The person knows `term`: Clareza stops explaining it and stops offering it. */
+async function knowClarezaTerm($: EngineInterface, term: string) {
+  await addClarezaTerms($, [term]);
+  await update($, clarezaGrade, (value) => value && { ...value, offered: value.offered.filter((word) => word !== term) });
+}
+/** Sends Clareza's plan to Claude: the rewrite turn it starts is marked, so it is not reviewed into a new plan. */
+async function sendClareza($: EngineInterface) {
+  const plan = await read($, clarezaProposal);
+  if (!plan) return;
+  await update($, clarezaProposal, () => null);
+  await update($, clarezaGrade, (value) => value && { ...value, fixing: true });
+  try { await $.ui.close({ id: "clareza" }); } catch {}
+  try { await $.prompt.submit({ text: plan.prompt }); }
+  catch { await update($, clarezaGrade, (value) => value && { ...value, fixing: false }); }
+}
+async function rejectClareza($: EngineInterface) {
+  await update($, clarezaProposal, () => null);
+  try { await $.ui.close({ id: "clareza" }); } catch {}
 }
 
 const SEMENTE_STOP = new Set(("this that with from into have will would could should about after before then than them they there their what when where which while also just like make more most some such only very each other these those file files code idea ideas maybe later todo want need using used use add adds added fix fixes update changes change").split(" "));
@@ -1931,30 +2071,39 @@ async function lapidaProjectContext($: EngineInterface) {
   if (commands.length) parts.push(`# Installed skills and commands\n${commands.map((command) => `/${command.name}: ${command.description}`).join("\n")}`);
   return `Project context for the rewrite:\n\n${parts.join("\n\n")}`;
 }
+const LAPIDA_FORK_TIMEOUT_MS = 120_000;
+
 async function enhanceLapida($: EngineInterface, draft: string) {
   draft = draft.trim();
-  const pt = (await getSettings($)).locale === "pt";
+  const locale = (await getSettings($)).locale;
+  const pt = locale === "pt";
   if (!draft) { await update($, lapidaPhase, () => "error"); await update($, lapidaNote, () => pt ? "Digite um rascunho primeiro." : "Type a prompt draft first."); return; }
   if (!(await featureEnabled($, "lapida"))) return;
   await update($, lapidaPhase, () => "enhancing");
   await update($, lapidaNote, () => "");
   await update($, lapidaChanges, () => []);
-  const prefs = await readFeaturePreferences($);
-  const taste = prefs.promptLearning ? lapidaTasteHint(await loadLapidaTaste($)) : "";
-  const marker = "<<<CHANGES>>>";
-  const instructions = pt
-    ? `Reescreva o rascunho de um desenvolvedor em um pedido claro e específico para o Claude Code. Preserve a intenção, use arquivos e convenções do projeto, declare objetivo, escopo, limites e conclusão, e pergunte se houver ambiguidade real. Independentemente do idioma do rascunho, escreva o prompt final inteiro em português brasileiro. Retorne apenas o prompt, uma linha contendo ${marker}, e 1 a 3 tópicos curtos em português sobre o que acrescentou.`
-    : `Rewrite a developer's rough draft into a clear, specific prompt for Claude Code. Preserve intent, use relevant project files and conventions, state goal, scope, constraints, and done criteria, and ask if something is genuinely ambiguous. Regardless of the draft's language, write the final prompt entirely in English. Return only the rewrite, a line containing ${marker}, and 1-3 short bullets in English on what you added.`;
-  const prompt = `${instructions}${taste ? `\n\n${taste}` : ""}\n\n<rough_prompt>\n${draft}\n</rough_prompt>`;
-  let result = await callModel($, "lapida", undefined, () => $.model.fork({ prompt }));
-  if (!result.isAnswered && result.reason === "nothing-to-fork") result = await completeModel($, "lapida", { model: await $.session.model(), system: await lapidaProjectContext($), prompt, maxTokens: 2048, timeoutMs: 60000 });
-  const reply = result.isAnswered ? splitLapidaReply(result.text) : { text: "", notes: [] as string[] };
-  if (!result.isAnswered || !reply.text) { await update($, lapidaPhase, () => "error"); await update($, lapidaNote, () => `Lapida failed: ${result.isAnswered ? "empty reply" : result.reason}`); return; }
-  const filled = await $.prompt.fill({ text: reply.text, mode: "replace" });
-  if (!filled.isFilled) { await update($, lapidaPhase, () => "error"); await update($, lapidaNote, () => `Prompt box refused the text (${filled.refusal ?? "unknown"})`); return; }
-  await update($, lapidaEnhanced, () => reply.text);
-  await update($, lapidaChanges, () => reply.notes);
-  await update($, lapidaPhase, () => "ready");
+  try {
+    const prefs = await readFeaturePreferences($);
+    const taste = prefs.promptLearning ? lapidaTasteHint(await loadLapidaTaste($)) : "";
+    const marker = "<<<CHANGES>>>";
+    const instructions = pt
+      ? `Reescreva o rascunho de um desenvolvedor em um pedido claro e específico para o Claude Code. Preserve a intenção, use arquivos e convenções do projeto, declare objetivo, escopo, limites e conclusão, e pergunte se houver ambiguidade real. Independentemente do idioma do rascunho, escreva o prompt final inteiro em português brasileiro. Retorne apenas o prompt, uma linha contendo ${marker}, e 1 a 3 tópicos curtos em português sobre o que acrescentou.`
+      : `Rewrite a developer's rough draft into a clear, specific prompt for Claude Code. Preserve intent, use relevant project files and conventions, state goal, scope, constraints, and done criteria, and ask if something is genuinely ambiguous. Regardless of the draft's language, write the final prompt entirely in English. Return only the rewrite, a line containing ${marker}, and 1-3 short bullets in English on what you added.`;
+    const prompt = `${instructions}${taste ? `\n\n${taste}` : ""}\n\n<rough_prompt>\n${draft}\n</rough_prompt>`;
+    let result = await callModel($, "lapida", undefined, () => $.model.fork({ prompt }), { timeoutMs: LAPIDA_FORK_TIMEOUT_MS, locale });
+    if (!result.isAnswered && result.reason === "nothing-to-fork") result = await completeModel($, "lapida", { model: await $.session.model(), system: await lapidaProjectContext($), prompt, maxTokens: 2048, timeoutMs: 60000 });
+    const reply = result.isAnswered ? splitLapidaReply(result.text) : { text: "", notes: [] as string[] };
+    if (!result.isAnswered || !reply.text) { await update($, lapidaPhase, () => "error"); await update($, lapidaNote, () => `Lapida failed: ${result.isAnswered ? "empty reply" : result.reason}`); return; }
+    const filled = await $.prompt.fill({ text: reply.text, mode: "replace" });
+    if (!filled.isFilled) { await update($, lapidaPhase, () => "error"); await update($, lapidaNote, () => `Prompt box refused the text (${filled.refusal ?? "unknown"})`); return; }
+    await update($, lapidaEnhanced, () => reply.text);
+    await update($, lapidaChanges, () => reply.notes);
+    await update($, lapidaPhase, () => "ready");
+  } catch (error) {
+    const why = error instanceof Error ? error.message : String(error);
+    await update($, lapidaPhase, () => "error");
+    await update($, lapidaNote, () => `Lapida failed: ${why}`);
+  }
 }
 async function recordLapidaSend($: EngineInterface, text: string) {
   const original = await read($, lapidaEnhanced);
@@ -1994,6 +2143,8 @@ async function farolAbove($: EngineInterface, e: { props: { hasSurvey?: boolean 
   const items = await read($, farolItems);
   const rules = await read($, farolRules);
   if (!items.length && !rules.length) return below;
+  // assumptions to review are said by Farol's mascot on the Deck lane, when it is on screen
+  if (items.some((item) => item.verdict === "open") && await castShown($)) return below;
   const { Box, Button } = renderElements($, e);
   const pt = (await getSettings($)).locale === "pt";
   const open = items.filter((item) => item.verdict === "open").length;
@@ -2024,7 +2175,11 @@ async function clarezaTurnStarted($: EngineInterface, e: { text: string }) {
   if (e.text.trim() && !e.text.includes("[Clareza]")) clarityLastAsk = e.text;
   const rewriting = e.text.includes("[Clareza]");
   await update($, clarezaRewrite, () => rewriting);
-  if (!rewriting) await update($, clarezaGrade, () => null);
+  // a new request moves past the answer the plan was for
+  if (!rewriting) {
+    await update($, clarezaGrade, () => null);
+    await update($, clarezaProposal, () => null);
+  }
   await update($, clarezaStatus, () => `Working: ${clarityLastAsk.replace(/\s+/g, " ").trim().slice(0, 70)}`);
 }
 async function clarezaTurnCompleted($: EngineInterface, e: { agentId?: string; reason: string; durationMs: number; answer: string }) {
@@ -2045,11 +2200,23 @@ async function clarezaAbove($: EngineInterface, e: { props: { hasSurvey?: boolea
   const line = await read($, clarezaStatus);
   if (!line && !grade) return below;
   const { Box, Button, Text } = renderElements($, e);
-  const top = <Box flexDirection="row" columnGap={1}><Text dimColor wrap="truncate-end">{GLYPH.on} {line}</Text>{grade && <Text color={grade.pass ? "success" : "error"}>{grade.pass ? `${GLYPH.ok} Clareza` : `✗ ${grade.problems.join("; ")}`}{grade.fixing ? " · rewriting" : ""}</Text>}</Box>;
-  const offered = grade?.offered.length ? <Box flexDirection="row" flexWrap="wrap" columnGap={1}><Text dimColor>{(await getSettings($)).locale === "pt" ? "Eu sei:" : "I know this:"}</Text>{grade.offered.map((term) => <Button key={`clareza-${term}`} label={term} dimColor onPress={async () => { await addClarezaTerms($, [term]); await update($, clarezaGrade, (value) => value && { ...value, offered: value.offered.filter((word) => word !== term) }); }} />)}</Box> : null;
+  const plan = await read($, clarezaProposal);
+  const pt = (await getSettings($)).locale === "pt";
+  // with a plan waiting and no mascot to say so, the problems open Clareza's pane, where it is sent or rejected
+  const verdict = grade && (plan && !(await castShown($))
+    ? <Button key="clareza-open" label={`✗ ${grade.problems.join("; ")} ${GLYPH.leader} ${pt ? "ver plano" : "see plan"}`} plain onPress={() => void openFeaturePane($, "clareza")} />
+    : <Text color={grade.pass ? "success" : "error"}>{grade.pass ? `${GLYPH.ok} Clareza` : `✗ ${grade.problems.join("; ")}`}{grade.fixing ? " · rewriting" : ""}</Text>);
+  const top = <Box flexDirection="row" columnGap={1}><Text dimColor wrap="truncate-end">{GLYPH.on} {line}</Text>{verdict}</Box>;
+  const offered = grade?.offered.length ? <Box flexDirection="row" flexWrap="wrap" columnGap={1}><Text dimColor>{pt ? "Eu sei:" : "I know this:"}</Text>{grade.offered.map((term) => <Button key={`clareza-${term}`} label={term} dimColor onPress={() => void knowClarezaTerm($, term)} />)}</Box> : null;
   return <Box flexDirection="column">{top}{offered}{below}</Box>;
 }
 
+/** Stops offering these ideas for the recent work; they stay on the shelf. */
+async function dismissSemente($: EngineInterface, picked: SementeIdea[]) {
+  const ids = new Set(picked.map((idea) => idea.id));
+  for (const id of ids) sementeDismissed.add(id);
+  await update($, sementeNudges, (list) => list.filter((id) => !ids.has(id)));
+}
 async function sementeStart($: EngineInterface) {
   await $.command.register({ name: "semente", description: "Save a side idea for later; with no text, open the idea shelf", argumentHint: "[idea]" });
   await $.tool.register({ name: "semente_shelve", description: "Save a side idea or out-of-scope improvement for the user to review later.", inputSchema: { type: "object", properties: { text: { type: "string", description: "One-line idea" } }, required: ["text"] }, isDeferred: false });
@@ -2083,11 +2250,13 @@ async function sementeAbove($: EngineInterface, e: { props: { hasSurvey?: boolea
   if (e.props.hasSurvey || e.props.isWorking || !(await featureEnabled($, "semente")) || !(await readFeaturePreferences($)).ideaNudges) return below;
   const ids = await read($, sementeNudges);
   const found = (await read($, sementeIdeas)).filter((idea) => ids.includes(idea.id));
-  if (!found.length) return below;
+  // matching ideas are said by Semente's mascot on the Deck lane, when it is on screen
+  if (!found.length || await castShown($)) return below;
   const { Box, Button, Text } = renderElements($, e);
   const pt = (await getSettings($)).locale === "pt";
   const label = pt ? `${found.length} ${found.length === 1 ? "ideia salva combina" : "ideias salvas combinam"} com o trabalho recente` : found.length === 1 ? "1 saved idea fits recent work" : `${found.length} saved ideas fit recent work`;
-  return <Box flexDirection="column"><Box><Text color={PAINT.brand}>{GLYPH.on} </Text><Text>{label}: </Text><Text dimColor wrap="truncate-end">{found.map((idea) => idea.text).join(" · ")} </Text><Button key="send" label={pt ? "Enviar" : "Send"} variant="primary" onPress={() => void sendSemente($, found)} /><Button key="dismiss" label={pt ? "Dispensar" : "Dismiss"} role="dismiss" onPress={async () => { for (const idea of found) sementeDismissed.add(idea.id); await update($, sementeNudges, () => []); }} /></Box>{below}</Box>;
+  // the idea text is cut to the line here; pressing the label opens Semente's pane with every idea whole
+  return <Box flexDirection="column"><Box><Text color={PAINT.brand}>{GLYPH.on} </Text><Button key="semente-open" label={`${label}:`} plain onPress={() => void openFeaturePane($, "semente")} /><Text dimColor wrap="truncate-end"> {found.map((idea) => idea.text).join(" · ")} </Text><Button key="send" label={pt ? "Enviar" : "Send"} variant="primary" onPress={() => void sendSemente($, found)} /><Button key="dismiss" label={pt ? "Dispensar" : "Dismiss"} role="dismiss" onPress={() => void dismissSemente($, found)} /></Box>{below}</Box>;
 }
 
 async function lapidaStart($: EngineInterface) {
@@ -2209,12 +2378,11 @@ async function sentinelaPids($: EngineInterface, rows: SentinelaSession[]) {
   const pids = rows.map((row) => row.pid);
   if (!pids.length) return new Set<number>();
   if (await $.env.get("OS") === "Windows_NT") {
-    const command = `@(${pids.join(",")}) | ForEach-Object { if (Get-Process -Id $_ -ErrorAction SilentlyContinue) { $_ } }`;
-    for (const exe of ["pwsh", "powershell"]) {
-      const result = await $.process.run([exe, "-NoProfile", "-NonInteractive", "-Command", command]).catch(() => null);
-      if (result) return new Set(result.stdout.split(/\s+/).map(Number).filter(Number.isFinite));
-    }
-    return new Set(pids);
+    // tasklist, not a PowerShell per refresh: this runs every few seconds in every session, and PowerShell costs
+    // about six times the memory and twice the CPU. Its PID column is plain digits in any locale.
+    const result = await $.process.run(["tasklist", "/FO", "CSV", "/NH"]).catch(() => null);
+    const running = new Set((result?.stdout ?? "").split(/\r?\n/).map((line) => Number(/^"[^"]*","(\d+)"/.exec(line)?.[1])).filter(Number.isFinite));
+    return running.size ? new Set(pids.filter((pid) => running.has(pid))) : new Set(pids);
   }
   const result = await $.process.run(["ps", "-o", "pid=", "-p", pids.join(",")]).catch(() => null);
   return new Set(result ? result.stdout.split(/\s+/).map(Number).filter(Number.isFinite) : pids);
@@ -2437,6 +2605,19 @@ export function normalizeTab(value: unknown): JevTab {
 async function openPane($: EngineInterface, which: JevTab): Promise<void> {
   await update($, tab, () => which);
   await $.ui.open({ id: PANE, title: "Jev", focus: true });
+}
+
+/** Opens a feature's own pane, where what its mascot says is shown whole, with its choices. */
+async function openFeaturePane($: EngineInterface, id: SpeakerId): Promise<void> {
+  const name = SPEAKER_NAMES[id];
+  if (id === "sentinela") {
+    await refreshSentinela($);
+    await $.ui.open({ id, title: name, rows: await sentinelaPaneRows($), focus: true, closeOnEscape: true });
+    return;
+  }
+  if (id === "vigia") await refreshVigia($);
+  if (id === "contexto" || id === "lapida") return openPane($, "features");
+  await $.ui.open({ id, title: name, focus: true, closeOnEscape: true, ...(id === "prisma" ? { holdToasts: true } : {}) });
 }
 
 async function statusText($: EngineInterface): Promise<string> {
@@ -2927,6 +3108,10 @@ export const register: Register = (on, given) => {
       await update($, clarezaGrade, () => null);
       await update($, clarezaRewrite, () => false);
       await update($, clarezaStatus, () => "");
+      await update($, clarezaProposal, () => null);
+      await update($, clarezaReviewing, () => false);
+      await update($, contextoBusy, () => false);
+      await update($, localAdviceUsed, () => 0);
       await update($, farolBusy, () => false);
       await update($, lapidaPhase, () => "idle");
       await update($, lapidaEnhanced, () => "");
@@ -3023,7 +3208,11 @@ export const register: Register = (on, given) => {
       finishAgent(deckState, e.agentId, e.isAborted ? "stopped" : e.reason === "answer" ? "done" : "failed", deckNow, locale);
       redrawDeck($);
     }
-    if (!e.agentId) turnEnded(deckState, deckNow);
+    if (!e.agentId) {
+      turnEnded(deckState, deckNow);
+      // Pingo stops speaking for Claude's turn the moment it ends
+      redrawDeck($);
+    }
     const seconds = formatDuration(e.durationMs, locale);
     const usage = e.usage;
     const inputComplete = typeof usage?.input_tokens === "number"
@@ -3659,6 +3848,37 @@ export const register: Register = (on, given) => {
     </Box>;
   });
 
+  // Clareza's plan, opened from what its mascot says: what may confuse in the last answer, the exact request Claude
+  // would get, and the choice to send it or reject it
+  on("ui.render", { component: "Pane", requestId: "clareza" }, async ($, e) => {
+    const { Box, Text, Button } = $.ui.resolve(e);
+    const pt = (await getSettings($)).locale === "pt";
+    if (!(await featureEnabled($, "clareza"))) return <Text dimColor>{pt ? "Clareza está desligada na Configuração do Jev." : "Clareza is disabled in Jev Configuration."}</Text>;
+    const plan = await read($, clarezaProposal);
+    const grade = await read($, clarezaGrade);
+    const status = await read($, clarezaStatus);
+    const offered = grade?.offered ?? [];
+    const terms = offered.length ? <Box flexDirection="row" flexWrap="wrap" columnGap={1}><Text dimColor>{pt ? "Eu sei:" : "I know this:"}</Text>{offered.map((term) => <Button key={`clareza-pane-${term}`} label={term} dimColor onPress={() => void knowClarezaTerm($, term)} />)}</Box> : null;
+    if (!plan) return <Box flexDirection="column" gap={1}><Text dimColor>{pt ? "Nenhum plano da Clareza agora." : "No plan from Clareza right now."}</Text>{status && <Text dimColor>{status}</Text>}{terms}</Box>;
+    const problems = plan.problems.length ? plan.problems : [pt ? "não ficou clara o bastante" : "it was not clear enough"];
+    return <Box flexDirection="column" gap={1}>
+      <Text bold>{pt ? "Plano da Clareza para a última resposta" : "Clareza's plan for the last answer"}</Text>
+      <Box flexDirection="column">
+        <Text dimColor>{pt ? "O que pode confundir:" : "What may confuse:"}</Text>
+        {problems.map((problem, i) => <Text key={`clareza-problem-${i}`}>• {problem}</Text>)}
+      </Box>
+      <Box flexDirection="column">
+        <Text dimColor>{pt ? "Se você enviar, o Claude recebe este pedido:" : "If you send it, Claude gets this request:"}</Text>
+        <Text>{plan.prompt}</Text>
+      </Box>
+      {terms}
+      <Box flexDirection="row" gap={1}>
+        <Button key="clareza-send" label={pt ? "Enviar (s)" : "Send (s)"} hotkey="s" variant="primary" onPress={() => void sendClareza($)} />
+        <Button key="clareza-reject" label={pt ? "Rejeitar (r)" : "Reject (r)"} hotkey="r" role="dismiss" onPress={() => void rejectClareza($)} />
+      </Box>
+    </Box>;
+  });
+
   on("ui.render", { component: "Pane", requestId: "semente" }, async ($, e) => {
     const ui = $.ui.resolve(e);
     const { Box, Text, Button } = ui;
@@ -3666,7 +3886,17 @@ export const register: Register = (on, given) => {
     const pt = (await getSettings($)).locale === "pt";
     if (!(await featureEnabled($, "semente"))) return <Text dimColor>{pt ? "Semente está desligada na Configuração do Jev." : "Semente is disabled in Jev Configuration."}</Text>;
     const list = await read($, sementeIdeas);
+    const nudged = await read($, sementeNudges);
+    // the ideas Semente's mascot is saying fit the recent work, first and whole, each to send or dismiss
+    const matching = list.filter((idea) => nudged.includes(idea.id));
     return <Box flexDirection="column">
+      {matching.length > 0 && <Box key="semente-fit" flexDirection="column" marginBottom={1}>
+        <Text bold>{pt ? "Combinam com o trabalho recente" : "Fit the recent work"}</Text>
+        {matching.map((idea) => <Box key={`fit-${idea.id}`} flexDirection="column">
+          <Text>{idea.text}</Text>
+          <Box flexDirection="row" gap={1}><Button key={`fit-send-${idea.id}`} label={pt ? "Enviar" : "Send"} variant="primary" onPress={() => void sendSemente($, [idea])} /><Button key={`fit-dismiss-${idea.id}`} label={pt ? "Dispensar" : "Dismiss"} role="dismiss" onPress={() => void dismissSemente($, [idea])} /></Box>
+        </Box>)}
+      </Box>}
       {Input && <Input key="new-idea" label="+ " placeholder={pt ? "Nova ideia…" : "New idea…"} submitLabel={pt ? "Salvar" : "Save"} onSubmit={(value) => { if (value.trim()) void addSemente($, value); }} />}
       {!list.length && <Text dimColor>{pt ? "Prateleira vazia. Use /semente &lt;ideia&gt; para adicionar." : "Shelf empty. Use /semente &lt;idea&gt; to add one."}</Text>}
       {list.map((idea) => <Box key={idea.id} flexDirection="row" gap={1}><Button key={`send-${idea.id}`} label={pt ? "Enviar" : "Send"} onPress={() => void sendSemente($, [idea])} /><Button key={`delete-${idea.id}`} label="×" dimColor onPress={() => void saveSemente($, (all) => all.filter((item) => item.id !== idea.id))} /><Text dimColor>{idea.source === "claude" ? "Claude" : pt ? "você" : "you"}:</Text><Text>{idea.text}</Text></Box>)}
@@ -3950,7 +4180,14 @@ export const register: Register = (on, given) => {
     try {
       if (!config.apiKey) throw new Error("Jev provider key is not configured");
       const input = e.messages as unknown as readonly ContextSessionMessage[];
-      const { result, messages } = await compactContextSession(input, contextAsker($, config), contextConfig);
+      await update($, contextoBusy, () => true);
+      let compacted: Awaited<ReturnType<typeof compactContextSession>>;
+      try {
+        compacted = await compactContextSession(input, contextAsker($, config), contextConfig);
+      } finally {
+        await update($, contextoBusy, () => false);
+      }
+      const { result, messages } = compacted;
       for (const line of contextDecisionLogLines(result, config.locale)) await log($, "mod", "feature", "info", line);
       const summary = contextSummary(result, config.locale);
       if (contextReductionRatio(result) < contextConfig.minReductionRatio) {

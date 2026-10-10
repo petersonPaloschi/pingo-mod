@@ -112,6 +112,84 @@ test("Lapida's model calls show in Live and in Logs, as the same lines", async (
   await ui.unmount();
 });
 
+/** Lapida's world with the fork and the prompt box the test's own, so a step can hang or fail. */
+function lapidaWorld(on: On, session: string) {
+  const clock = mock.clock(on, { now: Date.parse("2026-10-06T12:00:00Z") });
+  mockEngineServices(on);
+  on("session.model", async () => ({ value: "claude-opus-5-5" }));
+  on("session.id", async () => ({ value: session }));
+  mock.store(on);
+  mock.env(on, {});
+  on("fs.ancestors", async () => ({ value: [] }) as never);
+  on("command.list", async () => ({ value: [] }) as never);
+  return clock;
+}
+const LAPIDA_RUN = { command: "lapida", args: "fix loader", origin: { kind: "composer" }, presentation: { isFullscreen: true, columns: 160 } } as never;
+
+test("Lapida gives up on a fork that never answers and says so", async ($, on) => {
+  const clock = lapidaWorld(on, "session-lapida-hang");
+  on("model.fork", () => new Promise(() => {}) as never);
+  let settled = false;
+  const run = $.command.run(LAPIDA_RUN).then((reply) => ((settled = true), reply as { text?: string }));
+  await clock.advance(60_000);
+  expect(settled).toBe(false);
+  await clock.advance(60_000);
+  for (let i = 0; i < 200 && !settled; i++) await new Promise<void>((resolve) => setTimeout(() => resolve(), 5));
+  expect(settled).toBe(true);
+  expect((await run).text).toBe("Lapida failed: timed out after 120,000 ms");
+});
+
+test("a Lapida fork that times out closes its Live line as failed, not left asking", async ($, on) => {
+  const clock = lapidaWorld(on, "session-lapida-live-timeout");
+  on("model.fork", () => new Promise(() => {}) as never);
+  let settled = false;
+  void $.command.run(LAPIDA_RUN).then(() => { settled = true; });
+  await clock.advance(120_000);
+  for (let i = 0; i < 200 && !settled; i++) await new Promise<void>((resolve) => setTimeout(() => resolve(), 5));
+  const ui = await $.ui.mount({ plugin: "jev", surface: "terminal", component: "Pane", requestId: "jev", props: PANE_PROPS });
+  await ui.press({ key: "tab-live" });
+  const lines = async () => (await ui.findAll({ type: "Text" })).map((line) => line.text ?? "").filter((line) => line.includes("Lapida · "));
+  for (let i = 0; i < 200 && !(await lines()).some((line) => line.includes("timed out")); i++) await new Promise<void>((resolve) => setTimeout(() => resolve(), 5));
+  const live = await lines();
+  // the same deadline the caller had: the line says it failed, while the abandoned fork still hangs
+  expect(live.some((line) => /failed: timed out after 120,000 ms/.test(line))).toBe(true);
+  expect(live.some((line) => line.startsWith("⟳"))).toBe(false);
+  await ui.unmount();
+});
+
+test("Lapida ends with its note when a step throws, instead of staying busy", async ($, on) => {
+  lapidaWorld(on, "session-lapida-throw");
+  on("model.fork", async () => ({ value: { isAnswered: true, text: "Fix the loader.\n<<<CHANGES>>>\n- named the file", usage: { input_tokens: 40, output_tokens: 12 } } }) as never);
+  on("prompt.fill", async () => { throw new Error("boom"); });
+  // The command answers with Lapida's own note rather than rejecting with the step's error.
+  const reply = await $.command.run(LAPIDA_RUN) as { text?: string };
+  expect(reply.text).toMatch(/^Lapida failed:/);
+});
+
+test("Lapida leaves its busy state once the rewrite is in the box, and runs again from the band and the command", async ($, on) => {
+  lapidaWorld(on, "session-lapida-again");
+  let forks = 0;
+  let box = "fix loader";
+  on("model.fork", async () => ({ value: { isAnswered: true, text: `Fix the loader, take ${++forks}.\n<<<CHANGES>>>\n- named the file`, usage: { input_tokens: 40, output_tokens: 12 } } }) as never);
+  on("prompt.read", async () => ({ value: { text: box, cursor: 0 } }) as never);
+  on("prompt.fill", async (_$, e) => ((box = e.text), { isFilled: true }) as never);
+  const band = await $.ui.mount({ plugin: "jev", surface: "terminal", component: "AbovePrompt", props: BAND_PROPS });
+  const ready = async (take: number) => {
+    for (let i = 0; i < 200 && !(forks === take && await band.find({ type: "Text", text: "Lapida · review the rewrite" })); i++) await new Promise<void>((resolve) => setTimeout(() => resolve(), 5));
+    expect(box).toBe(`Fix the loader, take ${take}.`);
+    expect(await band.find({ type: "Text", text: "Lapida · review the rewrite" })).toBeDefined();
+    expect(await band.find({ type: "Text", text: "Lapida…" })).toBeUndefined();
+    expect(await band.find({ key: "lapida-enhance" })).toBeDefined();
+  };
+  expect((await $.command.run(LAPIDA_RUN) as { text?: string }).text).toBe("Enhanced prompt is in the prompt box. Review it, then send when ready.");
+  await ready(1);
+  await band.press({ key: "lapida-enhance" });
+  await ready(2);
+  expect((await $.command.run(LAPIDA_RUN) as { text?: string }).text).toBe("Enhanced prompt is in the prompt box. Review it, then send when ready.");
+  await ready(3);
+  await band.unmount();
+});
+
 test("the dashboard follows the configured Portuguese locale", { options: { locale: "pt" } }, async ($, on) => {
   mock.clock(on, { now: Date.parse("2026-10-06T12:00:00Z") });
   mockEngineServices(on);
