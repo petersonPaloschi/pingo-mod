@@ -25,7 +25,7 @@ export type RouteEvent = {
   jevRaw?: string[];
 };
 
-export type JevTab = "overview" | "live" | "models" | "agents" | "logs" | "configuration" | "deck" | "features";
+export type JevTab = "overview" | "live" | "models" | "agents" | "logs" | "configuration" | "deck" | "features" | "ai";
 
 /**
  * A message as the Live run view records it. Its run is tied only when the engine confirms it: the turn
@@ -71,7 +71,7 @@ export type TraceCheckpoint = {
 /** One Jev call: where it was asked from, the model asked, and the questions it carried. */
 export type TraceConsult = {
   id: string;
-  origin: "prompt" | "tool" | "agent" | "sift" | "setup" | "unit";
+  origin: "prompt" | "tool" | "agent" | "sift" | "setup" | "unit" | "context";
   model: string;
   /** Response model and raw provider counters, when supplied; input excludes cache. */
   observed?: string;
@@ -230,6 +230,7 @@ export type FeatureFlags = {
   lapida: boolean;
   sentinela: boolean;
   vigia: boolean;
+  contexto: boolean;
 };
 export type FeatureId = keyof FeatureFlags;
 
@@ -261,7 +262,7 @@ export type SentinelaSession = { pid: number; id: string; name: string; cwd: str
 export type VigiaTask = { id: string; text: string; status: "pending" | "in_progress" | "completed" };
 export type VigiaSession = { id: string; root: string; startedAt: number; beatAt: number; endedAt?: number; isBusy?: boolean; turns?: number; lastPrompt?: string; lastAnswer?: string; title?: string; done?: string; doing?: string; next?: string; tasks: VigiaTask[]; files?: string[]; edits?: Record<string, number> };
 
-export type FeedKind = "turn" | "step" | "jev" | "tool" | "agent" | "message" | "feature" | "error";
+export type FeedKind = "turn" | "step" | "jev" | "call" | "tool" | "agent" | "message" | "feature" | "error";
 export type FeedTone = "info" | "good" | "warn" | "bad" | "muted";
 
 /** Who a live-log line belongs to: you, Jev, Claude, a subagent, or the plugin itself. */

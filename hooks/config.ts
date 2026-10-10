@@ -13,6 +13,14 @@ export interface ModOptions {
   locale?: string;
   routing_locale?: string;
   claude_models?: string;
+  context_goal?: string;
+  context_compact_at_percent?: number;
+  context_min_reduction_ratio?: number;
+  context_keep_threshold?: number;
+  context_preserve_recent_messages?: number;
+  context_max_state_tokens?: number;
+  context_max_request_tokens?: number;
+  context_truncate_head_chars?: number;
 }
 
 /** Non-sensitive settings retained by the plugin. */

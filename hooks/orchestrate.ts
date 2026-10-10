@@ -476,7 +476,17 @@ async function updateBatches(io: Io, change: (list: Batch[]) => Batch[]): Promis
 }
 
 const batchOf = async (io: Io, id: string) => (await readBatches(io)).find((b) => b.id === id);
-const replaceBatch = (io: Io, batch: Batch) => updateBatches(io, (list) => list.map((b) => (b.id === batch.id ? batch : b)));
+
+/**
+ * One step applied to the batch as stored now, under the store lock: a step worked out from an earlier read (a
+ * launch, a worker's end, a review) never overwrites what another step wrote meanwhile. `change` answers undefined
+ * to leave the batch as it is; the changed batch comes back, else undefined.
+ */
+async function changeBatch(io: Io, id: string, change: (batch: Batch) => Batch | undefined): Promise<Batch | undefined> {
+  let changed: Batch | undefined;
+  await updateBatches(io, (list) => list.map((b) => (b.id === id ? (changed = change(b)) ?? b : b)));
+  return changed;
+}
 
 /** The managed-batch entry point (`mcp__jev__managed_batch`): validate, choose profiles, start the queue. */
 export async function submitBatch(io: Io, input: unknown): Promise<{ result?: string; deny?: string }> {
@@ -526,8 +536,17 @@ async function desiredWorkers(io: Io, config: Settings, policy: OrchestrationPol
   return "failure" in asked ? 1 : readConcurrency(asked.result.answers.concurrency, ceiling, config.minConfidence).workers;
 }
 
+/** The pump running now: one at a time, or two would admit the same queued unit and launch it twice. */
+let pumping: Promise<unknown> = Promise.resolve();
+
 /** Launch whatever the queue admits and start owed reviews. Safe to call any time. */
-async function pump(io: Io, batchId: string): Promise<void> {
+function pump(io: Io, batchId: string): Promise<void> {
+  const run = pumping.then(() => pumpOnce(io, batchId));
+  pumping = run.catch(() => undefined);
+  return run;
+}
+
+async function pumpOnce(io: Io, batchId: string): Promise<void> {
   let batch = await batchOf(io, batchId);
   if (!batch) return;
   // Agents the runtime runs outside this batch share the same live-agent ceiling.
@@ -536,28 +555,31 @@ async function pump(io: Io, batchId: string): Promise<void> {
   for (const unit of admit(batch, live)) {
     const prompt = unitPrompt(batch, unit);
     managedPrompts.set(prompt, { batch: batch.id, unit: unit.id });
+    let step: (b: Batch) => Batch;
     try {
       const description = `${batch.id} ${unit.id}`;
       const started = await io.spawn({ prompt, description, subagentType: "general-purpose", model: unit.worker!.model });
-      if ("deny" in started && typeof started.deny === "string") batch = launchFailed(batch, unit.id, `spawn_denied: ${started.deny}`);
+      if ("deny" in started && typeof started.deny === "string") step = (b) => launchFailed(b, unit.id, `spawn_denied: ${started.deny}`);
       else {
         // Core answers the started agent's ID; failing that, the runtime's agent list names it by its unique description.
         const taken = new Set(batch.units.map((u) => u.agentId).filter(Boolean));
         const agentId = (started as { agentId?: string }).agentId
           ?? (await io.agents().catch(() => [])).find((a) => a.description === description && !taken.has(a.id))?.id;
-        if (!agentId) batch = launchFailed(batch, unit.id, "spawn_without_agent_id");
+        if (!agentId) step = (b) => launchFailed(b, unit.id, "spawn_without_agent_id");
         else {
-          batch = launched(batch, unit.id, agentId);
+          step = (b) => launched(b, unit.id, agentId);
           io.setAgentEffort(agentId, unit.worker!.effort);
         }
       }
     } catch (error) {
-      batch = launchFailed(batch, unit.id, `spawn_failed: ${error instanceof Error ? error.message : String(error)}`);
+      step = (b) => launchFailed(b, unit.id, `spawn_failed: ${error instanceof Error ? error.message : String(error)}`);
     } finally {
       managedPrompts.delete(prompt);
     }
-    await replaceBatch(io, batch);
+    batch = (await changeBatch(io, batch.id, step)) ?? batch;
   }
+  // Owed reviews from the batch as stored now: a review or a worker may have finished during the launches.
+  batch = (await batchOf(io, batchId)) ?? batch;
   for (const unit of reviewable(batch)) void reviewUnit(io, batch.id, unit.id);
   if (unitsDone(batch) && batch.integration.state === "pending") void reviewIntegration(io, batch.id);
 }
@@ -568,18 +590,20 @@ async function advanceBatchUnit(io: Io, agentId: string, answer: string, ok: boo
   const unit = unitOfAgent(batch, agentId)!;
   const files = [...(editedBy.get(agentId) ?? [])].sort();
   editedBy.delete(agentId);
-  await replaceBatch(io, workerDone(batch, unit.id, answer, files, ok));
+  await changeBatch(io, batch.id, (b) => workerDone(b, unit.id, answer, files, ok));
   await io.log(ok ? "info" : "bad", `Orchestration: ${batch.id} ${unit.id} worker ${ok ? "finished; review owed" : "failed"}`);
   await pump(io, batch.id);
   return true;
 }
 
 async function reviewUnit(io: Io, batchId: string, unitId: string): Promise<void> {
-  let batch = await batchOf(io, batchId);
+  // Claimed under the lock, within the free review slots: two pumps never start the same review.
+  const batch = await changeBatch(io, batchId, (b) => {
+    const owed = reviewable(b).find((u) => u.id === unitId);
+    return owed?.reviewer && owed.digest ? reviewStarted(b, unitId) : undefined;
+  });
   const unit = batch?.units.find((u) => u.id === unitId);
-  if (!batch || !unit || unit.state !== "awaiting_review" || !unit.reviewer || !unit.digest) return;
-  batch = reviewStarted(batch, unitId);
-  await replaceBatch(io, batch);
+  if (!batch || !unit?.reviewer || !unit.digest) return;
   const evidence: Evidence[] = [
     { id: "E_task", kind: "task", label: "Unit task", body: unitPrompt(batch, unit) },
     { id: "E_answer", kind: unit.files?.length ? "claim" : "artifact", label: unit.files?.length ? "Worker summary (a claim, not proof)" : "Worker answer (the deliverable)", body: unit.answer || "(empty)" },
@@ -590,31 +614,31 @@ async function reviewUnit(io: Io, batchId: string, unitId: string): Promise<void
     artifactId: `${batchId}:${unitId}`, digest, criteria: unit.criteria, evidence,
     baseline: batch.sharedContracts || undefined,
   }, unit.reviewer, batch.limits.callTimeoutMs);
-  const current = await batchOf(io, batchId);
-  if (!current) return;
-  const next = reviewDone(current, unitId, outcome, digest);
-  await replaceBatch(io, next);
+  const next = await changeBatch(io, batchId, (b) => reviewDone(b, unitId, outcome, digest));
+  if (!next) return;
   const state = next.units.find((u) => u.id === unitId)?.state;
   await io.log(outcome.approved ? "good" : "warn", `Orchestration: ${batchId} ${unitId} review ${outcome.verdict} → ${state}`, outcome.problems.join(", ") || undefined);
   await pump(io, batchId);
 }
 
 async function reviewIntegration(io: Io, batchId: string): Promise<void> {
-  let batch = await batchOf(io, batchId);
-  if (!batch || batch.integration.state !== "pending") return;
-  const digest = integrationDigest(batch);
+  // Claimed under the lock: two pumps never start the integration review twice.
+  let claimed: string | undefined;
+  const batch = await changeBatch(io, batchId, (b) => {
+    if (b.integration.state !== "pending") return undefined;
+    claimed = integrationDigest(b);
+    if (!claimed) return { ...b, integration: { state: "blocked", why: "units_not_all_approved" } };
+    if (!b.integrator) return { ...b, integration: { state: "blocked", why: "no_integration_reviewer" } };
+    return integrationStarted(b, claimed);
+  });
+  if (!batch) return;
+  const digest = claimed;
   if (!digest) {
-    await replaceBatch(io, { ...batch, integration: { state: "blocked", why: "units_not_all_approved" } });
     await io.log("warn", `Orchestration: ${batchId} is UNVERIFIED — not every unit was approved`);
     return;
   }
   const integrator = batch.integrator;
-  if (!integrator) {
-    await replaceBatch(io, { ...batch, integration: { state: "blocked", why: "no_integration_reviewer" } });
-    return;
-  }
-  batch = integrationStarted(batch, digest);
-  await replaceBatch(io, batch);
+  if (!integrator) return;
   const files = [...new Set(batch.units.flatMap((u) => u.files ?? []))].sort();
   const evidence: Evidence[] = [
     // A unit that edited nothing delivered its answer; one that edited files only describes them (the diff is the evidence).
@@ -630,10 +654,8 @@ async function reviewIntegration(io: Io, batchId: string): Promise<void> {
     evidence,
     baseline: batch.sharedContracts || undefined,
   }, integrator, batch.limits.callTimeoutMs);
-  const current = await batchOf(io, batchId);
-  if (!current) return;
-  const next = integrationDone(current, outcome, digest);
-  await replaceBatch(io, next);
+  const next = await changeBatch(io, batchId, (b) => integrationDone(b, outcome, digest));
+  if (!next) return;
   await io.log(batchVerified(next) ? "good" : "warn", `Orchestration: ${batchId} integration ${next.integration.state}${batchVerified(next) ? " — verified" : " — UNVERIFIED"}`);
 }
 

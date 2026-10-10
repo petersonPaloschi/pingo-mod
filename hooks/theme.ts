@@ -60,8 +60,6 @@ export const PAINT = {
 export const SVG_PAINT = {
   muted: css(HUE.neutral),
   onFill: "#ffffff",
-  /** The empty part of a desktop bar: a warm grey a step under the stone of the labels. */
-  track: "#7f7a6e",
 } as const;
 
 /** Glyphs that say a state without color, and the pieces of the trail. */

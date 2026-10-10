@@ -7,7 +7,7 @@ import { renderPane, type Actions, type Els, type View } from "../hooks/ui.tsx";
 import { en } from "../hooks/strings/en.ts";
 
 const widths = [40, 60, 80, 100, 120, 160] as const;
-const tabs = ["overview", "live", "models", "agents", "logs", "features", "configuration", "deck"] as const;
+const tabs = ["overview", "live", "models", "agents", "logs", "features", "configuration", "deck", "ai"] as const;
 const features = Object.fromEntries(Object.keys(DEFAULT_FEATURES).map((id) => [id, true])) as typeof DEFAULT_FEATURES;
 const preferences = {
   assumptionScope: "all",

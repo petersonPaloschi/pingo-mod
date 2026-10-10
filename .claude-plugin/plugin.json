@@ -1,7 +1,7 @@
 {
   "name": "jev",
   "version": "0.1.0",
-  "description": "Execution diagnostics, semantic Sift judgments, and optional native-subagent planning for Claude Code.",
+  "description": "Execution diagnostics, semantic Sift judgments, optional native-subagent planning, and Jev-guided context compaction for Claude Code.",
   "author": { "name": "Peterson Paloschi" },
   "license": "MIT",
   "types": "./types/index.d.ts",
@@ -59,6 +59,62 @@
       "type": "string",
       "title": "Claude agent candidates",
       "description": "Optional comma-separated first-party Haiku, Sonnet and Opus model IDs supported by your account for eligible native-agent planning. Empty uses built-in IDs; unavailable choices fall back to the native request.",
+      "required": false
+    },
+    "context_goal": {
+      "type": "string",
+      "title": "Context task goal",
+      "description": "Optional description of the ongoing task for Jev's history decisions. Empty derives it from the last three user prompts.",
+      "default": "",
+      "required": false
+    },
+    "context_compact_at_percent": {
+      "type": "number",
+      "title": "Context compaction threshold (%)",
+      "description": "Request Jev-guided history compaction when session context reaches this percentage. Default: 60.",
+      "default": 60,
+      "required": false
+    },
+    "context_min_reduction_ratio": {
+      "type": "number",
+      "title": "Minimum context reduction",
+      "description": "Use the edited history only when compaction removes at least this share of its characters. Default: 0.25.",
+      "default": 0.25,
+      "required": false
+    },
+    "context_keep_threshold": {
+      "type": "number",
+      "title": "Context keep threshold",
+      "description": "Keep a tool call or its full result when Jev's probability reaches this value. Default: 0.5.",
+      "default": 0.5,
+      "required": false
+    },
+    "context_preserve_recent_messages": {
+      "type": "number",
+      "title": "Recent messages to preserve",
+      "description": "Number of newest messages left untouched by context compaction. Default: 6.",
+      "default": 6,
+      "required": false
+    },
+    "context_max_state_tokens": {
+      "type": "number",
+      "title": "Maximum context state tokens",
+      "description": "Estimated token ceiling for the history sent with each Jev request. Default: 25000.",
+      "default": 25000,
+      "required": false
+    },
+    "context_max_request_tokens": {
+      "type": "number",
+      "title": "Maximum context request tokens",
+      "description": "Estimated token ceiling for the state and questions in one Jev request. Default: 30000.",
+      "default": 30000,
+      "required": false
+    },
+    "context_truncate_head_chars": {
+      "type": "number",
+      "title": "Tool result characters to retain",
+      "description": "Characters kept at the start of a result Jev says can be shortened. Default: 300.",
+      "default": 300,
       "required": false
     }
   }

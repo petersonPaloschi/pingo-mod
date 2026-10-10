@@ -283,7 +283,7 @@ export function stripsSvg(
       }
     }
     const room = narrow ? W - 30 - indent : W * 0.45;
-    const full = (a.depth > 0 ? "↳ " : "") + a.title;
+    const full = (a.depth > 0 ? "╰ " : "") + a.title;
     let name = full;
     while (name.length > 4 && textWidth(name, 6.9) > room) name = name.slice(0, -1);
     if (name !== full) name = name.trimEnd() + "…";

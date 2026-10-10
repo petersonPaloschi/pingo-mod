@@ -40,7 +40,7 @@ import { TERMINAL_STYLE_NAMES, TERMINAL_STYLES } from "./deck/styles-terminal.ts
 /** The pane needs Select and Input, which the terminal and the desktop app draw. */
 export type Els = ElementTable<"terminal" | "desktop">;
 
-/** The eight screens, in the order the rail lists them, with their number keys. */
+/** The nine screens, in the order the rail lists them, with their number keys. */
 export const TABS: readonly (readonly (readonly [JevTab, string, string])[])[] = [
   [
     ["overview", "ui.tab.overview", "1"],
@@ -53,8 +53,17 @@ export const TABS: readonly (readonly (readonly [JevTab, string, string])[])[] =
     ["configuration", "ui.tab.configuration", "6"],
     ["deck", "ui.tab.deck", "7"],
     ["features", "ui.tab.features", "8"],
+    ["ai", "ui.tab.ai", "9"],
   ],
 ];
+
+/**
+ * The features that change which model runs, how it runs or what is sent to it: the AI screen's, not Features'.
+ * The rest (Pingo Vivo, Sentinela) only show state or looks.
+ */
+const AI_FEATURES: ReadonlySet<FeatureId> = new Set(["agents", "clareza", "lapida", "farol", "prisma", "semente", "vigia", "contexto"]);
+/** Keys the AI screen's own buttons hold (routing, test, remove key): a feature sharing one is toggled without it. */
+const AI_KEYS: ReadonlySet<string> = new Set(["r", "v", "f"]);
 
 /**
  * Text colors, all from hooks/theme.ts: theme keys for content, labels and rules (they follow the person's light
@@ -138,7 +147,7 @@ export interface View {
   key: { source: string; tail: string; provider: string };
   /** The Deck tab's data, made only when that tab is open: the other tabs and the band never read Deck's state. */
   deck: DeckPanel | null;
-  /** The orchestration policy and what it is doing; made only on the Configuration tab. */
+  /** The orchestration policy and what it is doing; made only on the AI tab. */
   orchestration?: OrchestrationView;
 }
 
@@ -378,7 +387,7 @@ function card(els: Els, title: string, body: RenderChildren, opts: { width: numb
   // The line is as tall as the body and the row under it; the host clips what the estimate adds.
   const rows = rowsOf(inner, width - INDENT);
   return (
-    <Box flexDirection="column" width={width} flexShrink={0} paddingLeft={2}>
+    <Box flexDirection="column" width={width} flexShrink={0} paddingLeft={2} position="relative">
       <Text bold color={opts.alert ? INK.fail : opts.color ?? INK.ink} wrap="wrap">{title}</Text>
       {inner}
       <Box position="absolute" top={0} left={0} width={1}>
@@ -452,14 +461,15 @@ function navButtons(els: Els, view: View, act: Actions) {
   });
 }
 
+/** Jev's on/off switch, on the AI screen. */
 function routingButton(els: Els, view: View, act: Actions) {
   const { Button } = els;
-  return <Button key="routing" plain label={text(view.routing ? "ui.header.turnOff" : "ui.header.turnOn", view.locale)} {...(view.tab === "features" ? {} : { hotkey: "r" })} onPress={() => act.routing(!view.routing)} />;
+  return <Button key="routing" plain label={text(view.routing ? "ui.header.turnOff" : "ui.header.turnOn", view.locale)} hotkey="r" onPress={() => act.routing(!view.routing)} />;
 }
 
 /**
- * The top of the pane at every width: Pingo's face in its mood's color, then "jev" and the state in bold with the
- * routing switch, and under them, in plain words, what is going on and the last five minutes. The screens' names
+ * The top of the pane at every width: Pingo's face in its mood's color, then "jev" and the state in bold, and
+ * under them, in plain words, what is going on and the last five minutes. The screens' names
  * follow after a blank row. A short terminal pane keeps the first line and the screens.
  */
 function header(els: Els, view: View, act: Actions) {
@@ -476,7 +486,6 @@ function header(els: Els, view: View, act: Actions) {
         <Text color={INK.border}>{` ${GLYPH.leader} `}</Text>
         <Text color={INK.ink}>{`${state.icon} ${said}`}</Text>
       </Text>
-      {routingButton(els, view, act)}
     </Box>
   );
   const nav = (
@@ -727,9 +736,12 @@ function overview(els: Els, view: View, act: Actions) {
   );
 }
 
+/** AI calls the Logs screen lists, newest first. */
+const CALLS_SHOWN = 20;
+
 /**
  * The Logs screen: a node of reason groups, each with a dot meter for its share of the largest, then the request
- * log itself, newest first, one line per request with its outcome's glyph in its color.
+ * log itself, newest first, one line per request with its outcome's glyph in its color, then the latest AI calls.
  */
 function logView(els: Els, view: View) {
   const { Box, Text } = els;
@@ -739,6 +751,9 @@ function logView(els: Els, view: View) {
   const most = Math.max(1, ...grouped.map((reason) => reason.count));
   const reasonsShown = grouped.slice(0, 6);
   const rows = [...view.events].reverse();
+  // Every AI call (Jev's and the features' own) as Live wrote it, newest first: the same lines, not a second record.
+  const calls = view.feed.filter((entry) => entry.kind === "call");
+  const shownCalls = calls.slice(-CALLS_SHOWN).reverse();
   return (
     <Box flexDirection="column" rowGap={1}>
       {card(
@@ -765,6 +780,10 @@ function logView(els: Els, view: View) {
       {card(els, text("ui.log.title", view.locale), rows.length ? rows.map((event) => logEntry(els, { ...view, width: view.width - 4 }, event)) : <Text color={INK.dim}>{text("ui.log.empty", view.locale)}</Text>, {
         width: view.width,
         note: text("ui.log.recent", view.locale, { shown: formatNumber(rows.length, view.locale), total: formatNumber(view.events.length, view.locale) }),
+      })}
+      {card(els, text("ui.log.calls", view.locale), conversation(els, { ...view, width: view.width - 4 }, shownCalls, text("ui.log.noCalls", view.locale)), {
+        width: view.width,
+        note: text("ui.log.recent", view.locale, { shown: formatNumber(shownCalls.length, view.locale), total: formatNumber(calls.length, view.locale) }),
       })}
     </Box>
   );
@@ -862,9 +881,14 @@ function step(els: Els, n: number, label: string, done: boolean, body: RenderChi
   );
 }
 
-/** Feature switches and the preferences that control their behavior. */
+/** Feature switches and the preferences that control their behavior, except the AI screen's. */
 function featuresView(els: Els, view: View, act: Actions) {
-  const { Box, Text, Button, Select } = els;
+  return featurePanel(els, view, act, false);
+}
+
+/** Feature switches and their preferences: the AI screen's (`ai`) or the Features screen's, never both. */
+function featurePanel(els: Els, view: View, act: Actions, ai: boolean) {
+  const { Box, Text, Select } = els;
   const state = `${GLYPH.on} ${text("ui.configuration.enabledValue", view.locale)}  ${GLYPH.off} ${text("ui.configuration.disabledValue", view.locale)}`;
   const summaryKeys: Record<FeatureId, LocaleKey> = {
     agents: "ui.features.summary.agents",
@@ -876,55 +900,59 @@ function featuresView(els: Els, view: View, act: Actions) {
     lapida: "ui.features.summary.lapida",
     sentinela: "ui.features.summary.sentinela",
     vigia: "ui.features.summary.vigia",
+    contexto: "ui.features.summary.contexto",
   };
   const preferenceToggle = (key: keyof FeaturePreferences, label: string, on: boolean) => () =>
     toggleButton(els, key, on, label, () => act.preference(key, !on));
   const locale = view.locale;
   const preferences = view.preferences;
-  const featuresList = features(locale).map((feature) => (cellWidth: number) => {
+  const featuresList = features(locale).filter((feature) => AI_FEATURES.has(feature.id) === ai).map((feature) => (cellWidth: number) => {
     const on = view.features[feature.id];
     const name = feature.id === "agents" ? text("ui.features.agentsShort", locale) : feature.name;
     return (
       <Box flexDirection="column" width={cellWidth} flexShrink={0}>
-        {toggleButton(els, "feature-" + feature.id, on, name, () => act.feature(feature.id, !on), feature.hotkey)}
+        {toggleButton(els, "feature-" + feature.id, on, name, () => act.feature(feature.id, !on), ai && AI_KEYS.has(feature.hotkey) ? undefined : feature.hotkey)}
         <Text color={INK.dim} wrap="wrap">{text(summaryKeys[feature.id], locale)}</Text>
       </Box>
     );
   });
-  const preferenceGroups: [LocaleKey, readonly (() => RenderChildren)[]][] = [
+  const scope = () => <Select key="assumption-scope" label={text("ui.features.scope", locale)} value={preferences.assumptionScope} options={[
+    { value: "all", label: text("ui.features.scopeAll", locale) },
+    { value: "important", label: text("ui.features.scopeImportant", locale) },
+  ]} onSelect={(value) => act.preference("assumptionScope", value as FeaturePreferences["assumptionScope"])} />;
+  const style = () => <Select key="plain-level" label={text("ui.features.style", locale)} value={preferences.plainLevel} options={[
+    { value: "beginner", label: text("ui.features.beginner", locale) },
+    { value: "expert", label: text("ui.features.expert", locale) },
+  ]} onSelect={(value) => act.preference("plainLevel", value as FeaturePreferences["plainLevel"])} />;
+  const hat = () => <Select key="pet-hat" label={text("ui.features.hat", locale)} value={preferences.petHat} options={[
+    { value: "random", label: text("ui.features.randomHat", locale) },
+    ...["tophat", "party", "crown", "wizard", "cowboy", "propeller", "chef", "viking", "halo", "santa", "nightcap"].map((hat) => ({ value: hat, label: text(`deck.pet.hat.${hat}` as LocaleKey, locale) })),
+  ]} onSelect={(value) => act.preference("petHat", String(value))} />;
+  const surface = () => <Select key="design-surface" label={text("ui.features.surface", locale)} value={preferences.designSurface} options={[
+    { value: "auto", label: text("ui.configuration.surfaceAuto", locale) },
+    { value: "pane", label: text("ui.configuration.surfacePane", locale) },
+    { value: "browser", label: text("ui.configuration.surfaceBrowser", locale) },
+  ]} onSelect={(value) => act.preference("designSurface", value as FeaturePreferences["designSurface"])} />;
+  const monitor = () => <Select key="monitor-interval" label={text("ui.features.monitor", locale)} value={String(preferences.monitorEveryMs)} options={[2000, 5000, 10000].map((ms) => ({ value: String(ms), label: `${ms / 1000}s` }))} onSelect={(value) => act.preference("monitorEveryMs", Number(value) as FeaturePreferences["monitorEveryMs"])} />;
+  const clash = () => <Select key="clash-window" label={text("ui.features.clashWindow", locale)} value={String(preferences.clashMinutes)} options={[15, 30, 60].map((minutes) => ({ value: String(minutes), label: `${minutes} min` }))} onSelect={(value) => act.preference("clashMinutes", Number(value) as FeaturePreferences["clashMinutes"])} />;
+  // What is sent to the model (Farol's scope, Clareza's level and review, Prisma, Semente, Lapida, Vigia's summary)
+  // goes with the AI screen; sound, mascot and monitoring stay on Features.
+  const preferenceGroups: [LocaleKey, readonly (() => RenderChildren)[]][] = ai ? [
     ["ui.features.replyGroup", [
-    () => <Select key="assumption-scope" label={text("ui.features.scope", locale)} value={preferences.assumptionScope} options={[
-      { value: "all", label: text("ui.features.scopeAll", locale) },
-      { value: "important", label: text("ui.features.scopeImportant", locale) },
-    ]} onSelect={(value) => act.preference("assumptionScope", value as FeaturePreferences["assumptionScope"])} />,
-    () => <Select key="plain-level" label={text("ui.features.style", locale)} value={preferences.plainLevel} options={[
-      { value: "beginner", label: text("ui.features.beginner", locale) },
-      { value: "expert", label: text("ui.features.expert", locale) },
-    ]} onSelect={(value) => act.preference("plainLevel", value as FeaturePreferences["plainLevel"])} />,
-    preferenceToggle("plainReview", text("ui.features.answerReview", locale), preferences.plainReview),
-    preferenceToggle("plainSound", text("ui.features.completionSound", locale), preferences.plainSound),
-    ]],
-    ["ui.features.mascotGroup", [
-    () => <Select key="pet-hat" label={text("ui.features.hat", locale)} value={preferences.petHat} options={[
-      { value: "random", label: text("ui.features.randomHat", locale) },
-      ...["tophat", "party", "crown", "wizard", "cowboy", "propeller", "chef", "viking", "halo", "santa", "nightcap"].map((hat) => ({ value: hat, label: text(`deck.pet.hat.${hat}` as LocaleKey, locale) })),
-    ]} onSelect={(value) => act.preference("petHat", String(value))} />,
-    preferenceToggle("petShades", text("ui.features.petShades", locale), preferences.petShades),
+      scope,
+      style,
+      preferenceToggle("plainReview", text("ui.features.answerReview", locale), preferences.plainReview),
     ]],
     ["ui.features.workflowGroup", [
-    () => <Select key="design-surface" label={text("ui.features.surface", locale)} value={preferences.designSurface} options={[
-      { value: "auto", label: text("ui.configuration.surfaceAuto", locale) },
-      { value: "pane", label: text("ui.configuration.surfacePane", locale) },
-      { value: "browser", label: text("ui.configuration.surfaceBrowser", locale) },
-    ]} onSelect={(value) => act.preference("designSurface", value as FeaturePreferences["designSurface"])} />,
-    preferenceToggle("ideaNudges", text("ui.features.ideaNudges", locale), preferences.ideaNudges),
-    preferenceToggle("promptLearning", text("ui.features.promptLearning", locale), preferences.promptLearning),
-    preferenceToggle("trackerSummary", text("ui.features.trackerSummary", locale), preferences.trackerSummary),
+      surface,
+      preferenceToggle("ideaNudges", text("ui.features.ideaNudges", locale), preferences.ideaNudges),
+      preferenceToggle("promptLearning", text("ui.features.promptLearning", locale), preferences.promptLearning),
+      preferenceToggle("trackerSummary", text("ui.features.trackerSummary", locale), preferences.trackerSummary),
     ]],
-    ["ui.features.monitorGroup", [
-    () => <Select key="monitor-interval" label={text("ui.features.monitor", locale)} value={String(preferences.monitorEveryMs)} options={[2000, 5000, 10000].map((ms) => ({ value: String(ms), label: `${ms / 1000}s` }))} onSelect={(value) => act.preference("monitorEveryMs", Number(value) as FeaturePreferences["monitorEveryMs"])} />,
-    () => <Select key="clash-window" label={text("ui.features.clashWindow", locale)} value={String(preferences.clashMinutes)} options={[15, 30, 60].map((minutes) => ({ value: String(minutes), label: `${minutes} min` }))} onSelect={(value) => act.preference("clashMinutes", Number(value) as FeaturePreferences["clashMinutes"])} />,
-    ]],
+  ] : [
+    ["ui.features.replyGroup", [preferenceToggle("plainSound", text("ui.features.completionSound", locale), preferences.plainSound)]],
+    ["ui.features.mascotGroup", [hat, preferenceToggle("petShades", text("ui.features.petShades", locale), preferences.petShades)]],
+    ["ui.features.monitorGroup", [monitor, clash]],
   ];
   return (
     <Box flexDirection="column" rowGap={1} width={view.width}>
@@ -935,27 +963,14 @@ function featuresView(els: Els, view: View, act: Actions) {
   );
 }
 
-/** Provider and language setup, saved credentials, and history controls. */
+/** The language and history controls; the provider and its key are on the AI screen. */
 function configurationView(els: Els, view: View, act: Actions) {
-  const { Box, Text, Button, Select, Input } = els;
-  const chosen = PROVIDER_IDS.includes(view.setup.provider as never) ? view.setup.provider : PROVIDER_IDS.includes(view.key.provider as never) ? view.key.provider : "typesafe";
-  const info = PROVIDERS[chosen as keyof typeof PROVIDERS];
-  const saved = view.key.source !== "none";
-  const typed = view.setup.typed ?? "";
-  const message = view.setup.message;
-  const connected = view.setup.isOk && Boolean(message) && !view.setup.busy;
+  const { Box, Text, Button, Select } = els;
   const cardWidth = view.width >= 101 ? Math.floor((view.width - GUTTER) / 2) : view.width;
   return (
     <Box flexDirection="column" rowGap={1}>
-      <Box flexDirection="column">
-        <Text color={INK.dim} wrap="wrap">{text("ui.setup.intro", view.locale)}</Text>
-        {!view.routing ? <Text color={INK.pass} wrap="wrap">{text("ui.configuration.routingOff", view.locale)}</Text> : null}
-      </Box>
       <Box flexDirection="row" flexWrap="wrap" columnGap={GUTTER} rowGap={1}>
-        {card(
-          els,
-          text("ui.configuration.provider", view.locale),
-          [
+        {card(els, text("ui.configuration.interface", view.locale), [
           <Select
             key="language"
             label={text("ui.setup.language", view.locale)}
@@ -968,64 +983,7 @@ function configurationView(els: Els, view: View, act: Actions) {
             onSelect={(value) => act.locale(value as LocaleOption)}
           />,
           <Text color={INK.faint} wrap="wrap">{text("ui.setup.languageHelp", view.locale)}</Text>,
-          step(
-            els,
-            1,
-            text("ui.setup.provider", view.locale),
-            true,
-            <Box flexDirection="column">
-              <Select key="provider" value={chosen} options={PROVIDER_IDS.map((id) => ({ value: id, label: PROVIDERS[id].label }))} onSelect={(value) => act.provider(value)} />
-              <Text color={INK.faint} wrap="wrap">{text("ui.setup.providerNote", view.locale, { note: text(info.noteKey, view.locale), url: info.keyUrl })}</Text>
-            </Box>,
-          ),
-          step(
-            els,
-            2,
-            text("ui.setup.keyLabel", view.locale),
-            saved && !typed,
-            <Box flexDirection="column">
-              {saved ? (
-                <Text wrap="truncate">
-                  <Text color={INK.route}>{`••••${view.key.tail}`}</Text>
-                  <Text color={INK.dim}>{text("ui.setup.keyInUse", view.locale, { source: text(`source.${view.key.source}` as LocaleKey, view.locale) })}</Text>
-                </Text>
-              ) : (
-                <Text color={INK.pass} wrap="truncate">{text("ui.setup.noKeyYet", view.locale, { env: info.keyEnv })}</Text>
-              )}
-              <Input
-                key="api-key"
-                value={typed}
-                placeholder={text(saved ? "ui.setup.keyPlaceholder" : "ui.setup.keyPlaceholderEmpty", view.locale)}
-                submitLabel={text("ui.setup.testSave", view.locale)}
-                onInput={(value) => act.typeKey(value)}
-                onSubmit={(value) => act.submitKey(value)}
-              />
-              <Text color={INK.faint} wrap="wrap">{text("ui.setup.maskedHelp", view.locale)}</Text>
-            </Box>,
-          ),
-          step(
-            els,
-            3,
-            text("ui.setup.connection", view.locale),
-            connected,
-            <Box flexDirection="column">
-              <Box flexDirection="row" columnGap={2} flexWrap="wrap">
-                <Button key="validate" label={`${text(typed ? "ui.setup.testSave" : "ui.setup.testConnection", view.locale)} (v)`} hotkey="v" onPress={() => act.validate()} />
-                {saved && view.key.source === "plugin" ? <Button key="forget" label={`${text("ui.setup.removeKey", view.locale)} (f)`} hotkey="f" onPress={() => act.forgetKey()} /> : null}
-              </Box>
-              {message ? (
-                <Text bold color={view.setup.busy ? INK.dim : view.setup.isOk ? INK.route : INK.fail} wrap="truncate">
-                  {`${view.setup.busy ? "◌" : view.setup.isOk ? GLYPH.on : GLYPH.fail} ${message}`}
-                </Text>
-              ) : null}
-            </Box>,
-          ),
-          <Box marginTop={1}>
-            <Text color={INK.pass} wrap="wrap">{text("ui.setup.privacy", view.locale)}</Text>
-          </Box>,
-          ],
-          { width: cardWidth, ...(connected ? { rule: INK.route } : {}) },
-        )}
+        ], { width: cardWidth })}
         {card(els, text("ui.configuration.history", view.locale), [
           <Text color={INK.faint} wrap="truncate">{view.meta}</Text>,
           <Box flexDirection="row">
@@ -1033,6 +991,98 @@ function configurationView(els: Els, view: View, act: Actions) {
           </Box>,
         ], { width: cardWidth })}
       </Box>
+    </Box>
+  );
+}
+
+/** Jev's provider, its key and the connection test. */
+function providerCard(els: Els, view: View, act: Actions) {
+  const { Box, Text, Button, Select, Input } = els;
+  const chosen = PROVIDER_IDS.includes(view.setup.provider as never) ? view.setup.provider : PROVIDER_IDS.includes(view.key.provider as never) ? view.key.provider : "typesafe";
+  const info = PROVIDERS[chosen as keyof typeof PROVIDERS];
+  const saved = view.key.source !== "none";
+  const typed = view.setup.typed ?? "";
+  const message = view.setup.message;
+  const connected = view.setup.isOk && Boolean(message) && !view.setup.busy;
+  return card(
+    els,
+    text("ui.configuration.provider", view.locale),
+    [
+      step(
+        els,
+        1,
+        text("ui.setup.provider", view.locale),
+        true,
+        <Box flexDirection="column">
+          <Select key="provider" value={chosen} options={PROVIDER_IDS.map((id) => ({ value: id, label: PROVIDERS[id].label }))} onSelect={(value) => act.provider(value)} />
+          <Text color={INK.faint} wrap="wrap">{text("ui.setup.providerNote", view.locale, { note: text(info.noteKey, view.locale), url: info.keyUrl })}</Text>
+        </Box>,
+      ),
+      step(
+        els,
+        2,
+        text("ui.setup.keyLabel", view.locale),
+        saved && !typed,
+        <Box flexDirection="column">
+          {saved ? (
+            <Text wrap="truncate">
+              <Text color={INK.route}>{`••••${view.key.tail}`}</Text>
+              <Text color={INK.dim}>{text("ui.setup.keyInUse", view.locale, { source: text(`source.${view.key.source}` as LocaleKey, view.locale) })}</Text>
+            </Text>
+          ) : (
+            <Text color={INK.pass} wrap="truncate">{text("ui.setup.noKeyYet", view.locale, { env: info.keyEnv })}</Text>
+          )}
+          <Input
+            key="api-key"
+            value={typed}
+            placeholder={text(saved ? "ui.setup.keyPlaceholder" : "ui.setup.keyPlaceholderEmpty", view.locale)}
+            submitLabel={text("ui.setup.testSave", view.locale)}
+            onInput={(value) => act.typeKey(value)}
+            onSubmit={(value) => act.submitKey(value)}
+          />
+          <Text color={INK.faint} wrap="wrap">{text("ui.setup.maskedHelp", view.locale)}</Text>
+        </Box>,
+      ),
+      step(
+        els,
+        3,
+        text("ui.setup.connection", view.locale),
+        connected,
+        <Box flexDirection="column">
+          <Box flexDirection="row" columnGap={2} flexWrap="wrap">
+            <Button key="validate" label={`${text(typed ? "ui.setup.testSave" : "ui.setup.testConnection", view.locale)} (v)`} hotkey="v" onPress={() => act.validate()} />
+            {saved && view.key.source === "plugin" ? <Button key="forget" label={`${text("ui.setup.removeKey", view.locale)} (f)`} hotkey="f" onPress={() => act.forgetKey()} /> : null}
+          </Box>
+          {message ? (
+            <Text bold color={view.setup.busy ? INK.dim : view.setup.isOk ? INK.route : INK.fail} wrap="truncate">
+              {`${view.setup.busy ? "◌" : view.setup.isOk ? GLYPH.on : GLYPH.fail} ${message}`}
+            </Text>
+          ) : null}
+        </Box>,
+      ),
+      <Box marginTop={1}>
+        <Text color={INK.pass} wrap="wrap">{text("ui.setup.privacy", view.locale)}</Text>
+      </Box>,
+    ],
+    { width: view.width, ...(connected ? { rule: INK.route } : {}) },
+  );
+}
+
+/**
+ * The AI screen: everything that changes which model runs, how it runs or what is sent to it. Jev's switch and
+ * provider, the features and preferences that reach the model, then orchestration.
+ */
+function aiView(els: Els, view: View, act: Actions) {
+  const { Box, Text } = els;
+  return (
+    <Box flexDirection="column" rowGap={1}>
+      <Box flexDirection="column">
+        <Text color={INK.dim} wrap="wrap">{text("ui.setup.intro", view.locale)}</Text>
+        {!view.routing ? <Text color={INK.pass} wrap="wrap">{text("ui.configuration.routingOff", view.locale)}</Text> : null}
+        <Box flexDirection="row">{routingButton(els, view, act)}</Box>
+      </Box>
+      {providerCard(els, view, act)}
+      {featurePanel(els, view, act, true)}
       {view.orchestration ? orchestrationCard(els, view, view.orchestration, act) : null}
     </Box>
   );
@@ -1088,7 +1138,7 @@ function roleRows(els: Els, view: View, policy: OrchestrationPolicy, role: Role,
   );
 }
 
-/** The Configuration tab's orchestration card: roles, switches, limits, the live objective and batches. */
+/** The AI tab's orchestration card: roles, switches, limits, the live objective and batches. */
 function orchestrationCard(els: Els, view: View, orch: OrchestrationView, act: Actions) {
   const { Box, Text, Button, Select, Input } = els;
   const locale = view.locale;
@@ -1939,6 +1989,8 @@ function tabBody(els: Els, view: View, act: Actions, rows: number) {
                 ? featuresView(els, view, act)
               : view.tab === "configuration"
                 ? configurationView(els, view, act)
+              : view.tab === "ai"
+                ? aiView(els, view, act)
                 : view.tab === "deck"
                   ? deckView(els, view, act)
                   : overview(els, view, act);

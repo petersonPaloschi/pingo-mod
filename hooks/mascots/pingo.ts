@@ -1,8 +1,7 @@
-// Pingo, Jev's mascot: a sphere of dots with two eyes, drawn from one small 3D scene. The terminal
-// gets it as braille (each cell a 2×4 grid of dots), the desktop app as SVG circles. The body is ink;
-// only the eyes, the orbit ring and a few sparks take the mood's color.
-import { brailleBit, brailleChar, DEPTH, DOT, hex, noise } from "../dots.ts";
-import type { BrailleCell } from "../dots.ts";
+// Pingo, Jev's mascot: a sphere of dots with two eyes, drawn from one small 3D scene. The Deck's pet
+// (deck/pet.ts) draws it in braille on the terminal and takes its SVG circles on the desktop. The body is
+// ink; only the eyes, the orbit ring and a few sparks take the mood's color.
+import { DEPTH, DOT, hex, noise } from "../dots.ts";
 
 export type Mood = "routing" | "thinking" | "passthrough" | "failing" | "idle" | "baseline";
 type Eyes = "happy" | "spinner" | "pill" | "x" | "line" | "closed";
@@ -57,14 +56,11 @@ function eyeGrid(step: number): [number, number][] {
   return grid;
 }
 
-/**
- * Whether a point of the face (fx, fy on the front of the sphere) is part of an eye. `scale` enlarges each eye
- * around its own center: a small sphere needs bigger eyes to be read, and a scale of 1 is the shapes as drawn.
- */
-export function eyeAt(eyes: Eyes, fx: number, fy: number, t: number, lookX = 0, open = 1, scale = 1): boolean {
+/** Whether a point of the face (fx, fy on the front of the sphere) is part of an eye. */
+export function eyeAt(eyes: Eyes, fx: number, fy: number, t: number, lookX = 0, open = 1): boolean {
   for (const side of [-1, 1]) {
-    const dx = (fx - (side * 0.3 + lookX)) / scale;
-    const dy = (fy - 0.1) / scale;
+    const dx = fx - (side * 0.3 + lookX);
+    const dy = fy - 0.1;
     if (Math.abs(dx) > 0.18 || Math.abs(dy) > 0.25) continue;
     switch (eyes) {
       case "pill": {
@@ -174,103 +170,6 @@ function bodyColor(mood: Mood, dot: Dot, t: number): number {
 /** A 4x4 ordered-dither matrix: a dot is lit where the shading beats its entry, so the same shade is always the same pattern. */
 const BAYER = [0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5];
 export const bayer = (x: number, y: number) => (BAYER[(y & 3) * 4 + (x & 3)]! + 0.5) / 16;
-/** Braille eyes are enlarged: at a few cells across, the desktop's eye shapes are a single dot. */
-const BRAILLE_EYE_SCALE = 1.5;
-const BRAILLE_FRAME_CACHE_LIMIT = 24;
-const brailleFrames = new Map<string, { tick: number; frame: BrailleCell[][] }>();
-
-/**
- * Pingo in braille, `columns` × `rows` cells: a halftone sphere drawn dot by dot, so its face reads at this size.
- * The eyes are the continuous shapes `eyeAt` cuts from the front of the sphere, and the body is dithered under a
- * light that turns with the sphere's slow spin. Every dot is a pure function of (mood, t, size).
- */
-export function brailleFrame(mood: Mood, t: number, columns: number, rows: number): BrailleCell[][] {
-  const tick = Math.floor(t * 10);
-  const time = tick / 10;
-  const key = `${mood}|${columns}|${rows}`;
-  const kept = brailleFrames.get(key);
-  if (kept?.tick === tick) return kept.frame;
-  if (kept !== undefined) brailleFrames.delete(key);
-
-  const width = columns * 2;
-  const height = rows * 4;
-  const bits = new Uint8Array(columns * rows);
-  const color = new Array<number>(columns * rows).fill(DEPTH[0]);
-  const rank = new Array<number>(columns * rows).fill(-Infinity);
-  const put = (x: number, y: number, shade: number, weight: number) => {
-    if (x < 0 || y < 0 || x >= width || y >= height) return;
-    const cell = (y >> 2) * columns + (x >> 1);
-    bits[cell]! |= brailleBit(x, y);
-    if (weight >= rank[cell]!) {
-      rank[cell] = weight;
-      color[cell] = shade;
-    }
-  };
-
-  const { eyes } = MOODS[mood];
-  const sleepy = mood === "idle" || mood === "baseline";
-  const spin = time * 0.12 * (sleepy ? 0.35 : mood === "thinking" ? 1.6 : 1);
-  const lookX = mood === "passthrough" ? 0.07 : 0;
-  const blink = (time * 0.9) % 4.2;
-  const open = eyes === "pill" && blink < 0.14 ? Math.abs(blink - 0.07) / 0.07 : 1;
-  const dim = mood === "baseline" ? 1 : 0;
-  // the whole sphere fits the grid with a dot to spare, and breathes a little
-  const radius = (Math.min(width, height - 2) / 2) * (1 + Math.sin(time * (sleepy ? 1.2 : 2.2)) * 0.015);
-  const shake = mood === "failing" && tick % 2 === 1 ? 1 : 0;
-  const cx = width / 2 + shake;
-  const cy = height / 2;
-  const accent = MOODS[mood].color;
-
-  const eyeDots: [number, number][] = [];
-  for (let y = 0; y < height; y++) {
-    for (let x = 0; x < width; x++) {
-      const u = (x + 0.5 - cx) / radius;
-      const v = (cy - (y + 0.5)) / radius;
-      const d2 = u * u + v * v;
-      if (d2 > 1) continue;
-      const nz = Math.sqrt(1 - d2);
-      if (nz > 0.2 && eyeAt(eyes, u, v, time, lookX, open, BRAILLE_EYE_SCALE)) {
-        eyeDots.push([x, y]);
-        continue;
-      }
-      // an outline of dots holds the edge; inside, a dither under the light, turned with the spin
-      const edge = (1 - Math.sqrt(d2)) * radius < 0.9;
-      const turned = u * Math.cos(spin) + nz * Math.sin(spin);
-      const lit = Math.max(0, -0.45 * turned - 0.55 * v + 0.7 * nz);
-      if (!edge && 0.3 + 0.7 * lit <= bayer(x, y)) continue;
-      const depth = Math.max(0, Math.min(DEPTH.length - 1, Math.floor(nz * DEPTH.length) - dim));
-      put(x, y, DEPTH[depth]!, nz);
-    }
-  }
-  // An eye's cells lose the body dots in them, so the eye keeps its shape and color and is not a blob.
-  for (const [x, y] of eyeDots) {
-    if (x < 0 || y < 0 || x >= width || y >= height) continue;
-    const cell = (y >> 2) * columns + (x >> 1);
-    bits[cell] = 0;
-    rank[cell] = -Infinity;
-  }
-  for (const [x, y] of eyeDots) put(x, y, accent, 2);
-
-  if (mood === "thinking") {
-    // the ring of the spinner's orbit, drawn only where it passes in front of the sphere
-    for (let i = 0; i < 64; i++) {
-      const a = (i / 64) * Math.PI * 2 + time * 1.4;
-      if (Math.sin(a) < -0.25) continue;
-      put(Math.floor(cx + Math.cos(a) * 1.42 * radius), Math.floor(cy - (Math.sin(a) * 0.21 - 0.05) * radius), accent, 0.5);
-    }
-  }
-
-  const frame = Array.from({ length: rows }, (_, r) =>
-    Array.from({ length: columns }, (_, c): BrailleCell => [brailleChar(bits[r * columns + c]!), color[r * columns + c]!]),
-  );
-  if (brailleFrames.size >= BRAILLE_FRAME_CACHE_LIMIT) brailleFrames.delete(brailleFrames.keys().next().value!);
-  brailleFrames.set(key, { tick, frame });
-  return frame;
-}
-
-/** The braille frame as plain lines, for logs and tests. */
-export const brailleText = (frame: BrailleCell[][]) => frame.map((row) => row.map(([char]) => char).join("")).join("\n");
-
 /** A still frame is a pure function of its inputs, so the last few are kept: a redraw inside the same frame costs nothing. */
 const svgFrames = new Map<string, string>();
 const SVG_FRAMES = 48;
@@ -294,57 +193,14 @@ export function pingoSvg(mood: Mood, t: number, size = 96, small = false): strin
 }
 
 /** One dot of the sphere as an SVG circle: its size and shade follow its depth, and its eyes and orbit take the mood's color. */
-function circleOf(mood: Mood, dot: Dot, t: number, small: boolean, style = ""): string {
+function circleOf(mood: Mood, dot: Dot, t: number, small: boolean): string {
   const depth = (dot.z + 1) / 2;
   const r = small
     ? dot.kind === "eye" ? SMALL.eye : dot.kind === "ring" ? 1.9 : SMALL.body + depth * 0.9
     : dot.kind === "eye" ? 1.9 : dot.kind === "ring" ? 1.3 : 0.5 + depth * 1.0;
   const fill = dot.kind === "body" ? bodyColor(mood, dot, t) : MOODS[mood].color;
   const opacity = dot.kind === "body" ? (small ? 0.3 + depth * depth * 0.7 : 0.15 + depth * depth * 0.85) : 1;
-  return `<circle cx="${(50 + dot.x * 34).toFixed(1)}" cy="${(50 - dot.y * 34).toFixed(1)}" r="${r.toFixed(2)}" fill="${hex(fill)}" fill-opacity="${opacity.toFixed(2)}"${style ? ` style="${style}"` : ""}/>`;
-}
-
-/** One lap of a thinking Pingo's orbit, in seconds: a highlight runs once around the ring per lap. */
-const ORBIT_S = 2.8;
-
-const LIVE_CSS =
-  "@keyframes pl-breathe{0%,100%{transform:scale(1)}50%{transform:scale(1.015)}}" +
-  "@keyframes pl-bob{0%,100%{transform:translateY(0)}50%{transform:translateY(-1.5px)}}" +
-  "@keyframes pl-blink{0%,93%,100%{transform:scaleY(1)}96%{transform:scaleY(.12)}}" +
-  `@keyframes pl-chase{0%,100%{opacity:1}30%{opacity:.25}}` +
-  "@keyframes pl-shake{0%,100%{transform:translateX(0)}25%{transform:translateX(-.6px)}75%{transform:translateX(.6px)}}" +
-  "@media (prefers-reduced-motion:reduce){.pl-live *{animation:none!important}}";
-const liveSvgs = new Map<string, string>();
-
-/**
- * Pingo for the desktop dashboard: one still sphere per mood and size, the same bytes on every redraw, so the app
- * keeps the animation it started. The sphere breathes and bobs, a pill-eyed mood blinks and a failing one shakes;
- * a thinking one's orbit is a fixed ellipse with a highlight running around it. All of it is CSS, and nothing here
- * is timed by the plugin.
- */
-export function pingoLiveSvg(mood: Mood, size = 96): string {
-  const key = `${mood}|${size}`;
-  const kept = liveSvgs.get(key);
-  if (kept !== undefined) return kept;
-  const dots = scene(mood, 0, 900);
-  const of = (kind: Kind) => dots.filter((dot) => dot.kind === kind).map((dot) => circleOf(mood, dot, 0, false)).join("");
-  const eyes = of("eye");
-  const blink = MOODS[mood].eyes === "pill";
-  const face = `${of("body")}${blink ? `<g style="transform-box:fill-box;transform-origin:center;animation:pl-blink 4.7s ease-in-out infinite">${eyes}</g>` : eyes}`;
-  const bob = `<g style="animation:pl-bob 2.4s ease-in-out infinite">${face}</g>`;
-  const breathe = `<g style="transform-box:view-box;transform-origin:50px 50px;animation:pl-breathe 2.4s ease-in-out infinite">${bob}</g>`;
-  const shaking = mood === "failing" ? `<g style="animation:pl-shake .3s ease-in-out infinite">${breathe}</g>` : breathe;
-  // The orbit stays where it is: its back half is drawn behind the sphere, its front half over it, and each dot
-  // fades on a delay set by its place on the ring, so the highlight travels round the ellipse.
-  const ring = dots.filter((dot) => dot.kind === "ring");
-  const orbit = (part: Dot[]) =>
-    part.map((dot) => circleOf(mood, dot, 0, false, `animation:pl-chase ${ORBIT_S}s linear infinite;animation-delay:${((dot.phase - 1) * ORBIT_S).toFixed(3)}s`)).join("");
-  const svg =
-    `<svg xmlns="http://www.w3.org/2000/svg" class="pl-live" width="${size}" height="${size}" viewBox="0 0 100 100">` +
-    `<style>${LIVE_CSS}</style>${orbit(ring.filter((dot) => dot.z < 0))}${shaking}${orbit(ring.filter((dot) => dot.z >= 0))}</svg>`;
-  if (liveSvgs.size >= SVG_FRAMES) liveSvgs.delete(liveSvgs.keys().next().value!);
-  liveSvgs.set(key, svg);
-  return svg;
+  return `<circle cx="${(50 + dot.x * 34).toFixed(1)}" cy="${(50 - dot.y * 34).toFixed(1)}" r="${r.toFixed(2)}" fill="${hex(fill)}" fill-opacity="${opacity.toFixed(2)}"/>`;
 }
 
 /** The small sphere's dots: how many on the whole sphere, how far apart an eye's dots are, and the radii (viewBox units). */

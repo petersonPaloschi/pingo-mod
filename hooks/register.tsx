@@ -9,6 +9,7 @@ import type { ElementTable, EngineInterface, PromptComposeInput, PromptSubmitInp
 import type { AdvisorInfo, AgentRun, FeatureFlags, FeaturePreferences, FarolAssumption, FarolRule, ClarezaGrade, SementeIdea, LapidaPhase, PrismaPicker, PrismaQuestion, PrismaOption, SentinelaSession, VigiaSession, VigiaTask, FeedEntry, PaneScroll, FeedKind, FeedSpeaker, FeedTone, JevTab, LiveNow, RouteEvent, SetupDraft, TraceState } from "../types";
 import { keyFor, keyOwner, providerBasis, resolveSettings, storedApplies, type ModOptions, type Settings, type StoredSettings } from "./config.ts";
 import { channelFile, channelReader, FOLLOW_SCRIPT } from "./core/channel.ts";
+import { compactContextSession, contextReductionRatio, resolveContextConfig, type ContextJevAsker, type ContextJevResponse, type ContextResult, type ContextSessionMessage, type ResolvedContextConfig } from "./core/compaction.ts";
 import { createAskJev, isProvider, observeAskJev, PROVIDERS, redact, resolveModel, validateKey, type AskJev, type JevEvent, type JevSent, type ProviderId, type Transport } from "./core/jev.ts";
 import type { ModelContext } from "./core/types.ts";
 import { featureGate, sizeRequest, totalInput, type FeatureContext } from "./core/runtime.ts";
@@ -180,6 +181,7 @@ const KEPT_AGENTS = 40;
 const AGENT_PANE = "jev-agent-";
 // Module state: lost on a reload, which is fine for each of these.
 let options: ModOptions = {};
+let contextCompacting = false;
 let settings: Settings | undefined;
 let sessionId = "";
 /** The session's full id: Deck keys what each session has counted by it. */
@@ -560,7 +562,7 @@ function jevReporter($: EngineInterface, locale: Locale, where: () => JevWhere):
       const at = where();
       const caller: JevCaller = { origin: at.origin, ...(at.trigger ? { trigger: at.trigger } : {}) };
       const card = jevAsked(event.sent, caller, locale);
-      const line = await log($, "jev", "jev", "info", card.text, undefined, { detail: card.detail, meta: text("feed.jev.asking", locale) });
+      const line = await log($, "jev", "call", "info", card.text, undefined, { detail: card.detail, meta: text("feed.jev.asking", locale) });
       let consult = "";
       await updateTrace($, (s) => {
         const [next, id] = consultStart(s, at, { origin: at.origin, model: event.sent.model, questions: event.sent.questions, startedAt: event.at });
@@ -609,6 +611,57 @@ function tracedAskJev($: EngineInterface, config: Settings, where: JevWhere): As
   return observeAskJev(createAskJev(config, transport($, config.locale)), jevReporter($, config.locale, () => where), () => $.clock.now());
 }
 
+/** Who makes one of the mod's model calls besides Jev's: a feature, or orchestration's advice and review. */
+type ModelCaller = "lapida" | "clareza" | "vigia" | "orchestration";
+type ModelReply = Awaited<ReturnType<EngineInterface["model"]["fork"]>>;
+
+/**
+ * Every model call of the mod's besides Jev's, through one path: the request goes out as given and its reply comes
+ * back as it came, while one line of the live log (kind "call", which Logs lists too) says who asked, which model,
+ * and how it went. The line is written alongside, so logging never delays the caller.
+ */
+function callModel<R extends ModelReply>($: EngineInterface, caller: ModelCaller, model: string | undefined, call: () => Promise<R>): Promise<R> {
+  const reply = call();
+  void reportCall($, caller, model, reply).catch(() => undefined);
+  return reply;
+}
+
+/** callModel's line of the live log: written as the call goes out, then told how it ended. */
+async function reportCall($: EngineInterface, caller: ModelCaller, model: string | undefined, reply: Promise<ModelReply>): Promise<void> {
+  const startedAt = await $.clock.now();
+  const locale = (await getSettings($)).locale;
+  const head = {
+    who: text(caller === "orchestration" ? "ui.orch.title" : `feature.${caller}.name`, locale),
+    model: model ? modelName(model) : text("feed.call.fork", locale),
+  };
+  const line = await log($, "mod", "call", "info", text("feed.call.asking", locale, head), undefined, { meta: text("feed.jev.asking", locale) });
+  const meta = async () => formatDuration((await $.clock.now()) - startedAt, locale);
+  let result: ModelReply;
+  try {
+    result = await reply;
+  } catch (error) {
+    await patch($, line, { text: text("feed.call.failed", locale, { ...head, why: short(error instanceof Error ? error.message : String(error), 160) }), tone: "bad", meta: await meta() });
+    return;
+  }
+  if (result.isAnswered) {
+    await patch($, line, {
+      text: text("feed.call.done", locale, head),
+      tone: "good",
+      meta: await meta(),
+      detail: text("feed.usage.tokens", locale, { input: formatCompact(result.usage.input_tokens, locale), output: formatCompact(result.usage.output_tokens, locale), cache: "" }),
+    });
+  } else if (result.reason === "nothing-to-fork") {
+    await patch($, line, { text: text("feed.call.nothingToFork", locale, head), tone: "muted", meta: await meta() });
+  } else {
+    const why = result.reason === "api-error" ? `${result.error}${result.status === null ? "" : ` ${result.status}`}` : result.reason;
+    await patch($, line, { text: text("feed.call.failed", locale, { ...head, why }), tone: "bad", meta: await meta() });
+  }
+}
+
+/** One completion through callModel, the request unchanged. */
+const completeModel = ($: EngineInterface, caller: ModelCaller, request: Parameters<EngineInterface["model"]["complete"]>[0]) =>
+  callModel($, caller, request.model, () => $.model.complete(request));
+
 // Orchestration borrows the engine calls it needs, the mod's settings, Jev gate and client, live
 // log and subagent bookkeeping; only this module may hold `$`, so each is lent as a function.
 function orchIo($: EngineInterface): orch.Io {
@@ -617,7 +670,7 @@ function orchIo($: EngineInterface): orch.Io {
     storeSet: (key, value) => $.store.set(key, value as never),
     storeDelete: (key) => $.store.delete(key),
     now: () => $.clock.now(),
-    complete: (request) => $.model.complete(request as never) as never,
+    complete: (request) => completeModel($, "orchestration", request as never) as never,
     spawn: (args) => $.agent.spawn(args) as never,
     agents: () => $.agent.list(),
     run: (argv, init) => $.process.run(argv, init),
@@ -1516,6 +1569,90 @@ function normalizeFeaturePreferences(value: unknown): FeaturePreferences {
   };
 }
 
+/** Routes context decisions through the same provider, timeout, and Jev log as every other feature. */
+function contextAsker($: EngineInterface, config: Settings): ContextJevAsker {
+  const ask = tracedAskJev($, config, { origin: "context" });
+  return {
+    async ask(state, questions) {
+      const result = await ask({ model: config.jevModel, state: state as never, questions: questions as never });
+      return {
+        model: result.model,
+        answers: result.answers as unknown as ContextJevResponse["answers"],
+        usage: result.usage,
+        ...(result.dropped ? { dropped: result.dropped } : {}),
+        ...(result.raw ? { raw: result.raw } : {}),
+      };
+    },
+  };
+}
+
+function contextPercent(ratio: number): string {
+  return `${Math.round(ratio * 100)}%`;
+}
+
+function contextDecisionLog(result: ContextResult): string {
+  return result.decisions
+    .filter((decision) => decision.reason !== "pinned")
+    .map((decision) => `${decision.id}:${decision.tool}:${decision.action}/call=${decision.keepCall.toFixed(2)}/result=${decision.keepResult.toFixed(2)}`)
+    .join(" ");
+}
+
+function contextDecisionLogLines(result: ContextResult, locale: Settings["locale"], maxChars = 4096): string[] {
+  const label = text("feature.contexto.decisions", locale);
+  const entries = contextDecisionLog(result).split(" ").filter(Boolean);
+  if (entries.length === 0) return [`${label}: ${text("feature.contexto.noDecisions", locale)}`];
+  const chunks: string[] = [];
+  let current = "";
+  for (const entry of entries) {
+    const next = current ? `${current} ${entry}` : entry;
+    if (current && next.length > maxChars - 24) {
+      chunks.push(current);
+      current = entry;
+    } else current = next;
+  }
+  chunks.push(current);
+  return chunks.map((chunk, index) => chunks.length === 1 ? `${label}: ${chunk}` : `${label} (${index + 1}/${chunks.length}): ${chunk}`);
+}
+
+function contextSummary(result: ContextResult, locale: Settings["locale"]): string {
+  const { stats } = result;
+  const details = [
+    stats.kept > 0 ? text("feature.contexto.summary.kept", locale, { count: formatNumber(stats.kept, locale) }) : "",
+    stats.resultsDropped > 0 ? text("feature.contexto.summary.results", locale, { count: formatNumber(stats.resultsDropped, locale) }) : "",
+    stats.callsDropped > 0 ? text("feature.contexto.summary.calls", locale, { count: formatNumber(stats.callsDropped, locale) }) : "",
+    stats.pinned > 0 ? text("feature.contexto.summary.pinned", locale, { count: formatNumber(stats.pinned, locale) }) : "",
+  ].filter(Boolean);
+  return text("feature.contexto.summary", locale, {
+    reduction: contextPercent(contextReductionRatio(result)),
+    decisions: details.join(" · ") || text("feature.contexto.summary.noCalls", locale),
+    tokens: formatCompact(stats.stateTokens, locale),
+    stage: stats.stateStage || text("feature.contexto.summary.noState", locale),
+    requests: formatNumber(stats.requests, locale),
+  });
+}
+
+async function notifyContext($: EngineInterface, message: string, tone: "good" | "warn"): Promise<void> {
+  await log($, "mod", "feature", tone, message);
+  $.ui.toast(message, { timeoutMs: 15_000 });
+}
+
+async function compactContextAfterTurn($: EngineInterface, config: ResolvedContextConfig): Promise<void> {
+  if (contextCompacting) return;
+  try {
+    if (!(await featureEnabled($, "contexto"))) return;
+    const { context } = await $.session.usage();
+    if ((context.percent ?? 0) < config.compactAtPercent) return;
+    contextCompacting = true;
+    await $.session.compact();
+  } catch (error) {
+    const locale = (await getSettings($)).locale;
+    const reason = short(error instanceof Error ? error.message : String(error), 160);
+    await notifyContext($, text("feature.contexto.autoSkipped", locale, { reason }), "warn");
+  } finally {
+    contextCompacting = false;
+  }
+}
+
 const farolRulesKey = async ($: EngineInterface) => `farol:rules:${await $.session.root()}`;
 async function readFarolRules($: EngineInterface): Promise<FarolRule[]> {
   const value = await $.store.get(await farolRulesKey($));
@@ -1666,7 +1803,7 @@ function parseClarezaReview(raw: string) {
 async function reviewClareza($: EngineInterface, ask: string, answer: string, wasRewrite: boolean) {
   const prefs = await readFeaturePreferences($);
   const known = await readClarezaTerms($);
-  const result = await $.model.complete({ model: "haiku", system: CLAREZA_REVIEW_SYSTEM, prompt: `Reader level: ${prefs.plainLevel}. Known terms: ${known.join(", ") || "none"}.\nUser request:\n<request>${ask || "(none)"}</request>\nFinal answer:\n<answer>${answer}</answer>`, maxTokens: 300, timeoutMs: 15000 });
+  const result = await completeModel($, "clareza", { model: "haiku", system: CLAREZA_REVIEW_SYSTEM, prompt: `Reader level: ${prefs.plainLevel}. Known terms: ${known.join(", ") || "none"}.\nUser request:\n<request>${ask || "(none)"}</request>\nFinal answer:\n<answer>${answer}</answer>`, maxTokens: 300, timeoutMs: 15000 });
   const review = result.isAnswered ? parseClarezaReview(result.text) : null;
   if (!review) { await update($, clarezaStatus, () => "Answer review unavailable"); return; }
   await update($, clarezaStatus, () => review.status);
@@ -1754,8 +1891,8 @@ async function enhanceLapida($: EngineInterface, draft: string) {
     ? `Reescreva o rascunho de um desenvolvedor em um pedido claro e específico para o Claude Code. Preserve a intenção, use arquivos e convenções do projeto, declare objetivo, escopo, limites e conclusão, e pergunte se houver ambiguidade real. Independentemente do idioma do rascunho, escreva o prompt final inteiro em português brasileiro. Retorne apenas o prompt, uma linha contendo ${marker}, e 1 a 3 tópicos curtos em português sobre o que acrescentou.`
     : `Rewrite a developer's rough draft into a clear, specific prompt for Claude Code. Preserve intent, use relevant project files and conventions, state goal, scope, constraints, and done criteria, and ask if something is genuinely ambiguous. Regardless of the draft's language, write the final prompt entirely in English. Return only the rewrite, a line containing ${marker}, and 1-3 short bullets in English on what you added.`;
   const prompt = `${instructions}${taste ? `\n\n${taste}` : ""}\n\n<rough_prompt>\n${draft}\n</rough_prompt>`;
-  let result = await $.model.fork({ prompt });
-  if (!result.isAnswered && result.reason === "nothing-to-fork") result = await $.model.complete({ model: await $.session.model(), system: await lapidaProjectContext($), prompt, maxTokens: 2048, timeoutMs: 60000 });
+  let result = await callModel($, "lapida", undefined, () => $.model.fork({ prompt }));
+  if (!result.isAnswered && result.reason === "nothing-to-fork") result = await completeModel($, "lapida", { model: await $.session.model(), system: await lapidaProjectContext($), prompt, maxTokens: 2048, timeoutMs: 60000 });
   const reply = result.isAnswered ? splitLapidaReply(result.text) : { text: "", notes: [] as string[] };
   if (!result.isAnswered || !reply.text) { await update($, lapidaPhase, () => "error"); await update($, lapidaNote, () => `Lapida failed: ${result.isAnswered ? "empty reply" : result.reason}`); return; }
   const filled = await $.prompt.fill({ text: reply.text, mode: "replace" });
@@ -2171,7 +2308,7 @@ async function summarizeVigia($: EngineInterface, answer: string) {
   if (!(await readFeaturePreferences($)).trackerSummary || !(await featureEnabled($, "vigia"))) return;
   const own = await ensureVigia($);
   const prompt = ["Summarize where this coding session stands for a teammate.", "Reply with exactly four lines, no markdown:", "TITLE: <2-5 word name for the work>", "DONE: <what is done, under 100 chars>", "DOING: <what is in progress or waiting, under 100 chars>", "NEXT: <concrete next step, under 100 chars>", `Previous: ${own.title ?? "-"} | ${own.done ?? "-"} | ${own.doing ?? "-"} | ${own.next ?? "-"}`, `Tasks: ${own.tasks.map((task) => `[${task.status}] ${task.text}`).join("; ") || "none"}`, `Files: ${(own.files ?? []).join(", ") || "none"}`, `Latest prompt: ${own.lastPrompt ?? "-"}`, `Latest answer:\n${answer.slice(-6000)}`].join("\n");
-  const result = await $.model.complete({ model: "haiku", prompt, maxTokens: 300, timeoutMs: 30000 });
+  const result = await completeModel($, "vigia", { model: "haiku", prompt, maxTokens: 300, timeoutMs: 30000 });
   if (!result.isAnswered) return;
   const pick = (label: string) => result.text.match(new RegExp(`^\\s*${label}:\\s*(.+)$`, "mi"))?.[1]?.trim();
   await saveVigia($, (record) => { record.title = pick("TITLE") ?? record.title; record.done = pick("DONE") ?? record.done; record.doing = pick("DOING") ?? record.doing; record.next = pick("NEXT") ?? record.next; });
@@ -2225,6 +2362,7 @@ export function normalizeTab(value: unknown): JevTab {
     case "configuration":
     case "deck":
     case "features":
+    case "ai":
       return value;
     case "flow":
       return "live";
@@ -2233,7 +2371,7 @@ export function normalizeTab(value: unknown): JevTab {
     case "log":
       return "logs";
     case "setup":
-      return "configuration";
+      return "ai";
     default:
       return "overview";
   }
@@ -2584,7 +2722,7 @@ async function view($: EngineInterface, width: number, rows: number, surface: st
     meta: text("ui.meta", config.locale, { provider: PROVIDERS[config.provider].label, model: config.jevModel, confidence: formatNumber(config.minConfidence, config.locale, 2), source: text(`source.${config.keySource}`, config.locale) }),
     key: { source: config.keySource, tail: config.apiKey ? config.apiKey.slice(-4) : "", provider: config.provider },
     deck: null,
-    ...(normalized === "configuration" ? { orchestration: await orchestrationView($) } : {}),
+    ...(normalized === "ai" ? { orchestration: await orchestrationView($) } : {}),
   };
 }
 
@@ -2597,6 +2735,17 @@ function actor(agentId: string | undefined): Speaker {
 
 export const register: Register = (on, given) => {
   options = given as ModOptions;
+  contextCompacting = false;
+  const contextConfig = resolveContextConfig({
+    goal: options.context_goal,
+    compactAtPercent: options.context_compact_at_percent,
+    minReductionRatio: options.context_min_reduction_ratio,
+    keepThreshold: options.context_keep_threshold,
+    preserveRecentMessages: options.context_preserve_recent_messages,
+    maxStateTokens: options.context_max_state_tokens,
+    maxRequestTokens: options.context_max_request_tokens,
+    truncateHeadChars: options.context_truncate_head_chars,
+  });
   mainModel = undefined;
   settings = undefined;
   draftKey = "";
@@ -2857,6 +3006,7 @@ export const register: Register = (on, given) => {
       else agentRuns.delete(id);
       const running = [...agentRuns.values()].filter((run) => !run.teammate || run.awake).length;
       await setLive($, { activity: running ? text("feed.activity.agentCount", locale, { count: formatNumber(running, locale), unit: text(running === 1 ? "unit.agent" : "unit.agents", locale) }) : text("feed.activity.waiting", locale) });
+      await compactContextAfterTurn($, contextConfig);
       return next(e);
     }
     const state = e.isAborted ? "aborted" : e.reason === "error" ? "failed" : e.reason === "refusal" ? "refused" : "completed";
@@ -2873,6 +3023,7 @@ export const register: Register = (on, given) => {
     await clarezaTurnCompleted($, e);
     await sementeTurnCompleted($, e);
     await vigiaTurnCompleted($, e);
+    await compactContextAfterTurn($, contextConfig);
     return next(e);
   });
 
@@ -3208,12 +3359,13 @@ export const register: Register = (on, given) => {
   on("command.run", { command: "sentinela" }, async ($) => { await toggleSentinela($); return {}; });
   on("command.run", { command: "vigia" }, async ($) => { await refreshVigia($); await $.ui.open({ id: "vigia", title: "Vigia", focus: true, closeOnEscape: true }); return {}; });
 
-  on("tool.call", { tool: "mcp__jev__farol_assumption" }, async ($, e) => {
+  on("tool.call", { tool: "mcp__jev__farol_assumption" as never }, async ($, e) => {
     const pt = (await getSettings($)).locale === "pt";
     if (!(await featureEnabled($, "farol"))) return { deny: pt ? "Farol está desligado na Configuração do Jev." : "Farol is disabled in Jev Configuration." };
-    const assumption = typeof e.assumption === "string" ? e.assumption.trim() : "";
+    const input = e as unknown as { assumption?: unknown; context?: unknown };
+    const assumption = typeof input.assumption === "string" ? input.assumption.trim() : "";
     if (!assumption) return { deny: "assumption is required" };
-    const context = typeof e.context === "string" && e.context.trim() ? e.context.trim() : undefined;
+    const context = typeof input.context === "string" && input.context.trim() ? input.context.trim() : undefined;
     let id = 0;
     await update($, farolSeq, (value) => (id = value + 1));
     const item: FarolAssumption = { id, text: assumption, ...(context ? { context } : {}), verdict: "open", sent: false };
@@ -3235,10 +3387,11 @@ export const register: Register = (on, given) => {
     return { text: await orch.batchSkillPrompt(orchIo($), result.text).catch(() => result.text) };
   }).catch((_$, e, next) => next(e));
 
-  on("tool.call", { tool: "mcp__jev__semente_shelve" }, async ($, e) => {
+  on("tool.call", { tool: "mcp__jev__semente_shelve" as never }, async ($, e) => {
     const pt = (await getSettings($)).locale === "pt";
     if (!(await featureEnabled($, "semente"))) return { deny: pt ? "Semente está desligada na Configuração do Jev." : "Semente is disabled in Jev Configuration." };
-    const value = typeof e.text === "string" ? e.text.trim() : "";
+    const input = e as unknown as { text?: unknown };
+    const value = typeof input.text === "string" ? input.text.trim() : "";
     if (!value) return { deny: "Semente needs a non-empty idea." };
     const id = await addSemente($, value, "claude");
     sementeShelvedThisTurn.add(id);
@@ -3338,7 +3491,9 @@ export const register: Register = (on, given) => {
       reasons: "logs",
       logs: "logs",
       log: "logs",
-      setup: "configuration",
+      setup: "ai",
+      ai: "ai",
+      ia: "ai",
     };
     if (verb === "agents" && arg === "clear") {
       const removed = await removeRuns($, () => true);
@@ -3385,7 +3540,7 @@ export const register: Register = (on, given) => {
       // Raw arguments: agent type names keep their case.
       const line = e.args.trim().split(/\s+/).slice(1).join(" ");
       if (!line) {
-        await openPane($, "configuration");
+        await openPane($, "ai");
         return {};
       }
       return { text: await runOrchestration($, line) };
@@ -3722,4 +3877,34 @@ export const register: Register = (on, given) => {
     below = await vigiaAbove($, e, below);
     return <Box flexDirection="column">{below}</Box>;
   });
+
+  on("session.compact", async ($, e, next) => {
+    if (!(await featureEnabled($, "contexto"))) return next(e);
+    const config = await getSettings($);
+    try {
+      if (!config.apiKey) throw new Error("Jev provider key is not configured");
+      const input = e.messages as unknown as readonly ContextSessionMessage[];
+      const { result, messages } = await compactContextSession(input, contextAsker($, config), contextConfig);
+      for (const line of contextDecisionLogLines(result, config.locale)) await log($, "mod", "feature", "info", line);
+      const summary = contextSummary(result, config.locale);
+      if (contextReductionRatio(result) < contextConfig.minReductionRatio) {
+        await notifyContext($, text("feature.contexto.fallback.small", config.locale, {
+          minimum: contextPercent(contextConfig.minReductionRatio),
+          summary,
+        }), "warn");
+        return next(e);
+      }
+      await notifyContext($, text("feature.contexto.applied", config.locale, {
+        after: formatNumber(messages.length, config.locale),
+        before: formatNumber(e.messages.length, config.locale),
+        summary,
+      }), "good");
+      return { messages: messages as unknown as typeof e.messages };
+    } catch (error) {
+      const reason = short(error instanceof Error ? error.message : String(error), 160);
+      await notifyContext($, text("feature.contexto.fallback.error", config.locale, { reason }), "warn");
+      return next(e);
+    }
+  });
+
 };

@@ -2,7 +2,7 @@
 
 **Execution diagnostics and semantic search for Claude Code, powered by Jev.**
 
-Pingo shows observable activity, task durations, models and effort actually used, tools, workers, errors, and reported token usage. The `sift` skill asks [TypeSafe's Jev](https://typesafe.ai/) structured semantic questions over bounded candidates. Optional native-subagent planning chooses model and effort when Claude starts an eligible agent.
+Pingo shows observable activity, task durations, models and effort actually used, tools, workers, errors, and reported token usage. The `sift` skill asks [TypeSafe's Jev](https://typesafe.ai/) structured semantic questions over bounded candidates. Optional native-subagent planning chooses model and effort when Claude starts an eligible agent. The Context feature asks Jev to keep or trim older tool history when session usage reaches its configured threshold; Claude's normal summary remains the fallback when the reduction is small.
 
 The plugin identifier remains **`jev`**, commands start with **`/jev`**, and configuration uses **`JEV_*`** environment variables. Claude Code owns the main model, effort, tools, delegation, permissions, and completion. Main prompts and successful tool batches add no automatic Jev consultation.
 
@@ -16,9 +16,9 @@ cd pingo
 claude --plugin-dir .
 ```
 
-1. Run `/jev config` to configure and test your provider. Enter its key in the masked field; a refused key is not saved or used.
+1. Run `/jev setup` to configure and test your provider on the AI tab. Enter its key in the masked field; a refused key is not saved or used.
 2. Run `/jev status` to inspect the provider, credential source, and observed execution.
-3. Run `/jev` to open the dashboard. Enable `agents` in Configuration only when its planning overhead is appropriate.
+3. Run `/jev` to open the dashboard. Enable `agents` on the AI tab only when its planning overhead is appropriate.
 
 For later sessions, keep `--plugin-dir` or add an absolute directory to `~/.claude/settings.json`:
 
@@ -65,7 +65,8 @@ Task timing starts at prompt submission. Main-response and background-completion
 | `/jev agent <selector> remove` | Remove a finished run and close its pane. |
 | `/jev agents clear` | Remove finished runs; active workers stay. |
 | `/jev logs`, `/jev log`, `/jev reasons` | Open Logs. |
-| `/jev config`, `/jev setup [provider]`, `/jev features` | Open Configuration. |
+| `/jev config`, `/jev features` | Open Configuration (language and history). |
+| `/jev ai`, `/jev ia`, `/jev setup [provider]`, `/jev orch` | Open AI: Jev on/off, provider and key, the features that reach the model, orchestration. |
 | `/jev status` | Show settings and observed execution. |
 | `/jev routing on|off` | Enable/disable optional agent planning. |
 | `/jev feature agents on|off` | Toggle native-subagent planning. |
@@ -124,6 +125,16 @@ Configure in Configuration or `/plugin configure jev@inline`:
 | `locale` | `auto` | Interface language: `auto`, `en`, or `pt`. |
 | `routing_locale` | `en` | Jev question language; conversation content is preserved. |
 | `claude_models` | Built-in candidates | Explicit first-party IDs for agent planning, not account discovery. |
+| `context_goal` | Empty | Optional task goal; empty derives it from the last three user prompts. |
+| `context_compact_at_percent` | `60` | Context usage percentage that starts compaction. |
+| `context_min_reduction_ratio` | `0.25` | Minimum share of history characters removed before replacing Claude's summary. |
+| `context_keep_threshold` | `0.5` | Jev probability needed to keep a call or its full result. |
+| `context_preserve_recent_messages` | `6` | Newest messages left untouched by compaction. |
+| `context_max_state_tokens` | `25000` | Estimated ceiling for history sent with each Jev request. |
+| `context_max_request_tokens` | `30000` | Estimated ceiling for the state and questions in one Jev request. |
+| `context_truncate_head_chars` | `300` | Initial result characters kept when Jev says a result can be shortened. |
+
+Context compaction uses the same selected provider, credential, and Jev model as the rest of the plugin.
 
 Explicit `provider` precedes `JEV_PROVIDER`. With `auto`, environment detection follows the table order, else TypeSafe. A sensitive option without an issuer is treated as a TypeSafe key. A provider detected from its environment receives that key, never one paired with another provider.
 
@@ -133,7 +144,7 @@ The field is masked; saved-key display reveals only the last four characters. St
 
 ## Data handling
 
-Optional agent planning sends the selected provider the agent type, bounded description/prompt, and model/effort questions. Explicit Sift commands send judged content and criteria. Limits do not redact secrets inside normal content or stdin. Use these features only for content you may share.
+Context compaction sends fitted conversation text, the task goal, and abbreviated tool-call inputs to the selected Jev provider for keep/drop judgments; tool outputs are replaced with status and size notes. Optional agent planning sends the selected provider the agent type, bounded description/prompt, and model/effort questions. Explicit Sift commands send judged content and criteria. Limits do not redact secrets inside normal content or stdin. Use these features only for content you may share.
 
 Sift rejects credential-like filenames, binaries, files over 2 MB, lockfiles, and common build/dependency directories. Credential/size guards cover explicit items, state, spec, and labels files. Explicit filenames and stdin are deliberate inputs. Judgments are persisted only with `--save`.
 

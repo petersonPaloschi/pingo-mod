@@ -40,7 +40,7 @@ test("the terminal exposes overflowing content to the host's native pane scroll"
   mock.store(on);
   mock.env(on, {});
   const ui = await $.ui.mount({ plugin: "jev", surface: "terminal", component: "Pane", requestId: "jev", props: props(14) });
-  for (const tab of ["tab-deck", "tab-features", "tab-configuration"]) {
+  for (const tab of ["tab-deck", "tab-features", "tab-ai", "tab-configuration"]) {
     await ui.press({ key: tab });
     const root = (await ui.drawn()) as { props?: Record<string, unknown> };
     expect(root.props?.height).toBeUndefined();

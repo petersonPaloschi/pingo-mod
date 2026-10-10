@@ -72,7 +72,7 @@ for (const locale of ["en", "pt"] as const) {
     await $.turn.complete({ turnId: "t-main", answer: "Done.", durationMs: 3000, isAborted: false, reason: "answer", usage: { input_tokens: 900, output_tokens: 40 } } as never);
     for (const surface of ["terminal", "desktop"] as const) {
       const ui = await $.ui.mount({ plugin: "jev", surface, component: "Pane", requestId: "jev", props: PANE_PROPS });
-      for (const tab of ["tab-overview", "tab-live", "tab-models", "tab-agents", "tab-logs", "tab-configuration"]) {
+      for (const tab of ["tab-overview", "tab-live", "tab-models", "tab-agents", "tab-logs", "tab-configuration", "tab-ai"]) {
         await ui.press({ key: tab });
         expect(texts(await ui.drawn()).join("\n")).not.toMatch(RAW_KEY);
       }
@@ -154,7 +154,7 @@ test("persisted legacy tabs resolve to valid screens on both surfaces", () => {
     ["flow", "live", "Live"],
     ["features", "features", "Integrated features"],
     ["reasons", "logs", "Request log"],
-    ["setup", "configuration", "Provider and language"],
+    ["setup", "ai", "Jev provider"],
     ["log", "logs", "Request log"],
     ["deck", "deck", "Every /deck command as a control"],
     ["unknown", "overview", "No Claude requests or Jev calls in this range"],

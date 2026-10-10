@@ -13,6 +13,7 @@ export const DEFAULT_FEATURES: Features = {
   lapida: true,
   sentinela: true,
   vigia: true,
+  contexto: true,
 };
 
 export type Tier = "haiku" | "sonnet" | "opus";

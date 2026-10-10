@@ -34,7 +34,8 @@ test("every tab draws on the terminal and the desktop app", async ($, on) => {
       ["tab-models", /Current main model/],
       ["tab-agents", /No subagents/],
       ["tab-logs", /Request log/],
-      ["tab-configuration", /paste its key/],
+      ["tab-configuration", "History"],
+      ["tab-ai", /paste its key/],
       ["tab-deck", "Band above the prompt"],
     ] as const) {
       await ui.press({ key });
@@ -42,6 +43,65 @@ test("every tab draws on the terminal and the desktop app", async ($, on) => {
     }
     await ui.unmount();
   }
+});
+
+test("the AI tab holds every control that changes the model; no other tab keeps one", async ($, on) => {
+  mock.clock(on, { now: Date.parse("2026-10-06T12:00:00Z") });
+  mockEngineServices(on);
+  on("session.model", async () => ({ value: "claude-opus-5-5" }));
+  on("session.id", async () => ({ value: "session-ui-ai" }));
+  mock.store(on);
+  mock.env(on, {});
+  const ai = [
+    "routing", "provider", "api-key", "validate", "orch-enabled",
+    "feature-agents", "feature-clareza", "feature-lapida", "feature-farol", "feature-prisma", "feature-semente", "feature-vigia",
+    "assumption-scope", "plain-level", "plainReview", "design-surface", "ideaNudges", "promptLearning", "trackerSummary",
+  ];
+  const rest: Record<string, string[]> = {
+    "tab-configuration": ["language", "clear"],
+    "tab-features": ["feature-pingoVivo", "feature-sentinela", "plainSound", "pet-hat", "petShades", "monitor-interval", "clash-window"],
+  };
+  const ui = await $.ui.mount({ plugin: "jev", surface: "terminal", component: "Pane", requestId: "jev", props: PANE_PROPS });
+  await ui.press({ key: "tab-ai" });
+  for (const key of ai) expect(await ui.find({ key })).toBeDefined();
+  for (const keys of Object.values(rest)) for (const key of keys) expect(await ui.find({ key })).toBeUndefined();
+  // The AI tab's own buttons keep r, v and f; the features sharing those keys are toggled without one.
+  expect((await ui.find({ key: "routing" }))?.props.hotkey).toBe("r");
+  for (const key of ["feature-farol", "feature-prisma", "feature-vigia"]) expect((await ui.find({ key }))?.props.hotkey).toBeUndefined();
+  expect((await ui.find({ key: "feature-lapida" }))?.props.hotkey).toBe("l");
+  for (const tab of ["tab-overview", "tab-live", "tab-models", "tab-agents", "tab-logs", "tab-configuration", "tab-deck", "tab-features"]) {
+    await ui.press({ key: tab });
+    for (const key of ai) expect(await ui.find({ key })).toBeUndefined();
+    for (const key of rest[tab] ?? []) expect(await ui.find({ key })).toBeDefined();
+  }
+  await ui.unmount();
+});
+
+declare const setTimeout: (callback: () => void, ms: number) => unknown;
+
+test("Lapida's model calls show in Live and in Logs, as the same lines", async ($, on) => {
+  mock.clock(on, { now: Date.parse("2026-10-06T12:00:00Z") });
+  mockEngineServices(on);
+  on("session.model", async () => ({ value: "claude-opus-5-5" }));
+  on("session.id", async () => ({ value: "session-ui-lapida" }));
+  mock.store(on);
+  mock.env(on, {});
+  on("model.fork", async () => ({ value: { isAnswered: false, reason: "nothing-to-fork" } }) as never);
+  on("model.complete", async () => ({ value: { isAnswered: true, text: "Fix the loader.\n<<<CHANGES>>>\n- named the file", usage: { input_tokens: 40, output_tokens: 12 } } }) as never);
+  on("prompt.fill", async () => ({ isFilled: true }) as never);
+  on("fs.ancestors", async () => ({ value: [] }) as never);
+  on("command.list", async () => ({ value: [] }) as never);
+  await $.command.run({ command: "lapida", args: "fix loader", origin: { kind: "composer" }, presentation: { isFullscreen: true, columns: 160 } } as never);
+  const ui = await $.ui.mount({ plugin: "jev", surface: "terminal", component: "Pane", requestId: "jev", props: PANE_PROPS });
+  const lines = async () => (await ui.findAll({ type: "Text" })).map((line) => line.text ?? "").filter((line) => /^(✓ )?Lapida · /.test(line));
+  await ui.press({ key: "tab-live" });
+  for (let i = 0; i < 200 && !(await lines()).some((line) => line.startsWith("✓")); i++) await new Promise<void>((resolve) => setTimeout(() => resolve(), 5));
+  const live = await lines();
+  expect(live).toEqual(["Lapida · this conversation — no conversation to fork yet", "✓ Lapida · opus-5-5"]);
+  await ui.press({ key: "tab-logs" });
+  expect(await ui.find({ type: "Text", text: "AI calls" })).toBeDefined();
+  expect((await lines()).sort()).toEqual([...live].sort());
+  await ui.unmount();
 });
 
 test("the dashboard follows the configured Portuguese locale", { options: { locale: "pt" } }, async ($, on) => {
@@ -52,10 +112,10 @@ test("the dashboard follows the configured Portuguese locale", { options: { loca
   mock.store(on, { events: [EVENT] });
   mock.env(on, {});
   const ui = await $.ui.mount({ plugin: "jev", surface: "terminal", component: "Pane", requestId: "jev", props: PANE_PROPS });
-  await ui.press({ key: "tab-configuration" });
-  expect(await ui.find({ type: "Text", text: "Provedor e idioma" })).toBeDefined();
+  await ui.press({ key: "tab-ai" });
+  expect(await ui.find({ type: "Text", text: "Provedor do Jev" })).toBeDefined();
   await ui.press({ key: "tab-features" });
-  expect(await ui.find({ key: "feature-agents" })).toBeDefined();
+  expect(await ui.find({ key: "feature-pingoVivo" })).toBeDefined();
   await ui.press({ key: "tab-live" });
   expect(await ui.find({ type: "Text", text: /Nenhuma execução registrada ainda/ })).toBeDefined();
   await ui.press({ key: "tab-deck" });
@@ -95,10 +155,10 @@ test("the language can be changed from Jev Setup", async ($, on) => {
   await ui.press({ key: "tab-configuration" });
   await ui.select({ key: "language", value: "pt" });
   expect(store.locale).toBe("pt");
-  expect(await ui.find({ type: "Text", text: "Provedor e idioma" })).toBeDefined();
+  expect(await ui.find({ type: "Text", text: "Histórico" })).toBeDefined();
   await ui.press({ key: "tab-logs" });
   expect(await ui.find({ type: "Text", text: "Confiança baixa" })).toBeDefined();
-  for (const tab of ["tab-overview", "tab-live", "tab-models", "tab-agents", "tab-logs", "tab-configuration"]) {
+  for (const tab of ["tab-overview", "tab-live", "tab-models", "tab-agents", "tab-logs", "tab-configuration", "tab-ai"]) {
     await ui.press({ key: tab });
   }
   await ui.unmount();
@@ -205,6 +265,7 @@ test("the routing button pauses Jev consultation without opening a comparison", 
   mock.store(on);
   mock.env(on, {});
   const ui = await $.ui.mount({ plugin: "jev", surface: "terminal", component: "Pane", requestId: "jev", props: PANE_PROPS });
+  await ui.press({ key: "tab-ai" });
   await ui.press({ key: "routing" });
   expect((await ui.find({ key: "routing" }))?.props.label).toBe("Turn Jev on");
   await ui.press({ key: "tab-logs" });
@@ -224,10 +285,9 @@ test("saved routing and agent planning switch return after /clear", async ($, on
   await $.classic.SessionStart({ source: "clear" });
   const ui = await $.ui.mount({ plugin: "jev", surface: "terminal", component: "Pane", requestId: "jev", props: PANE_PROPS });
 
+  await ui.press({ key: "tab-ai" });
   expect((await ui.find({ key: "routing" }))?.props.label).toBe("Turn Jev on");
-  await ui.press({ key: "tab-configuration" });
   expect(await ui.find({ type: "Text", text: /Jev consultation is off/ })).toBeDefined();
-  await ui.press({ key: "tab-features" });
   expect((await ui.find({ key: "feature-agents" }))?.props.dimColor).toBe(true);
   await ui.unmount();
 });
@@ -238,7 +298,7 @@ test("setup does not call a provider without a key", async ($, on) => {
   mock.env(on, {});
   const fetches = successfulFetches(on);
   const ui = await $.ui.mount({ plugin: "jev", surface: "terminal", component: "Pane", requestId: "jev", props: PANE_PROPS });
-  await ui.press({ key: "tab-configuration" });
+  await ui.press({ key: "tab-ai" });
   expect(await ui.find({ type: "Text", text: /No key yet/ })).toBeDefined();
   await ui.press({ key: "validate" });
   expect(fetches.length).toBe(0);
@@ -269,7 +329,7 @@ test("a pasted key is shown masked, tested, saved in secure plugin storage and u
   configRows(on, written);
   const auth = successfulFetches(on);
   const ui = await $.ui.mount({ plugin: "jev", surface: "terminal", component: "Pane", requestId: "jev", props: PANE_PROPS });
-  await ui.press({ key: "tab-configuration" });
+  await ui.press({ key: "tab-ai" });
   await ui.input({ key: "api-key", kind: "change", text: "dummy-test-1234" });
   // The field holds only the mask; nothing in the tree carries the key.
   const drawn = JSON.stringify(await ui.drawn());
@@ -292,7 +352,7 @@ test("a refused key is neither saved nor used", async ($, on) => {
   configRows(on, written);
   on("http.fetch", async () => ({ value: { status: 401, ok: false, headers: {}, text: '{"error":"bad key"}' } }));
   const ui = await $.ui.mount({ plugin: "jev", surface: "terminal", component: "Pane", requestId: "jev", props: PANE_PROPS });
-  await ui.press({ key: "tab-configuration" });
+  await ui.press({ key: "tab-ai" });
   await ui.input({ key: "api-key", kind: "change", text: "sk-wrong-0000" });
   await ui.press({ key: "validate" });
   expect(written).toEqual([]);
@@ -309,7 +369,7 @@ test("a saved key can be replaced, and an unsupported removal keeps it in use", 
   configRows(on, written);
   on("http.fetch", async () => ({ value: { status: 200, ok: true, headers: {}, text: "{}" } }));
   const ui = await $.ui.mount({ plugin: "jev", surface: "terminal", component: "Pane", requestId: "jev", props: PANE_PROPS });
-  await ui.press({ key: "tab-configuration" });
+  await ui.press({ key: "tab-ai" });
   expect(await ui.find({ type: "Text", text: /••••aaaa/ })).toBeDefined();
   await ui.input({ key: "api-key", kind: "change", text: "new-key-bbbb" });
   await ui.press({ key: "validate" });
@@ -329,7 +389,7 @@ test("a restarted session uses the saved key without testing it again", { option
   mock.env(on, {});
   on("http.fetch", async () => { throw new Error("opening Setup must not revalidate a saved key"); });
   const ui = await $.ui.mount({ plugin: "jev", surface: "terminal", component: "Pane", requestId: "jev", props: PANE_PROPS });
-  await ui.press({ key: "tab-configuration" });
+  await ui.press({ key: "tab-ai" });
   expect(await ui.find({ type: "Text", text: /••••1234/ })).toBeDefined();
   const shown = await status($);
   expect(shown).toContain("Provider: OpenRouter");
@@ -349,7 +409,7 @@ test("a configured key is never written to plugin state", { options: { api_key: 
     return { value: { status: 200, ok: true, headers: {}, text: "{}" } };
   });
   const ui = await $.ui.mount({ plugin: "jev", surface: "terminal", component: "Pane", requestId: "jev", props: PANE_PROPS });
-  await ui.press({ key: "tab-configuration" });
+  await ui.press({ key: "tab-ai" });
   await ui.press({ key: "validate" });
   expect(posted).toEqual(["Bearer configured-test-key"]);
   expect(await status($)).toContain("Key source: plugin settings");
@@ -369,7 +429,7 @@ test("the selected provider is validated with its own key", { options: { api_key
     return { value: { status: 200, ok: true, headers: {}, text: "{}" } };
   });
   const ui = await $.ui.mount({ plugin: "jev", surface: "terminal", component: "Pane", requestId: "jev", props: PANE_PROPS });
-  await ui.press({ key: "tab-configuration" });
+  await ui.press({ key: "tab-ai" });
   await ui.select({ key: "provider", value: "opencode" });
   await ui.press({ key: "validate" });
 
@@ -391,7 +451,7 @@ test("connection checks use the configured paid OpenCode model", { options: { pr
     return { value: { status: 200, ok: true, headers: {}, text: "{}" } };
   });
   const ui = await $.ui.mount({ plugin: "jev", surface: "terminal", component: "Pane", requestId: "jev", props: PANE_PROPS });
-  await ui.press({ key: "tab-configuration" });
+  await ui.press({ key: "tab-ai" });
   await ui.select({ key: "provider", value: "opencode" });
   await ui.press({ key: "validate" });
   expect(models).toEqual(["jev-1.13"]);

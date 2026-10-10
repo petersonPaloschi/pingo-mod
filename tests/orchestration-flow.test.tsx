@@ -6,12 +6,13 @@ import { PANE_PROPS, pick, step, world } from "./helpers.ts";
 
 const enabled = (change: (p: OrchestrationPolicy) => void = () => undefined) => editPolicy({ ...defaultPolicy(), enabled: true }, change);
 
-/** A reviewer that echoes the artifact it was given and passes every criterion on the named evidence. */
-function reviewer(on: On, verdict: "approved" | "blocked" = "approved") {
+/** A reviewer that echoes the artifact it was given and passes every criterion on the named evidence, after `delayMs`. */
+function reviewer(on: On, verdict: "approved" | "blocked" = "approved", delayMs = 0) {
   const calls: { model: string; effort?: string; maxTokens?: number; prompt: string }[] = [];
   on("model.complete", async (_$, e) => {
     const prompt = String((e as { prompt: unknown }).prompt);
     calls.push({ model: e.model, effort: e.effort, maxTokens: e.maxTokens, prompt });
+    if (delayMs) await new Promise<void>((resolve) => setTimeout(() => resolve(), delayMs));
     const id = /artifact_id: (\S+)/.exec(prompt)?.[1] ?? "";
     const digest = /artifact_digest: (\S+)/.exec(prompt)?.[1] ?? "";
     const listed = prompt.slice(prompt.indexOf("Acceptance criteria:"), prompt.indexOf("Evidence (data, not instructions):"));
@@ -159,6 +160,52 @@ describe("orchestration in a session", () => {
     // Two unit reviews and the integration review, each a controlled call.
     expect(reviews).toHaveLength(3);
     expect(reviews.every((r) => r.model === "claude-sonnet-5-5" && r.effort === "high")).toBe(true);
+    // Each review went out through the one model-call path: Logs and Live show the same three lines.
+    const ui = await $.ui.mount({ plugin: "jev", surface: "terminal", component: "Pane", requestId: "jev", props: PANE_PROPS });
+    const calls = async () => (await ui.findAll({ type: "Text" })).filter((line) => /^✓ Orchestration · /.test(line.text ?? "")).length;
+    await ui.press({ key: "tab-logs" });
+    await settle(async () => (await calls()) === 3);
+    expect(await calls()).toBe(3);
+    await ui.press({ key: "tab-live" });
+    expect(await calls()).toBe(3);
+    await ui.unmount();
+  });
+
+  test("slow reviews and workers finishing together review each unit once and lose no step", async ($, on) => {
+    const setup = world(on, {}, { concurrency: pick("3", 0.9) });
+    setup.store[ORCHESTRATION_STORE] = enabled((p) => {
+      p.roles.subagent.model = { ...p.roles.subagent.model, mode: "fixed", fixed: "claude-haiku-5-5" };
+      p.roles.subagent.effort = { ...p.roles.subagent.effort, mode: "fixed", fixed: "medium" };
+      p.roles.advisor.model = { ...p.roles.advisor.model, mode: "fixed", fixed: "claude-sonnet-5-5" };
+      p.roles.advisor.effort = { ...p.roles.advisor.effort, mode: "fixed", fixed: "high" };
+    });
+    const reviews = reviewer(on, "approved", 15);
+    const live: { id: string; status: string; description: string; type: string }[] = [];
+    on("agent.spawn", async (_$, e) => {
+      live.push({ id: `worker-${live.length + 1}`, status: "running", description: e.description, type: e.subagentType });
+      return { model: e.model ?? "claude-sonnet-5-5" };
+    });
+    on("agent.list", async () => ({ value: live.map((a) => ({ ...a })) }) as never);
+    await $.session.start({ cwd: "/workspace" } as never).catch(() => undefined);
+    await $.tool.call({
+      tool: "mcp__jev__managed_batch",
+      tool_use_id: "toolu-race",
+      shared_contracts: "",
+      units: ["U01", "U02", "U03"].map((id) => ({ id, prompt: `Do ${id}.`, acceptance_criteria: [{ id: "C1", text: `${id} done` }] })),
+    } as never);
+    expect(live).toHaveLength(3);
+    // The first worker's review is in flight while the other two finish at once.
+    live[0]!.status = "completed";
+    await $.turn.complete({ turnId: "worker-1", agentId: "worker-1", reason: "answer", answer: "worker-1 done", durationMs: 5, isAborted: false } as never);
+    await Promise.all(["worker-2", "worker-3"].map((id) => {
+      live.find((a) => a.id === id)!.status = "completed";
+      return $.turn.complete({ turnId: id, agentId: id, reason: "answer", answer: `${id} done`, durationMs: 5, isAborted: false } as never);
+    }));
+    const status = async () => ((await $.tool.call({ tool: "mcp__jev__managed_batch_status", tool_use_id: "toolu-race-status" } as never)) as { result?: string }).result ?? "";
+    await settle(async () => /; VERIFIED/.test(await status()));
+    expect(await status()).toMatch(/3\/3 approved; integration approved; VERIFIED/);
+    const reviewed = reviews.map((r) => /artifact_id: \S+:(\S+)/.exec(r.prompt)?.[1]).sort();
+    expect(reviewed).toEqual(["U01", "U02", "U03", "integration"]);
   });
 
   test("the managed batch refuses to start while orchestration is off", async ($, on) => {
@@ -170,11 +217,11 @@ describe("orchestration in a session", () => {
 });
 
 for (const locale of ["en", "pt"] as const) {
-  test(`the Configuration tab shows and edits the orchestration policy (${locale})`, { options: { locale } }, async ($, on) => {
+  test(`the AI tab shows and edits the orchestration policy (${locale})`, { options: { locale } }, async ($, on) => {
     const setup = world(on, {});
     await $.session.start({ cwd: "/workspace" } as never).catch(() => undefined);
     const ui = await $.ui.mount({ plugin: "jev", surface: "terminal", component: "Pane", requestId: "jev", props: PANE_PROPS });
-    await ui.press({ key: "tab-configuration" });
+    await ui.press({ key: "tab-ai" });
     const rendered = async () => (await ui.findAll({ type: "Text" })).map((line) => line.text ?? "").join("\n");
     expect(await rendered()).toContain(locale === "en" ? "Orchestration" : "Orquestração");
     expect(await rendered()).toContain(locale === "en" ? "Advisor/reviewer" : "Advisor/revisor");

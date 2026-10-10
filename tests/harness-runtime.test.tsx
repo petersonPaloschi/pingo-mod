@@ -168,7 +168,7 @@ describe("runtime without main-turn advice", () => {
     world(on);
     await $.session.start({ cwd: "/workspace" } as never).catch(() => undefined);
     const ui = await $.ui.mount({ plugin: "jev", surface: "terminal", component: "Pane", requestId: "jev", props: PANE_PROPS });
-    for (const [alias, label] of [["flow", "Live"], ["reasons", "Logs"], ["features", "Configuration"], ["setup", "Configuration"]]) {
+    for (const [alias, label] of [["flow", "Live"], ["reasons", "Logs"], ["features", "Configuration"], ["setup", "AI"], ["ai", "AI"], ["ia", "AI"], ["orch", "AI"]]) {
       await $.command.run({ command: "jev", args: alias, origin: ORIGIN } as never);
       expect(JSON.stringify(await ui.drawn())).toContain(`◉ ${label}`);
     }

@@ -22,6 +22,7 @@ const FEATURE_KEYS: readonly { id: FeatureId; name: LocaleKey; hotkey: string; d
   { id: "lapida", name: "feature.lapida.name", hotkey: "l", description: "feature.lapida.description" },
   { id: "sentinela", name: "feature.sentinela.name", hotkey: "s", description: "feature.sentinela.description" },
   { id: "vigia", name: "feature.vigia.name", hotkey: "v", description: "feature.vigia.description" },
+  { id: "contexto", name: "feature.contexto.name", hotkey: "x", description: "feature.contexto.description" },
 ];
 
 export const features = (locale: Locale = localeFor()) => FEATURE_KEYS.map((feature) => ({
@@ -135,14 +136,11 @@ export const featureFlagsText = (flags: FeatureFlags, locale: Locale = localeFor
   return names.length ? new Intl.ListFormat(locale === "pt" ? "pt-BR" : "en-US", { style: "short", type: "conjunction" }).format(names) : text("feed.none", locale);
 };
 
-/** The most probable options of a choice, as "name 87.3%", likeliest first. */
-const TOP_PROBABILITIES = 4;
-
 const percent = (value: number, locale: Locale) => `${formatDecimal(value * 100, locale, 1)}%`;
 
 /** Where a Jev call was asked from: the routing point, and what set it off (a tool, a subagent type). */
 export interface JevCaller {
-  origin: "agent" | "sift" | "setup" | "prompt" | "unit";
+  origin: "agent" | "sift" | "setup" | "prompt" | "unit" | "context";
   trigger?: string;
 }
 
@@ -153,6 +151,7 @@ const ASKED_BY: Record<JevCaller["origin"], string> = {
   setup: "validateKey()",
   prompt: "decideObjective()",
   unit: "offeredProfiles()",
+  context: "compactContextSession()",
 };
 
 /** What each question makes Jev judge, by its name (core/questions.ts and core/plan.ts). */
@@ -185,15 +184,13 @@ function askLine(ask: JevAsk, locale: Locale): string {
 function answerLine(answer: Answer | undefined, locale: Locale): string {
   if (!answer) return text("feed.jev.answer.missing", locale);
   if (answer.type === "noul") return text("feed.jev.answer.noul", locale, { value: percent(answer.noul, locale) });
-  const odds = Object.entries(answer.probabilities ?? {})
-    .filter(([option]) => option !== answer.choice)
+  const probabilities = Object.entries(answer.probabilities)
     .sort(([, a], [, b]) => b - a)
-    .slice(0, TOP_PROBABILITIES - 1)
     .map(([option, probability]) => `${short(option, 32)} ${percent(probability, locale)}`);
   return text("feed.jev.answer.choice", locale, {
     choice: short(answer.choice, 60),
     confidence: percent(answer.confidence, locale),
-    odds: odds.length ? text("feed.jev.answer.odds", locale, { odds: odds.join(" · ") }) : "",
+    odds: probabilities.length ? text("feed.jev.answer.odds", locale, { odds: probabilities.join(" · ") }) : "",
   });
 }
 
