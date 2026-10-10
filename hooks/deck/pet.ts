@@ -5,7 +5,7 @@
 import { brailleBit, brailleChar, DEPTH, hex } from "../dots.ts";
 import type { BrailleCell } from "../dots.ts";
 import { bayer, MOODS, pingoSvg, type Mood } from "../mascots/pingo.ts";
-import { css, HUE } from "../theme.ts";
+import { DECK_DESIGN, PET_PALETTE } from "../theme.ts";
 
 export const PET_ACTS = ["idle", "walk", "run", "jump", "console", "read", "sleep", "celebrate", "alert"] as const;
 export type PetAct = (typeof PET_ACTS)[number];
@@ -26,14 +26,14 @@ export interface Pet {
   shades?: boolean;
 }
 
-const SPEED = { walk: 0.035, run: 0.11 } as const; // lane fractions per second
+const SPEED = DECK_DESIGN.pet.speed; // lane fractions per second
 
 /** The pet's box in pet units, as the lane draws it: 48 wide and 38 tall, from (-4, -6). */
-const PET_W = 48;
-const PET_H = 38;
-const PET_VIEW = "-4 -6 48 38";
+const PET_W = DECK_DESIGN.pet.body.width;
+const PET_H = DECK_DESIGN.pet.body.height;
+const PET_VIEW = DECK_DESIGN.pet.body.viewBox;
 /** The pet's cells in a terminal: 12 columns by 4 rows, so a 24 by 16 dot grid. */
-export const PET_BRAILLE = { columns: 12, rows: 4 };
+export const PET_BRAILLE = DECK_DESIGN.pet.braille;
 /** The terminal's dot grid, and its scale: dots per pet unit across (the 48 units span 24 dots). */
 export const PET_RASTER = {
   scale: (PET_BRAILLE.columns * 2) / PET_W,
@@ -118,36 +118,27 @@ export function stepPet(pet: Pet, mood: DeckMood, now: number, rand: () => numbe
 }
 
 // The props keep their own colors, apart from every mood's, so the eyes alone wear the mood's color.
-const PROP = {
-  dark: 0x4a4a48,
-  screen: 0x5dcaa5,
-  red: 0xe5484d,
-  blue: 0x378add,
-  paper: 0xf2f0ea,
-  page: 0xe8e4da,
-  gray: 0x9a9893,
-  amber: 0xe09a1e,
-  mark: 0x412402,
-} as const;
-const CONFETTI = [0xeba83a, 0x9c95ec, 0x5dcaa5, 0xe2706f] as const;
+const PROP = PET_PALETTE.props;
+const CONFETTI = PET_PALETTE.confetti;
+const PET_MOTION = DECK_DESIGN.pet.motion;
 
 // ---------- desktop: SVG, moved by CSS and by the lane's own translate ----------
 
 export const PET_CSS =
   ".fb{transform-box:fill-box;transform-origin:center}.fbot{transform-box:fill-box;transform-origin:bottom center}" +
-  "@keyframes breathe{0%,100%{transform:scaleY(1)}50%{transform:scaleY(.965)}}" +
-  "@keyframes bob{0%,100%{transform:translateY(0)}50%{transform:translateY(-1.2px)}}" +
-  "@keyframes jump{0%,100%{transform:translateY(0) scaleY(.92)}12%{transform:translateY(0) scaleY(1.04)}45%{transform:translateY(-12px)}80%{transform:translateY(0)}}" +
-  "@keyframes shake{0%,100%{transform:translateX(0)}25%{transform:translateX(-1px)}75%{transform:translateX(1px)}}" +
-  "@keyframes conf{0%{transform:translateY(0);opacity:1}100%{transform:translateY(16px);opacity:0}}" +
-  "@keyframes zz{0%{transform:translate(0,0);opacity:0}20%{opacity:1}100%{transform:translate(6px,-14px);opacity:0}}" +
-  "@keyframes glow{0%,100%{opacity:1}50%{opacity:.55}}" +
-  "@keyframes puff{0%{transform:translateX(0) scale(.6);opacity:.7}100%{transform:translateX(-8px) scale(1.3);opacity:0}}" +
+  `@keyframes breathe{0%,100%{transform:scaleY(1)}50%{transform:scaleY(${PET_MOTION.breatheScale})}}` +
+  `@keyframes bob{0%,100%{transform:translateY(0)}50%{transform:translateY(-${PET_MOTION.bobPixels}px)}}` +
+  `@keyframes jump{0%,100%{transform:translateY(0) scaleY(.92)}12%{transform:translateY(0) scaleY(1.04)}45%{transform:translateY(-${PET_MOTION.jumpPixels}px)}80%{transform:translateY(0)}}` +
+  `@keyframes shake{0%,100%{transform:translateX(0)}25%{transform:translateX(-${PET_MOTION.shakePixels}px)}75%{transform:translateX(${PET_MOTION.shakePixels}px)}}` +
+  `@keyframes conf{0%{transform:translateY(0);opacity:1}100%{transform:translateY(${PET_MOTION.confettiPixels}px);opacity:0}}` +
+  `@keyframes zz{0%{transform:translate(0,0);opacity:0}20%{opacity:1}100%{transform:translate(${PET_MOTION.sleepZX}px,-${PET_MOTION.sleepZY}px);opacity:0}}` +
+  `@keyframes glow{0%,100%{opacity:1}50%{opacity:${PET_MOTION.glowLowOpacity}}}` +
+  `@keyframes puff{0%{transform:translateX(0) scale(${PET_MOTION.puffScale[0]});opacity:${PET_MOTION.puffOpacity}}100%{transform:translateX(-${PET_MOTION.puffPixels}px) scale(${PET_MOTION.puffScale[1]});opacity:0}}` +
   "@media (prefers-reduced-motion:reduce){*{animation:none!important}}";
 
 /** The floor line, and the sphere: a square of `size` units centred on x, its outer edge (0.355 of the square) on the floor. */
-const FLOOR_Y = 29.5;
-const BODY = { size: 34, x: 20 };
+const FLOOR_Y = DECK_DESIGN.pet.body.floorY;
+const BODY = { size: DECK_DESIGN.pet.body.size, x: DECK_DESIGN.pet.body.x };
 const BODY_Y = FLOOR_Y - 0.355 * BODY.size;
 
 const bodies = new Map<string, string>();
@@ -170,25 +161,22 @@ function buildSvgBody(state: PetAct, hat: string, shades: boolean): string {
   const sleep = state === "sleep";
   const motion =
     state === "jump" || state === "celebrate"
-      ? "jump 1s cubic-bezier(.3,.6,.4,1) infinite"
+      ? `jump ${PET_MOTION.jumpSeconds}s cubic-bezier(.3,.6,.4,1) infinite`
       : walk
-        ? `bob ${run ? ".28s" : ".6s"} ease-in-out infinite`
-        : `breathe ${sleep ? "3s" : "2.4s"} ease-in-out infinite`;
+        ? `bob ${run ? PET_MOTION.runSeconds : PET_MOTION.walkSeconds}s ease-in-out infinite`
+        : `breathe ${sleep ? PET_MOTION.sleepSeconds : PET_MOTION.breatheSeconds}s ease-in-out infinite`;
   const mood = petMoodFor(state);
   // passthrough eyes look aside, so the walking sphere is turned round to look ahead
   const ahead = mood === "passthrough" ? ` transform="translate(${BODY.size} 0) scale(-1 1)"` : "";
   const sphere = `<g transform="translate(${BODY.x - BODY.size / 2} ${BODY_Y - BODY.size / 2})"><g${ahead}>${pingoSvg(mood, 0, BODY.size, true)}</g></g>`;
   const body = `<g${run ? ' transform="rotate(-7 20 28)"' : ""}><g class="fbot" style="animation:${motion}">${sphere}</g></g>`;
-  const shadow = `<ellipse cx="20" cy="${FLOOR_Y}" rx="${state === "jump" ? 8 : 12}" ry="1.6" fill="#000" opacity=".35"/>`;
+  const shadow = `<ellipse cx="20" cy="${FLOOR_Y}" rx="${state === "jump" ? 8 : 12}" ry="1.6" fill="${PET_PALETTE.shadow}" opacity=".35"/>`;
   return shadow + body + propsSvg(state) + accessoriesSvg(hat, shades);
 }
 
 // the hats keep their own colors (a chef's hat is white, a cowboy's brown), and never a mood's: the eyes alone
 // wear the mood's color. The party and wizard hats take the identity's plum and sky.
-const HAT_COLORS: Record<string, string> = {
-  tophat: "#454551", party: css(HUE.plum), crown: "#ffd23f", wizard: css(HUE.you), cowboy: "#8b5a2b",
-  propeller: "#3c7be0", chef: "#f4f4f4", viking: "#9aa3ad", halo: "#ffc400", santa: "#e03c3c", nightcap: "#3c7be0",
-};
+const HAT_COLORS: Readonly<Record<string, string | undefined>> = PET_PALETTE.hats;
 
 function accessoriesSvg(hat: string, shades: boolean): string {
   let headwear = "";
@@ -196,19 +184,19 @@ function accessoriesSvg(hat: string, shades: boolean): string {
   if (color) {
     const brim = `<rect x="12" y="7" width="16" height="2.5" rx="1" fill="${color}"/>`;
     const body = hat === "tophat" ? `<rect x="16" y="0" width="8" height="8" rx="1" fill="${color}"/>`
-      : hat === "party" ? `<path d="M14 8 20 -3 26 8Z" fill="${color}"/><circle cx="20" cy="-3" r="1.3" fill="#ffd23f"/>`
-        : hat === "crown" ? `<path d="M14 8 15 1 18 4 20 -1 22 4 25 1 26 8Z" fill="${color}" stroke="#e0245e" stroke-width=".7"/>`
-          : hat === "wizard" ? `<path d="M14 8 20 -4 26 8Z" fill="${color}"/><path d="M18 5 20 3 22 5" stroke="#ffd23f" stroke-width="1"/>`
-            : hat === "cowboy" ? `<path d="M14 5 Q20 -1 26 5 L28 7 Q20 9 12 7Z" fill="${color}"/><rect x="17" y="2" width="6" height="5" rx="1" fill="${color}"/>`
-              : hat === "propeller" ? `<rect x="16" y="4" width="8" height="4" rx="2" fill="${color}"/><path d="M20 4V1 M13 1H27" stroke="#e03c3c" stroke-width="1.5" stroke-linecap="round"/>`
-                : hat === "chef" ? `<path d="M15 8 Q12 2 16 2 Q17 -2 20 2 Q24 -2 25 3 Q29 4 25 8Z" fill="${color}" stroke="#cfcfcf" stroke-width=".7"/>`
-                  : hat === "viking" ? `<rect x="15" y="4" width="10" height="4" rx="2" fill="${color}"/><path d="M16 5 Q12 0 12 2 L15 7 M24 5 Q28 0 28 2 L25 7" fill="#f4f4f4" stroke="#9aa3ad" stroke-width="1"/>`
+    : hat === "party" ? `<path d="M14 8 20 -3 26 8Z" fill="${color}"/><circle cx="20" cy="-3" r="1.3" fill="${PET_PALETTE.accents.gold}"/>`
+      : hat === "crown" ? `<path d="M14 8 15 1 18 4 20 -1 22 4 25 1 26 8Z" fill="${color}" stroke="${PET_PALETTE.accents.red}" stroke-width=".7"/>`
+        : hat === "wizard" ? `<path d="M14 8 20 -4 26 8Z" fill="${color}"/><path d="M18 5 20 3 22 5" stroke="${PET_PALETTE.accents.gold}" stroke-width="1"/>`
+          : hat === "cowboy" ? `<path d="M14 5 Q20 -1 26 5 L28 7 Q20 9 12 7Z" fill="${color}"/><rect x="17" y="2" width="6" height="5" rx="1" fill="${color}"/>`
+            : hat === "propeller" ? `<rect x="16" y="4" width="8" height="4" rx="2" fill="${color}"/><path d="M20 4V1 M13 1H27" stroke="${HAT_COLORS.santa}" stroke-width="1.5" stroke-linecap="round"/>`
+              : hat === "chef" ? `<path d="M15 8 Q12 2 16 2 Q17 -2 20 2 Q24 -2 25 3 Q29 4 25 8Z" fill="${color}" stroke="${PET_PALETTE.accents.trim}" stroke-width=".7"/>`
+                : hat === "viking" ? `<rect x="15" y="4" width="10" height="4" rx="2" fill="${color}"/><path d="M16 5 Q12 0 12 2 L15 7 M24 5 Q28 0 28 2 L25 7" fill="${HAT_COLORS.chef}" stroke="${color}" stroke-width="1"/>`
                     : hat === "halo" ? `<ellipse cx="20" cy="1" rx="7" ry="2" fill="none" stroke="${color}" stroke-width="1.5"/>`
-                      : hat === "santa" ? `<path d="M14 8 Q16 2 21 0 L25 7Z" fill="${color}"/><circle cx="21" cy="0" r="1.8" fill="#f4f4f4"/>`
-                        : `<path d="M15 7 Q16 0 24 1 L27 7Z" fill="${color}"/><circle cx="25" cy="1" r="1.5" fill="#f4f4f4"/>`;
+                  : hat === "santa" ? `<path d="M14 8 Q16 2 21 0 L25 7Z" fill="${color}"/><circle cx="21" cy="0" r="1.8" fill="${HAT_COLORS.chef}"/>`
+                    : `<path d="M15 7 Q16 0 24 1 L27 7Z" fill="${color}"/><circle cx="25" cy="1" r="1.5" fill="${HAT_COLORS.chef}"/>`;
     headwear = brim + body;
   }
-  const glasses = shades ? `<g fill="#17171d" stroke="#ffe66d" stroke-width=".6"><rect x="12.5" y="13" width="6.5" height="4.2" rx="1.4"/><rect x="21" y="13" width="6.5" height="4.2" rx="1.4"/><path d="M19 14.5h2M12.5 14 10.5 13M27.5 14l2-1"/></g>` : "";
+  const glasses = shades ? `<g fill="${PET_PALETTE.accents.glasses}" stroke="${PET_PALETTE.accents.glassesEdge}" stroke-width=".6"><rect x="12.5" y="13" width="6.5" height="4.2" rx="1.4"/><rect x="21" y="13" width="6.5" height="4.2" rx="1.4"/><path d="M19 14.5h2M12.5 14 10.5 13M27.5 14l2-1"/></g>` : "";
   return headwear + glasses;
 }
 
@@ -217,7 +205,7 @@ function propsSvg(state: PetAct): string {
   if (state === "console")
     return (
       `<rect x="11" y="19" width="18" height="9" rx="2" fill="${hex(PROP.dark)}"/>` +
-      `<rect x="13" y="20.5" width="9" height="6" rx="1" fill="${hex(PROP.screen)}" style="animation:glow .4s infinite"/>` +
+      `<rect x="13" y="20.5" width="9" height="6" rx="1" fill="${hex(PROP.screen)}" style="animation:glow ${PET_MOTION.glowSeconds}s infinite"/>` +
       `<circle cx="25" cy="22" r="1" fill="${hex(PROP.red)}"/><circle cx="26.5" cy="25" r="1" fill="${hex(PROP.blue)}"/>`
     );
   if (state === "read")
@@ -225,27 +213,27 @@ function propsSvg(state: PetAct): string {
       `<rect x="10" y="18" width="20" height="10" rx="1.5" fill="${hex(PROP.blue)}"/>` +
       `<rect x="11.5" y="19" width="8" height="8" rx=".8" fill="${hex(PROP.paper)}"/>` +
       `<rect x="20.5" y="19" width="8" height="8" rx=".8" fill="${hex(PROP.page)}"/>` +
-      `<path d="M13 21.5h5M13 23.5h5M13 25.5h4M22 21.5h5M22 23.5h5" stroke="#9a9893" stroke-width=".6"/>`
+      `<path d="M13 21.5h5M13 23.5h5M13 25.5h4M22 21.5h5M22 23.5h5" stroke="${hex(PROP.gray)}" stroke-width=".6"/>`
     );
   if (state === "sleep")
     return (
-      `<text x="31" y="6" font-size="6" fill="${hex(PROP.gray)}" font-family="system-ui" style="animation:zz 2s infinite">z</text>` +
-      `<text x="34" y="3" font-size="4.5" fill="${hex(PROP.gray)}" font-family="system-ui" style="animation:zz 2s infinite .9s">z</text>`
+      `<text x="31" y="6" font-size="6" fill="${hex(PROP.gray)}" font-family="${DECK_DESIGN.type.svg}" style="animation:zz ${PET_MOTION.sleepZSeconds}s infinite">z</text>` +
+      `<text x="34" y="3" font-size="4.5" fill="${hex(PROP.gray)}" font-family="${DECK_DESIGN.type.svg}" style="animation:zz ${PET_MOTION.sleepZSeconds}s infinite ${PET_MOTION.sleepZDelaySeconds}s">z</text>`
     );
   if (state === "alert")
     return (
-      `<g style="animation:shake .3s infinite"><circle cx="33.5" cy="1.5" r="4.5" fill="${hex(PROP.amber)}"/>` +
-      `<text x="33.5" y="4.3" font-size="7" font-weight="600" text-anchor="middle" fill="${hex(PROP.mark)}" font-family="system-ui">!</text></g>`
+      `<g style="animation:shake ${PET_MOTION.shakeSeconds}s infinite"><circle cx="33.5" cy="1.5" r="4.5" fill="${hex(PROP.amber)}"/>` +
+      `<text x="33.5" y="4.3" font-size="7" font-weight="600" text-anchor="middle" fill="${hex(PROP.mark)}" font-family="${DECK_DESIGN.type.svg}">!</text></g>`
     );
   if (state === "celebrate")
     return CONFETTI.map(
       (color, i) =>
-        `<rect x="${6 + i * 9}" y="-2" width="2" height="2" rx=".5" fill="${hex(color)}" style="animation:conf 1s infinite ${i * 0.22}s"/>`,
+        `<rect x="${6 + i * 9}" y="-2" width="2" height="2" rx=".5" fill="${hex(color)}" style="animation:conf ${PET_MOTION.confettiSeconds}s infinite ${i * PET_MOTION.confettiDelaySeconds}s"/>`,
     ).join("");
   if (state === "run")
     return (
-      `<circle cx="6" cy="27" r="2" fill="${hex(PROP.dark)}" class="fb" style="animation:puff .5s infinite"/>` +
-      `<circle cx="4" cy="25" r="1.5" fill="${hex(PROP.dark)}" class="fb" style="animation:puff .5s infinite .25s"/>`
+      `<circle cx="6" cy="27" r="2" fill="${hex(PROP.dark)}" class="fb" style="animation:puff ${PET_MOTION.puffSeconds}s infinite"/>` +
+      `<circle cx="4" cy="25" r="1.5" fill="${hex(PROP.dark)}" class="fb" style="animation:puff ${PET_MOTION.puffSeconds}s infinite ${PET_MOTION.puffDelaySeconds}s"/>`
     );
   return "";
 }
@@ -256,7 +244,7 @@ const LANES_KEPT = 8;
 // the lane: the pet walks from x0 to x1 by CSS, phased by the scene's age so a redraw does not restart it. A scene
 // is one picture for as long as it runs, so the lane's text is made once, at the scene's first draw, and handed back
 // as it was: the app sees the same source and keeps the animation going, and nothing is built again.
-export function petLaneSvg(pet: Pet, now: number, W: number, H = 62, scale = 1.05): string {
+export function petLaneSvg(pet: Pet, now: number, W: number, H: number = DECK_DESIGN.pet.lane.desktopHeight, scale: number = DECK_DESIGN.pet.lane.desktopScale): string {
   const key = [pet.id, pet.act, pet.dir, pet.hat, pet.shades, pet.x0, pet.x1, pet.dur, pet.start, W, H, scale].join("|");
   const kept = lanes.get(key);
   if (kept !== undefined) return kept;
@@ -277,12 +265,12 @@ function buildLaneSvg(pet: Pet, now: number, W: number, H: number, scale: number
   const move = `@keyframes mv${pet.id}{from{transform:translateX(${a.toFixed(1)}px)}to{transform:translateX(${b.toFixed(1)}px)}}`;
   const flip = pet.dir < 0 ? `translate(${PW} 0) scale(-1 1)` : "";
   let dots = "";
-  if (scale >= 1) for (let x = 4; x < W; x += 12) dots += `<rect x="${x}" y="${H - 4}" width="4" height="1" fill="#fff" opacity=".07"/>`;
+  if (scale >= 1) for (let x = 4; x < W; x += DECK_DESIGN.pet.lane.backgroundSpacing) dots += `<rect x="${x}" y="${H - 4}" width="4" height="1" fill="${PET_PALETTE.laneLight}" opacity=".07"/>`;
   return (
     `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">` +
     `<style>${PET_CSS}${move}.mv{animation:mv${pet.id} ${dur.toFixed(2)}s linear both;animation-delay:-${Math.min(age, dur).toFixed(2)}s}</style>` +
     dots +
-    `<g class="mv"><g transform="translate(0 ${H - PH - 2})"><g transform="${flip}"><svg width="${PW}" height="${PH}" viewBox="${PET_VIEW}" overflow="visible">${petSvgBody(pet.act, pet.hat, pet.shades)}</svg></g></g></g>` +
+    `<g class="mv"><g transform="translate(0 ${H - PH - DECK_DESIGN.pet.lane.bodyGap})"><g transform="${flip}"><svg width="${PW}" height="${PH}" viewBox="${PET_VIEW}" overflow="visible">${petSvgBody(pet.act, pet.hat, pet.shades)}</svg></g></g></g>` +
     "</svg>"
   );
 }
@@ -614,7 +602,7 @@ export function petFrame(act: PetAct, tMs: number, dir: 1 | -1, hat = "none", sh
 // ---------- the terminal lane: the sprite laid along a row as wide as the band ----------
 
 /** How many cells wide the lane is for a band `cols` wide: the body less a margin, and never narrower than the sprite. */
-export const petLaneColumns = (cols: number): number => Math.max(PET_BRAILLE.columns, Math.min(512, cols - 2));
+export const petLaneColumns = (cols: number): number => Math.max(PET_BRAILLE.columns, Math.min(DECK_DESIGN.pet.lane.maximumColumns, cols - DECK_DESIGN.pet.lane.sidePadding));
 
 const BLANK: BrailleCell = [" ", DEPTH[0]];
 

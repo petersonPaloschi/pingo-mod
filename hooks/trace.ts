@@ -6,7 +6,7 @@
 // the engine confirms it: the turn that starts while its idle submission is still entering. A
 // message typed into a running turn names that turn and stays queued. A subagent's turns raise no
 // turn.start: its steps, tools and advisor calls join the run that spawned it.
-import type { AdvisorInfo, AgentState, TraceAdvisor, TraceAgent, TraceConsult, TraceMessage, TracePlan, TraceRun, TraceState, TraceStep, TraceTool } from "../types";
+import type { AdvisorInfo, AgentState, TraceAdvice, TraceAdvisor, TraceAgent, TraceConsult, TraceMessage, TracePlan, TraceRun, TraceState, TraceStep, TraceTool } from "../types";
 
 export const TRACE_SCHEMA = 2;
 /** Finished runs kept; runs still active (or with a subagent still running) are always kept. */
@@ -19,6 +19,8 @@ const KEPT_INBOX = 6;
 const KEPT_RECEIVED = 6;
 const KEPT_FILES = 40;
 const TEXT_MAX = 200;
+/** An answer, a subagent's result or the advisor's guidance, as the Flow tab quotes it. */
+const ANSWER_MAX = 240;
 
 export const emptyTrace = (): TraceState => ({ schemaVersion: TRACE_SCHEMA, seq: 0, turns: 0, inbox: [], runs: [] });
 
@@ -241,6 +243,19 @@ export function planMessage(s: TraceState, id: string, plan: TracePlan): TraceSt
   };
 }
 
+/**
+ * The controlled advisor's decision for a message, then its outcome: merged into what was noted. It
+ * follows the message into the run it starts, so it is kept before and after turn.start.
+ */
+export function noteAdvice(s: TraceState, id: string, change: Partial<TraceAdvice>): TraceState {
+  return changeMessage(s, id, (message) => {
+    const merged = { ...message.advice, ...change } as TraceAdvice;
+    if (merged.guidance) merged.guidance = clip(merged.guidance, ANSWER_MAX);
+    if (merged.problem) merged.problem = clip(merged.problem, 120);
+    return { ...message, advice: merged };
+  });
+}
+
 /** prompt.submit's `next` resolved: the message entered (its run started meanwhile, or it waits), or was refused. */
 export function promptEntered(s: TraceState, id: string, dropped?: string): TraceState {
   const next = s.entering === id ? omit(s, "entering") : s;
@@ -324,6 +339,8 @@ export interface StepStart {
   original: string;
   sent: string;
   effort?: string;
+  /** Why it went as it did (TraceStep.route). */
+  route?: string;
   at: number;
 }
 
@@ -336,6 +353,7 @@ export function stepStart(s: TraceState, step: StepStart): TraceState {
     original: step.original,
     sent: step.sent,
     ...(step.effort ? { effort: step.effort } : {}),
+    ...(step.route ? { route: step.route } : {}),
     startedAt: step.at,
   };
   const pushStep = (run: TraceRun) => ({ ...run, steps: [...run.steps, record].slice(-KEPT_STEPS) });
@@ -452,17 +470,19 @@ export function stepEnd(s: TraceState, step: StepEnd): TraceState {
 
 export type TurnEndReason = "answer" | "aborted" | "refusal" | "error";
 
-/** turn.complete: a main run ends, or one turn of a subagent's loop does. */
-export function completeTurn(s: TraceState, turnId: string, at: number, reason: TurnEndReason, agentId?: string): TraceState {
+/** turn.complete: a main run ends, or one turn of a subagent's loop does; `answer` is what it said. */
+export function completeTurn(s: TraceState, turnId: string, at: number, reason: TurnEndReason, agentId?: string, answer?: string): TraceState {
+  const said = answer?.trim() ? clip(answer.trim(), ANSWER_MAX) : undefined;
   if (agentId) {
     const run = runOfAgent(s, agentId);
     if (!run) return s;
     const state: AgentState = reason === "aborted" ? "aborted" : reason === "error" ? "error" : "done";
-    return prune(withAgent(s, run.id, agentId, (agent) => ({ ...agent, state, endedAt: at })));
+    return prune(withAgent(s, run.id, agentId, (agent) => ({ ...agent, state, endedAt: at, ...(said ? { result: said } : {}) })));
   }
   const run = s.runs.find((one) => one.id === turnId) ?? (activeRun(s)?.confirmed === false ? activeRun(s) : undefined);
   if (!run) return s;
-  return prune(endRun(s, run.id, at, reason));
+  const ended = endRun(s, run.id, at, reason);
+  return prune(said ? withRun(ended, run.id, (one) => ({ ...one, answer: said })) : ended);
 }
 
 // --- Tools and subagents ---

@@ -128,7 +128,6 @@ function harness() {
     setup: { provider: "typesafe", message: "", isOk: true },
     features: { ...DEFAULT_FEATURES, agents: true },
     preferences: { assumptionScope: "all", plainLevel: "beginner", plainReview: true, plainSound: true, petHat: "random", petShades: false, designSurface: "auto", ideaNudges: true, promptLearning: true, monitorEveryMs: 5000, trackerSummary: false, clashMinutes: 30 },
-    flowDetails: false,
     feed: [],
     live: {},
     now: NOW,
@@ -151,7 +150,8 @@ test("persisted legacy tabs resolve to valid screens on both surfaces", () => {
   const { els, act, view } = harness();
   const retired = [
     ["baseline", "logs", "Request log"],
-    ["flow", "live", "Live"],
+    ["flow", "flow", "what Pingo did for each request"],
+    ["orchestration", "orchestration", "Orchestration off"],
     ["features", "features", "Integrated features"],
     ["reasons", "logs", "Request log"],
     ["setup", "ai", "Jev provider"],

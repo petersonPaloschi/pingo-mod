@@ -3,20 +3,22 @@
 // turns into Svg, Text and Box. A state's color says the state, and its glyph says it again, so a
 // dot never carries the meaning alone.
 
+import type { FeatureId } from "../../types";
 import { text, type Locale } from "../i18n.ts";
+import { displayWidth } from "../layout.ts";
 import { EFFORTS, fmtUsd, shortModel, stripTool, type Agent, type DeckRow, type RouteView, type Spend } from "./model.ts";
 import type { DeckSize, DeckSurfaceStyle } from "./settings.ts";
-import { BODY, DIM, MUTED, PILL_INK, STYLE, SVG_ON_FILL, SVG_TEXT, SVG_TRACK, TEXT, TIER, esc, textCells, textWidth, trunc, type AgentRow, type Row, type TierName } from "./theme.ts";
+import { BODY, DECK_DESIGN, DIM, MUTED, PILL_INK, STYLE, SVG_ON_FILL, SVG_TEXT, SVG_TRACK, TEXT, TIER, esc, textCells, textWidth, trunc, type AgentRow, type Row, type TierName } from "./theme.ts";
 import { desktopTrack, stripsHeight, stripsSvg, type LastHead, type LastStrip } from "./styles-desktop.ts";
 import { terminalMini } from "./styles-terminal.ts";
 import { GLYPH } from "../theme.ts";
 
-export const TRACK_H = 22;
-export const RIGHT_W = 92;
-const FONT = "'Anthropic Sans',ui-sans-serif,system-ui,sans-serif";
+export const TRACK_H = DECK_DESIGN.bar.height;
+export const RIGHT_W = DECK_DESIGN.bar.rightWidth;
+const FONT = DECK_DESIGN.type.svg;
 // the unfold: each row starts FOLD_STEP ms after the one above, and fades and rises in over FOLD_FADE ms
-export const FOLD_STEP = 35;
-export const FOLD_FADE = 220;
+export const FOLD_STEP = DECK_DESIGN.motion.foldStepMs;
+export const FOLD_FADE = DECK_DESIGN.motion.foldFadeMs;
 
 export type Cell = ReturnType<typeof textCells>[number];
 
@@ -218,7 +220,7 @@ function historyStrip(routeHist: readonly string[], W: number, x: number): strin
 
 // a small progress ring with an icon in the middle
 export function ringSvg(pct: number, color: string, icon: "usd" | "week" | "clock"): string {
-  const r = 8.5;
+  const { size, center, radius: r, strokeWidth } = DECK_DESIGN.ring;
   const C = 2 * Math.PI * r;
   const glyph =
     icon === "usd"
@@ -227,9 +229,9 @@ export function ringSvg(pct: number, color: string, icon: "usd" | "week" | "cloc
         ? `<rect x="7.2" y="7.6" width="7.6" height="7" rx="1.2" fill="none" stroke="${color}" stroke-width="1.3"/><rect x="7.2" y="7.6" width="7.6" height="2" fill="${color}"/>`
         : `<path d="M11 7.2V11l2.4 1.6" fill="none" stroke="${color}" stroke-width="1.4" stroke-linecap="round"/>`;
   return (
-    `<svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 22 22">` +
-    `<circle cx="11" cy="11" r="${r}" fill="none" stroke="${SVG_TRACK}" stroke-opacity=".3" stroke-width="2.2"/>` +
-    `<circle cx="11" cy="11" r="${r}" fill="none" stroke="${color}" stroke-width="2.2" stroke-linecap="round" stroke-dasharray="${((C * Math.min(100, pct)) / 100).toFixed(1)} ${C.toFixed(1)}" transform="rotate(-90 11 11)"/>` +
+    `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" viewBox="0 0 ${size} ${size}">` +
+    `<circle cx="${center}" cy="${center}" r="${r}" fill="none" stroke="${SVG_TRACK}" stroke-opacity=".3" stroke-width="${strokeWidth}"/>` +
+    `<circle cx="${center}" cy="${center}" r="${r}" fill="none" stroke="${color}" stroke-width="${strokeWidth}" stroke-linecap="round" stroke-dasharray="${((C * Math.min(100, pct)) / 100).toFixed(1)} ${C.toFixed(1)}" transform="rotate(-90 ${center} ${center})"/>` +
     glyph +
     "</svg>"
   );
@@ -240,7 +242,7 @@ export function rowSvg(row: DeckRow, W: number, o: RowDrawOptions): { height: nu
   const sv = stripsView(row, o.locale);
   const stripsH = sv ? 5 + stripsHeight(sv.view) : 0;
   // compact rows sit with no gap between them; a little air above and below keeps the pills apart
-  const pad = o.size === "roomy" ? 0 : 3;
+  const pad = o.size === "roomy" ? 0 : DECK_DESIGN.bar.compactPadding;
   const H = TRACK_H + stripsH + pad * 2;
   const total = W + RIGHT_W;
   const track = row.kind === "route" ? routeSvg(row, W, o.routeHist, o.locale) : desktopTrack(o.style, toTrackRow(row), W, o.now, o.caches.head);
@@ -272,7 +274,7 @@ export function fadeInSvg(source: string, ageMs: number, fadeMs: number): string
   const tail = source.lastIndexOf("</svg>");
   return (
     source.slice(0, head) +
-    `<style>@keyframes rin{from{opacity:0;transform:translateY(5px)}}.rin{animation:rin ${fadeMs}ms cubic-bezier(.22,1,.36,1) both;animation-delay:-${Math.max(0, Math.round(ageMs))}ms}@media (prefers-reduced-motion:reduce){.rin{animation:none}}</style><g class="rin">` +
+    `<style>@keyframes rin{from{opacity:0;transform:translateY(${DECK_DESIGN.motion.foldRisePixels}px)}}.rin{animation:rin ${fadeMs}ms ${DECK_DESIGN.motion.unfoldEasing} both;animation-delay:-${Math.max(0, Math.round(ageMs))}ms}@media (prefers-reduced-motion:reduce){.rin{animation:none}}</style><g class="rin">` +
     source.slice(head, tail) +
     "</g>" +
     source.slice(tail)
@@ -291,7 +293,8 @@ export function rowGlyph(row: DeckRow): string {
 
 // one mini bar of the desktop chips: a 36-by-8 track with its fill
 export function chipBarSvg(pct: number, color: string): string {
-  return `<svg xmlns="http://www.w3.org/2000/svg" width="36" height="8"><rect width="36" height="8" rx="4" fill="${SVG_TRACK}" fill-opacity=".2"/><rect width="${Math.max((36 * pct) / 100, pct > 0 ? 4 : 0)}" height="8" rx="4" fill="${color}"/></svg>`;
+  const { width, height, minimumVisibleFill } = DECK_DESIGN.miniBar;
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}"><rect width="${width}" height="${height}" rx="${height / 2}" fill="${SVG_TRACK}" fill-opacity=".2"/><rect width="${Math.max((width * pct) / 100, pct > 0 ? minimumVisibleFill : 0)}" height="${height}" rx="${height / 2}" fill="${color}"/></svg>`;
 }
 
 export type ChipMini = { kind: "svg"; pct: number; color: string; alt: string } | { kind: "cells"; cells: Cell[] };
@@ -315,11 +318,15 @@ export type ChipOptions = {
 export function collapsedChips(ordered: readonly DeckRow[], o: ChipOptions): { chips: Chip[] } {
   const chips: Chip[] = [];
   // the terminal counts columns; the desktop counts pixels (about 8 per column, ~7.5 per character)
-  let budget = o.desktop ? o.cols * 8 - 140 - o.extrasLength * 7.5 : o.cols - 10 - o.extrasLength;
+  let budget = o.desktop
+    ? o.cols * DECK_DESIGN.band.pixelsPerColumn - DECK_DESIGN.band.collapsed.desktop.reservePixels - o.extrasLength * DECK_DESIGN.band.collapsed.desktop.extraPixelsPerChar
+    : o.cols - DECK_DESIGN.band.collapsed.terminal.reserveColumns - o.extrasLength * DECK_DESIGN.band.collapsed.terminal.extraColumnsPerChar;
   let hidden = 0;
   for (const row of ordered) {
     const st = STYLE[row.style];
-    const w = o.desktop ? row.short.length * 8.5 + 76 : row.short.length + 10;
+    const w = o.desktop
+      ? row.short.length * DECK_DESIGN.band.collapsed.desktop.titlePixelsPerChar + DECK_DESIGN.band.collapsed.desktop.itemPaddingPixels
+      : row.short.length + DECK_DESIGN.band.collapsed.terminal.itemPaddingColumns;
     if (w > budget) {
       hidden++;
       continue;
@@ -405,4 +412,36 @@ export function collapsedRings(rows: readonly DeckRow[], spend: Spend, costOn: b
   const busy = rows.find((r) => (r.kind === "bar" || r.kind === "activity") && r.animating && r.state !== "needs_input");
   if (busy) items.push({ kind: "busy", glyph: rowGlyph(busy), color: MUTED, text: trunc(busy.short, 22) });
   return items;
+}
+
+/** One feature's switch as the expanded band draws it: its id, the name it shows, and whether it is on. */
+export type FeatureSwitch = { id: FeatureId; name: string; on: boolean };
+
+/** A switch's label: its state glyph, then its name. */
+export const switchLabel = (sw: FeatureSwitch) => `${sw.on ? GLYPH.on : GLYPH.off} ${sw.name}`;
+
+/**
+ * The switches packed into terminal lines of `cols` columns, indented under their title. A switch that does not fit
+ * moves whole to the next line; only a name wider than a whole line is shortened. The band draws these lines and
+ * counts them against its row budget, so the two never disagree.
+ */
+export function featureLines(switches: readonly FeatureSwitch[], cols: number): { sw: FeatureSwitch; label: string }[][] {
+  const { indent, columnGap } = DECK_DESIGN.band.features;
+  const room = Math.max(4, cols - indent);
+  const lines: { sw: FeatureSwitch; label: string }[][] = [];
+  let line: { sw: FeatureSwitch; label: string }[] = [];
+  let used = 0;
+  for (const sw of switches) {
+    const label = trunc(switchLabel(sw), room);
+    const width = displayWidth(label);
+    if (line.length && used + columnGap + width > room) {
+      lines.push(line);
+      line = [];
+      used = 0;
+    }
+    used += (line.length ? columnGap : 0) + width;
+    line.push({ sw, label });
+  }
+  if (line.length) lines.push(line);
+  return lines;
 }

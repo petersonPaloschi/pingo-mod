@@ -1,11 +1,11 @@
 // Terminal bar styles. Each returns exactly W cells for a row. Pure, no I/O.
-import { STYLE, TRACK, TRACK_BG, TICK_ON, TICK_OFF, MUTED, TEXT, HEAD_DIM, SHINE, hash, seedOf, trunc, textCells } from "./theme.ts";
+import { DECK_DESIGN, DECK_STYLE_NAMES, DECK_STYLE_ORDER, STYLE, TRACK, TRACK_BG, TICK_ON, TICK_OFF, MUTED, TEXT, HEAD_DIM, SHINE, hash, seedOf, trunc, textCells, type DeckStyleName } from "./theme.ts";
 import type { Cell, Row, Style } from "./theme.ts";
 import { GLYPH } from "../theme.ts";
 
-export const TERMINAL_STYLES = ["segments", "line", "solid", "dots", "pixel", "spark"] as const;
-export type TerminalStyle = (typeof TERMINAL_STYLES)[number];
-export const TERMINAL_STYLE_NAMES: Record<TerminalStyle, string> = { segments: "Segments", line: "Line", solid: "Solid", dots: "Dots", pixel: "Pixel dots", spark: "Spark" };
+export const TERMINAL_STYLES = DECK_STYLE_ORDER.terminal;
+export type TerminalStyle = DeckStyleName;
+export const TERMINAL_STYLE_NAMES: Record<TerminalStyle, string> = DECK_STYLE_NAMES.terminal;
 
 const DOTS = "⠁⠂⠄⠈⠃⠅⠉⠑⠆⠊⠒⠇⠋⠓⠧⠏⠗⠯⠷⠿⡿⣟⣯⣷⣽⣾⣿";
 
@@ -26,8 +26,9 @@ function withLabel(bar: Cell[], row: Row, W: number): Cell[] {
 }
 
 function barWidth(W: number): number {
-  const want = Math.min(W - 8, Math.max(10, Math.round(W * 0.58)));
-  return Math.max(6, want);
+  const { minimumWidth, labelReserve, preferredMinimum, shareRatio } = DECK_DESIGN.bar.terminal;
+  const want = Math.min(W - labelReserve, Math.max(preferredMinimum, Math.round(W * shareRatio)));
+  return Math.max(minimumWidth, want);
 }
 
 type DrawCells = (row: Row, W: number, frame: number) => Cell[];
@@ -82,7 +83,7 @@ function solid(row: Row, W: number, frame: number): Cell[] {
 function dots(row: Row, W: number, frame: number): Cell[] {
   const st = STYLE[row.style];
   const cells: Cell[] = [];
-  if (row.steps && row.steps <= 16) {
+  if (row.steps && row.steps <= DECK_DESIGN.bar.terminal.stepLimit) {
     for (let i = 0; i < row.steps; i++) {
       const done = i < (row.finished ?? 0);
       const cur = i === row.finished && row.animating;
@@ -90,9 +91,9 @@ function dots(row: Row, W: number, frame: number): Cell[] {
       if (i < row.steps - 1) cells.push({ ch: done ? "─" : "┄", color: done ? st.fill : TRACK });
     }
   } else {
-    const n = 10;
+    const n = DECK_DESIGN.bar.terminal.dotCount;
     for (let i = 0; i < n; i++) {
-      const v = row.pct / 10 - i;
+      const v = row.pct / DECK_DESIGN.bar.terminal.dotCount - i;
       cells.push({ ch: v >= 1 ? GLYPH.on : v > 0.4 ? "◐" : GLYPH.off, color: v > 0.4 ? st.fill : TICK_OFF });
       if (i < n - 1) cells.push({ ch: " ", color: TRACK });
     }
@@ -128,9 +129,10 @@ function spark(row: Row, W: number, frame: number): Cell[] {
   const st = STYLE[row.style];
   // the label and rate always fit; the bar and sparkline get whatever room is left
   const tail = trunc(row.name, 24).length + (row.rate ? row.rate.length + 2 : row.count ? row.count.length + 1 : 0) + 3;
-  const bw = Math.max(3, Math.min(18, Math.round(W * 0.22), W - tail - 1));
-  const room = Math.max(0, Math.min(24, W - bw - 1 - tail));
-  const hist = room >= 4 ? (row.hist ?? []).slice(-room) : [];
+  const { sparkMinWidth, sparkMaxWidth, sparkRatio, historyLimit } = DECK_DESIGN.bar.terminal;
+  const bw = Math.max(sparkMinWidth, Math.min(sparkMaxWidth, Math.round(W * sparkRatio), W - tail - 1));
+  const room = Math.max(0, Math.min(historyLimit, W - bw - 1 - tail));
+  const hist = room >= 4 ? (row.hist ?? []).slice(-Math.min(room, historyLimit)) : [];
   const f = Math.round((bw * row.pct) / 100);
   const cells: Cell[] = [];
   for (let x = 0; x < bw; x++) cells.push({ ch: x < f ? "━" : "─", color: x < f ? st.fill : TRACK });

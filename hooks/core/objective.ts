@@ -88,7 +88,7 @@ export async function decideObjective(input: ObjectiveInput, config: ObjectiveCo
   const locale = config.promptLocale ?? config.locale;
   const offer = offeredProfiles(policy, "executor", input.caps);
   const advisorOffer = offeredProfiles(policy, "advisor", input.caps);
-  const adviceLeft = policy.advice === "auto" && Object.keys(advisorOffer.profiles).length > 0
+  const adviceLeft = policy.advice !== "off" && Object.keys(advisorOffer.profiles).length > 0
     && (active?.adviceUsed ?? 0) < policy.limits.adviceCalls;
   const guidanceOptions = GUIDANCE.filter((option) => option !== "recover" || active);
   const questions: Questions = {

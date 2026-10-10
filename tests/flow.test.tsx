@@ -533,10 +533,23 @@ describe("the Flow tab in the pane", () => {
     await $.turn.complete({ turnId: "t1", answer: "Done.", durationMs: 10, isAborted: false, reason: "answer" });
     for (const surface of ["terminal", "desktop"] as const) {
       const ui = await $.ui.mount({ plugin: "jev", surface, component: "Pane", requestId: "jev", props: PANE_PROPS });
-      await ui.press({ key: "tab-live" });
-      const expected = surface === "desktop"
-        ? [/FLOW · RUN 1/, /“ship the login fix”/, /No Jev calls observed/, /Opus 5\.5 → answered Opus 5\.5/, /Claude Code 2/, /1 denied/, /look around/, /✓ 0s/, /Sonnet 5\.5/, /1 call observed/, /configured in settings/, /completed · 0s/, /1 edit · 1 file/]
-        : [/Latest run sequence/, /message/, /Jev/, /main/, /tools/, /subagents/, /advisor/, /answer/, /“ship the login fix”/, /look around/, /completed · 0s/, /1 edit · 1 file/, /Prompt to main completion:/, /Prompt to last background completion:/];
+      await ui.press({ key: "tab-flow" });
+      const expected = [
+        /Request 1 · /,
+        /You: “ship the login fix”/,
+        /Advisor off · simple request/,
+        /Model call 1 · Opus 5\.5/,
+        /Jev did not change this call/,
+        /Edit · ok/,
+        /Bash · denied/,
+        /Subagent Explore: look around/,
+        /Explore › Model call 1 · Sonnet 5\.5/,
+        /Explore finished in 0s/,
+        /“ok”/,
+        /Native \/advisor consulted on model call 1 · result received/,
+        /Answer · completed · 0s/,
+        /“Done\.”/,
+      ];
       const missing: string[] = [];
       for (const line of expected) if (!(await ui.find({ type: "Text", text: line }))) missing.push(String(line));
       if (missing.length) throw new Error(`Missing ${surface} Flow content: ${missing.join(" | ")}`);
@@ -553,7 +566,7 @@ describe("the Flow tab in the pane", () => {
     await ui.unmount();
   });
 
-  test("queued messages stay visible with pending association in compact and full views", async ($, on) => {
+  test("queued messages stay visible on the trail of the turn they arrived in", async ($, on) => {
     const enter = world(on);
     await $.session.start({ cwd: "/workspace" } as never).catch(() => undefined);
     await enter($, "refactor the router", "t1");
@@ -561,8 +574,8 @@ describe("the Flow tab in the pane", () => {
     await $.prompt.submit({ text: "and the docs", wait: false, origin: ORIGIN, turnId: "t1" } as never);
     for (const surface of ["terminal", "desktop"] as const) {
       const ui = await $.ui.mount({ plugin: "jev", surface, component: "Pane", requestId: "jev", props: PANE_PROPS });
-      await ui.press({ key: "tab-live" });
-      const expected = [/also the tests/, /association/, /pending/, /and the docs/];
+      await ui.press({ key: "tab-flow" });
+      const expected = [/Arrived during the turn: “also the tests”/, /Arrived during the turn: “and the docs”/];
       const missing: string[] = [];
       for (const line of expected) if (!(await ui.find({ type: "Text", text: line }))) missing.push(String(line));
       if (missing.length) throw new Error(`Missing ${surface} queued-message detail: ${missing.join(" | ")}`);
@@ -583,43 +596,39 @@ describe("the Flow tab in the pane", () => {
       const ui = await $.ui.mount({ plugin: "jev", surface, component: "Pane", requestId: "jev", props: PANE_PROPS });
       await ui.press({ key: "tab-agents" });
       expect(await ui.find({ type: "Text", text: "  Explore #1" })).toBeUndefined();
-      await ui.press({ key: "tab-live" });
+      await ui.press({ key: "tab-flow" });
       expect(await ui.find({ type: "Text", text: /look around/ })).toBeDefined();
       expect(await ui.find({ type: "Text", text: /✓/ })).toBeDefined();
       await ui.unmount();
     }
   });
 
-  test("the compact Live sequence keeps timing at 20 columns", async ($, on) => {
+  test("the Flow tab fits a 20-column pane: the time column goes before the sentence", async ($, on) => {
     const enter = world(on);
     await $.session.start({ cwd: "/workspace" } as never).catch(() => undefined);
     await enter($, "a long message that must wrap in a narrow pane", "t1");
     const ui = await $.ui.mount({ plugin: "jev", surface: "terminal", component: "Pane", requestId: "jev", props: { ...PANE_PROPS, bodyColumns: 20 } as never });
-    await ui.press({ key: "tab-live" });
-    expect(await ui.find({ type: "Text", text: /Latest run sequence/ })).toBeDefined();
-    expect(await ui.find({ type: "Text", text: /Prompt to main completion/ })).toBeDefined();
-    expect(await ui.find({ type: "Text", text: /Prompt to last background completion/ })).toBeDefined();
-    expect(await ui.find({ type: "Text", text: /FLOW · RUN/ })).toBeUndefined();
+    await ui.press({ key: "tab-flow" });
+    expect(await ui.find({ type: "Text", text: /^● You: “a long/ })).toBeDefined();
+    expect(await ui.find({ type: "Text", text: /Running for/ })).toBeDefined();
     await ui.unmount();
   });
 
-  test("terminal Live can expand the compact sequence to full Flow details", async ($, on) => {
+  test("Live keeps only its feed; the run's details are on the Flow tab", async ($, on) => {
     const enter = world(on);
     await $.session.start({ cwd: "/workspace" } as never).catch(() => undefined);
     await enter($, "inspect the cache", "t1");
     await step($ as never, { turnId: "t1", index: 0, model: "claude-opus-5-5", messageCount: 1 });
     const ui = await $.ui.mount({ plugin: "jev", surface: "terminal", component: "Pane", requestId: "jev", props: PANE_PROPS });
     await ui.press({ key: "tab-live" });
-    expect(await ui.find({ type: "Text", text: /Latest run sequence/ })).toBeDefined();
-    await ui.press({ key: "flow-details" });
-    expect(await ui.find({ type: "Text", text: /FLOW · RUN 1/ })).toBeDefined();
-    expect(await ui.find({ type: "Text", text: /Session timeline/ })).toBeDefined();
-    await ui.press({ key: "flow-details" });
-    expect(await ui.find({ type: "Text", text: /Latest run sequence/ })).toBeDefined();
+    expect(await ui.find({ key: "flow-details" })).toBeUndefined();
+    expect(await ui.find({ type: "Text", text: /Model call 1 · Opus 5\.5/ })).toBeUndefined();
+    await ui.press({ key: "tab-flow" });
+    expect(await ui.find({ type: "Text", text: /Model call 1 · Opus 5\.5/ })).toBeDefined();
     await ui.unmount();
   });
 
-  test("/jev flow opens the Live run view", async ($, on) => {
+  test("/jev flow opens the Flow tab", async ($, on) => {
     world(on);
     const opened: string[] = [];
     on("ui.open", async (_$, e) => {
@@ -629,7 +638,7 @@ describe("the Flow tab in the pane", () => {
     await $.command.run({ command: "jev", args: "flow", origin: ORIGIN, presentation: { isFullscreen: true, columns: 160 } } as never);
     expect(opened).toContain("jev");
     const ui = await $.ui.mount({ plugin: "jev", surface: "terminal", component: "Pane", requestId: "jev", props: PANE_PROPS });
-    expect(await ui.find({ type: "Text", text: /No runs recorded yet/ })).toBeDefined();
+    expect(await ui.find({ type: "Text", text: /Nothing yet: send a request/ })).toBeDefined();
     await ui.unmount();
   });
 });

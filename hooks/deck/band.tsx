@@ -1,7 +1,9 @@
 // Deck's band as elements: the collapsed look (chips, one line, or rings), the expanded rows with
-// their strips, and the pet lane. Pure: the caller hands in the rows, settings and time it drew from.
+// their strips, the feature switches, and the pet lane. Pure: the caller hands in the rows, settings
+// and time it drew from.
 import type { ElementTable, RenderNode } from "claude-code";
 
+import type { FeatureId } from "../../types";
 import { cellsOf } from "../dots.ts";
 import { text, type Locale } from "../i18n.ts";
 import { collapsedOrder, elapsed, stripTool, type Agent, type DeckRow, type Spend } from "./model.ts";
@@ -16,17 +18,20 @@ import {
   FOLD_FADE,
   FOLD_STEP,
   RIGHT_W,
+  featureLines,
   routeCellsTerminal,
   rowGlyph,
   rowSvg,
+  switchLabel,
   tierColor,
   toTrackRow,
   type Chip,
   type ChipMini,
   type DrawCaches,
+  type FeatureSwitch,
   type RingItem,
 } from "./rows.ts";
-import { AGENT_STYLE, BODY, DIM, MUTED, PILL_INK, STYLE, TEXT, TRACK, runs, textWidth, trunc } from "./theme.ts";
+import { AGENT_STYLE, BODY, DECK_DESIGN, DIM, MUTED, PILL_INK, STYLE, TEXT, TRACK, runs, textWidth, trunc } from "./theme.ts";
 import { terminalBar } from "./styles-terminal.ts";
 import { GLYPH } from "../theme.ts";
 
@@ -57,28 +62,34 @@ export type DeckBand = {
   maxRows?: number;
   /** Dismisses one expanded row: the ✕ beside it calls this with the row. */
   dismiss: (row: DeckRow) => void;
+  /** Every feature's switch, in the dashboard's order, drawn under the expanded band's header. */
+  features: readonly FeatureSwitch[];
+  /** Turns one feature on or off through the dashboard's own path, so both always show the same state. */
+  feature: (id: FeatureId, on: boolean) => void;
+  /** Drawn in the Deck pane: the expanded look even before any row, so the switches stay in reach. */
+  pane?: boolean;
 };
 
 /** Desktop pixels per column, as the chip budget and the row widths count them. */
-const PX_PER_COL = 8;
+const PX_PER_COL = DECK_DESIGN.band.pixelsPerColumn;
 /** A row title is cut to this many characters, and its column is at most this many pixels wide. */
-const TITLE_MAX_CH = 22;
-const TITLE_MAX_PX = 160;
+const TITLE_MAX_CH = DECK_DESIGN.band.titleMaxChars;
+const TITLE_MAX_PX = DECK_DESIGN.band.titleMaxPixels;
 /** Terminal lines the band may fill when the caller gives no maxRows. */
-const DEFAULT_MAX_ROWS = 14;
+const DEFAULT_MAX_ROWS = DECK_DESIGN.band.defaultMaxRows;
 /** The terminal animation steps once per this many milliseconds. */
-export const FRAME_MS = 150;
+export const FRAME_MS = DECK_DESIGN.motion.frameMs;
 /** The pet walking the header line: its height and its scale. */
-const HEADER_PET_H = 28;
-const HEADER_PET_SCALE = 0.7;
+const HEADER_PET_H = DECK_DESIGN.band.headerPetHeight;
+const HEADER_PET_SCALE = DECK_DESIGN.band.headerPetScale;
 
 /** The Deck band: the toggle, then the collapsed look, or the expanded rows and the pet. */
 export function renderDeck(els: ElementTable, band: DeckBand, surface: Surface) {
   const { Box, Button, Text } = els;
-  // nothing to show (no rows, no clock or weather, no pet): an empty column takes no line
-  if (!band.rows.length && !band.extras.length && !band.settings.show.pet) return <Box flexDirection="column" />;
+  // nothing to show (no rows, no clock or weather, no pet): an empty column takes no line; the pane keeps its switches
+  if (!band.pane && !band.rows.length && !band.extras.length && !band.settings.show.pet) return <Box flexDirection="column" />;
   const desktop = surface === "desktop" && "Svg" in els;
-  const expanded = band.expanded && band.rows.length > 0;
+  const expanded = band.expanded && (band.rows.length > 0 || band.pane === true);
   const extrasStr = band.extras.join("  ·  ");
   const toggle = (
     <Button key="deck-toggle" label={text(band.expanded ? "deck.toggle.expanded" : "deck.toggle.collapsed", band.locale)} plain dimColor hotkey="0" onPress={band.toggle} />
@@ -110,14 +121,66 @@ export function renderDeck(els: ElementTable, band: DeckBand, surface: Surface) 
     </Box>
   );
   const shown = Math.min(count, band.shown ?? count);
-  const lines = desktop ? desktopRows(els, band, shown) : terminalRows(els, band, shown, lane !== null);
+  const switches = featureSwitches(els, band, desktop, lane !== null);
+  const lines = desktop ? desktopRows(els, band, shown) : terminalRows(els, band, shown, lane !== null, switches.lines);
   return (
     <Box flexDirection="column" gap={desktop ? (band.settings.size === "roomy" ? 1 : 0) : undefined}>
       {lane}
       {header}
+      {switches.node}
       {lines}
     </Box>
   );
+}
+
+// the feature switches under the header: a title saying what the two glyphs mean, then one switch per feature,
+// each turning its feature on or off the way the dashboard does. On the desktop they wrap with the host's layout;
+// in the terminal they are packed into whole lines that count against the row budget (each line may still wrap, so a
+// terminal that draws a glyph wider never cuts a switch), and when the band has too little room left for its rows
+// they wait for the Deck pane rather than squeeze in
+function featureSwitches(els: ElementTable, band: DeckBand, desktop: boolean, hasLane: boolean): { node: RenderNode | null; lines: number } {
+  const { Box, Button, Text } = els;
+  if (!band.features.length) return { node: null, lines: 0 };
+  const { indent, columnGap, desktopColumnGap, desktopRowGap, minimumRows } = DECK_DESIGN.band.features;
+  const legend = `${GLYPH.on} ${text("ui.configuration.enabledValue", band.locale)}  ${GLYPH.off} ${text("ui.configuration.disabledValue", band.locale)}`;
+  const title = (
+    <Box key="deck-features-title" flexDirection="row" columnGap={columnGap} paddingLeft={indent}>
+      <Text color={TEXT} bold>{text("deck.features.title", band.locale)}</Text>
+      <Text color={MUTED} wrap="truncate">{legend}</Text>
+    </Box>
+  );
+  const button = (sw: FeatureSwitch, label: string) => (
+    <Button key={"deck-feature-" + sw.id} label={label} plain dimColor={!sw.on} onPress={() => band.feature(sw.id, !sw.on)} />
+  );
+  if (desktop) {
+    return {
+      node: (
+        <Box key="deck-features" flexDirection="column">
+          {title}
+          <Box flexDirection="row" flexWrap="wrap" columnGap={desktopColumnGap} rowGap={desktopRowGap} paddingLeft={indent}>
+            {band.features.map((sw) => button(sw, switchLabel(sw)))}
+          </Box>
+        </Box>
+      ),
+      lines: 0,
+    };
+  }
+  const packed = featureLines(band.features, band.cols);
+  const room = (band.maxRows ?? DEFAULT_MAX_ROWS) - 1 - (hasLane ? PET_BRAILLE.rows : 0);
+  if (!band.pane && room - 1 - packed.length < Math.min(minimumRows, band.rows.length)) return { node: null, lines: 0 };
+  return {
+    node: (
+      <Box key="deck-features" flexDirection="column">
+        {title}
+        {packed.map((line, i) => (
+          <Box key={"deck-features-" + i} flexDirection="row" flexWrap="wrap" columnGap={columnGap} paddingLeft={indent}>
+            {line.map(({ sw, label }) => button(sw, label))}
+          </Box>
+        ))}
+      </Box>
+    ),
+    lines: 1 + packed.length,
+  };
 }
 
 // the collapsed line: the toggle, then the chips, the one-line text, or the rings, with the extras at its end
@@ -273,10 +336,11 @@ const pctOf = (row: DeckRow) => `${Math.round(Math.max(0, Math.min(100, row.pct)
 const VALUE_W = 4;
 
 // the expanded rows in the terminal, a trail: each row's node (its state), the title, the bar, its share right after
-// it, what is left of the right-hand value (a reset, a rate), the ✕, and the agents hanging under it
-function terminalRows(els: ElementTable, band: DeckBand, shown: number, hasLane: boolean) {
+// it, what is left of the right-hand value (a reset, a rate), the ✕, and the agents hanging under it. `reserved`
+// lines (the feature switches) are already taken from the budget.
+function terminalRows(els: ElementTable, band: DeckBand, shown: number, hasLane: boolean, reserved: number) {
   const { Box, Text } = els;
-  const maxRows = Math.max(2, (band.maxRows ?? DEFAULT_MAX_ROWS) - 1 - (hasLane ? PET_BRAILLE.rows : 0));
+  const maxRows = Math.max(2, (band.maxRows ?? DEFAULT_MAX_ROWS) - 1 - (hasLane ? PET_BRAILLE.rows : 0) - reserved);
   const labelW = Math.min(22, Math.max(10, Math.floor(band.cols * 0.18)));
   const rightW = band.rows.some((row) => row.kind !== "route" && row.right && row.right !== pctOf(row)) ? 11 : 0;
   const barW = Math.max(1, band.cols - labelW - VALUE_W - rightW - 9);

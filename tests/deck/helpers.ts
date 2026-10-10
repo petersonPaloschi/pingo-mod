@@ -37,6 +37,8 @@ export type DeckWorldOptions = {
   usage?: unknown;
   /** What `$.tool.call` answers; the engine's default is a plain result. */
   toolCall?: (...args: any[]) => unknown;
+  /** The engine's `prompt.submit` answer; the default enters the text at once. */
+  promptSubmit?: (...args: any[]) => unknown;
   /** What `$.agent.spawn` answers, as the engine's `agent.spawn` hook. */
   spawn?: (...args: any[]) => unknown;
   /** The city lookup's answer; `null` finds nothing. */
@@ -111,7 +113,7 @@ export function deckWorld(on: On, saved = new Map<string, unknown>(), options: D
     }
     return { value: { status: 200, ok: true, headers: {}, text: JSON.stringify({ current: state.forecast }) } };
   });
-  on("prompt.submit", async (_$, e) => ({ text: e.text }));
+  on("prompt.submit", (options.promptSubmit ?? (async (_$: unknown, e: { text: string }) => ({ text: e.text }))) as never);
   on("turn.start", async (_$, e) => ({ turnId: e.turnId }));
   on("turn.complete", async () => ({ text: "" }));
   on("tool.call", (options.toolCall ?? (async () => ({ result: "ok" }))) as never);

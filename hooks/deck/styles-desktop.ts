@@ -1,11 +1,11 @@
 // Desktop bar styles as SVG markup (22px tall), plus agent strips. Pure, no I/O.
 // The pixel style and the strips adapt plan-progress (zycck/claude-mods, MIT, Kirill Serditov).
-import { AGENT_STYLE, STYLE, SVG_ON_FILL, SVG_TEXT, SVG_TRACK, hash, seedOf, esc, textWidth, hex, mix, rgb, type AgentRow, type AgentView, type Row, type Style, type StyleName } from "./theme.ts";
+import { AGENT_STYLE, DECK_DESIGN, DECK_STYLE_NAMES, DECK_STYLE_ORDER, STYLE, SVG_ON_FILL, SVG_TEXT, SVG_TRACK, hash, seedOf, esc, textWidth, hex, mix, rgb, type AgentRow, type AgentView, type DeckStyleName, type Row, type Style, type StyleName } from "./theme.ts";
 import { elapsed } from "./model.ts";
 
-export const DESKTOP_STYLES = ["pixel", "segments", "line", "solid", "dots", "spark"] as const;
-export type DesktopStyle = (typeof DESKTOP_STYLES)[number];
-export const DESKTOP_STYLE_NAMES: Record<DesktopStyle, string> = { pixel: "Pixel", segments: "Segments", line: "Line", solid: "Solid", dots: "Dots", spark: "Spark" };
+export const DESKTOP_STYLES = DECK_STYLE_ORDER.desktop;
+export type DesktopStyle = DeckStyleName;
+export const DESKTOP_STYLE_NAMES: Record<DesktopStyle, string> = DECK_STYLE_NAMES.desktop;
 
 /** The lastHead / lastStrip memories: where each bar or strip was last drawn, so it can glide. */
 export type LastHead = Map<string, number>;
@@ -14,9 +14,9 @@ export interface LastStrip {
   color: string;
 }
 
-const H = 22;
-const FONT = "'Anthropic Sans',ui-sans-serif,system-ui,-apple-system,sans-serif";
-const NARROW = 360;
+const H = DECK_DESIGN.bar.height;
+const FONT = DECK_DESIGN.type.svg;
+const NARROW = DECK_DESIGN.breakpoints.narrowWidth;
 
 const ICON_PATH: Partial<Record<StyleName, string>> = {
   ask: "M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3M12 17h.01",
@@ -27,13 +27,13 @@ const ICON_PATH: Partial<Record<StyleName, string>> = {
 // twinkle classes keep their phase across redraws
 export function twinkleCss(nowMs: number, done: boolean): string {
   const t = nowMs / 1000;
-  const durs = done ? [3.2, 3.8, 4.4, 3.5] : [2.2, 2.8, 1.9, 3.3];
-  const base = [0, 0.7, 1.3, 0.4];
+  const { activeSeconds, doneSeconds, phaseSeconds, activeOpacity, doneOpacity } = DECK_DESIGN.motion.twinkle;
+  const durs = done ? doneSeconds : activeSeconds;
   let css = "";
   durs.forEach((d, i) => {
-    css += `.t${i}{animation:tw ${d}s ease-in-out infinite;animation-delay:-${((t + base[i]!) % d).toFixed(2)}s}`;
+    css += `.t${i}{animation:tw ${d}s ease-in-out infinite;animation-delay:-${((t + phaseSeconds[i]!) % d).toFixed(2)}s}`;
   });
-  return css + `@keyframes tw{0%,100%{opacity:1}50%{opacity:${done ? 0.8 : 0.45}}}@media (prefers-reduced-motion:reduce){.t0,.t1,.t2,.t3{animation:none}}`;
+  return css + `@keyframes tw{0%,100%{opacity:1}50%{opacity:${done ? doneOpacity : activeOpacity}}}@media (prefers-reduced-motion:reduce){.t0,.t1,.t2,.t3{animation:none}}`;
 }
 
 function glideFrom(lastHead: LastHead, id: string, fx: number): number {
@@ -42,7 +42,7 @@ function glideFrom(lastHead: LastHead, id: string, fx: number): number {
   return from;
 }
 
-const EASE = 'calcMode="spline" keyTimes="0;1" keySplines=".2 .8 .2 1"';
+const EASE = `calcMode="spline" keyTimes="0;1" keySplines="${DECK_DESIGN.motion.easing}"`;
 
 function pillMarkup(row: Row, W: number, fx: number, from: number, st: Style, maxShare = 0.55): string {
   const icon = ICON_PATH[row.style];
@@ -78,8 +78,8 @@ function pixel(row: Row, W: number, nowMs: number, lastHead: LastHead): string {
   const fx = (Math.max(0, Math.min(100, row.pct)) / 100) * W;
   const from = glideFrom(lastHead, row.id, fx);
   const acc = hex(st.desk);
-  const light = mix(acc, [255, 255, 255], 0.32);
-  const grey: [number, number, number] = [132, 130, 138];
+  const light = mix(acc, [255, 255, 255], DECK_DESIGN.bar.desktop.pixelLightMix);
+  const grey = hex(DECK_DESIGN.bar.desktop.pixelBase);
   const seed = Math.abs(seedOf(row.id) % 997);
   const buckets = [0, 1, 2, 3, 4].map((b) => {
     const m = b / 4;
@@ -102,10 +102,10 @@ function pixel(row: Row, W: number, nowMs: number, lastHead: LastHead): string {
     const x = m.f * W;
     const passed = x < fx - 1;
     const h = m.stage ? H : 8;
-    marks += `<rect x="${(x - (m.stage ? 1 : 0.75)).toFixed(1)}" y="${(H - h) / 2}" width="${m.stage ? 2 : 1.5}" height="${h}" rx=".75" fill="${passed ? rgb(mix(light, [255, 255, 255], 0.45)) : "#8A8984"}" opacity="${passed ? (m.stage ? 0.95 : 0.6) : m.stage ? 0.7 : 0.45}"/>`;
+    marks += `<rect x="${(x - (m.stage ? 1 : 0.75)).toFixed(1)}" y="${(H - h) / 2}" width="${m.stage ? 2 : 1.5}" height="${h}" rx=".75" fill="${passed ? rgb(mix(light, [255, 255, 255], 0.45)) : SVG_TRACK}" opacity="${passed ? (m.stage ? 0.95 : 0.6) : m.stage ? 0.7 : 0.45}"/>`;
   }
   const id = "p" + seed;
-  const glideFill = Math.abs(from - fx) > 0.5 ? `<animate attributeName="width" from="${from.toFixed(1)}" to="${fx.toFixed(1)}" dur=".45s" ${EASE} fill="freeze"/>` : "";
+  const glideFill = Math.abs(from - fx) > 0.5 ? `<animate attributeName="width" from="${from.toFixed(1)}" to="${fx.toFixed(1)}" dur="${DECK_DESIGN.motion.glideSeconds}s" ${EASE} fill="freeze"/>` : "";
   const css = buckets.map((b, i) => `.b${i}{fill:${b.color};fill-opacity:${b.opacity}}`).join("") + ".pxd{width:2px;height:2px}" + twinkleCss(nowMs, done);
   return (
     `<style>${css}</style>` +
@@ -122,15 +122,17 @@ function label(row: Row, x: number, color: string): string {
 }
 
 function barShare(W: number): number {
-  return Math.max(80, Math.round(W * 0.62));
+  const { minimumShare, shareRatio } = DECK_DESIGN.bar.desktop;
+  return Math.max(minimumShare, Math.round(W * shareRatio));
 }
 
 function segments(row: Row, W: number, nowMs: number, lastHead: LastHead): string {
   const st = STYLE[row.style];
   const color = st.desk;
   const bw = barShare(W);
-  const n = Math.max(8, Math.min(40, Math.round(bw / 9)));
-  const gap = 2;
+  const { segmentMin, segmentMax, segmentWidth, segmentGap } = DECK_DESIGN.bar.desktop;
+  const n = Math.max(segmentMin, Math.min(segmentMax, Math.round(bw / segmentWidth)));
+  const gap = segmentGap;
   const sw = (bw - gap * (n - 1)) / n;
   const filled = (row.pct / 100) * n;
   const stages = new Set(row.marks.filter((m) => m.stage).map((m) => Math.round(m.f * n)));
@@ -150,11 +152,11 @@ function line(row: Row, W: number, _nowMs: number, lastHead: LastHead): string {
   const bw = barShare(W);
   const fx = (row.pct / 100) * bw;
   const from = glideFrom(lastHead, row.id, fx);
-  const glide = Math.abs(from - fx) > 0.5 ? `<animate attributeName="width" from="${from.toFixed(1)}" to="${fx.toFixed(1)}" dur=".45s" ${EASE} fill="freeze"/>` : "";
-  const glideDot = Math.abs(from - fx) > 0.5 ? `<animate attributeName="cx" from="${from.toFixed(1)}" to="${fx.toFixed(1)}" dur=".45s" ${EASE} fill="freeze"/>` : "";
+  const glide = Math.abs(from - fx) > 0.5 ? `<animate attributeName="width" from="${from.toFixed(1)}" to="${fx.toFixed(1)}" dur="${DECK_DESIGN.motion.glideSeconds}s" ${EASE} fill="freeze"/>` : "";
+  const glideDot = Math.abs(from - fx) > 0.5 ? `<animate attributeName="cx" from="${from.toFixed(1)}" to="${fx.toFixed(1)}" dur="${DECK_DESIGN.motion.glideSeconds}s" ${EASE} fill="freeze"/>` : "";
   let marks = "";
-  for (const m of row.marks) marks += `<rect x="${(m.f * bw).toFixed(1)}" y="${m.stage ? 6 : 8}" width="1.5" height="${m.stage ? 10 : 6}" rx=".75" fill="${m.f * bw < fx ? color : "#8A8984"}" opacity=".7"/>`;
-  const pulse = row.animating ? '<animate attributeName="r" values="4;5.5;4" dur="1.2s" repeatCount="indefinite"/>' : "";
+  for (const m of row.marks) marks += `<rect x="${(m.f * bw).toFixed(1)}" y="${m.stage ? 6 : 8}" width="1.5" height="${m.stage ? 10 : 6}" rx=".75" fill="${m.f * bw < fx ? color : SVG_TRACK}" opacity=".7"/>`;
+  const pulse = row.animating ? `<animate attributeName="r" values="4;5.5;4" dur="${DECK_DESIGN.motion.progressPulseSeconds}s" repeatCount="indefinite"/>` : "";
   return (
     `<rect x="0" y="10" width="${bw}" height="2" rx="1" fill="${SVG_TRACK}" fill-opacity=".25"/>` +
     `<rect x="0" y="9.5" width="${fx.toFixed(1)}" height="3" rx="1.5" fill="${color}">${glide}</rect>${marks}` +
@@ -168,10 +170,11 @@ function solid(row: Row, W: number, nowMs: number, lastHead: LastHead): string {
   const fx = (row.pct / 100) * W;
   const from = glideFrom(lastHead, row.id, fx);
   const id = "s" + Math.abs(seedOf(row.id) % 997);
-  const glide = Math.abs(from - fx) > 0.5 ? `<animate attributeName="width" from="${from.toFixed(1)}" to="${fx.toFixed(1)}" dur=".45s" ${EASE} fill="freeze"/>` : "";
-  const t = (nowMs / 1000) % 2.4;
+  const glide = Math.abs(from - fx) > 0.5 ? `<animate attributeName="width" from="${from.toFixed(1)}" to="${fx.toFixed(1)}" dur="${DECK_DESIGN.motion.glideSeconds}s" ${EASE} fill="freeze"/>` : "";
+  const sweepSeconds = DECK_DESIGN.motion.solidSweepSeconds;
+  const t = (nowMs / 1000) % sweepSeconds;
   const sweep = row.animating
-    ? `<rect x="-60" y="0" width="60" height="${H}" fill="${SVG_ON_FILL}" fill-opacity=".18"><animate attributeName="x" from="-60" to="${W}" dur="2.4s" begin="-${t.toFixed(2)}s" repeatCount="indefinite"/></rect>`
+    ? `<rect x="-60" y="0" width="60" height="${H}" fill="${SVG_ON_FILL}" fill-opacity=".18"><animate attributeName="x" from="-60" to="${W}" dur="${sweepSeconds}s" begin="-${t.toFixed(2)}s" repeatCount="indefinite"/></rect>`
     : "";
   const text = esc(row.name) + (row.count ? " · " + esc(row.count) : "");
   return (
@@ -187,7 +190,7 @@ function dots(row: Row, W: number, nowMs: number, lastHead: LastHead): string {
   glideFrom(lastHead, row.id, 0);
   let out = "";
   let x = 8;
-  if (row.steps && row.steps <= 16) {
+  if (row.steps && row.steps <= DECK_DESIGN.bar.desktop.stepLimit) {
     const gapW = Math.min(26, Math.max(12, (barShare(W) - 16) / Math.max(1, row.steps - 1)));
     for (let i = 0; i < row.steps; i++) {
       const done = i < (row.finished ?? 0);
@@ -201,8 +204,8 @@ function dots(row: Row, W: number, nowMs: number, lastHead: LastHead): string {
       x += gapW;
     }
   } else {
-    for (let i = 0; i < 10; i++) {
-      const v = row.pct / 10 - i;
+    for (let i = 0; i < DECK_DESIGN.bar.desktop.dotCount; i++) {
+      const v = row.pct / DECK_DESIGN.bar.desktop.dotCount - i;
       out += `<circle cx="${x}" cy="11" r="5" fill="${SVG_TRACK}" fill-opacity=".2"/>`;
       if (v > 0) out += `<clipPath id="d${seedOf(row.id) % 997}${i}"><rect x="${x - 5}" y="6" width="${10 * Math.min(1, v)}" height="10"/></clipPath><circle cx="${x}" cy="11" r="5" fill="${color}" clip-path="url(#d${seedOf(row.id) % 997}${i})"/>`;
       x += 16;
@@ -215,21 +218,22 @@ function dots(row: Row, W: number, nowMs: number, lastHead: LastHead): string {
 function spark(row: Row, W: number, _nowMs: number, lastHead: LastHead): string {
   const st = STYLE[row.style];
   const color = st.desk;
-  const bw = Math.max(60, Math.round(W * 0.26));
+  const { sparkMinWidth, sparkRatio, historyLimit } = DECK_DESIGN.bar.desktop;
+  const bw = Math.max(sparkMinWidth, Math.round(W * sparkRatio));
   const fx = (row.pct / 100) * bw;
   const from = glideFrom(lastHead, row.id, fx);
-  const glide = Math.abs(from - fx) > 0.5 ? `<animate attributeName="width" from="${from.toFixed(1)}" to="${fx.toFixed(1)}" dur=".45s" ${EASE} fill="freeze"/>` : "";
+  const glide = Math.abs(from - fx) > 0.5 ? `<animate attributeName="width" from="${from.toFixed(1)}" to="${fx.toFixed(1)}" dur="${DECK_DESIGN.motion.glideSeconds}s" ${EASE} fill="freeze"/>` : "";
   let out = `<rect x="0" y="7" width="${bw}" height="8" rx="4" fill="${SVG_TRACK}" fill-opacity=".2"/><rect x="0" y="7" width="${fx.toFixed(1)}" height="8" rx="4" fill="${color}">${glide}</rect>`;
-  const sw = Math.max(60, Math.round(W * 0.3));
+  const sw = Math.max(DECK_DESIGN.bar.desktop.sparklineMinimumWidth, Math.round(W * DECK_DESIGN.bar.desktop.sparklineRatio));
   const sx = bw + 14;
-  const hist = (row.hist ?? []).slice(-30);
+  const hist = (row.hist ?? []).slice(-historyLimit);
   if (hist.length > 1) {
     const lo = Math.min(...hist);
     const hi = Math.max(...hist);
     const pts = hist.map((v, i): [number, number] => [sx + (i * sw) / (hist.length - 1), 18 - ((v - lo) / Math.max(1e-9, hi - lo)) * 14]);
     out += `<path d="${pts.map(([x, y], i) => (i ? "L" : "M") + x.toFixed(1) + "," + y.toFixed(1)).join(" ")}" fill="none" stroke="${color}" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round"/>`;
     const [lx, ly] = pts[pts.length - 1]!;
-    out += `<circle cx="${lx.toFixed(1)}" cy="${ly.toFixed(1)}" r="2.6" fill="${color}"><animate attributeName="r" values="2.6;3.6;2.6" dur="1.6s" repeatCount="indefinite"/></circle>`;
+    out += `<circle cx="${lx.toFixed(1)}" cy="${ly.toFixed(1)}" r="2.6" fill="${color}"><animate attributeName="r" values="2.6;3.6;2.6" dur="${DECK_DESIGN.motion.sparkPulseSeconds}s" repeatCount="indefinite"/></circle>`;
   } else {
     out += `<rect x="${sx}" y="10.5" width="${sw}" height="1" fill="${SVG_TRACK}" fill-opacity=".3"/>`;
   }
@@ -249,8 +253,8 @@ export function desktopTrack(style: string, row: Row, W: number, nowMs: number, 
 
 // ---------- agent strips under a bar ----------
 
-export const STRIP_H = 18;
-export const STRIP_GAP = 3;
+export const STRIP_H = DECK_DESIGN.strips.height;
+export const STRIP_GAP = DECK_DESIGN.strips.gap;
 
 export function stripsHeight(v: AgentView): number {
   const n = v.shown.length + (v.hidden.length ? 1 : 0);
@@ -293,7 +297,7 @@ export function stripsSvg(
     const was = lastStrip.get(a.id);
     lastStrip.set(a.id, { tool, color: c });
     const changed = was !== undefined && was.tool !== tool;
-    const flow = was && was.color !== c ? `<animate attributeName="fill" from="${was.color}" to="${c}" dur=".2s" fill="freeze"/>` : "";
+    const flow = was && was.color !== c ? `<animate attributeName="fill" from="${was.color}" to="${c}" dur="${DECK_DESIGN.motion.toolChangeSeconds}s" fill="freeze"/>` : "";
     const time = elapsed((a.endedAt ?? nowMs) - a.startedAt);
     let tag = "";
     if (a.model && !narrow) {
@@ -318,11 +322,11 @@ export function stripsSvg(
     out += `<rect x="0" y="${y}" width="${W}" height="${STRIP_H}" rx="${STRIP_H / 2}" fill="${SVG_TRACK}" fill-opacity=".14"/><text x="10" y="${y + 12.5}" class="sn st">${esc(more(v.hidden.length, done))}</text>`;
   }
   return (
-    `<style>.sn{font:400 11.5px ${FONT};fill:#F0EEFC}.st{fill-opacity:.65}` +
+    `<style>.sn{font:400 11.5px ${FONT};fill:${DECK_DESIGN.strips.textFill}}.st{fill-opacity:.65}` +
     twinkleCss(nowMs, false) +
-    ".sd{animation:sp 1.1s ease-in-out infinite}@keyframes sp{50%{opacity:.3}}" +
-    ".mi{animation:mi .2s ease-out both}@keyframes mi{from{opacity:0;filter:blur(3px)}}" +
-    ".mo{animation:mo .2s ease-in both}@keyframes mo{to{opacity:0;filter:blur(3px)}}" +
+    `.sd{animation:sp ${DECK_DESIGN.motion.stripPulseSeconds}s ease-in-out infinite}@keyframes sp{50%{opacity:.3}}` +
+    `.mi{animation:mi ${DECK_DESIGN.motion.toolChangeSeconds}s ease-out both}@keyframes mi{from{opacity:0;filter:blur(3px)}}` +
+    `.mo{animation:mo ${DECK_DESIGN.motion.toolChangeSeconds}s ease-in both}@keyframes mo{to{opacity:0;filter:blur(3px)}}` +
     "@media (prefers-reduced-motion:reduce){.sd,.mi,.mo{animation:none}.mo{opacity:0}}</style>" +
     out
   );

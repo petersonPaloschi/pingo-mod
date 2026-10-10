@@ -29,10 +29,174 @@ export const HUE = {
   claude: 0xd97757,
 } as const;
 
+/** Palette for dot raster cells and the Pingo sphere's depth shading. */
+export const DOT_PALETTE = {
+  dim: HUE.neutral,
+  faint: 0x6b7280,
+  route: HUE.ok,
+  pass: HUE.warn,
+  fail: HUE.fail,
+  idle: HUE.neutral,
+  base: HUE.info,
+  brand: HUE.brand,
+} as const;
+export const DOT_DEPTH = [0x2c2f36, 0x434750, 0x676c78, 0x9a9fab, 0xc9ccd4, 0xe9ebef] as const;
+
+/** Distinct but related accents for the five subagent mascots. */
+export const AGENT_MASCOT_PALETTE = {
+  tetra: 0x67d4e6,
+  gem: 0xf78fc6,
+  can: 0xc3e88d,
+  coil: 0xffb38a,
+  cone: 0xe9e09a,
+} as const;
+
 /** Animated Deck fills: a darker moving head and a light sweep of the brand lime, never used for text. */
 export const DECK_ACCENT = {
   headDim: 0x5d7216,
   shine: 0xb3c96a,
+} as const;
+
+/** One registry for the styles offered on both render surfaces; order and labels stay surface-specific. */
+export const DECK_STYLE_ORDER = {
+  desktop: ["pixel", "segments", "line", "solid", "dots", "spark"],
+  terminal: ["segments", "line", "solid", "dots", "pixel", "spark"],
+} as const;
+export type DeckStyleName = (typeof DECK_STYLE_ORDER.desktop)[number];
+export const DECK_STYLE_NAMES = {
+  desktop: { pixel: "Pixel", segments: "Segments", line: "Line", solid: "Solid", dots: "Dots", spark: "Spark" },
+  terminal: { segments: "Segments", line: "Line", solid: "Solid", dots: "Dots", pixel: "Pixel dots", spark: "Spark" },
+} as const satisfies Record<"desktop" | "terminal", Record<DeckStyleName, string>>;
+
+/** Visual parameters shared by the Deck's SVG, terminal-cell and mascot renderers. */
+export const DECK_DESIGN = {
+  type: { svg: "'Anthropic Sans',ui-sans-serif,system-ui,-apple-system,sans-serif" },
+  breakpoints: { narrowWidth: 360 },
+  motion: {
+    frameMs: 150,
+    glideSeconds: 0.45,
+    solidSweepSeconds: 2.4,
+    easing: ".2 .8 .2 1",
+    foldStepMs: 35,
+    foldFadeMs: 220,
+    foldRisePixels: 5,
+    unfoldEasing: "cubic-bezier(.22,1,.36,1)",
+    progressPulseSeconds: 1.2,
+    sparkPulseSeconds: 1.6,
+    stripPulseSeconds: 1.1,
+    toolChangeSeconds: 0.2,
+    twinkle: {
+      activeSeconds: [2.2, 2.8, 1.9, 3.3],
+      doneSeconds: [3.2, 3.8, 4.4, 3.5],
+      phaseSeconds: [0, 0.7, 1.3, 0.4],
+      activeOpacity: 0.45,
+      doneOpacity: 0.8,
+    },
+  },
+  bar: {
+    height: 22,
+    rightWidth: 92,
+    compactPadding: 3,
+    desktop: {
+      minimumShare: 80,
+      shareRatio: 0.62,
+      segmentMin: 8,
+      segmentMax: 40,
+      segmentWidth: 9,
+      segmentGap: 2,
+      dotCount: 10,
+      stepLimit: 16,
+      sparkMinWidth: 60,
+      sparkRatio: 0.26,
+      sparklineMinimumWidth: 60,
+      sparklineRatio: 0.3,
+      historyLimit: 30,
+      pixelBase: "#84828a",
+      pixelLightMix: 0.32,
+    },
+    terminal: {
+      minimumWidth: 6,
+      labelReserve: 8,
+      shareRatio: 0.58,
+      preferredMinimum: 10,
+      dotCount: 10,
+      stepLimit: 16,
+      sparkMinWidth: 3,
+      sparkMaxWidth: 18,
+      sparkRatio: 0.22,
+      historyLimit: 24,
+    },
+  },
+  strips: { height: 18, gap: 3, textFill: "#F0EEFC" },
+  band: {
+    pixelsPerColumn: 8,
+    titleMaxChars: 22,
+    titleMaxPixels: 160,
+    defaultMaxRows: 14,
+    headerPetHeight: 28,
+    headerPetScale: 0.7,
+    /** The expanded band's feature switches: a title line, then the switches packed into lines under it. */
+    features: {
+      /** Columns the title and the switch lines sit in from the band's left edge, under the rows' titles. */
+      indent: 2,
+      /** Terminal columns between two switches on one line. */
+      columnGap: 2,
+      /** Desktop spacing between switches, across and between wrapped lines. */
+      desktopColumnGap: 3,
+      desktopRowGap: 0,
+      /** Data rows a terminal band keeps below the switches; with less room the switches wait for the Deck pane. */
+      minimumRows: 2,
+    },
+    collapsed: {
+      desktop: { reservePixels: 140, extraPixelsPerChar: 7.5, titlePixelsPerChar: 8.5, itemPaddingPixels: 76 },
+      terminal: { reserveColumns: 10, extraColumnsPerChar: 1, itemPaddingColumns: 10 },
+    },
+  },
+  ring: { size: 22, center: 11, radius: 8.5, strokeWidth: 2.2 },
+  miniBar: { width: 36, height: 8, minimumVisibleFill: 4 },
+  stylePicker: {
+    desktopMinWidth: 200,
+    desktopMaxWidth: 420,
+    desktopReservedPixels: 160,
+    terminalMinWidth: 24,
+    terminalMaxWidth: 48,
+    terminalReservedColumns: 26,
+    nameWidth: 14,
+    columnGap: 2,
+    rowGap: 1,
+  },
+  pet: {
+    speed: { walk: 0.035, run: 0.11 },
+    body: { width: 48, height: 38, viewBox: "-4 -6 48 38", size: 34, x: 20, floorY: 29.5 },
+    braille: { columns: 12, rows: 4 },
+    lane: { desktopHeight: 62, desktopScale: 1.05, bodyGap: 2, backgroundSpacing: 12, sidePadding: 2, maximumColumns: 512 },
+    motion: {
+      breatheSeconds: 2.4,
+      sleepSeconds: 3,
+      walkSeconds: 0.6,
+      runSeconds: 0.28,
+      jumpSeconds: 1,
+      shakeSeconds: 0.3,
+      confettiSeconds: 1,
+      confettiDelaySeconds: 0.22,
+      sleepZSeconds: 2,
+      sleepZDelaySeconds: 0.9,
+      glowSeconds: 0.4,
+      glowLowOpacity: 0.55,
+      puffSeconds: 0.5,
+      puffDelaySeconds: 0.25,
+      puffScale: [0.6, 1.3],
+      puffOpacity: 0.7,
+      breatheScale: 0.965,
+      bobPixels: 1.2,
+      jumpPixels: 12,
+      shakePixels: 1,
+      confettiPixels: 16,
+      sleepZX: 6,
+      sleepZY: 14,
+      puffPixels: 8,
+    },
+  },
 } as const;
 
 /** A number color as the "#rrggbb" a Text, Box or SVG paints with. */
@@ -56,10 +220,66 @@ export const PAINT = {
   onFill: "#14110f",
 } as const;
 
+/** Dashboard text roles and spacing tokens; the host renders the UI primitives on both surfaces. */
+export const UI_INK = {
+  ink: PAINT.text,
+  dim: PAINT.muted,
+  faint: PAINT.muted,
+  border: PAINT.rule,
+  brand: PAINT.brand,
+  route: PAINT.ok,
+  pass: PAINT.warn,
+  fail: PAINT.fail,
+  you: PAINT.you,
+  claude: PAINT.claude,
+} as const;
+export const UI_DESIGN = {
+  space: { none: 0, xs: 1, sm: 2, md: 3 },
+  layout: { indent: 3, gutter: 3, minCardWidth: 10, gridMinWidth: 34, gridMaxColumns: 2 },
+} as const;
+
 /** The same roles for an SVG source, which cannot name a theme key: mid-tones that hold on both grounds. */
 export const SVG_PAINT = {
   muted: css(HUE.neutral),
   onFill: "#ffffff",
+} as const;
+
+/** Colors specific to the mascot's props; the main mood colors continue to come from HUE. */
+export const PET_PALETTE = {
+  shadow: "#000000",
+  laneLight: "#ffffff",
+  accents: {
+    gold: "#ffd23f",
+    red: "#e0245e",
+    glasses: "#17171d",
+    glassesEdge: "#ffe66d",
+    trim: "#cfcfcf",
+  },
+  props: {
+    dark: 0x4a4a48,
+    screen: 0x5dcaa5,
+    red: 0xe5484d,
+    blue: 0x378add,
+    paper: 0xf2f0ea,
+    page: 0xe8e4da,
+    gray: 0x9a9893,
+    amber: 0xe09a1e,
+    mark: 0x412402,
+  },
+  confetti: [0xeba83a, 0x9c95ec, 0x5dcaa5, 0xe2706f],
+  hats: {
+    tophat: "#454551",
+    party: css(HUE.plum),
+    crown: "#ffd23f",
+    wizard: css(HUE.you),
+    cowboy: "#8b5a2b",
+    propeller: "#3c7be0",
+    chef: "#f4f4f4",
+    viking: "#9aa3ad",
+    halo: "#ffc400",
+    santa: "#e03c3c",
+    nightcap: "#3c7be0",
+  },
 } as const;
 
 /** Glyphs that say a state without color, and the pieces of the trail. */

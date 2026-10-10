@@ -60,3 +60,6 @@ id_ed25519
 /.ignore
 /AGENTS.md
 /.github/copilot-instructions.md
+
+# Text captures from scripts/screens.ts (before/after of the band and the /jev tabs).
+/.screens/

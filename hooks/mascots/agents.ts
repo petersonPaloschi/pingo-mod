@@ -1,3 +1,5 @@
+import { AGENT_MASCOT_PALETTE } from "../theme.ts";
+
 export type MascotId = "tetra" | "gem" | "can" | "coil" | "cone";
 
 export interface AgentMascot {
@@ -7,11 +9,11 @@ export interface AgentMascot {
 }
 
 export const AGENT_MASCOTS: Record<MascotId, AgentMascot> = {
-  tetra: { id: "tetra", name: "Tetra", color: 0x67d4e6 },
-  gem: { id: "gem", name: "Gem", color: 0xf78fc6 },
-  can: { id: "can", name: "Can", color: 0xc3e88d },
-  coil: { id: "coil", name: "Coil", color: 0xffb38a },
-  cone: { id: "cone", name: "Top", color: 0xe9e09a },
+  tetra: { id: "tetra", name: "Tetra", color: AGENT_MASCOT_PALETTE.tetra },
+  gem: { id: "gem", name: "Gem", color: AGENT_MASCOT_PALETTE.gem },
+  can: { id: "can", name: "Can", color: AGENT_MASCOT_PALETTE.can },
+  coil: { id: "coil", name: "Coil", color: AGENT_MASCOT_PALETTE.coil },
+  cone: { id: "cone", name: "Top", color: AGENT_MASCOT_PALETTE.cone },
 };
 
 export const MASCOT_ORDER: readonly MascotId[] = ["tetra", "gem", "can", "coil", "cone"];

@@ -106,7 +106,7 @@ class Canvas {
 }
 
 /** The text on one line of at most `width` columns, wide characters counted twice. */
-const fit = (text: string, width: number) => {
+export const fit = (text: string, width: number) => {
   const line = text.replace(/\s+/g, " ");
   if (displayWidth(line) <= width) return line;
   let out = "";
@@ -121,7 +121,7 @@ const fit = (text: string, width: number) => {
 };
 
 /** Word-wrapped to `width` columns, at most `max` lines: the last one cut with "…" when more is left. */
-function wrap(text: string, width: number, max = 3): string[] {
+export function wrap(text: string, width: number, max = 3): string[] {
   const room = Math.max(1, width);
   const lines: string[] = [];
   let line = "";

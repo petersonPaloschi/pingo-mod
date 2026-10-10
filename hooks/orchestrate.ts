@@ -25,6 +25,8 @@ import {
   type Role,
 } from "./core/orchestration.ts";
 import { decideObjective, restoreObjective, type Objective } from "./core/objective.ts";
+import { ADVICE_ON_SCORE, decideAdvice, type AdviceDecision, type AdviceSignal } from "./core/advice.ts";
+import { formatDuration, text } from "./i18n.ts";
 import { digestOf, runGuidance, runReview, type Complete, type Evidence, type ReviewOutcome, type ReviewRequest } from "./core/review.ts";
 import {
   admit,
@@ -50,6 +52,7 @@ import {
   type Batch,
 } from "./core/queue.ts";
 import type { Settings } from "./config.ts";
+import type { TraceAdvice } from "../types";
 
 export const BATCH_STORE = "orchestration.batches";
 const NOTES_STORE = "orchestration.notes";
@@ -78,6 +81,8 @@ export interface Io {
   log: (tone: Tone, line: string, detail?: string) => Promise<void>;
   /** The effort turn.step should size a subagent's requests with. */
   setAgentEffort: (agentId: string, effort: Effort) => void;
+  /** Records the advisor's decision and outcome for the prompt being entered, for the Flow tab. */
+  noteAdvice?: (change: Partial<TraceAdvice>) => Promise<void>;
 }
 
 /** One writer at a time for the batch and objective records (the store has no compare-and-set). */
@@ -142,12 +147,19 @@ export async function onPromptSubmit(io: Io, e: { text: string; attachments?: re
   if (e.turnId || !HUMAN.has(e.origin.kind)) return [];
   const policy = await readPolicy(io);
   const notes = await takeNotes(io);
-  if (!policy.enabled) return notes;
-    const config = await io.settings();
+  const config = await io.settings();
   const closed = await io.gate(config);
-  if (closed) {
-    await io.log("muted", `Orchestration: AUTO did not apply (${closed}); the request stays native.`);
-    return notes;
+  // Off: executor and subagents stay native; the advisor still decides locally, per prompt,
+  // unless Jev itself is off (no key is fine: the local decision and the advisor need none).
+  if (!policy.enabled || closed) {
+    if (closed && policy.enabled) await io.log("muted", `Orchestration: AUTO did not apply (${closed}); the request stays native.`);
+    if (closed === "routing_disabled") {
+      await io.log("muted", text("feed.advice.off", config.locale, { why: text("feed.advice.why.jev_off", config.locale) }));
+      await io.noteAdvice?.({ at: await io.now(), on: false, why: "jev_off", decider: "local" });
+      return notes;
+    }
+    // Orchestration off decides locally whatever Jev's state; "gate" is only an on policy Jev cannot serve.
+    return [...notes, ...await localAdvice(io, config, policy, e, policy.enabled ? "gate" : "local")];
   }
   return exclusive(async () => {
     const active = await readObjective(io);
@@ -164,20 +176,106 @@ export async function onPromptSubmit(io: Io, e: { text: string; attachments?: re
     let objective = decision.objective;
     if (decision.failure) await io.log("warn", "Orchestration: Jev failed, AUTO did not apply; the request stays native.", decision.failure);
     const lines = [...notes];
-    if (objective) {
-      const executor = objective.executor ? `${MODEL_LABEL[objective.executor.model]} ${objective.executor.effort}` : `native (${objective.executorWhy ?? "unset"})`;
-      await io.log(decision.held.length ? "warn" : "good", `Orchestration: ${decision.continuity} objective ${objective.id} · ${objective.workMode}${objective.workModeConfident ? "" : " (default)"} · executor ${executor}`, decision.held.length ? `held: ${decision.held.join(", ")}` : undefined);
-      if (decision.guidance !== "none" && objective.adviceUsed < objective.policy.limits.adviceCalls) {
-        const advice = await guidance(io, config, objective, e.text, decision.guidance);
+    const executor = objective?.executor ? `${MODEL_LABEL[objective.executor.model]} ${objective.executor.effort}` : `native (${objective?.executorWhy ?? "unset"})`;
+    if (objective) await io.log(decision.held.length ? "warn" : "good", `Orchestration: ${decision.continuity} objective ${objective.id} · ${objective.workMode}${objective.workModeConfident ? "" : " (default)"} · executor ${executor}`, decision.held.length ? `held: ${decision.held.join(", ")}` : undefined);
+    if (decision.failure) {
+      // Jev gave no guidance answer: the local decision stands in, counted on the objective it keeps.
+      const local = await localAdvice(io, config, policy, e, "jev_failed", objective?.adviceUsed ?? 0);
+      if (local.length && objective) objective = { ...objective, adviceUsed: objective.adviceUsed + 1 };
+      lines.push(...local);
+    } else if (objective) {
+      // A fixed "on" wins over Jev's none; with "off" Jev was not asked, so its answer is none.
+      const purpose = decision.guidance === "none" && policy.advice === "on" ? "plan" : decision.guidance;
+      const allowance = objective.adviceUsed < objective.policy.limits.adviceCalls;
+      await logAdvice(io, config, {
+        on: purpose !== "none" && allowance,
+        why: policy.advice === "off" ? "forced_off" : !allowance ? "no_allowance" : purpose !== decision.guidance ? "forced_on" : "jev",
+        decider: "jev",
+        purpose,
+        executor,
+      });
+      if (purpose !== "none" && allowance) {
+        const advice = await guidance(io, config, objective, e.text, purpose);
         if (advice) {
           objective = { ...objective, adviceUsed: objective.adviceUsed + 1 };
-          lines.push(`Pingo advisor guidance (${decision.guidance}; optional, not approval):\n${advice}`);
+          lines.push(`Pingo advisor guidance (${purpose}; optional, not approval):\n${advice}`);
         }
       }
-      lines.unshift(objectiveNote(objective));
     }
+    if (objective) lines.unshift(objectiveNote(objective));
     await saveObjective(io, objective);
     return lines;
+  });
+}
+
+/** Guidance given while the executor stays native waits less: the prompt holds until it returns. */
+const LOCAL_ADVICE_TIMEOUT_MS = 30_000;
+
+type Decider = "local" | "gate" | "jev_failed" | "jev";
+
+/**
+ * The advisor decided here, without Jev: the local score picks on or off and the advisor profile
+ * (override, fixed values and AUTO allowlist first). Returns the guidance line for the prompt's
+ * context, or nothing. A failed consult is logged as a failure, not as "off", and is not counted.
+ */
+async function localAdvice(io: Io, config: Settings, policy: OrchestrationPolicy, e: { text: string; attachments?: readonly unknown[] }, decider: Exclude<Decider, "jev">, used = 0): Promise<string[]> {
+  const decision = decideAdvice({ text: e.text, attachments: e.attachments?.length ?? 0, used }, policy, capsOf(config));
+  await logAdvice(io, config, { ...decision, decider, purpose: "plan", executor: text("feed.advice.executorNative", config.locale) });
+  if (!decision.on || !decision.profile) return [];
+  const profile = decision.profile;
+  const started = await io.now();
+  const result = await runGuidance(io.complete, {
+    goal: truncate(e.text, 8000, config.locale),
+    constraints: ["Executor: native (orchestration does not choose it)", "Work mode: not managed"],
+    evidence: "",
+    purpose: "plan",
+  }, profile, Math.min(policy.limits.callTimeoutMs, LOCAL_ADVICE_TIMEOUT_MS));
+  const duration = formatDuration((await io.now()) - started, config.locale);
+  const model = `${MODEL_LABEL[profile.model]} ${profile.effort}`;
+  const endedAt = await io.now();
+  if (!result.text) {
+    await io.log("bad", text("feed.advice.failed", config.locale, { model, why: result.problem ?? "empty", duration }));
+    await io.noteAdvice?.({ outcome: "failed", endedAt, problem: result.problem ?? "empty" });
+    return [];
+  }
+  await io.log("good", text("feed.advice.given", config.locale, { model, duration }));
+  await io.noteAdvice?.({ outcome: "given", endedAt, guidance: result.text });
+  return [`Pingo advisor guidance (plan; optional, not approval):\n${result.text}`];
+}
+
+/** One line per prompt in Live: advisor on or off, its model and effort, why, and who decided. */
+async function logAdvice(io: Io, config: Settings, d: {
+  on: boolean; why: AdviceDecision["why"] | "jev"; decider: Decider; purpose: string; executor: string;
+  score?: number; tier?: AdviceDecision["tier"]; signals?: readonly AdviceSignal[]; profile?: Profile; source?: AdviceDecision["source"];
+}): Promise<void> {
+  const locale = config.locale;
+  const why = text(`feed.advice.why.${d.why}`, locale, {
+    score: String(d.score ?? 0),
+    need: String(ADVICE_ON_SCORE),
+    tier: d.tier ? text(`feed.advice.tier.${d.tier}`, locale) : "",
+    purpose: d.purpose,
+  });
+  const head = d.on
+    ? text("feed.advice.on", locale, { model: d.profile ? `${MODEL_LABEL[d.profile.model]} ${d.profile.effort}` : text("feed.advice.modelByJev", locale), why })
+    : text("feed.advice.off", locale, { why });
+  const detail = [
+    d.signals ? text("feed.advice.signals", locale, { signals: d.signals.length ? d.signals.map((s) => text(`feed.advice.signal.${s}`, locale)).join(", ") : text("feed.advice.signal.none", locale) }) : "",
+    text("feed.advice.decider", locale, { decider: text(`feed.advice.decider.${d.decider}`, locale) }),
+    d.source ? text("feed.advice.source", locale, { source: text(`feed.advice.source.${d.source}`, locale) }) : "",
+    text("feed.advice.executor", locale, { executor: d.executor }),
+  ].filter(Boolean).join(" · ");
+  await io.log(d.on ? "info" : "muted", head, detail);
+  await io.noteAdvice?.({
+    at: await io.now(),
+    on: d.on,
+    why: d.why,
+    decider: d.decider,
+    purpose: d.purpose,
+    ...(d.score === undefined ? {} : { score: d.score, need: ADVICE_ON_SCORE }),
+    ...(d.tier ? { tier: d.tier } : {}),
+    ...(d.signals ? { signals: [...d.signals] } : {}),
+    ...(d.profile ? { model: d.profile.model, effort: d.profile.effort } : {}),
+    ...(d.source ? { source: d.source } : {}),
   });
 }
 
@@ -198,8 +296,10 @@ async function guidance(io: Io, config: Settings, objective: Objective, goal: st
   const advisor = profile.guidance_advisor;
   if (!advisor) {
     await io.log("warn", "Orchestration: guidance skipped, no advisor profile was confidently chosen.");
+    await io.noteAdvice?.({ outcome: "failed", endedAt: await io.now(), problem: "no advisor profile was confidently chosen" });
     return undefined;
   }
+  await io.noteAdvice?.({ model: advisor.model, effort: advisor.effort });
   const result = await runGuidance(io.complete, {
     goal: truncate(goal, 8000, config.locale),
     constraints: [`Executor: ${objective.executor ? `${objective.executor.model} ${objective.executor.effort}` : "native"}`, `Work mode: ${objective.workMode}`],
@@ -207,6 +307,9 @@ async function guidance(io: Io, config: Settings, objective: Objective, goal: st
     purpose,
   }, advisor, Math.min(objective.policy.limits.callTimeoutMs, 60_000));
   await io.log(result.text ? "good" : "warn", result.text ? `Orchestration: ${MODEL_LABEL[advisor.model]} ${advisor.effort} gave ${purpose} guidance` : `Orchestration: guidance failed (${result.problem})`);
+  await io.noteAdvice?.(result.text
+    ? { outcome: "given", endedAt: await io.now(), guidance: result.text }
+    : { outcome: "failed", endedAt: await io.now(), problem: result.problem ?? "empty" });
   return result.text;
 }
 

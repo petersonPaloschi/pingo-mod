@@ -168,7 +168,28 @@ export function rowsOf(node: Node, width: number): number {
   return rows + border + padY + margin;
 }
 
+/** The lines a text takes wrapped as the terminal wraps it: at spaces, a word wider than a whole line cut across lines. */
 function wrapped(text: string, width: number): number {
   const w = Math.max(1, width);
-  return text.split("\n").reduce((s, line) => s + Math.max(1, Math.ceil(displayWidth(line) / w)), 0);
+  let rows = 0;
+  for (const line of text.split("\n")) {
+    let lines = 1;
+    let used = 0;
+    for (const word of line.split(" ")) {
+      const size = displayWidth(word);
+      if (used > 0 && used + 1 + size > w) {
+        lines++;
+        used = 0;
+      }
+      if (used === 0 && size > w) {
+        const extra = Math.ceil(size / w) - 1;
+        lines += extra;
+        used = size - extra * w;
+      } else {
+        used += (used ? 1 : 0) + size;
+      }
+    }
+    rows += lines;
+  }
+  return rows;
 }

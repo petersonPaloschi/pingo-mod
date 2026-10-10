@@ -3,6 +3,11 @@ import { expect, test } from "claude-code/testing";
 import { ASK, ORIGIN } from "./helpers.ts";
 
 import { DECK_VERSION } from "../../hooks/deck/model.ts";
+import { displayWidth } from "../../hooks/layout.ts";
+import { DECK_DESIGN } from "../../hooks/theme.ts";
+import { DESKTOP_STYLES } from "../../hooks/deck/styles-desktop.ts";
+import { TERMINAL_STYLES } from "../../hooks/deck/styles-terminal.ts";
+import { shot } from "../textshot.ts";
 
 import { DESKTOP, TERMINAL, TODOS, deckWorld, inAnHour, spawn } from "./helpers.ts";
 
@@ -101,12 +106,16 @@ test("every CLI and Desktop style draws a valid bar", LOCALE, async ($, on) => {
   deckWorld(on);
   await $.session.start(SESSION);
   await $.tool.call({ tool: "TodoWrite", todos: TODOS } as never);
-  for (const style of ["segments", "line", "solid", "dots", "pixel"]) {
+  for (const style of TERMINAL_STYLES) {
     await $.command.run({ command: "deck", ...ASK, args: "style " + style });
     await $.command.run({ command: "deck", ...ASK, args: "expand" });
     const term = await $.ui.mount({ ...BAND, surface: TERMINAL });
     expect(await term.find({ type: "Text", text: /Fixing auth/ })).toBeDefined();
     await term.unmount();
+  }
+  for (const style of DESKTOP_STYLES) {
+    await $.command.run({ command: "deck", ...ASK, args: "style " + style });
+    await $.command.run({ command: "deck", ...ASK, args: "expand" });
     const desk = await $.ui.mount({ ...BAND, surface: DESKTOP });
     expect(await desk.find({ key: "row-bar:todo" })).toBeDefined();
     await desk.unmount();
@@ -118,11 +127,12 @@ test("the style picker lists every style and a key press picks one per surface",
   await $.session.start(SESSION);
   await $.command.run({ command: "deck", ...ASK, args: "style" });
   const term = await $.ui.mount({ ...PICKER, surface: TERMINAL });
-  for (const k of ["segments", "line", "solid", "dots", "pixel"]) expect(await term.find({ key: "style-" + k })).toBeDefined();
+  for (const k of TERMINAL_STYLES) expect(await term.find({ key: "style-" + k })).toBeDefined();
   await term.press({ key: "style-dots" });
   await term.unmount();
   const desk = await $.ui.mount({ ...PICKER, surface: DESKTOP });
   expect(await desk.find({ type: "Svg" })).toBeDefined();
+  for (const k of DESKTOP_STYLES) expect(await desk.find({ key: "style-" + k })).toBeDefined();
   await desk.press({ key: "style-line" });
   expect((saved.get("deck") as any).style).toEqual({ terminal: "dots", desktop: "line" });
 });
@@ -510,4 +520,45 @@ test("/deck demo fills in a sample route and limits in a fresh session, and real
   out = await $.command.run({ command: "deck", ...ASK, args: "status" });
   expect(out.text).not.toMatch(/Session · 5h/);
   expect(out.text).toMatch(/7d · 50% used/);
+});
+
+test("at 40 columns the Deck pane draws every feature switch whole, on lines of their own, within its row budget", LOCALE, async ($, on) => {
+  deckWorld(on);
+  await $.session.start(SESSION);
+  await $.tool.call({ tool: "TodoWrite", todos: TODOS } as never);
+  // more agents than the pane has lines for, so the rows fill whatever the switches leave
+  for (const name of ["Explore auth", "Map routes", "Check tests", "Read docs", "Scan logs"]) await $.agent.spawn(spawn(name) as never).catch(() => undefined);
+  await $.command.run({ command: "jev", ...ASK, args: "feature lapida off" });
+  const pane = await $.ui.mount({ ...PANEL, surface: TERMINAL, props: { ...PANEL.props, bodyColumns: 40 } });
+  const lines = shot(await pane.drawn(), 40, { rasters: "mask" }).split("\n");
+  // the pane's budget, the pet's lane, header and switches included, and the rows take all that is left
+  expect(lines.length).toBe(DECK_DESIGN.band.defaultMaxRows);
+  for (const line of lines) expect(displayWidth(line)).toBeLessThanOrEqual(40);
+  const title = lines.findIndex((line) => line.trim().startsWith("Features"));
+  expect(lines[title]).toContain("● On  ○ Off");
+  // the switch lines sit under the title, only switches on them, each glyph and name whole
+  const switchLines = lines.slice(title + 1).filter((line) => /^ {2}[●○] /.test(line));
+  const drawn = switchLines.join("  ");
+  // Agents is off by default, Lapida was just turned off
+  for (const label of ["○ Agents", "● Farol", "● Clareza", "● Pingo Vivo", "● Prisma", "● Semente", "○ Lapida", "● Sentinela", "● Vigia", "● Context"]) expect(drawn).toContain(label);
+  for (const line of switchLines) expect(line.trim().split(/ {2}/).every((part) => /^[●○] \S/.test(part))).toBe(true);
+  await pane.unmount();
+});
+
+test("a band too short for its rows and the switches leaves the switches to the Deck pane", LOCALE, async ($, on) => {
+  deckWorld(on, new Map([["deck", { open: true }]]));
+  await $.session.start(SESSION);
+  await $.tool.call({ tool: "TodoWrite", todos: TODOS } as never);
+  const roomy = await $.ui.mount({ ...BAND, surface: TERMINAL, props: { ...BAND.props, bodyColumns: 40 } });
+  expect(await roomy.find({ key: "deck-feature-clareza" })).toBeDefined();
+  await roomy.unmount();
+  // 9 lines: the pet's 4, the header, and 4 left, too few for the title, the switch lines and two rows
+  const short = await $.ui.mount({ ...BAND, surface: TERMINAL, props: { ...BAND.props, bodyColumns: 40, maxRows: 9 } });
+  expect(await short.find({ key: "deck-feature-clareza" })).toBeUndefined();
+  // the rows keep the room: the context row's title is still drawn
+  expect(await short.find({ type: "Text", text: /^Context$/ })).toBeDefined();
+  await short.unmount();
+  const pane = await $.ui.mount({ ...PANEL, surface: TERMINAL });
+  expect(await pane.find({ key: "deck-feature-clareza" })).toBeDefined();
+  await pane.unmount();
 });

@@ -1,6 +1,10 @@
 // The pane and the band draw valid trees on both surfaces, and their controls act.
 import type { On, RenderPropsOf } from "claude-code";
 import { expect, mock, test } from "claude-code/testing";
+import { DEFAULT_FEATURES } from "../hooks/core/plan.ts";
+import { en } from "../hooks/strings/en.ts";
+import { pt } from "../hooks/strings/pt.ts";
+import { ASK, DESKTOP, TERMINAL, TODOS, deckWorld } from "./deck/helpers.ts";
 import { PANE_PROPS, PINGO_FACE, mockEngineServices, mockStore, status, successfulFetches } from "./helpers.ts";
 
 const BAND_PROPS = { hasSurvey: false, isWorking: false, maxRows: 3, bodyColumns: 100 } as unknown as RenderPropsOf["AbovePrompt"];
@@ -37,6 +41,8 @@ test("every tab draws on the terminal and the desktop app", async ($, on) => {
       ["tab-configuration", "History"],
       ["tab-ai", /paste its key/],
       ["tab-deck", "Band above the prompt"],
+      ["tab-flow", /Nothing yet: send a request/],
+      ["tab-orchestration", /Advisor\/reviewer/],
     ] as const) {
       await ui.press({ key });
       expect(await ui.find({ type: "Text", text })).toBeDefined();
@@ -45,7 +51,7 @@ test("every tab draws on the terminal and the desktop app", async ($, on) => {
   }
 });
 
-test("the AI tab holds every control that changes the model; no other tab keeps one", async ($, on) => {
+test("the AI tab holds every control that changes the model but orchestration's, which has its own tab", async ($, on) => {
   mock.clock(on, { now: Date.parse("2026-10-06T12:00:00Z") });
   mockEngineServices(on);
   on("session.model", async () => ({ value: "claude-opus-5-5" }));
@@ -53,13 +59,14 @@ test("the AI tab holds every control that changes the model; no other tab keeps 
   mock.store(on);
   mock.env(on, {});
   const ai = [
-    "routing", "provider", "api-key", "validate", "orch-enabled",
+    "routing", "provider", "api-key", "validate",
     "feature-agents", "feature-clareza", "feature-lapida", "feature-farol", "feature-prisma", "feature-semente", "feature-vigia",
     "assumption-scope", "plain-level", "plainReview", "design-surface", "ideaNudges", "promptLearning", "trackerSummary",
   ];
   const rest: Record<string, string[]> = {
     "tab-configuration": ["language", "clear"],
     "tab-features": ["feature-pingoVivo", "feature-sentinela", "plainSound", "pet-hat", "petShades", "monitor-interval", "clash-window"],
+    "tab-orchestration": ["orch-enabled", "orch-review", "orch-advice", "orch-batch", "native-advisor", "orch-command"],
   };
   const ui = await $.ui.mount({ plugin: "jev", surface: "terminal", component: "Pane", requestId: "jev", props: PANE_PROPS });
   await ui.press({ key: "tab-ai" });
@@ -69,7 +76,7 @@ test("the AI tab holds every control that changes the model; no other tab keeps 
   expect((await ui.find({ key: "routing" }))?.props.hotkey).toBe("r");
   for (const key of ["feature-farol", "feature-prisma", "feature-vigia"]) expect((await ui.find({ key }))?.props.hotkey).toBeUndefined();
   expect((await ui.find({ key: "feature-lapida" }))?.props.hotkey).toBe("l");
-  for (const tab of ["tab-overview", "tab-live", "tab-models", "tab-agents", "tab-logs", "tab-configuration", "tab-deck", "tab-features"]) {
+  for (const tab of ["tab-overview", "tab-live", "tab-models", "tab-agents", "tab-logs", "tab-configuration", "tab-deck", "tab-features", "tab-flow", "tab-orchestration"]) {
     await ui.press({ key: tab });
     for (const key of ai) expect(await ui.find({ key })).toBeUndefined();
     for (const key of rest[tab] ?? []) expect(await ui.find({ key })).toBeDefined();
@@ -116,27 +123,40 @@ test("the dashboard follows the configured Portuguese locale", { options: { loca
   expect(await ui.find({ type: "Text", text: "Provedor do Jev" })).toBeDefined();
   await ui.press({ key: "tab-features" });
   expect(await ui.find({ key: "feature-pingoVivo" })).toBeDefined();
-  await ui.press({ key: "tab-live" });
-  expect(await ui.find({ type: "Text", text: /Nenhuma execução registrada ainda/ })).toBeDefined();
+  await ui.press({ key: "tab-flow" });
+  expect(await ui.find({ type: "Text", text: /Nada ainda: envie um pedido/ })).toBeDefined();
+  await ui.press({ key: "tab-orchestration" });
+  expect(await ui.find({ type: "Text", text: /Advisor\/revisor/ })).toBeDefined();
   await ui.press({ key: "tab-deck" });
   expect(await ui.find({ type: "Text", text: "O que a faixa mostra" })).toBeDefined();
   expect(await ui.find({ type: "Text", text: "Faixa acima do prompt" })).toBeDefined();
   await ui.unmount();
 });
 
-test("Live opens the full run details in place and returns to its log", async ($, on) => {
+test("Flow and Orchestration are tabs of their own, keys 0 and o, on both surfaces; Live keeps only its feed", async ($, on) => {
   mock.clock(on, { now: Date.parse("2026-10-06T12:00:00Z") });
+  mockEngineServices(on);
+  on("session.model", async () => ({ value: "claude-opus-5-5" }));
+  on("session.id", async () => ({ value: "session-ui-flow" }));
   mock.store(on);
   mock.env(on, {});
   for (const surface of ["terminal", "desktop"] as const) {
     const ui = await $.ui.mount({ plugin: "jev", surface, component: "Pane", requestId: "jev", props: PANE_PROPS });
+    expect((await ui.find({ key: "tab-flow" }))?.props.hotkey).toBe("0");
+    expect((await ui.find({ key: "tab-orchestration" }))?.props.hotkey).toBe("o");
     await ui.press({ key: "tab-live" });
-    expect((await ui.find({ key: "flow-details" }))?.props.label).toBe("Full run details (f)");
-    await ui.press({ key: "flow-details" });
-    expect((await ui.find({ key: "flow-details" }))?.props.label).toBe("Back to Live log (b)");
-    expect(await ui.find({ type: "Text", text: /No runs recorded yet/ })).toBeDefined();
-    await ui.press({ key: "flow-details" });
-    expect((await ui.find({ key: "flow-details" }))?.props.label).toBe("Full run details (f)");
+    expect(await ui.find({ key: "flow-details" })).toBeUndefined();
+    expect(await ui.find({ key: "orch-enabled" })).toBeUndefined();
+    await ui.press({ key: "tab-flow" });
+    expect(await ui.find({ type: "Text", text: "Flow" })).toBeDefined();
+    expect(await ui.find({ type: "Text", text: /what Pingo did for each request/ })).toBeDefined();
+    expect(await ui.find({ type: "Text", text: /Nothing yet: send a request/ })).toBeDefined();
+    await ui.press({ key: "tab-orchestration" });
+    expect(await ui.find({ type: "Text", text: "Orchestration" })).toBeDefined();
+    expect(await ui.find({ key: "orch-enabled" })).toBeDefined();
+    await ui.press({ key: "tab-ai" });
+    expect(await ui.find({ key: "orch-enabled" })).toBeUndefined();
+    expect(await ui.find({ key: "routing" })).toBeDefined();
     await ui.unmount();
   }
 });
@@ -473,4 +493,58 @@ test("a key accepted in Setup comes back after a restart from the plugin store",
   expect(await status($)).toContain("Provider: OpenRouter");
   expect(await status($)).not.toContain("Key source: none");
   expect(await status($)).not.toContain("stored-key-7777");
+});
+
+for (const [locale, strings] of [["en", en], ["pt", pt]] as const) {
+  test(`every feature's description shows under its switch on the dashboard (${locale})`, { options: { locale } }, async ($, on) => {
+    mock.clock(on, { now: Date.parse("2026-10-06T12:00:00Z") });
+    mockEngineServices(on);
+    mock.store(on);
+    mock.env(on, {});
+    const ui = await $.ui.mount({ plugin: "jev", surface: "terminal", component: "Pane", requestId: "jev", props: PANE_PROPS });
+    const shown = new Set<string>();
+    for (const tab of ["tab-ai", "tab-features"]) {
+      await ui.press({ key: tab });
+      for (const id of Object.keys(DEFAULT_FEATURES)) {
+        if (!(await ui.find({ key: `feature-${id}` }))) continue;
+        const description = strings[`feature.${id}.description` as keyof typeof en];
+        expect((await ui.find({ type: "Text", text: description }))?.text).toBe(description);
+        shown.add(id);
+      }
+    }
+    expect([...shown].sort()).toEqual(Object.keys(DEFAULT_FEATURES).sort());
+    await ui.unmount();
+  });
+}
+
+const DECK_BAND = {
+  plugin: "jev",
+  component: "AbovePrompt",
+  requestId: "above-prompt",
+  viewport: { columns: 120, rows: 40 },
+  props: { hasSurvey: false, isWorking: true, maxRows: 20, bodyColumns: 100, scroll: { offset: 0, bodyRows: 20 }, view: {} },
+} as const;
+
+test("a feature switched in the Deck is switched on the dashboard, and the reverse, on both surfaces", { options: { locale: "en" } }, async ($, on) => {
+  deckWorld(on);
+  await $.session.start({ surface: "terminal", isInteractive: true, cwd: "/work" });
+  await $.tool.call({ tool: "TodoWrite", todos: TODOS } as never);
+  await $.command.run({ command: "deck", ...ASK, args: "expand" });
+  const pane = await $.ui.mount({ plugin: "jev", surface: "terminal", component: "Pane", requestId: "jev", props: PANE_PROPS });
+  await pane.press({ key: "tab-ai" });
+  for (const surface of [TERMINAL, DESKTOP]) {
+    const band = await $.ui.mount({ ...DECK_BAND, surface });
+    // every feature has its switch in the expanded band, named and showing its state
+    for (const id of Object.keys(DEFAULT_FEATURES)) expect((await band.find({ key: `deck-feature-${id}` }))?.props.label).toMatch(/^[●○] \S/);
+    expect((await band.find({ key: "deck-feature-clareza" }))?.props.label).toBe("● Clareza");
+    await band.press({ key: "deck-feature-clareza" });
+    expect((await band.find({ key: "deck-feature-clareza" }))?.props.label).toBe("○ Clareza");
+    expect((await band.find({ key: "deck-feature-clareza" }))?.props.dimColor).toBe(true);
+    expect((await pane.find({ key: "feature-clareza" }))?.props.dimColor).toBe(true);
+    await pane.press({ key: "feature-clareza" });
+    expect((await pane.find({ key: "feature-clareza" }))?.props.dimColor).toBe(false);
+    expect((await band.find({ key: "deck-feature-clareza" }))?.props.label).toBe("● Clareza");
+    await band.unmount();
+  }
+  await pane.unmount();
 });

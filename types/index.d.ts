@@ -25,7 +25,7 @@ export type RouteEvent = {
   jevRaw?: string[];
 };
 
-export type JevTab = "overview" | "live" | "models" | "agents" | "logs" | "configuration" | "deck" | "features" | "ai";
+export type JevTab = "overview" | "live" | "models" | "agents" | "logs" | "configuration" | "deck" | "features" | "ai" | "flow" | "orchestration";
 
 /**
  * A message as the Live run view records it. Its run is tied only when the engine confirms it: the turn
@@ -46,6 +46,35 @@ export type TraceMessage = {
   plan?: TracePlan;
   /** Jev calls made for it before its run started. */
   consults: TraceConsult[];
+  /** The controlled advisor's decision for it, and the consult's outcome once it returned. */
+  advice?: TraceAdvice;
+};
+
+/**
+ * The controlled advisor for one message, as orchestration decided it: on or off, why (a
+ * `feed.advice.why.*` code), who decided (`feed.advice.decider.*`), the profile, and the outcome.
+ */
+export type TraceAdvice = {
+  at: number;
+  on: boolean;
+  why: string;
+  decider: string;
+  /** The local score, the score it turns on from, its tier and the signals behind it. */
+  score?: number;
+  need?: number;
+  tier?: string;
+  signals?: string[];
+  /** "plan" or "recover": what the guidance was asked for. */
+  purpose?: string;
+  model?: string;
+  effort?: string;
+  /** Where the profile came from: the advisor role's override, fixed values or AUTO allowlist. */
+  source?: string;
+  outcome?: "given" | "failed";
+  endedAt?: number;
+  /** The guidance, clipped, or why the consult failed. */
+  guidance?: string;
+  problem?: string;
 };
 
 /** Legacy plan summary kept so older run records can still show their reason and outcome. */
@@ -92,6 +121,8 @@ export type TraceStep = {
   /** usage.model of the response; absent when no response (or no usage) arrived. */
   observed?: string;
   effort?: string;
+  /** Why the request went as it did: "orchestrated", "not_asked", "routing_disabled" or "subagent". */
+  route?: string;
   startedAt: number;
   endedAt?: number;
   stop?: string | null;
@@ -128,6 +159,8 @@ export type TraceAgent = {
   endedAt?: number;
   tools: number;
   requests: number;
+  /** Its last answer, clipped. */
+  result?: string;
 };
 
 /**
@@ -157,6 +190,8 @@ export type TraceRun = {
   startedAt: number;
   endedAt?: number;
   reason?: "answer" | "aborted" | "refusal" | "error" | "superseded";
+  /** The main loop's final answer, clipped. */
+  answer?: string;
   message?: TraceMessage;
   /** Messages submitted while it ran. */
   received: TraceMessage[];
@@ -368,7 +403,6 @@ declare module "claude-code" {
       sentinelaReplyTo: string;
       vigiaSessions: VigiaSession[];
       vigiaCollapsed: boolean;
-      flowDetails: boolean;
       feed: FeedEntry[];
       now: LiveNow;
       agents: AgentRun[];

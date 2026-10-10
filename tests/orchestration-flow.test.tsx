@@ -217,11 +217,11 @@ describe("orchestration in a session", () => {
 });
 
 for (const locale of ["en", "pt"] as const) {
-  test(`the AI tab shows and edits the orchestration policy (${locale})`, { options: { locale } }, async ($, on) => {
+  test(`the Orchestration tab shows and edits the orchestration policy (${locale})`, { options: { locale } }, async ($, on) => {
     const setup = world(on, {});
     await $.session.start({ cwd: "/workspace" } as never).catch(() => undefined);
     const ui = await $.ui.mount({ plugin: "jev", surface: "terminal", component: "Pane", requestId: "jev", props: PANE_PROPS });
-    await ui.press({ key: "tab-ai" });
+    await ui.press({ key: "tab-orchestration" });
     const rendered = async () => (await ui.findAll({ type: "Text" })).map((line) => line.text ?? "").join("\n");
     expect(await rendered()).toContain(locale === "en" ? "Orchestration" : "Orquestração");
     expect(await rendered()).toContain(locale === "en" ? "Advisor/reviewer" : "Advisor/revisor");

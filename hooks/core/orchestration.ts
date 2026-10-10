@@ -87,6 +87,8 @@ export interface Limits {
   activeCalls: number;
   /** Units one batch may hold. */
   units: number;
+  /** Independent units (depending on no other) a batch must hold unless the user asked for /batch. */
+  batchMinUnits: number;
   /** Optional controlled advice calls per objective. */
   adviceCalls: number;
   /** Repair rounds per unit. */
@@ -116,7 +118,8 @@ export interface OrchestrationPolicy {
   limits: Limits;
   /** Independent review of delegated results. */
   review: boolean;
-  advice: "auto" | "off";
+  /** The controlled advisor's optional guidance: decided per prompt (auto), always on, or off. */
+  advice: "auto" | "on" | "off";
   batch: "auto" | "off";
   nativeAdvisor: { mode: NativeAdvisorMode; model: ClaudeModelId };
   /** A trusted override for the next objective, per role; kept until cleared. */
@@ -130,6 +133,7 @@ export const DEFAULT_LIMITS: Readonly<Limits> = Object.freeze({
   reviewers: 1,
   activeCalls: 4,
   units: 30,
+  batchMinUnits: 5,
   adviceCalls: 3,
   repairRounds: 2,
   reviewPasses: 3,
@@ -142,6 +146,7 @@ const LIMIT_RANGE: Record<keyof Limits, readonly [number, number]> = {
   reviewers: [1, 8],
   activeCalls: [1, 24],
   units: [1, 200],
+  batchMinUnits: [1, 200],
   adviceCalls: [0, 20],
   repairRounds: [0, 10],
   reviewPasses: [1, 10],
@@ -232,7 +237,7 @@ export function normalizePolicy(value: unknown): OrchestrationPolicy {
       return [key, typeof value === "number" && Number.isFinite(value) ? Math.round(Math.min(max, Math.max(min, value))) : DEFAULT_LIMITS[key]];
     })) as unknown as Limits,
     review: raw.review !== false,
-    advice: raw.advice === "off" ? "off" : "auto",
+    advice: raw.advice === "off" || raw.advice === "on" ? raw.advice : "auto",
     batch: raw.batch === "off" ? "off" : "auto",
     nativeAdvisor: {
       mode: native.mode === "fixed" || native.mode === "auto" ? native.mode : "off",
@@ -420,7 +425,7 @@ const HANDLE_MODEL: Readonly<Record<string, ClaudeModelId>> = Object.freeze(Obje
 const modelOf = (value: string | undefined) => (value ? HANDLE_MODEL[value.toLowerCase()] : undefined);
 const roleOf = (value: string | undefined) => ROLES.find((role) => role === value);
 const LIMIT_NAMES: Readonly<Record<string, keyof Limits>> = Object.freeze({
-  workers: "workers", reviewers: "reviewers", calls: "activeCalls", units: "units", advice: "adviceCalls",
+  workers: "workers", reviewers: "reviewers", calls: "activeCalls", units: "units", batchmin: "batchMinUnits", advice: "adviceCalls",
   repairs: "repairRounds", reviews: "reviewPasses", turns: "workerTurns", timeout: "callTimeoutMs",
 });
 export const LIMIT_KEYS = Object.keys(LIMIT_NAMES);
@@ -450,8 +455,9 @@ export function applyCommand(policy: OrchestrationPolicy, line: string): { polic
     case "review":
       return a === "on" || a === "off" ? edit((p) => { p.review = a === "on"; }) : fail("review on|off");
     case "advice":
+      return a === "auto" || a === "on" || a === "off" ? edit((p) => { p.advice = a; }) : fail("advice auto|on|off");
     case "batch":
-      return a === "auto" || a === "off" ? edit((p) => { p[verb] = a; }) : fail(`${verb} auto|off`);
+      return a === "auto" || a === "off" ? edit((p) => { p.batch = a; }) : fail("batch auto|off");
     case "native": {
       if (a === "off" || a === "auto") return edit((p) => { p.nativeAdvisor.mode = a; });
       const model = modelOf(b);

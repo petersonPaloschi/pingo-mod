@@ -1,6 +1,11 @@
 import { expect, test } from "claude-code/testing";
 
 import { DEFAULT_FEATURES } from "../hooks/core/plan.ts";
+import { renderDeck, type DeckBand } from "../hooks/deck/band.tsx";
+import { createPet } from "../hooks/deck/pet.ts";
+import { DEFAULT_SETTINGS } from "../hooks/deck/settings.ts";
+import { features as featureList } from "../hooks/feed.ts";
+import { text as say } from "../hooks/i18n.ts";
 import { displayWidth, rowsOf } from "../hooks/layout.ts";
 import { emptyTrace } from "../hooks/trace.ts";
 import { renderPane, type Actions, type Els, type View } from "../hooks/ui.tsx";
@@ -185,7 +190,6 @@ function view(width: number, tab: View["tab"], locale: View["locale"]): View {
     meta: "",
     agents: [],
     trace: emptyTrace(),
-    flowDetails: false,
     scroll: 0,
     fixed: false,
     key: { source: "none", tail: "", provider: "typesafe" },
@@ -211,4 +215,65 @@ test("the terminal dashboard fits every tab and keeps every control actionable a
     }
   }
   expect(actions).toBeGreaterThan(0);
+});
+
+/**
+ * The Deck pane with no rows yet: its header and every feature's switch, every other one off. The desktop pet is a
+ * picture sized in pixels, which this column count cannot place, so the desktop pane is drawn without it.
+ */
+function deckPane(width: number, locale: View["locale"], pressed: string[], pet: boolean): DeckBand {
+  const now = Date.parse("2026-10-07T12:00:00Z");
+  return {
+    rows: [],
+    settings: { ...DEFAULT_SETTINGS, show: { ...DEFAULT_SETTINGS.show, pet } },
+    expanded: true,
+    pane: true,
+    locale,
+    cols: width,
+    now,
+    caches: { head: new Map(), strip: new Map() },
+    routeHist: [],
+    spend: { day: "2026-10-07", dayUsd: 0, month: "2026-10", monthUsd: 0 },
+    extras: ["12:00:00"],
+    pet: createPet(now),
+    toggle: () => undefined,
+    dismiss: () => undefined,
+    foldAge: null,
+    features: featureList(locale).map((one, i) => ({
+      id: one.id,
+      name: one.id === "agents" ? say("ui.features.agentsShort", locale) : one.name,
+      on: i % 2 === 0,
+    })),
+    feature: (id) => void pressed.push(id),
+  };
+}
+
+test("the Deck's feature switches fit whole at every width on both surfaces, and each one turns its feature", async () => {
+  const terminalEls = Object.fromEntries(Object.entries(els).filter(([tag]) => tag !== "Svg")) as unknown as Els;
+  const ids = Object.keys(DEFAULT_FEATURES).sort();
+  for (const locale of ["en", "pt"] as const) {
+    for (const width of widths) {
+      for (const [surface, table] of [["terminal", terminalEls], ["desktop", els]] as const) {
+        const pressed: string[] = [];
+        const band = deckPane(width, locale, pressed, surface === "terminal");
+        const tree = renderDeck(table, band, surface);
+        // every control fits the room it is given, and pressing it acts: the switches name their own feature
+        await fitControls(tree, width, `deck/${surface}/${locale}/${width}`, () => undefined);
+        expect([...pressed].sort()).toEqual(ids);
+        // each switch shows its state glyph and its whole name, and nothing else draws a raw string key
+        const labels = elements(tree).filter((node) => node.type === "Button").map((node) => String(node.props?.label ?? ""));
+        for (const sw of band.features) expect(labels).toContain(`${sw.on ? "●" : "○"} ${sw.name}`);
+        expect(textOf(tree).join("\n")).not.toMatch(rawLocaleKey);
+        if (surface === "terminal") {
+          // the terminal packs whole lines itself, counted against its row budget: no line may need the host to wrap it
+          const switchLines = elements(tree).filter((node) => {
+            const kids = node.type === "Box" ? childrenOf(node).filter(Boolean) as Element[] : [];
+            return kids.length > 0 && kids.every((kid) => kid.type === "Button" && /^[●○] /.test(String(kid.props?.label)));
+          });
+          expect(switchLines.length).toBeGreaterThan(0);
+          for (const line of switchLines) expect(naturalWidth(line) + Number(line.props?.paddingLeft ?? 0)).toBeLessThanOrEqual(width);
+        }
+      }
+    }
+  }
 });

@@ -1,6 +1,6 @@
 // The dotted visual system: one palette, braille cells, and shared dot meters.
 // Everything is a dot: the mascot, the meters, the timeline. The body is ink; color only says state.
-import { css, HUE } from "./theme.ts";
+import { css, DOT_DEPTH, DOT_PALETTE } from "./theme.ts";
 
 /** Draws in the terminal's own default color (a Raster cell's "no color"). */
 export const DEFAULT_COLOR = 0x01000000;
@@ -9,20 +9,10 @@ export const DEFAULT_COLOR = 0x01000000;
  * The palette as numbers, for Raster cells: the mid-tone hues of hooks/theme.ts, so the mascot, the meters and
  * the timeline hold on a dark and on a light terminal. Text paints with theme keys (PAINT), not with these.
  */
-export const DOT = {
-  dim: HUE.neutral,
-  faint: 0x6b7280,
-  route: HUE.ok,
-  pass: HUE.warn,
-  fail: HUE.fail,
-  idle: HUE.neutral,
-  base: HUE.info,
-  /** Pingo's own accent: the open screen, a call to Jev in flight. */
-  brand: HUE.brand,
-} as const;
+export const DOT = DOT_PALETTE;
 
 /** Body dots from the far side of a sphere to the near side: dimmer far away. */
-export const DEPTH = [0x2c2f36, 0x434750, 0x676c78, 0x9a9fab, 0xc9ccd4, 0xe9ebef] as const;
+export const DEPTH = DOT_DEPTH;
 
 /** A palette color as the string a Text or Box paints with. */
 export const hex = css;

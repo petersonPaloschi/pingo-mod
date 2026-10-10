@@ -31,6 +31,7 @@ import {
   consultEnd,
   consultStart,
   emptyTrace,
+  noteAdvice,
   promptEntered,
   setAdvisorInfo,
   startTurn,
@@ -46,7 +47,7 @@ import { renderAbove, renderAgentPane, renderPane, type Actions, type DeckPanel,
 import { flowSummary } from "./flow.ts";
 import * as orch from "./orchestrate.ts";
 import { MODEL_LABEL } from "./core/orchestration.ts";
-import { formatCompact, formatDecimal, formatDuration, formatNumber, formatPercent, text, type Locale, type LocaleKey, type LocaleOption } from "./i18n.ts";
+import { formatCompact, formatDecimal, formatDuration, formatNumber, formatPercent, localeFor, text, type Locale, type LocaleKey, type LocaleOption } from "./i18n.ts";
 import { renderDeck, FRAME_MS, type DeckBand, type Surface } from "./deck/band.tsx";
 import { DEFAULT_SETTINGS, parseSettings, serializeSettings, type DeckSettings } from "./deck/settings.ts";
 import {
@@ -101,7 +102,7 @@ import { DESKTOP_STYLES, DESKTOP_STYLE_NAMES, desktopTrack } from "./deck/styles
 import { TERMINAL_STYLES, TERMINAL_STYLE_NAMES, terminalBar } from "./deck/styles-terminal.ts";
 import { applyDeckCommand, deckUsage, deckWords, openReply } from "./deck/wire.ts";
 import { DIM, runs } from "./deck/theme.ts";
-import { GLYPH, PAINT } from "./theme.ts";
+import { DECK_DESIGN, GLYPH, PAINT, UI_DESIGN } from "./theme.ts";
 
 const PANE = "jev";
 type FeatureId = keyof FeatureFlags;
@@ -140,7 +141,6 @@ const sentinelaProblem = atom({ plugin: "jev", key: "sentinelaProblem" } as cons
 const sentinelaReplyTo = atom({ plugin: "jev", key: "sentinelaReplyTo" } as const, "");
 const vigiaSessions = atom({ plugin: "jev", key: "vigiaSessions" } as const, [] as VigiaSession[]);
 const vigiaCollapsed = atom({ plugin: "jev", key: "vigiaCollapsed" } as const, false);
-const flowDetails = atom({ plugin: "jev", key: "flowDetails" } as const, false);
 const feed = atom({ plugin: "jev", key: "feed" } as const, [] as FeedEntry[]);
 const live = atom({ plugin: "jev", key: "now" } as const, {} as LiveNow);
 const agents = atom({ plugin: "jev", key: "agents" } as const, [] as AgentRun[]);
@@ -1369,6 +1369,7 @@ async function deckBandOf($: EngineInterface, cols: number, surface: Surface, ma
   else deckShownDesktopAt = now;
   const s = deckOf(now);
   const rows = collectRows(s, show, now, config.locale);
+  const flags = await read($, features);
   return {
     rows,
     ...(folding && deckFold ? { shown: foldCount(rows.length, now) } : {}),
@@ -1389,6 +1390,13 @@ async function deckBandOf($: EngineInterface, cols: number, surface: Surface, ma
     toggle: () => void toggleDeck($),
     dismiss: (row) => void dismissDeckRow($, row),
     foldAge: folding && deckFold?.dir === "open" ? foldAgeOf(deckFold, now) : null,
+    // the dashboard's switches and names (Agents short, as there), toggled through the same setFeature
+    features: featureList(config.locale).map((one) => ({
+      id: one.id,
+      name: one.id === "agents" ? text("ui.features.agentsShort", config.locale) : one.name,
+      on: flags[one.id],
+    })),
+    feature: (id, enabled) => void setFeature($, id, enabled),
   };
 }
 
@@ -1435,7 +1443,9 @@ function stylePicker(
   const list: readonly string[] = desktop ? DESKTOP_STYLES : TERMINAL_STYLES;
   const names: Record<string, string> = desktop ? DESKTOP_STYLE_NAMES : TERMINAL_STYLE_NAMES;
   const current = desktop ? cfg.style.desktop : cfg.style.terminal;
-  const pw = Math.max(200, Math.min(420, cols * 8 - 160));
+  const picker = DECK_DESIGN.stylePicker;
+  const pw = Math.max(picker.desktopMinWidth, Math.min(picker.desktopMaxWidth, cols * DECK_DESIGN.band.pixelsPerColumn - picker.desktopReservedPixels));
+  const terminalWidth = Math.max(picker.terminalMinWidth, Math.min(picker.terminalMaxWidth, cols - picker.terminalReservedColumns));
   const lines = list.map((name, i) => {
     const track = toTrackRow({ ...row, id: "pick-" + name });
     const preview = desktop ? (
@@ -1446,11 +1456,11 @@ function stylePicker(
         source={`<svg xmlns="http://www.w3.org/2000/svg" width="${pw}" height="${TRACK_H}">${desktopTrack(name, track, pw, nowMs, new Map())}</svg>`}
       />
     ) : (
-      <Box flexDirection="row">{runs(Text, terminalBar(name, track, Math.max(24, Math.min(48, cols - 26)), deckFrame))}</Box>
+      <Box flexDirection="row">{runs(Text, terminalBar(name, track, terminalWidth, deckFrame))}</Box>
     );
     return (
-      <Box key={"style-row-" + name} flexDirection="row" columnGap={2} alignItems="center">
-        <Box width={14} flexShrink={0}>
+      <Box key={"style-row-" + name} flexDirection="row" columnGap={picker.columnGap} alignItems="center">
+        <Box width={picker.nameWidth} flexShrink={0}>
           <Button
             key={"style-" + name}
             label={names[name] ?? name}
@@ -1465,7 +1475,7 @@ function stylePicker(
     );
   });
   return (
-    <Box flexDirection="column" gap={desktop ? 1 : 0}>
+    <Box flexDirection="column" gap={desktop ? picker.rowGap : 0}>
       {lines}
       <Text color={DIM}>{text("deck.picker.hint", locale, { keys: list.map((_, i) => i + 1).join("/") })}</Text>
     </Box>
@@ -2060,7 +2070,8 @@ async function lapidaAbove($: EngineInterface, e: { props: { hasSurvey?: boolean
   const label = phase === "enhancing" ? "Lapida…" : phase === "ready" ? (pt ? "Lapida · revise o rascunho" : "Lapida · review the rewrite") : phase === "error" ? await read($, lapidaNote) : "Lapida";
   const notes = phase === "ready" ? await read($, lapidaChanges) : [];
   const width = Math.max(10, (e.props.bodyColumns || 80) - 2);
-  return <Box flexDirection="column"><Box><Text color={PAINT.brand}>{GLYPH.on} </Text><Text dimColor>{label} </Text>{!enhancing && <Button key="lapida-enhance" label={pt ? "Lapidar (e)" : "Enhance (e)"} hotkey="e" onPress={enhanceDraft} />}<Text> </Text>{!enhancing && <Button key="lapida-send" label={pt ? "Enviar (s)" : "Send (s)"} hotkey="s" onPress={send} />}</Box>{notes.map((line) => <Text key={line} dimColor wrap="truncate-end">{`+ ${line}`.slice(0, width)}</Text>)}{below}</Box>;
+  // The node and label, then each button, move whole to the next line on a narrow band instead of being squeezed.
+  return <Box flexDirection="column"><Box flexDirection="row" flexWrap="wrap" columnGap={UI_DESIGN.space.xs}><Box flexDirection="row" columnGap={UI_DESIGN.space.xs}><Text color={PAINT.brand}>{GLYPH.on}</Text><Text dimColor wrap="truncate-end">{label}</Text></Box>{!enhancing && <Box flexShrink={0}><Button key="lapida-enhance" label={pt ? "Lapidar (e)" : "Enhance (e)"} hotkey="e" onPress={enhanceDraft} /></Box>}{!enhancing && <Box flexShrink={0}><Button key="lapida-send" label={pt ? "Enviar (s)" : "Send (s)"} hotkey="s" onPress={send} /></Box>}</Box>{notes.map((line) => <Text key={line} dimColor wrap="truncate-end">{`+ ${line}`.slice(0, width)}</Text>)}{below}</Box>;
 }
 
 type PrismaQuestionInput = { question: string; header: string; multiSelect?: boolean; options?: { label: string; description?: string; preview?: string }[] };
@@ -2231,7 +2242,8 @@ async function sentinelaAbove($: EngineInterface, e: { props: { hasSurvey?: bool
   const count = (status: SentinelaSession["status"]) => list.filter((row) => row.status === status).length;
   const { Box, Button, Text } = renderElements($, e);
   const locale = (await getSettings($)).locale;
-  return <Box flexDirection="column"><Box><Text color={PAINT.brand}>{GLYPH.on} </Text><Button key="sessions" label={locale === "pt" ? "Sessões" : "Sessions"} onPress={() => void toggleSentinela($)} /><Text> </Text><Text color="error">{GLYPH.ask} {count("waiting")} {locale === "pt" ? "aguardando" : "waiting"}  </Text><Text color="warning">{GLYPH.on} {count("working")} {locale === "pt" ? "trabalhando" : "working"}  </Text><Text color="success">{GLYPH.ok} {count("done")} {locale === "pt" ? "concluídas" : "done"}</Text></Box>{below}</Box>;
+  // Each part moves whole to the next line on a narrow band: the button is never split from its node or cut.
+  return <Box flexDirection="column"><Box flexDirection="row" flexWrap="wrap" columnGap={UI_DESIGN.space.sm}><Box flexDirection="row" flexShrink={0} columnGap={UI_DESIGN.space.xs}><Text color={PAINT.brand}>{GLYPH.on}</Text><Button key="sessions" label={locale === "pt" ? "Sessões" : "Sessions"} onPress={() => void toggleSentinela($)} /></Box><Box flexShrink={0}><Text color="error">{GLYPH.ask} {count("waiting")} {locale === "pt" ? "aguardando" : "waiting"}</Text></Box><Box flexShrink={0}><Text color="warning">{GLYPH.on} {count("working")} {locale === "pt" ? "trabalhando" : "working"}</Text></Box><Box flexShrink={0}><Text color="success">{GLYPH.ok} {count("done")} {locale === "pt" ? "concluídas" : "done"}</Text></Box></Box>{below}</Box>;
 }
 
 const vigiaFlat = (value: string, max: number) => { const text = value.replace(/\s+/g, " ").trim(); return text.length > max ? `${text.slice(0, max - 1)}…` : text; };
@@ -2363,9 +2375,9 @@ export function normalizeTab(value: unknown): JevTab {
     case "deck":
     case "features":
     case "ai":
-      return value;
     case "flow":
-      return "live";
+    case "orchestration":
+      return value;
     case "reasons":
     case "baseline":
     case "log":
@@ -2632,7 +2644,6 @@ function actions($: EngineInterface, requestId = PANE): Actions {
     layout: () => undefined,
     tab: async (which) => { await update($, tab, () => which); await resetScroll(); },
     range: (ms) => void update($, range, () => ms),
-    flowDetails: async (open) => { await update($, flowDetails, () => open); await resetScroll(); },
     routing: (enabled) => void setRouting($, enabled),
     feature: (id, enabled) => void setFeature($, id, enabled),
     preference: (key, value) => {
@@ -2707,7 +2718,6 @@ async function view($: EngineInterface, width: number, rows: number, surface: st
     routing: await read($, routing),
     tab: normalized,
     range: await read($, range),
-    flowDetails: await read($, flowDetails),
     setup: await read($, setup),
     features: await read($, features),
     preferences: await read($, featurePreferences),
@@ -2722,7 +2732,7 @@ async function view($: EngineInterface, width: number, rows: number, surface: st
     meta: text("ui.meta", config.locale, { provider: PROVIDERS[config.provider].label, model: config.jevModel, confidence: formatNumber(config.minConfidence, config.locale, 2), source: text(`source.${config.keySource}`, config.locale) }),
     key: { source: config.keySource, tail: config.apiKey ? config.apiKey.slice(-4) : "", provider: config.provider },
     deck: null,
-    ...(normalized === "ai" ? { orchestration: await orchestrationView($) } : {}),
+    ...(normalized === "orchestration" ? { orchestration: await orchestrationView($) } : {}),
   };
 }
 
@@ -2769,6 +2779,21 @@ export const register: Register = (on, given) => {
   on("session.start", async ($, e, next) => {
     deckSessionId = await $.session.id();
     sessionId = deckSessionId.slice(0, 8);
+    // The commands first: an unreadable store, or any step below that throws, must never hide /jev.
+    const locale = (await getSettings($).catch(() => undefined))?.locale ?? localeFor();
+    await $.command.register({
+      name: "jev",
+      description: text("ui.command.description", locale),
+      argumentHint: text("ui.command.argumentHint", locale),
+      immediate: true,
+    });
+    await $.command.register({
+      name: "deck",
+      description: text("deck.command.description", locale),
+      argumentHint: text("deck.command.argumentHint", locale),
+      immediate: true,
+    });
+    await $.command.register({ name: "pingo", description: "Change Pingo's hat, react, dance, hide, or show", argumentHint: "[hat <name|random>|hats|pet|dance|party|shades|hide|show]" });
     const config = await getSettings($);
     await restoreStoredState($);
     await orch.restore(orchIo($)).catch(() => undefined);
@@ -2813,19 +2838,6 @@ export const register: Register = (on, given) => {
         $.ui.invalidate("ui.render");
       }
     });
-    await $.command.register({
-      name: "jev",
-      description: text("ui.command.description", config.locale),
-      argumentHint: text("ui.command.argumentHint", config.locale),
-      immediate: true,
-    });
-    await $.command.register({
-      name: "deck",
-      description: text("deck.command.description", config.locale),
-      argumentHint: text("deck.command.argumentHint", config.locale),
-      immediate: true,
-    });
-    await $.command.register({ name: "pingo", description: "Change Pingo's hat, react, dance, hide, or show", argumentHint: "[hat <name|random>|hats|pet|dance|party|shades|hide|show]" });
     return next(e);
   });
 
@@ -2928,7 +2940,13 @@ export const register: Register = (on, given) => {
       return result;
     };
     // Orchestration's objective decision and any notes ride along as context; it never blocks the prompt.
-    const orchestration = await orch.onPromptSubmit(orchIo($), enriched).catch(() => [] as string[]);
+    const orchestration = await orch.onPromptSubmit({
+      ...orchIo($),
+      // The advisor's decision and outcome for this message, for the Flow tab.
+      noteAdvice: async (change) => {
+        await updateTrace($, (s) => noteAdvice(s, messageId, change)).catch(() => undefined);
+      },
+    }, enriched).catch(() => [] as string[]);
     return entered(await next(orchestration.length ? { ...enriched, context: [...(enriched.context ?? []), ...orchestration] } : enriched));
   }).catch((_$, e, next) => next(e));
 
@@ -2989,7 +3007,7 @@ export const register: Register = (on, given) => {
         detail: `${tokens || text("feed.turn.noUsage", locale)}${e.reason && e.reason !== "answer" ? text("feed.turn.endedBy", locale, { reason: ["error", "refusal", "aborted"].includes(e.reason) ? text(`feed.turn.reason.${e.reason}` as LocaleKey, locale) : e.reason }) : ""}`,
       });
       const endedAt = await $.clock.now();
-      await updateTrace($, (s) => completeTurn(s, e.turnId, endedAt, e.isAborted ? "aborted" : e.reason, id));
+      await updateTrace($, (s) => completeTurn(s, e.turnId, endedAt, e.isAborted ? "aborted" : e.reason, id, e.answer));
       await updateRun($, id, (one) => {
         const { activity: _activity, ...rest } = one;
         return {
@@ -3018,7 +3036,7 @@ export const register: Register = (on, given) => {
     });
     await setLive($, { activity: undefined });
     const endedAt = await $.clock.now();
-    await updateTrace($, (s) => completeTurn(s, e.turnId, endedAt, e.isAborted ? "aborted" : e.reason));
+    await updateTrace($, (s) => completeTurn(s, e.turnId, endedAt, e.isAborted ? "aborted" : e.reason, undefined, e.answer));
     await farolTurnCompleted($, e.agentId);
     await clarezaTurnCompleted($, e);
     await sementeTurnCompleted($, e);
@@ -3235,6 +3253,7 @@ export const register: Register = (on, given) => {
         original: e.model,
         sent: sent.model,
         ...(sent.effort === undefined ? {} : { effort: String(sent.effort) }),
+        route: reason,
         at: startedAt,
       }),
     );
@@ -3484,7 +3503,8 @@ export const register: Register = (on, given) => {
       model: "models",
       modelos: "models",
       agents: "agents",
-      flow: "live",
+      flow: "flow",
+      fluxo: "flow",
       features: "configuration",
       configuration: "configuration",
       deck: "deck",
@@ -3540,7 +3560,7 @@ export const register: Register = (on, given) => {
       // Raw arguments: agent type names keep their case.
       const line = e.args.trim().split(/\s+/).slice(1).join(" ");
       if (!line) {
-        await openPane($, "ai");
+        await openPane($, "orchestration");
         return {};
       }
       return { text: await runOrchestration($, line) };
@@ -3857,7 +3877,7 @@ export const register: Register = (on, given) => {
     const surface = deckSurface(e.surface);
     const band = await deckBandOf($, Math.max(40, e.props.bodyColumns ?? 100), surface, undefined, false);
     noteLane($, e.requestId, band, surface);
-    return renderDeck($.ui.resolve(e), { ...band, expanded: true }, surface);
+    return renderDeck($.ui.resolve(e), { ...band, expanded: true, pane: true }, surface);
   });
 
   on("ui.render", { component: "AbovePrompt" }, async ($, e, next) => {
