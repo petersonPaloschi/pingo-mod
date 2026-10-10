@@ -4,8 +4,8 @@
 // Drawing lives in rows.ts; the hooks that feed this module live with the band.
 
 import type { RouteEvent } from "../../types";
-import { EFFORTS } from "../core/contracts.ts";
-import { DECK_GLYPH } from "../theme.ts";
+import { CLAUDE_MODEL, EFFORT, EFFORTS, MODEL_NAMES, TIERS } from "../core/contracts.ts";
+import { DECK_GLYPH, type DeckGlyphName } from "../theme.ts";
 import { text, type Locale, type LocaleKey } from "../i18n.ts";
 import { type DeckSettings, type Section, type Show, SECTIONS } from "./settings.ts";
 import { trunc } from "./theme.ts";
@@ -29,11 +29,11 @@ export const COST_SESSIONS = 30;
 export const DECK_VERSION = "0.1.0";
 
 export { EFFORTS };
-export const TIER_MODEL: Record<string, string> = { fast: "haiku", balanced: "sonnet", deep: "opus" };
-const MODEL_RANK: Record<string, number> = { haiku: 0, sonnet: 1, opus: 2 };
+export const TIER_MODEL: Record<string, string> = { fast: CLAUDE_MODEL.HAIKU.name, balanced: CLAUDE_MODEL.SONNET.name, deep: CLAUDE_MODEL.OPUS.name };
+const MODEL_RANK: Record<string, number> = Object.fromEntries(TIERS.map((tier, index) => [tier, index]));
 
 // the row styles: a state's glyph and its color role (rows.ts maps a style to the palette)
-export type RowStyle = keyof typeof DECK_GLYPH;
+export type RowStyle = DeckGlyphName;
 export const STYLE_GLYPH: Record<RowStyle, string> = DECK_GLYPH;
 const STATE_STYLE: Record<BarState, RowStyle> = { running: "run", needs_input: "ask", error: "hot", done: "done" };
 
@@ -269,10 +269,7 @@ export function limitName(kind: string, locale: Locale): [string, string] {
 
 export function shortModel(id: string | null | undefined): string {
   const s = String(id ?? "").toLowerCase();
-  if (s.includes("haiku")) return "haiku";
-  if (s.includes("sonnet")) return "sonnet";
-  if (s.includes("opus")) return "opus";
-  if (s.includes("fable")) return "fable";
+  for (const name of MODEL_NAMES) if (s.includes(name)) return name;
   return trunc(id ?? "", 14);
 }
 
@@ -1444,7 +1441,7 @@ export function statusText(
 
 // ---------- demo and sample fixtures ----------
 
-export const DEMO_ROUTE_HIST = ["haiku", "opus", "sonnet", "haiku", "haiku", "opus"];
+export const DEMO_ROUTE_HIST = [CLAUDE_MODEL.HAIKU.name, CLAUDE_MODEL.OPUS.name, CLAUDE_MODEL.SONNET.name, CLAUDE_MODEL.HAIKU.name, CLAUDE_MODEL.HAIKU.name, CLAUDE_MODEL.OPUS.name];
 
 export function demoStages(locale: Locale): Stage[] {
   const st = (key: LocaleKey, status: StepStatus = "pending"): Step => ({ title: text(key, locale), status });
@@ -1461,7 +1458,7 @@ export function startDemo(s: DeckState, now: number, locale: Locale): void {
   for (const a of [...s.agents.values()]) if (a.home === "demo") s.agents.delete(a.id);
   placeBar(s, newBar("demo", text("deck.demo.plan", locale), "demo", demoStages(locale), now));
   if (!s.route) {
-    s.route = { noAnswer: false, tier: "fast", conf: 0.89, model: "", effort: "medium", unchanged: true, effortScore: null, risky: 0.02, ms: 249, at: now };
+    s.route = { noAnswer: false, tier: "fast", conf: 0.89, model: "", effort: EFFORT.MEDIUM, unchanged: true, effortScore: null, risky: 0.02, ms: 249, at: now };
     s.routeHist.splice(0, s.routeHist.length, ...DEMO_ROUTE_HIST);
     s.demoRoute = true;
   }
@@ -1476,8 +1473,8 @@ export function startDemo(s: DeckState, now: number, locale: Locale): void {
     s.demoUsage = true;
   }
   const base = { startedAt: now, endedAt: null, depth: 0, home: "demo", todo: null };
-  s.agents.set("demo-a1", { ...base, id: "demo-a1", title: text("deck.demo.agent.mapTables", locale), state: "running", tool: "Grep", model: "haiku" });
-  s.agents.set("demo-a2", { ...base, id: "demo-a2", title: text("deck.demo.agent.draftMigration", locale), state: "running", tool: "Read", model: "sonnet" });
+  s.agents.set("demo-a1", { ...base, id: "demo-a1", title: text("deck.demo.agent.mapTables", locale), state: "running", tool: "Grep", model: CLAUDE_MODEL.HAIKU.name });
+  s.agents.set("demo-a2", { ...base, id: "demo-a2", title: text("deck.demo.agent.draftMigration", locale), state: "running", tool: "Read", model: CLAUDE_MODEL.SONNET.name });
   s.turnActive = true;
 }
 

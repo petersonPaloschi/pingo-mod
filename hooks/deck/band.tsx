@@ -7,7 +7,8 @@ import type { FeatureId } from "../../types";
 import { cellsOf } from "../dots.ts";
 import { text, type Locale } from "../i18n.ts";
 import { collapsedOrder, elapsed, stripTool, type Agent, type DeckRow, type Spend } from "./model.ts";
-import { petLaneCells, petLaneColumns, petLaneSvg, PET_BRAILLE, type Pet } from "./pet.ts";
+import { castLaneCells, castLaneSvg, CAST_LABEL_PX, LANE_ROWS, type CastMember } from "./cast.ts";
+import { petLaneColumns, petLaneSvg, type Pet } from "./pet.ts";
 import type { DeckSettings } from "./settings.ts";
 import {
   chipBarSvg,
@@ -33,7 +34,7 @@ import {
 } from "./rows.ts";
 import { AGENT_STYLE, BODY, DECK_DESIGN, DIM, MUTED, PILL_INK, STYLE, TEXT, TRACK, runs, textWidth, trunc } from "./theme.ts";
 import { terminalBar } from "./styles-terminal.ts";
-import { GLYPH } from "../theme.ts";
+import { GLYPH, UI_DESIGN } from "../theme.ts";
 
 const BRANCH = GLYPH.branch;
 
@@ -53,6 +54,8 @@ export type DeckBand = {
   /** The clock and weather text, drawn at the end of the line. */
   extras: readonly string[];
   pet: Pet;
+  /** Who stands with the pet on its lane, each named above it: Jev, then the subagents at work. Pingo alone when absent. */
+  cast?: readonly CastMember[];
   toggle: () => void;
   /** Rows drawn so far while the band unfolds; every row when absent. */
   shown?: number;
@@ -99,7 +102,8 @@ export function renderDeck(els: ElementTable, band: DeckBand, surface: Surface) 
       <Text color={MUTED}>{extrasStr}</Text>
     </Box>
   );
-  const inlinePet = expanded && desktop && band.settings.show.pet && band.settings.size !== "roomy";
+  // the header line has no room for names over a cast, so a cast always gets the lane
+  const inlinePet = expanded && desktop && band.settings.show.pet && band.settings.size !== "roomy" && !band.cast?.length;
   const lane = band.settings.show.pet && !inlinePet ? petLane(els, band, surface) : null;
   if (!expanded) {
     return (
@@ -113,7 +117,7 @@ export function renderDeck(els: ElementTable, band: DeckBand, surface: Surface) 
   const countText = "· " + (count === 1 ? text("deck.rows.one", band.locale, { count }) : text("deck.rows.many", band.locale, { count }));
   // the head of the trail: the toggle and the row count, the clock and weather at the far end
   const header = (
-    <Box flexDirection="row" columnGap={1} alignItems="center">
+    <Box flexDirection="row" columnGap={UI_DESIGN.space.xs} alignItems="center">
       {toggle}
       <Text color={DIM}>{countText}</Text>
       {inlinePet ? inlinePetEl(els, band, extrasStr.length) : <Box flexGrow={1} />}
@@ -124,7 +128,7 @@ export function renderDeck(els: ElementTable, band: DeckBand, surface: Surface) 
   const switches = featureSwitches(els, band, desktop, lane !== null);
   const lines = desktop ? desktopRows(els, band, shown) : terminalRows(els, band, shown, lane !== null, switches.lines);
   return (
-    <Box flexDirection="column" gap={desktop ? (band.settings.size === "roomy" ? 1 : 0) : undefined}>
+    <Box flexDirection="column" gap={desktop ? (band.settings.size === "roomy" ? UI_DESIGN.space.xs : UI_DESIGN.space.none) : undefined}>
       {lane}
       {header}
       {switches.node}
@@ -166,7 +170,7 @@ function featureSwitches(els: ElementTable, band: DeckBand, desktop: boolean, ha
     };
   }
   const packed = featureLines(band.features, band.cols);
-  const room = (band.maxRows ?? DEFAULT_MAX_ROWS) - 1 - (hasLane ? PET_BRAILLE.rows : 0);
+  const room = (band.maxRows ?? DEFAULT_MAX_ROWS) - 1 - (hasLane ? LANE_ROWS : 0);
   if (!band.pane && room - 1 - packed.length < Math.min(minimumRows, band.rows.length)) return { node: null, lines: 0 };
   return {
     node: (
@@ -192,7 +196,7 @@ function collapsedLine(els: ElementTable, band: DeckBand, surface: Surface, togg
   if (band.settings.collapsed === "text") {
     const parts = collapsedText(ordered, band.extras, desktop);
     return (
-      <Box flexDirection="row" columnGap={1}>
+      <Box flexDirection="row" columnGap={UI_DESIGN.space.xs}>
         {toggleCell}
         <Box flexDirection="row" flexShrink={1}>
           <Text wrap="truncate">
@@ -207,9 +211,9 @@ function collapsedLine(els: ElementTable, band: DeckBand, surface: Surface, togg
   if (band.settings.collapsed === "rings") {
     const items = collapsedRings(band.rows, band.spend, band.settings.cost, desktop, band.locale);
     return (
-      <Box flexDirection="row" columnGap={2} alignItems="center">
+      <Box flexDirection="row" columnGap={UI_DESIGN.space.sm} alignItems="center">
         {toggleCell}
-        <Box flexDirection="row" flexShrink={1} overflow="hidden" columnGap={desktop ? 4 : 3} alignItems="center">
+        <Box flexDirection="row" flexShrink={1} overflow="hidden" columnGap={DECK_DESIGN.band.collapsed.gap[desktop ? "desktop" : "terminal"]} alignItems="center">
           {items.map((item, i) => ringEl(els, item, i, desktop))}
         </Box>
         <Box flexGrow={1} />
@@ -225,7 +229,7 @@ function collapsedLine(els: ElementTable, band: DeckBand, surface: Surface, togg
     locale: band.locale,
   });
   return (
-    <Box flexDirection="row" columnGap={1} alignItems="center">
+    <Box flexDirection="row" columnGap={UI_DESIGN.space.xs} alignItems="center">
       {toggleCell}
       <Box flexDirection="row" alignItems="center">
         {chips.flatMap((chip, i) => chipEls(els, chip, i))}
@@ -250,7 +254,7 @@ function ringEl(els: ElementTable, item: RingItem, i: number, desktop: boolean) 
   const glyph = ringGlyph(els, item, desktop);
   if (item.kind === "limit") {
     return (
-      <Box key={"k" + i} flexDirection="row" flexShrink={0} columnGap={1} alignItems="center">
+      <Box key={"k" + i} flexDirection="row" flexShrink={0} columnGap={UI_DESIGN.space.xs} alignItems="center">
         {glyph}
         <Text color={TEXT} bold wrap="truncate">{item.percent}</Text>
         <Text color={MUTED} wrap="truncate">{item.label}</Text>
@@ -258,7 +262,7 @@ function ringEl(els: ElementTable, item: RingItem, i: number, desktop: boolean) 
     );
   }
   return (
-    <Box key={"k" + i} flexDirection="row" flexShrink={0} columnGap={1} alignItems="center">
+    <Box key={"k" + i} flexDirection="row" flexShrink={0} columnGap={UI_DESIGN.space.xs} alignItems="center">
       {glyph}
       <Text color={item.color} bold wrap="truncate">{item.amount}</Text>
       <Text color={MUTED} wrap="truncate">{item.note}</Text>
@@ -270,7 +274,7 @@ function ringEl(els: ElementTable, item: RingItem, i: number, desktop: boolean) 
 function ringGlyph(els: ElementTable, item: Extract<RingItem, { kind: "limit" | "spend" }>, desktop: boolean) {
   if (desktop && item.svg && "Svg" in els) {
     const { Svg } = els as ElementTable<"desktop">;
-    return <Svg source={item.svg} alt={item.alt} width={22} height={22} />;
+    return <Svg source={item.svg} alt={item.alt} width={DECK_DESIGN.ring.size} height={DECK_DESIGN.ring.size} />;
   }
   const { Text } = els;
   return <Text color={item.color}>{item.glyph}</Text>;
@@ -295,16 +299,17 @@ function chipMini(els: ElementTable, mini: ChipMini, i: number) {
   if (mini.kind === "cells") return <Box key={`${i}m`} flexDirection="row">{runs(Text, mini.cells)}</Box>;
   if (!("Svg" in els)) return null;
   const { Svg } = els as ElementTable<"desktop">;
-  return <Svg key={`${i}m`} source={chipBarSvg(mini.pct, mini.color)} alt={mini.alt} width={36} height={8} />;
+  return <Svg key={`${i}m`} source={chipBarSvg(mini.pct, mini.color)} alt={mini.alt} width={DECK_DESIGN.miniBar.width} height={DECK_DESIGN.miniBar.height} />;
 }
 
 // the expanded rows on the desktop: a glyph, the title, the track with its right-hand value, and the ✕
 function desktopRows(els: ElementTable, band: DeckBand, shown: number) {
   const { Box, Text } = els;
   const { Svg } = els as ElementTable<"desktop">;
-  const total = Math.max(320, band.cols * PX_PER_COL);
-  const titleW = Math.min(TITLE_MAX_PX, Math.round(total * 0.28), Math.max(...band.rows.map((r) => Math.round(textWidth(trunc(r.title, TITLE_MAX_CH), 6.4)))));
-  const trackW = Math.max(120, Math.min(1400, total - titleW - RIGHT_W - 70));
+  const { desktop } = DECK_DESIGN.band;
+  const total = Math.max(DECK_DESIGN.band.minimumDesktopWidth, band.cols * PX_PER_COL);
+  const titleW = Math.min(TITLE_MAX_PX, Math.round(total * desktop.titleWidthRatio), Math.max(...band.rows.map((r) => Math.round(textWidth(trunc(r.title, TITLE_MAX_CH), DECK_DESIGN.type.measure.labelPixelsPerChar)))));
+  const trackW = Math.max(desktop.trackMinimumWidth, Math.min(desktop.trackMaximumWidth, total - titleW - RIGHT_W - desktop.trackReservePixels));
   return band.rows.slice(0, shown).map((row, i) => {
     const st = STYLE[row.style];
     const drawn = rowSvg(row, trackW, {
@@ -318,7 +323,7 @@ function desktopRows(els: ElementTable, band: DeckBand, shown: number) {
     // a row that just unfolded fades in from its own age, so the rows below it start later
     const source = band.foldAge === null ? drawn.source : fadeInSvg(drawn.source, band.foldAge - i * FOLD_STEP, FOLD_FADE);
     return (
-      <Box key={"row-" + row.id} flexDirection="row" alignItems={row.strips ? "flex-start" : "center"} gap={1}>
+      <Box key={"row-" + row.id} flexDirection="row" alignItems={row.strips ? "flex-start" : "center"} gap={UI_DESIGN.space.xs}>
         <Text color={st.desk}>{rowGlyph(row)}</Text>
         <Text wrap="truncate">{trunc(row.title, TITLE_MAX_CH)}</Text>
         <Box flexGrow={1} />
@@ -333,17 +338,17 @@ function desktopRows(els: ElementTable, band: DeckBand, shown: number) {
 const pctOf = (row: DeckRow) => `${Math.round(Math.max(0, Math.min(100, row.pct)))}%`;
 
 /** The value column: wide enough for "100%". */
-const VALUE_W = 4;
 
 // the expanded rows in the terminal, a trail: each row's node (its state), the title, the bar, its share right after
 // it, what is left of the right-hand value (a reset, a rate), the ✕, and the agents hanging under it. `reserved`
 // lines (the feature switches) are already taken from the budget.
 function terminalRows(els: ElementTable, band: DeckBand, shown: number, hasLane: boolean, reserved: number) {
   const { Box, Text } = els;
-  const maxRows = Math.max(2, (band.maxRows ?? DEFAULT_MAX_ROWS) - 1 - (hasLane ? PET_BRAILLE.rows : 0) - reserved);
-  const labelW = Math.min(22, Math.max(10, Math.floor(band.cols * 0.18)));
-  const rightW = band.rows.some((row) => row.kind !== "route" && row.right && row.right !== pctOf(row)) ? 11 : 0;
-  const barW = Math.max(1, band.cols - labelW - VALUE_W - rightW - 9);
+  const layout = DECK_DESIGN.band.terminal;
+  const maxRows = Math.max(layout.minimumRows, (band.maxRows ?? DEFAULT_MAX_ROWS) - 1 - (hasLane ? LANE_ROWS : 0) - reserved);
+  const labelW = Math.min(layout.labelMaximumColumns, Math.max(layout.labelMinimumColumns, Math.floor(band.cols * layout.labelRatio)));
+  const rightW = band.rows.some((row) => row.kind !== "route" && row.right && row.right !== pctOf(row)) ? layout.rightValueColumns : 0;
+  const barW = Math.max(1, band.cols - labelW - layout.valueColumns - rightW - layout.barReservedColumns);
   const frame = Math.floor(band.now / FRAME_MS);
   const lines: RenderNode[] = [];
   for (const row of band.rows.slice(0, shown)) {
@@ -351,12 +356,12 @@ function terminalRows(els: ElementTable, band: DeckBand, shown: number, hasLane:
     if (row.kind === "route") {
       const { cells, dirColor } = routeCellsTerminal(row, band.routeHist, band.locale);
       lines.push(
-        <Box key={"row-" + row.id} flexDirection="row" columnGap={1}>
+        <Box key={"row-" + row.id} flexDirection="row" columnGap={UI_DESIGN.space.xs}>
           <Text color={STYLE.run.fill}>{rowGlyph(row)}</Text>
           <Box width={labelW} flexShrink={0}>
             <Text color={TEXT} bold wrap="truncate">{trunc(row.title, labelW)}</Text>
           </Box>
-          <Box flexGrow={1} flexDirection="row">{runs(Text, cells.slice(0, barW + VALUE_W + 1))}</Box>
+          <Box flexGrow={1} flexDirection="row">{runs(Text, cells.slice(0, barW + layout.valueColumns + 1))}</Box>
           <Box flexShrink={0} justifyContent="flex-end">
             <Text color={dirColor}>{row.right}</Text>
           </Box>
@@ -369,13 +374,13 @@ function terminalRows(els: ElementTable, band: DeckBand, shown: number, hasLane:
     const value = pctOf(row);
     const rest = row.right && row.right !== value ? row.right : "";
     lines.push(
-      <Box key={"row-" + row.id} flexDirection="row" columnGap={1}>
+      <Box key={"row-" + row.id} flexDirection="row" columnGap={UI_DESIGN.space.xs}>
         <Text color={st.fill} bold>{rowGlyph(row)}</Text>
         <Box width={labelW} flexShrink={0}>
           <Text color={TEXT} bold wrap="truncate">{trunc(row.title, labelW)}</Text>
         </Box>
         <Box flexGrow={1} flexDirection="row">{runs(Text, terminalBar(band.settings.style.terminal, toTrackRow(row), barW, frame))}</Box>
-        <Box width={VALUE_W} flexShrink={0} justifyContent="flex-end">
+        <Box width={layout.valueColumns} flexShrink={0} justifyContent="flex-end">
           <Text color={row.style === "run" ? TEXT : st.fill} bold>{value}</Text>
         </Box>
         {rightW ? (
@@ -403,12 +408,13 @@ function agentLine(els: ElementTable, band: DeckBand, ag: Agent, frame: number, 
   const { Box, Text } = els;
   const ast = STYLE[AGENT_STYLE[ag.state]];
   const glyph = ag.state === "running" ? (frame % 6 < 3 ? GLYPH.off : GLYPH.on) : ast.glyph;
+  const agentLabelW = Math.max(DECK_DESIGN.band.terminal.agentLabelMinimumColumns, labelW - DECK_DESIGN.band.terminal.agentLabelInsetColumns);
   return (
-    <Box key={"agent-" + ag.id} flexDirection="row" columnGap={1}>
+    <Box key={"agent-" + ag.id} flexDirection="row" columnGap={UI_DESIGN.space.xs}>
       <Text color={TRACK}>{ag.depth ? `    ${BRANCH}${GLYPH.rule}` : `  ${BRANCH}${GLYPH.rule}`}</Text>
       <Text color={ast.fill} bold>{glyph}</Text>
-      <Box width={Math.max(8, labelW - 2)} flexShrink={0}>
-        <Text color={BODY} wrap="truncate">{trunc(ag.title, Math.max(8, labelW - 2))}</Text>
+      <Box width={agentLabelW} flexShrink={0}>
+        <Text color={BODY} wrap="truncate">{trunc(ag.title, agentLabelW)}</Text>
       </Box>
       <Text color={ast.fill} wrap="truncate">{stripTool(ag, band.locale)}</Text>
       {ag.model ? <Text color={PILL_INK} backgroundColor={tierColor(ag.model, false)}>{" " + ag.model + " "}</Text> : null}
@@ -433,22 +439,26 @@ function rowAlt(row: DeckRow, locale: Locale): string {
   return row.title + ": " + (row.name ?? "") + (row.count ? " " + row.count : "") + ", " + row.right;
 }
 
-// the pet's lane: a drawn strip on the desktop; in the terminal, one Raster as wide as the band, in which the
-// sprite walks. The Raster keeps its size, so the caller repaints it in place (blit) as the pet moves.
+// the pet's lane, with its cast and their names on top: a drawn strip on the desktop; in the terminal, one Raster as
+// wide as the band, in which the group walks. The Raster keeps its size, so the caller repaints it in place (blit).
 function petLane(els: ElementTable, band: DeckBand, surface: Surface) {
   const { Box } = els;
+  const cast = band.cast ?? [];
   if (surface === "desktop" && "Svg" in els) {
     const { Svg } = els as ElementTable<"desktop">;
-    const W = Math.max(320, band.cols * PX_PER_COL);
-    const H = band.settings.size === "roomy" ? 54 : 44;
-    return <Svg source={petLaneSvg(band.pet, band.now, W, H)} alt={text("deck.alt.pet", band.locale, { act: band.pet.act })} width={W} height={H} />;
+    const W = Math.max(DECK_DESIGN.band.minimumDesktopWidth, band.cols * PX_PER_COL);
+    const H = DECK_DESIGN.pet.lane.desktopBandHeight[band.settings.size] + CAST_LABEL_PX;
+    const alt = cast.length
+      ? text("deck.alt.cast", band.locale, { act: band.pet.act, names: cast.map((member) => member.label).join(", ") })
+      : text("deck.alt.pet", band.locale, { act: band.pet.act });
+    return <Svg source={castLaneSvg(band.pet, cast, band.now, W, H)} alt={alt} width={W} height={H} />;
   }
   if (!("Raster" in els)) return null;
   const { Raster } = els as ElementTable<"terminal">;
   const columns = petLaneColumns(band.cols);
   return (
-    <Box flexDirection="row" height={PET_BRAILLE.rows} overflow="hidden">
-      <Raster key="deck-pet" columns={columns} rows={PET_BRAILLE.rows} cells={cellsOf(petLaneCells(band.pet, band.now, columns))} />
+    <Box flexDirection="row" height={LANE_ROWS} overflow="hidden">
+      <Raster key="deck-pet" columns={columns} rows={LANE_ROWS} cells={cellsOf(castLaneCells(band.pet, cast, band.now, columns))} />
     </Box>
   );
 }
@@ -457,7 +467,8 @@ function petLane(els: ElementTable, band: DeckBand, surface: Surface) {
 function inlinePetEl(els: ElementTable, band: DeckBand, extrasLength: number) {
   const { Box } = els;
   const { Svg } = els as ElementTable<"desktop">;
-  const W = Math.max(80, Math.round(Math.max(320, band.cols * PX_PER_COL) - 170 - extrasLength * 7.5));
+  const { desktop } = DECK_DESIGN.band;
+  const W = Math.max(desktop.inlinePetMinimumWidth, Math.round(Math.max(DECK_DESIGN.band.minimumDesktopWidth, band.cols * PX_PER_COL) - desktop.inlinePetReservedPixels - extrasLength * desktop.inlinePetExtraPixelsPerChar));
   return (
     <Box flexGrow={1} overflow="hidden">
       <Svg source={petLaneSvg(band.pet, band.now, W, HEADER_PET_H, HEADER_PET_SCALE)} alt={text("deck.alt.pet", band.locale, { act: band.pet.act })} width={W} height={HEADER_PET_H} />

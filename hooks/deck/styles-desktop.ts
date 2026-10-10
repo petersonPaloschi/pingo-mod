@@ -1,4 +1,4 @@
-// Desktop bar styles as SVG markup (22px tall), plus agent strips. Pure, no I/O.
+// Desktop bar styles as SVG markup, sized by DECK_DESIGN.bar.height, plus agent strips. Pure, no I/O.
 // The pixel style and the strips adapt plan-progress (zycck/claude-mods, MIT, Kirill Serditov).
 import { AGENT_STYLE, DECK_DESIGN, DECK_STYLE_NAMES, DECK_STYLE_ORDER, STYLE, SVG_ON_FILL, SVG_TEXT, SVG_TRACK, hash, seedOf, esc, textWidth, hex, mix, rgb, type AgentRow, type AgentView, type DeckStyleName, type Row, type Style, type StyleName } from "./theme.ts";
 import { elapsed } from "./model.ts";
@@ -44,7 +44,7 @@ function glideFrom(lastHead: LastHead, id: string, fx: number): number {
 
 const EASE = `calcMode="spline" keyTimes="0;1" keySplines="${DECK_DESIGN.motion.easing}"`;
 
-function pillMarkup(row: Row, W: number, fx: number, from: number, st: Style, maxShare = 0.55): string {
+function pillMarkup(row: Row, W: number, fx: number, from: number, st: Style): string {
   const icon = ICON_PATH[row.style];
   const color = st.desk;
   let knob: string;
@@ -54,8 +54,8 @@ function pillMarkup(row: Row, W: number, fx: number, from: number, st: Style, ma
     knob = `<circle cx="0" cy="${H / 2}" r="${H / 2}" fill="${color}"/>`;
   } else {
     const iconW = icon ? 16 : 0;
-    const countW = row.count ? textWidth(row.count, 6.5) + 6 : 0;
-    const maxW = Math.max(80, W * maxShare);
+    const countW = row.count ? textWidth(row.count, DECK_DESIGN.type.measure.countPixelsPerChar) + 6 : 0;
+    const maxW = Math.max(DECK_DESIGN.bar.desktop.pillMinimumWidth, W * DECK_DESIGN.bar.desktop.pillMaximumShare);
     let shown = row.name;
     while (shown.length > 3 && 20 + iconW + textWidth(shown) + countW > maxW) shown = shown.slice(0, -1);
     if (shown !== row.name) shown = shown.trimEnd() + "…";
@@ -63,7 +63,7 @@ function pillMarkup(row: Row, W: number, fx: number, from: number, st: Style, ma
     const left = -kw / 2 + 10;
     knob = `<rect x="${-kw / 2}" y="0" width="${kw}" height="${H}" rx="${H / 2}" fill="${color}"/>`;
     if (icon) knob += `<path d="${icon}" transform="translate(${left} 5) scale(.5)" fill="none" stroke="${SVG_ON_FILL}" stroke-width="3.6" stroke-linecap="round" stroke-linejoin="round"/>`;
-    knob += `<text x="${left + iconW}" y="${H / 2 + 4.2}" style="font:500 12px ${FONT};fill:${SVG_ON_FILL}">${esc(shown)}${row.count ? `<tspan dx="6" style="font-weight:400;fill-opacity:.75">${esc(row.count)}</tspan>` : ""}</text>`;
+    knob += `<text x="${left + iconW}" y="${H / 2 + 4.2}" style="font:500 ${DECK_DESIGN.type.svgBodyPixels}px ${FONT};fill:${SVG_ON_FILL}">${esc(shown)}${row.count ? `<tspan dx="6" style="font-weight:400;fill-opacity:.75">${esc(row.count)}</tspan>` : ""}</text>`;
   }
   const at = (x: number) => Math.max(kw / 2, Math.min(W - kw / 2, x >= kw ? x - kw / 2 : x + kw / 2));
   const kx = at(fx);
@@ -118,7 +118,7 @@ function pixel(row: Row, W: number, nowMs: number, lastHead: LastHead): string {
 }
 
 function label(row: Row, x: number, color: string): string {
-  return `<text x="${x}" y="15" style="font:500 12px ${FONT};fill:${color}">${esc(row.name)}${row.count ? `<tspan dx="6" style="font-weight:400;fill:${SVG_TEXT.muted}">${esc(row.count)}</tspan>` : ""}</text>`;
+  return `<text x="${x}" y="15" style="font:500 ${DECK_DESIGN.type.svgBodyPixels}px ${FONT};fill:${color}">${esc(row.name)}${row.count ? `<tspan dx="6" style="font-weight:400;fill:${SVG_TEXT.muted}">${esc(row.count)}</tspan>` : ""}</text>`;
 }
 
 function barShare(W: number): number {
@@ -180,8 +180,8 @@ function solid(row: Row, W: number, nowMs: number, lastHead: LastHead): string {
   return (
     `<defs><clipPath id="${id}a"><rect width="${W}" height="${H}" rx="6"/></clipPath><clipPath id="${id}b"><rect width="${fx.toFixed(1)}" height="${H}">${glide}</rect></clipPath></defs>` +
     `<g clip-path="url(#${id}a)"><rect width="${W}" height="${H}" fill="${SVG_TRACK}" fill-opacity=".16"/>` +
-    `<text x="10" y="15" style="font:500 12px ${FONT};fill:${SVG_TEXT.muted}">${text}</text>` +
-    `<g clip-path="url(#${id}b)"><rect width="${W}" height="${H}" fill="${st.desk}"/>${sweep}<text x="10" y="15" style="font:500 12px ${FONT};fill:${SVG_ON_FILL}">${text}</text></g></g>`
+    `<text x="10" y="15" style="font:500 ${DECK_DESIGN.type.svgBodyPixels}px ${FONT};fill:${SVG_TEXT.muted}">${text}</text>` +
+    `<g clip-path="url(#${id}b)"><rect width="${W}" height="${H}" fill="${st.desk}"/>${sweep}<text x="10" y="15" style="font:500 ${DECK_DESIGN.type.svgBodyPixels}px ${FONT};fill:${SVG_ON_FILL}">${text}</text></g></g>`
   );
 }
 
@@ -189,26 +189,30 @@ function dots(row: Row, W: number, nowMs: number, lastHead: LastHead): string {
   const color = STYLE[row.style].desk;
   glideFrom(lastHead, row.id, 0);
   let out = "";
-  let x = 8;
+  const dot = DECK_DESIGN.bar.desktop;
+  const { dotStartX, dotSpacing, stepGapMinimum, stepGapMaximum, stepGapReserve, stepConnectorInset } = dot;
+  const centerY = H / 2;
+  const connectorRadius = dot.stepConnectorHeight / 2;
+  let x = dotStartX;
   if (row.steps && row.steps <= DECK_DESIGN.bar.desktop.stepLimit) {
-    const gapW = Math.min(26, Math.max(12, (barShare(W) - 16) / Math.max(1, row.steps - 1)));
+    const gapW = Math.min(stepGapMaximum, Math.max(stepGapMinimum, (barShare(W) - stepGapReserve) / Math.max(1, row.steps - 1)));
     for (let i = 0; i < row.steps; i++) {
       const done = i < (row.finished ?? 0);
       const cur = i === row.finished && row.animating;
-      if (i > 0) out += `<rect x="${x - gapW + 5}" y="10.25" width="${gapW - 10}" height="1.5" rx=".75" fill="${done || cur ? color : SVG_TRACK}" fill-opacity="${done || cur ? 0.8 : 0.3}"/>`;
+      if (i > 0) out += `<rect x="${x - gapW + stepConnectorInset}" y="${centerY - connectorRadius}" width="${gapW - 2 * stepConnectorInset}" height="${dot.stepConnectorHeight}" rx="${connectorRadius}" fill="${done || cur ? color : SVG_TRACK}" fill-opacity="${done || cur ? dot.stepConnectorActiveOpacity : dot.stepConnectorIdleOpacity}"/>`;
       out += done
-        ? `<circle cx="${x}" cy="11" r="5" fill="${color}"/>`
+        ? `<circle cx="${x}" cy="${centerY}" r="${dot.dotRadius}" fill="${color}"/>`
         : cur
-          ? `<circle cx="${x}" cy="11" r="5" fill="none" stroke="${color}" stroke-width="2"/><circle cx="${x}" cy="11" r="2.4" fill="${color}" class="t0"/>`
-          : `<circle cx="${x}" cy="11" r="4.5" fill="none" stroke="${SVG_TRACK}" stroke-opacity=".45" stroke-width="1.5"/>`;
+          ? `<circle cx="${x}" cy="${centerY}" r="${dot.dotRadius}" fill="none" stroke="${color}" stroke-width="${dot.stepActiveStrokeWidth}"/><circle cx="${x}" cy="${centerY}" r="${dot.stepActiveCoreRadius}" fill="${color}" class="t0"/>`
+          : `<circle cx="${x}" cy="${centerY}" r="${dot.stepIdleRadius}" fill="none" stroke="${SVG_TRACK}" stroke-opacity="${dot.stepIdleOpacity}" stroke-width="${dot.stepIdleStrokeWidth}"/>`;
       x += gapW;
     }
   } else {
     for (let i = 0; i < DECK_DESIGN.bar.desktop.dotCount; i++) {
       const v = row.pct / DECK_DESIGN.bar.desktop.dotCount - i;
-      out += `<circle cx="${x}" cy="11" r="5" fill="${SVG_TRACK}" fill-opacity=".2"/>`;
-      if (v > 0) out += `<clipPath id="d${seedOf(row.id) % 997}${i}"><rect x="${x - 5}" y="6" width="${10 * Math.min(1, v)}" height="10"/></clipPath><circle cx="${x}" cy="11" r="5" fill="${color}" clip-path="url(#d${seedOf(row.id) % 997}${i})"/>`;
-      x += 16;
+      out += `<circle cx="${x}" cy="${centerY}" r="${dot.dotRadius}" fill="${SVG_TRACK}" fill-opacity="${dot.dotIdleOpacity}"/>`;
+      if (v > 0) out += `<clipPath id="d${seedOf(row.id) % 997}${i}"><rect x="${x - dot.dotRadius}" y="${centerY - dot.dotRadius}" width="${2 * dot.dotRadius * Math.min(1, v)}" height="${2 * dot.dotRadius}"/></clipPath><circle cx="${x}" cy="${centerY}" r="${dot.dotRadius}" fill="${color}" clip-path="url(#d${seedOf(row.id) % 997}${i})"/>`;
+      x += dotSpacing;
     }
   }
   return `<style>${twinkleCss(nowMs, false)}</style>${out}${label(row, x + 6, color)}`;
@@ -238,7 +242,7 @@ function spark(row: Row, W: number, _nowMs: number, lastHead: LastHead): string 
     out += `<rect x="${sx}" y="10.5" width="${sw}" height="1" fill="${SVG_TRACK}" fill-opacity=".3"/>`;
   }
   const lx = sx + sw + 14;
-  out += `<text x="${lx}" y="15" style="font:500 12px ${FONT};fill:${color}">${esc(row.name)}${row.rate ? `<tspan dx="8" style="font-weight:400;fill:${SVG_TEXT.muted}">${esc(row.rate)}</tspan>` : row.count ? `<tspan dx="6" style="font-weight:400;fill:${SVG_TEXT.muted}">${esc(row.count)}</tspan>` : ""}</text>`;
+  out += `<text x="${lx}" y="15" style="font:500 ${DECK_DESIGN.type.svgBodyPixels}px ${FONT};fill:${color}">${esc(row.name)}${row.rate ? `<tspan dx="8" style="font-weight:400;fill:${SVG_TEXT.muted}">${esc(row.rate)}</tspan>` : row.count ? `<tspan dx="6" style="font-weight:400;fill:${SVG_TEXT.muted}">${esc(row.count)}</tspan>` : ""}</text>`;
   return out;
 }
 
@@ -272,27 +276,29 @@ export function stripsSvg(
   more: (hidden: number, done: number) => string,
 ): string {
   const narrow = W < NARROW;
+  const design = DECK_DESIGN.strips;
+  const texture = design.texture;
   let out = "";
   v.shown.forEach((a, i) => {
     const c = STYLE[AGENT_STYLE[a.state]].desk;
     const y = i * (STRIP_H + STRIP_GAP);
-    const indent = a.depth > 0 ? 12 : 0;
+    const indent = a.depth > 0 ? design.indentPixels : 0;
     let px = "";
     if (a.state === "running") {
-      for (let col = 0; col * 3 < W; col++) {
-        for (let r = 0; r < 4; r++) {
-          if (hash(col + i * 41, r, 5) > 0.2) continue;
-          px += `<rect x="${col * 3}" y="${(y + 3 + r * 3.6).toFixed(1)}" width="2" height="2" class="t${Math.floor(hash(col, r, 6) * 4)}" fill="${c}" fill-opacity=".32"/>`;
+      for (let col = 0; col * texture.columnPitchPixels < W; col++) {
+        for (let r = 0; r < texture.rowCount; r++) {
+          if (hash(col + i * texture.runSeedOffset, r, texture.patternSeed) > texture.density) continue;
+          px += `<rect x="${col * texture.columnPitchPixels}" y="${(y + texture.topInsetPixels + r * texture.rowPitchPixels).toFixed(1)}" width="${texture.cellPixels}" height="${texture.cellPixels}" class="t${Math.floor(hash(col, r, texture.paletteSeed) * texture.paletteBuckets)}" fill="${c}" fill-opacity="${texture.opacity}"/>`;
         }
       }
     }
-    const room = narrow ? W - 30 - indent : W * 0.45;
+    const room = narrow ? W - design.narrowNameReservePixels - indent : W * design.nameWidthRatio;
     const full = (a.depth > 0 ? "╰ " : "") + a.title;
     let name = full;
-    while (name.length > 4 && textWidth(name, 6.9) > room) name = name.slice(0, -1);
+    while (name.length > 4 && textWidth(name, DECK_DESIGN.type.measure.stripNamePixelsPerChar) > room) name = name.slice(0, -1);
     if (name !== full) name = name.trimEnd() + "…";
-    const nameX = 19 + indent;
-    const toolX = nameX + textWidth(name, 6.9) + 12;
+    const nameX = design.nameStartPixels + indent;
+    const toolX = nameX + textWidth(name, DECK_DESIGN.type.measure.stripNamePixelsPerChar) + design.toolGapPixels;
     const tool = stripTool(a);
     const was = lastStrip.get(a.id);
     lastStrip.set(a.id, { tool, color: c });
@@ -302,27 +308,27 @@ export function stripsSvg(
     let tag = "";
     if (a.model && !narrow) {
       const tc = tierColor(a.model);
-      const tw = textWidth(a.model, 6) + 12;
-      tag = `<rect x="${W - 52 - tw}" y="${y + 3}" width="${tw}" height="12" rx="3" fill="${tc}" fill-opacity=".25"/><text x="${W - 46 - tw}" y="${y + 12.5}" style="font:500 10.5px ${FONT};fill:${tc}">${esc(a.model)}</text>`;
+      const tw = textWidth(a.model, DECK_DESIGN.type.measure.modelTagPixelsPerChar) + design.modelTag.textPaddingPixels;
+      tag = `<rect x="${W - design.modelTag.boxRightInsetPixels - tw}" y="${y + design.modelTag.topPixels}" width="${tw}" height="${design.modelTag.heightPixels}" rx="${design.modelTag.radiusPixels}" fill="${tc}" fill-opacity=".25"/><text x="${W - design.modelTag.textRightInsetPixels - tw}" y="${y + design.textBaselinePixels}" style="font:500 ${DECK_DESIGN.type.svgTagPixels}px ${FONT};fill:${tc}">${esc(a.model)}</text>`;
     }
     out +=
       `<rect x="0" y="${y}" width="${W}" height="${STRIP_H}" rx="${STRIP_H / 2}" fill="${c}" fill-opacity=".15">${flow}</rect>${px}` +
-      `<circle cx="${10 + indent}" cy="${y + STRIP_H / 2}" r="3" fill="${c}"${a.state === "running" ? ' class="sd"' : ""}>${flow}</circle>` +
-      `<text x="${nameX}" y="${y + 12.5}" class="sn">${esc(name)}</text>` +
+      `<circle cx="${design.stateDot.x + indent}" cy="${y + STRIP_H / 2}" r="${design.stateDot.radius}" fill="${c}"${a.state === "running" ? ' class="sd"' : ""}>${flow}</circle>` +
+      `<text x="${nameX}" y="${y + design.textBaselinePixels}" class="sn">${esc(name)}</text>` +
       (narrow
         ? ""
-        : (changed ? `<text x="${toolX}" y="${y + 12.5}" class="sn mo" style="fill:${was.color}">${esc(was.tool)}</text>` : "") +
-          `<text x="${toolX}" y="${y + 12.5}" class="sn${changed ? " mi" : ""}" style="fill:${c}">${esc(tool)}</text>` +
+        : (changed ? `<text x="${toolX}" y="${y + design.textBaselinePixels}" class="sn mo" style="fill:${was.color}">${esc(was.tool)}</text>` : "") +
+          `<text x="${toolX}" y="${y + design.textBaselinePixels}" class="sn${changed ? " mi" : ""}" style="fill:${c}">${esc(tool)}</text>` +
           tag +
-          `<text x="${W - 9}" y="${y + 12.5}" text-anchor="end" class="sn st">${time}</text>`);
+          `<text x="${W - design.timeRightInsetPixels}" y="${y + design.textBaselinePixels}" text-anchor="end" class="sn st">${time}</text>`);
   });
   if (v.hidden.length) {
     const y = v.shown.length * (STRIP_H + STRIP_GAP);
     const done = v.hidden.filter((a) => a.state === "done").length;
-    out += `<rect x="0" y="${y}" width="${W}" height="${STRIP_H}" rx="${STRIP_H / 2}" fill="${SVG_TRACK}" fill-opacity=".14"/><text x="10" y="${y + 12.5}" class="sn st">${esc(more(v.hidden.length, done))}</text>`;
+    out += `<rect x="0" y="${y}" width="${W}" height="${STRIP_H}" rx="${STRIP_H / 2}" fill="${SVG_TRACK}" fill-opacity=".14"/><text x="${design.stateDot.x}" y="${y + design.textBaselinePixels}" class="sn st">${esc(more(v.hidden.length, done))}</text>`;
   }
   return (
-    `<style>.sn{font:400 11.5px ${FONT};fill:${DECK_DESIGN.strips.textFill}}.st{fill-opacity:.65}` +
+    `<style>.sn{font:400 ${DECK_DESIGN.type.svgSmallPixels}px ${FONT};fill:${design.textFill}}.st{fill-opacity:.65}` +
     twinkleCss(nowMs, false) +
     `.sd{animation:sp ${DECK_DESIGN.motion.stripPulseSeconds}s ease-in-out infinite}@keyframes sp{50%{opacity:.3}}` +
     `.mi{animation:mi ${DECK_DESIGN.motion.toolChangeSeconds}s ease-out both}@keyframes mi{from{opacity:0;filter:blur(3px)}}` +

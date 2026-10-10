@@ -4,7 +4,7 @@
 // native advisor's calls and the answer, each a node on one vertical line with its time. Pure: the pane
 // draws exactly these lines, and a test reads them.
 import type { TraceAdvice, TraceAgent, TraceMessage, TraceRun, TraceState } from "../types";
-import { prettyModel, wrap, type FlowSegment } from "./flow.ts";
+import { CLAUDE_MODEL, MODEL_NAMES, TIERS } from "./core/contracts.ts";
 import { formatClock, formatCompact, formatDuration, localeFor, text, type Locale, type LocaleKey } from "./i18n.ts";
 import { displayWidth } from "./layout.ts";
 import { css, GLYPH, HUE, PAINT } from "./theme.ts";
@@ -28,7 +28,63 @@ const RUNS_SHOWN = 6;
 const HEAD_LINES = 2;
 const DETAIL_LINES = 3;
 
+type TrailSegment = { text: string; color: string; bold?: boolean; bg?: string };
 type Line = { text: string; color: string; bold?: boolean };
+
+/** "claude-opus-5-5" → "Opus 5.5", including older IDs and date suffixes. */
+export function prettyModel(id: string | undefined): string {
+  if (!id) return "Claude";
+  const canonical = Object.values(CLAUDE_MODEL).find((model) => model.id === id);
+  if (canonical) return canonical.label;
+  const capital = (family: string) => family.charAt(0).toUpperCase() + family.slice(1).toLowerCase();
+  const match = new RegExp(`(${MODEL_NAMES.join("|")})-(\\d{1,2})(?:-(\\d{1,2}))?(?!\\d)`, "i").exec(id);
+  if (match) return `${capital(match[1]!)} ${match[2]}${match[3] ? `.${match[3]}` : ""}`;
+  const old = new RegExp(`claude-(\\d{1,2})(?:-(\\d{1,2}))?-(${TIERS.join("|")})`, "i").exec(id);
+  if (old) return `${capital(old[3]!)} ${old[1]}${old[2] ? `.${old[2]}` : ""}`;
+  return id.replace(/^claude-/, "").replace(/-\d{8}$/, "");
+}
+
+const fit = (value: string, width: number) => {
+  const line = value.replace(/\s+/g, " ");
+  if (displayWidth(line) <= width) return line;
+  let out = "";
+  let used = 0;
+  for (const ch of line) {
+    const w = displayWidth(ch);
+    if (out && used + w > width - 1) break;
+    out += ch;
+    used += w;
+  }
+  return out + "…";
+};
+
+/** Wraps at word boundaries, breaks long words, and caps details to `max` lines. */
+function wrap(value: string, width: number, max = 3): string[] {
+  const room = Math.max(1, width);
+  const lines: string[] = [];
+  let line = "";
+  for (const word of value.replace(/\s+/g, " ").trim().split(" ")) {
+    const joined = line ? `${line} ${word}` : word;
+    if (displayWidth(joined) <= room) {
+      line = joined;
+      continue;
+    }
+    if (line) lines.push(line);
+    line = word;
+    while (displayWidth(line) > room) {
+      let head = "";
+      for (const ch of line) {
+        if (head && displayWidth(head + ch) > room) break;
+        head += ch;
+      }
+      lines.push(head);
+      line = line.slice(head.length);
+    }
+  }
+  if (line) lines.push(line);
+  if (lines.length <= max) return lines;
+  return [...lines.slice(0, max - 1), fit(lines.slice(max - 1).join(" ") + " …", room)];
+}
 
 /** One thing that happened: when, its node, its sentence, and the lines under it. */
 interface Event {
@@ -265,7 +321,7 @@ function answerEvent(run: TraceRun, now: number, locale: Locale): Event {
 }
 
 /** One request's lines: its title, then each event as a node on the line with its time. */
-function draw(title: Line, events: readonly Event[], width: number, locale: Locale): FlowSegment[][] {
+function draw(title: Line, events: readonly Event[], width: number, locale: Locale): TrailSegment[][] {
   const times = events.map((event) => formatClock(event.at, locale));
   const timeWidth = Math.max(0, ...times.map(displayWidth));
   // Narrow panes drop the time column before they drop the sentence.
@@ -273,7 +329,7 @@ function draw(title: Line, events: readonly Event[], width: number, locale: Loca
   const lead = timed ? timeWidth + 1 : 0;
   const room = Math.max(1, width - lead - 2);
   const pad = (value: string) => value + " ".repeat(Math.max(0, timeWidth - displayWidth(value)));
-  const lines: FlowSegment[][] = wrap(title.text, width, HEAD_LINES).map((line) => [{ text: line, color: title.color, bold: true }]);
+  const lines: TrailSegment[][] = wrap(title.text, width, HEAD_LINES).map((line) => [{ text: line, color: title.color, bold: true }]);
   events.forEach((event, index) => {
     const bar = event.branch ? { text: BRANCH, color: C.amber } : { text: GLYPH.spine, color: C.rule };
     const blank = timed ? [{ text: " ".repeat(lead), color: C.dim }] : [];
@@ -291,18 +347,21 @@ function draw(title: Line, events: readonly Event[], width: number, locale: Loca
 }
 
 /** The Flow tab's lines: a message still entering, then each kept request, newest first. */
-export function trailLines(input: TrailInput): FlowSegment[][] {
+export function trailLines(input: TrailInput): TrailSegment[][] {
   const locale = input.locale ?? localeFor();
   const width = Math.max(1, input.width);
   const { trace, now } = input;
-  const sections: FlowSegment[][][] = [];
-  // Only a message still on its way in: the one entering, or one waiting since the latest run began. A waiting
-  // one older than that never got its run tied to it, and is not shown as entering forever.
+  const sections: TrailSegment[][][] = [];
+  // A pending message can be waiting for its run, or refused since the latest run began. Old unlinked waits do not
+  // stay at the top forever.
   const latest = trace.runs.at(-1)?.startedAt ?? -Infinity;
-  const entering = trace.inbox.filter((message) => message.state === "waiting" && (message.id === trace.entering || message.at > latest));
-  for (const message of entering) {
+  const messages = trace.inbox.filter((message) => message.state === "waiting"
+    ? message.id === trace.entering || message.at > latest
+    : message.state === "dropped" && message.at >= latest);
+  for (const message of messages) {
+    const entering = message.state === "waiting";
     sections.push(draw(
-      { text: text("trail.entering", locale), color: C.lime },
+      { text: text(entering ? "trail.entering" : "trail.refused", locale), color: entering ? C.lime : C.rose },
       [...messageEvents(message, undefined, locale), ...adviceEvents(message.advice, message.at, locale)].sort((a, b) => a.at - b.at || a.rank - b.rank),
       width,
       locale,
@@ -319,7 +378,7 @@ export function trailLines(input: TrailInput): FlowSegment[][] {
     sections.push(draw({ text: `${running ? GLYPH.run : GLYPH.on} ${title}`, color: running ? C.lime : C.ink }, runEvents(run, now, locale), width, locale));
   }
   if (!sections.length) return wrap(text("trail.empty", locale), width, 4).map((line) => [{ text: line, color: C.dim }]);
-  const out: FlowSegment[][] = [];
+  const out: TrailSegment[][] = [];
   sections.forEach((section, index) => {
     if (index) out.push([]);
     out.push(...section);

@@ -3,7 +3,7 @@
 // off, Jev unavailable or failed); the profile always comes from the advisor role's offer, so a
 // trusted override, a fixed model or effort and the AUTO allowlist win over the tier's preference.
 // Pure and cheap: a few regular expressions over the prompt, no model call.
-import { CLAUDE_MODELS, EFFORTS, type ClaudeModelId, type Effort } from "./contracts.ts";
+import { CLAUDE_MODEL, CLAUDE_MODELS, EFFORT, EFFORTS, type ClaudeModelId, type Effort } from "./contracts.ts";
 import { offeredProfiles, type Capabilities, type OrchestrationPolicy, type Profile } from "./orchestration.ts";
 
 /** The score from which a prompt gets guidance in AUTO. */
@@ -17,9 +17,9 @@ export type AdviceSignal =
 
 /** Each tier's starting advisor profile (plan §3), from the strongest down; below them, no guidance. */
 const TIERS: readonly { tier: AdviceTier; min: number; target: Profile }[] = [
-  { tier: "exceptional", min: 9, target: { model: "claude-fable-5-1", effort: "high" } },
-  { tier: "hard", min: 6, target: { model: "claude-opus-5-5", effort: "high" } },
-  { tier: "complex", min: ADVICE_ON_SCORE, target: { model: "claude-sonnet-5-5", effort: "high" } },
+  { tier: "exceptional", min: 9, target: { model: CLAUDE_MODEL.FABLE.id, effort: EFFORT.HIGH } },
+  { tier: "hard", min: 6, target: { model: CLAUDE_MODEL.OPUS.id, effort: EFFORT.HIGH } },
+  { tier: "complex", min: ADVICE_ON_SCORE, target: { model: CLAUDE_MODEL.SONNET.id, effort: EFFORT.HIGH } },
 ];
 
 const WEIGHT: Readonly<Record<AdviceSignal, number>> = {

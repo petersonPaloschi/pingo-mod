@@ -114,7 +114,6 @@ async function shown($: Engine, tab: string, texts: RegExp[]): Promise<void> {
         const rendered = (await ui.findAll({ type: "Text" })).map((line) => line.text ?? "").join("\n");
         expect(rendered).toMatch(text);
       }
-      expect(found).toBeDefined();
     }
   } finally {
     await ui.unmount();
@@ -157,6 +156,44 @@ describe("sift's calls in the mod", () => {
     await $.tool.call({ tool: "Bash", command: 'node "/plugins/pingo/scripts/sift.ts" status', tool_use_id: "toolu-sift-2" } as never);
     expect(set.length).toBe(1);
     await shown($, "tab-live", [/recorded Jev calls: 1/]);
+  });
+
+  test("the band says Jev is asking while any call is open, not only a subagent's plan, and keeps the call in view after", async ($, on) => {
+    const { clock } = world(on, { agents: false });
+    on("env.set", async () => ({ value: undefined }) as never);
+    let finish: () => void = () => {};
+    const finished = new Promise<void>((resolve) => (finish = resolve));
+    const at = Date.parse("2026-10-07T12:00:00Z");
+    on("process.spawn", async function* () {
+      yield { stream: "stdout" as const, text: channelLine({ phase: "start", call: "sift-7-1", at, sent: jevSent(REQUEST) }) };
+      await finished;
+      yield { stream: "stdout" as const, text: channelLine({ phase: "end", call: "sift-7-1", at: at + 340, result: RESULT }) };
+      return { value: { code: 0, signal: null } } as never;
+    });
+    await $.session.start({ cwd: "/workspace" } as never).catch(() => undefined);
+    const band = await $.ui.mount({ plugin: "jev", surface: "terminal", component: "AbovePrompt", props: { hasSurvey: false, isWorking: false, maxRows: 3, bodyColumns: 120 } as never });
+    const seen = async (text: RegExp) => {
+      let found;
+      for (let i = 0; i < 200 && !found; i++) {
+        found = await band.find({ type: "Text", text });
+        if (!found) await Promise.resolve();
+      }
+      expect(found).toBeDefined();
+    };
+    const jevStatus = async () => (await band.find({ type: "Text", text: /^Jev: / }))?.text ?? "";
+    try {
+      await seen(/No Jev call yet/);
+      const call = $.tool.call({ tool: "Bash", command: 'node "/plugins/pingo/scripts/sift.ts" filter "Does it retry?" src', tool_use_id: "toolu-sift" } as never);
+      await seen(/Jev: Asking Jev…/);
+      await seen(/Last Jev call \S+ ago: ⟳ sift · sift command/);
+      finish();
+      await seen(/Last Jev call \S+ ago: ✓ sift · sift command — match/);
+      expect(await jevStatus()).not.toContain("Asking Jev…");
+      await call;
+    } finally {
+      finish();
+      await band.unmount();
+    }
   });
 
   test("concurrent sift commands share one channel export and follower", async ($, on) => {

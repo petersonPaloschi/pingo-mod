@@ -1,36 +1,21 @@
 // The versioned orchestration policy (`orchestration.v1`): the four exact Claude models, per-role
 // AUTO/fixed model and effort settings, the profiles Jev may be offered, and the SystemOne questions
 // that choose among them. Pure: register.tsx reads the store and talks to Jev and Claude.
-import { CLAUDE_MODELS, EFFORTS as PROFILE_EFFORTS, ROLES, type ClaudeModelId, type Effort, type Role } from "./contracts.ts";
+import { CLAUDE_MODEL, CLAUDE_MODELS, EFFORT, EFFORTS as PROFILE_EFFORTS, EFFORT_TEXT_VALUES, MODEL_HANDLE, MODEL_TEXT_VALUES, ROLES, type ClaudeModelId, type Effort, type Role } from "./contracts.ts";
 import { readChoice } from "./selection.ts";
 import type { Answer, ChoiceQuestion, Json, Questions } from "./types.ts";
 import { text, type Locale, type LocaleKey } from "../i18n.ts";
 
-export { CLAUDE_MODELS, EFFORTS as PROFILE_EFFORTS, ROLES, type ClaudeModelId, type Role } from "./contracts.ts";
+export { CLAUDE_MODELS, EFFORTS as PROFILE_EFFORTS, MODEL_HANDLE, MODEL_LABEL, ROLES, type ClaudeModelId, type Role } from "./contracts.ts";
 
 export const ORCHESTRATION_STORE = "orchestration.v1";
 export const OBJECTIVE_STORE = "orchestration.objective";
-/** Short handles for profile keys and the dashboard; resolved back through this immutable map only. */
-export const MODEL_HANDLE: Readonly<Record<ClaudeModelId, string>> = Object.freeze({
-  "claude-haiku-5-5": "haiku",
-  "claude-sonnet-5-5": "sonnet",
-  "claude-opus-5-5": "opus",
-  "claude-fable-5-1": "fable",
-});
-
-export const MODEL_LABEL: Readonly<Record<ClaudeModelId, string>> = Object.freeze({
-  "claude-haiku-5-5": "Haiku 5.5",
-  "claude-sonnet-5-5": "Sonnet 5.5",
-  "claude-opus-5-5": "Opus 5.5",
-  "claude-fable-5-1": "Fable 5.1",
-});
-
 /** Which native advisors each executor accepts (validate against the account before use). */
 export const NATIVE_ADVISORS: Readonly<Record<ClaudeModelId, readonly ClaudeModelId[]>> = Object.freeze({
-  "claude-haiku-5-5": CLAUDE_MODELS,
-  "claude-sonnet-5-5": ["claude-sonnet-5-5", "claude-opus-5-5", "claude-fable-5-1"],
-  "claude-opus-5-5": ["claude-opus-5-5", "claude-fable-5-1"],
-  "claude-fable-5-1": ["claude-fable-5-1"],
+  [CLAUDE_MODEL.HAIKU.id]: CLAUDE_MODELS,
+  [CLAUDE_MODEL.SONNET.id]: [CLAUDE_MODEL.SONNET.id, CLAUDE_MODEL.OPUS.id, CLAUDE_MODEL.FABLE.id],
+  [CLAUDE_MODEL.OPUS.id]: [CLAUDE_MODEL.OPUS.id, CLAUDE_MODEL.FABLE.id],
+  [CLAUDE_MODEL.FABLE.id]: [CLAUDE_MODEL.FABLE.id],
 });
 
 export const isClaudeModel = (value: unknown): value is ClaudeModelId => CLAUDE_MODELS.includes(value as ClaudeModelId);
@@ -155,8 +140,8 @@ const LIMIT_RANGE: Record<keyof Limits, readonly [number, number]> = {
 };
 
 const autoRole = (): RolePolicy => ({
-  model: { mode: "auto", allowed: [...CLAUDE_MODELS], fixed: "claude-sonnet-5-5", fallback: [] },
-  effort: { mode: "auto", allowed: [...PROFILE_EFFORTS], fixed: "medium", fallback: [] },
+  model: { mode: "auto", allowed: [...CLAUDE_MODELS], fixed: CLAUDE_MODEL.SONNET.id, fallback: [] },
+  effort: { mode: "auto", allowed: [...PROFILE_EFFORTS], fixed: EFFORT.MEDIUM, fallback: [] },
 });
 
 /**
@@ -173,7 +158,7 @@ export function defaultPolicy(): OrchestrationPolicy {
     review: true,
     advice: "auto",
     batch: "auto",
-    nativeAdvisor: { mode: "off", model: "claude-opus-5-5" },
+    nativeAdvisor: { mode: "off", model: CLAUDE_MODEL.OPUS.id },
     override: {},
     agentTypes: {},
   };
@@ -332,7 +317,7 @@ export type Continuity = (typeof CONTINUITY)[number];
 export type WorkMode = (typeof WORK_MODES)[number];
 export type Guidance = (typeof GUIDANCE)[number];
 
-const prompt = (key: LocaleKey, locale?: Locale) => text("orchestration.prompt.common", locale) + "\n\n" + text(key, locale);
+const prompt = (key: LocaleKey, locale?: Locale) => text("orchestration.prompt.common", locale) + "\n\n" + text(key, locale, { ...MODEL_TEXT_VALUES, ...EFFORT_TEXT_VALUES });
 
 const labelled = <T extends string>(keys: readonly T[]): Record<string, Json> => Object.fromEntries(keys.map((key) => [key, key]));
 
@@ -414,7 +399,7 @@ export function readConcurrency(answer: Answer | undefined, ceiling: number, min
 
 /** Output cap for a controlled review by effort, held to what one completion can return. */
 export function reviewCap(effort: Effort): number {
-  return effort === "max" ? 64_000 : effort === "xhigh" ? 32_768 : effort === "high" ? 16_384 : 8_192;
+  return effort === EFFORT.MAX ? 64_000 : effort === EFFORT.XHIGH ? 32_768 : effort === EFFORT.HIGH ? 16_384 : 8_192;
 }
 
 // --- Dashboard and /jev commands ---

@@ -58,6 +58,8 @@ function oneOf<T extends string>(v: unknown, options: readonly T[], fallback: T)
   return typeof v === "string" && (options as readonly string[]).includes(v) ? (v as T) : fallback;
 }
 
+/** Keep bounded unknown style ids so a newer version can recognize them again after a downgrade. */
+/** Keep bounded unknown ids so an older install does not erase styles added by a newer version. */
 function styleName(v: unknown, fallback: string): string {
   return typeof v === "string" && v.length > 0 && v.length <= STYLE_NAME_MAX ? v : fallback;
 }

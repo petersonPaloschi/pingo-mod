@@ -1,4 +1,5 @@
 import { modelTier, supportsEffort, type Effort, type FeatureId, type Features } from "./plan.ts";
+import { CLAUDE_MODEL } from "./contracts.ts";
 import { gateReason } from "./reasons.ts";
 
 /** The same live gate is used when planning, sending requests and showing results. */
@@ -39,7 +40,7 @@ export function sizeRequest<T extends { model: string; effort?: Effort | number 
       effortOutcome = { kind: "applied", value: wanted, ...(original.effort === undefined ? {} : { from: String(original.effort) }) };
     } else {
       ignoredEffort = wanted;
-      effortOutcome = { kind: "ignored", value: wanted, why: modelTier(model) === "haiku" ? "haiku_no_effort" : "unsupported_effort" };
+      effortOutcome = { kind: "ignored", value: wanted, why: modelTier(model) === CLAUDE_MODEL.HAIKU.name ? `${CLAUDE_MODEL.HAIKU.name}_no_effort` : "unsupported_effort" };
     }
   }
   // Leave native/manual requests alone; only strip an incompatible planned effort.

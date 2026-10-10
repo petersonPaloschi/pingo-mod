@@ -5,11 +5,11 @@ import { expect, mock, test } from "claude-code/testing";
 
 import type { FeedEntry, RouteEvent } from "../types";
 import { DEFAULT_FEATURES } from "../hooks/core/plan.ts";
-import { prettyModel } from "../hooks/flow.ts";
+import { prettyModel } from "../hooks/trail.ts";
 import { emptyTrace } from "../hooks/trace.ts";
 import { formatClock, type Locale } from "../hooks/i18n.ts";
 import { displayWidth, rowsOf } from "../hooks/layout.ts";
-import { clip, clockWidth, oneLine, renderPane, shares, type Actions, type Els, type View } from "../hooks/ui.tsx";
+import { clip, clockWidth, ENTRIES_SHOWN, oneLine, renderBand, renderPane, shares, type Actions, type Els, type View } from "../hooks/ui.tsx";
 import { normalizeTab } from "../hooks/register.tsx";
 import { en } from "../hooks/strings/en.ts";
 import { PANE_PROPS, mockEngineServices } from "./helpers.ts";
@@ -32,6 +32,7 @@ function noKey(on: On) {
   on("prompt.compose", async () => ({ sections: [] }));
   on("prompt.submit", async (_$, e) => ({ text: e.text }));
   on("turn.complete", async (_$, e) => ({ text: e.answer }));
+  on("ui.toast", async () => ({ value: undefined } as never));
 }
 
 /** Every piece of text in a drawn tree: strings, and the labels and alt texts of elements. */
@@ -177,6 +178,11 @@ function elements(node: unknown): { type?: unknown; props?: Record<string, unkno
   return [el, ...elements(el.children ?? [])];
 }
 
+function scrollOffset(node: unknown): number {
+  const margin = elements(node).find((el) => typeof el.props?.marginTop === "number" && el.props.marginTop < 0)?.props?.marginTop;
+  return typeof margin === "number" ? -margin : 0;
+}
+
 test("the live log has no time column: the time sits faint under the text and the speaker's name is not cut", () => {
   const { els, act, feedLine, view } = harness();
   const feed = [feedLine(1), feedLine(2)];
@@ -198,32 +204,78 @@ test("the request log draws newest first", () => {
   expect(older).toBeGreaterThan(newest);
 });
 
-test("a scrolled-back live log stays on the lines it showed as new ones arrive", () => {
-  const { els, act, layouts, feedLine, view } = harness();
-  const lastShown = (feed: FeedEntry[], scroll: number) => {
-    const shown = texts(renderPane(els, view({ feed, scroll }), act)).filter((one) => /^line \d+$/.test(one));
-    return shown.at(-1);
-  };
+test("a scrolled-down live log stays on the lines it showed as new ones come in on top", () => {
+  const { els, act, feedLine, view } = harness();
+  const offset = (feed: FeedEntry[], scroll: number) => scrollOffset(renderPane(els, view({ feed, scroll }), act));
   const feed = Array.from({ length: 40 }, (_, i) => feedLine(i + 1));
-  expect(lastShown(feed, 0)).toBe("line 40");
-  expect(lastShown(feed, 5)).toBe("line 35");
+  expect(offset(feed, 0)).toBe(0);
+  expect(offset(feed, 5)).toBe(5);
   const grown = [...feed, feedLine(41), feedLine(42), feedLine(43)];
-  // Three new lines: the view keeps to line 35 rather than slide to line 38.
-  expect(lastShown(grown, 5)).toBe("line 35");
-  // Scrolling further back goes on from there, and the stored offset may go as far as line 1.
-  expect(lastShown(grown, 6)).toBe("line 34");
-  expect(layouts.at(-1)).toBe(6 + 42 - 9);
-  // Back at the live edge, it follows the newest line again.
-  expect(lastShown(grown, 0)).toBe("line 43");
-  expect(lastShown([...grown, feedLine(44)], 0)).toBe("line 44");
+  // Three lines on top, two rows each (the line and its time under it): the body moves down by six to keep the
+  // same ones in view.
+  expect(offset(grown, 5)).toBe(11);
+  // Scrolling further down goes on from there.
+  expect(offset(grown, 6)).toBe(12);
+  // Back at the top, it shows the newest line again.
+  expect(offset(grown, 0)).toBe(0);
+  expect(offset([...grown, feedLine(44)], 0)).toBe(0);
+});
+
+test(`Live and Logs draw at most ${ENTRIES_SHOWN} entries, the newest on top, however many arrive`, { timeoutMs: 30_000 }, () => {
+  const { els, act, feedLine, event, view } = harness();
+  const live = (feed: FeedEntry[], fixed: boolean) => texts(renderPane(els, view({ feed, fixed }), act)).filter((one) => /^line \d+$/.test(one));
+  const requests = (events: RouteEvent[], fixed: boolean) => texts(renderPane(els, view({ tab: "logs", events, fixed }), act)).join("\n").match(/\btool-\d+\b/g) ?? [];
+  const feed: FeedEntry[] = [];
+  const events: RouteEvent[] = [];
+  // One entry at a time, well past the cap: the drawn list never grows past it, and its top is always the newest.
+  for (let seq = 1; seq <= ENTRIES_SHOWN * 3; seq++) {
+    feed.push(feedLine(seq));
+    events.push({ ...event(seq), tool: `tool-${seq}` });
+    const shown = Math.min(seq, ENTRIES_SHOWN);
+    const lines = live(feed, false);
+    expect(lines.length).toBe(shown);
+    expect(lines[0]).toBe(`line ${seq}`);
+    expect(lines.at(-1)).toBe(`line ${seq - shown + 1}`);
+    const drawn = requests(events, false);
+    expect(drawn.length).toBe(shown);
+    expect(drawn[0]).toBe(`tool-${seq}`);
+    expect(drawn.at(-1)).toBe(`tool-${seq - shown + 1}`);
+  }
+  // A fixed-height pane draws the same list.
+  const last = ENTRIES_SHOWN * 3;
+  expect(live(feed, true)).toEqual(Array.from({ length: ENTRIES_SHOWN }, (_, i) => `line ${last - i}`));
+  expect(requests(events, true)).toEqual(Array.from({ length: ENTRIES_SHOWN }, (_, i) => `tool-${last - i}`));
+  // The Logs card says how many of the kept requests it shows.
+  const logs = texts(renderPane(els, view({ tab: "logs", events, fixed: false }), act)).join("\n");
+  expect(logs).toContain(`Showing ${ENTRIES_SHOWN} of ${last} entries`);
+});
+
+test("the latest Jev call stays pinned on top of Live, and the band names it after it ends", () => {
+  const { els, act, feedLine, view } = harness();
+  const call: FeedEntry = { seq: 1, time: NOW - 120_000, who: "jev", kind: "call", tone: "good", text: "✓ planAgent · subagent Explore — pick model" };
+  // Twice the cap of newer lines after it: without the pin it would be long gone.
+  const feed = [call, ...Array.from({ length: ENTRIES_SHOWN * 2 }, (_, i) => feedLine(i + 2))];
+  for (const fixed of [false, true]) {
+    const drawn = texts(renderPane(els, view({ feed, fixed }), act));
+    const pin = drawn.indexOf("Latest Jev call · pinned");
+    const lines = drawn.filter((one) => /^line \d+$/.test(one));
+    expect(pin).toBeGreaterThanOrEqual(0);
+    expect(drawn.indexOf(call.text)).toBeGreaterThan(pin);
+    // The pin counts toward the cap; the newest other lines fill the rest under it, newest first.
+    expect(lines.length).toBe(ENTRIES_SHOWN - 1);
+    expect(lines[0]).toBe(`line ${ENTRIES_SHOWN * 2 + 1}`);
+    expect(drawn.indexOf(lines[0]!)).toBeGreaterThan(drawn.indexOf(call.text));
+  }
+  expect(texts(renderBand(els, view({ feed }))).join("\n")).toContain(`Last Jev call 2 min ago: ${call.text}`);
+  // No Jev call kept: Live pins nothing, and the band says so rather than leave a gap.
+  const without = feed.slice(1);
+  expect(texts(renderPane(els, view({ feed: without, fixed: false }), act))).not.toContain("Latest Jev call · pinned");
+  expect(texts(renderBand(els, view({ feed: without }))).join("\n")).toContain("No Jev call yet");
 });
 
 test("a scrolled-down request log stays on the requests it showed as new ones come in on top", () => {
   const { els, act, event, view } = harness();
-  const offset = (events: RouteEvent[], scroll: number) => {
-    const moved = elements(renderPane(els, view({ tab: "logs", events, scroll, rows: 20 }), act)).find((el) => typeof el.props?.marginTop === "number" && (el.props.marginTop as number) < 0);
-    return moved ? -(moved.props!.marginTop as number) : 0;
-  };
+  const offset = (events: RouteEvent[], scroll: number) => scrollOffset(renderPane(els, view({ tab: "logs", events, scroll, rows: 20 }), act));
   const events = Array.from({ length: 40 }, (_, i) => event(i + 1));
   expect(offset(events, 0)).toBe(0);
   expect(offset(events, 6)).toBe(6);
@@ -236,21 +288,18 @@ test("a scrolled-down request log stays on the requests it showed as new ones co
 // The pane draws a rail beside the screen from 64 columns and a bar on top below that; either way the screen is
 // measured at the width it really gets, so the logs keep to what they showed at every width.
 for (const width of [50, 140]) {
-  test(`a scrolled-back live log and a scrolled-down request log keep their place at ${width} columns`, () => {
-    const { els, act, layouts, feedLine, event, view } = harness();
-    const lastShown = (feed: FeedEntry[], scroll: number) => texts(renderPane(els, view({ feed, scroll, width }), act)).filter((one) => /^line \d+$/.test(one)).at(-1);
+  test(`a scrolled-down live log and request log keep their place at ${width} columns`, () => {
+    const { els, act, feedLine, event, view } = harness();
+    const liveOffset = (feed: FeedEntry[], scroll: number) => scrollOffset(renderPane(els, view({ feed, scroll, width }), act));
     const feed = Array.from({ length: 40 }, (_, i) => feedLine(i + 1));
-    expect(lastShown(feed, 0)).toBe("line 40");
-    expect(lastShown(feed, 5)).toBe("line 35");
+    expect(liveOffset(feed, 0)).toBe(0);
+    expect(liveOffset(feed, 5)).toBe(5);
     const grown = [...feed, feedLine(41), feedLine(42), feedLine(43)];
-    expect(lastShown(grown, 5)).toBe("line 35");
-    expect(lastShown(grown, 6)).toBe("line 34");
-    expect(layouts.at(-1)).toBe(6 + 42 - 9);
-    expect(lastShown(grown, 0)).toBe("line 43");
-    const offset = (events: RouteEvent[], scroll: number) => {
-      const moved = elements(renderPane(els, view({ tab: "logs", events, scroll, rows: 20, width }), act)).find((el) => typeof el.props?.marginTop === "number" && (el.props.marginTop as number) < 0);
-      return moved ? -(moved.props!.marginTop as number) : 0;
-    };
+    // Three lines on top, two rows each: the line and its time under it.
+    expect(liveOffset(grown, 5)).toBe(5 + 3 * 2);
+    expect(liveOffset(grown, 6)).toBe(6 + 3 * 2);
+    expect(liveOffset(grown, 0)).toBe(0);
+    const offset = (events: RouteEvent[], scroll: number) => scrollOffset(renderPane(els, view({ tab: "logs", events, scroll, rows: 20, width }), act));
     const events = Array.from({ length: 40 }, (_, i) => event(i + 1));
     expect(offset(events, 0)).toBe(0);
     expect(offset(events, 6)).toBe(6);
@@ -311,5 +360,6 @@ test("model names: old ids and date suffixes", () => {
   expect(prettyModel("claude-sonnet-4-20250514")).toBe("Sonnet 4");
   expect(prettyModel("claude-haiku-4-5-20251001")).toBe("Haiku 4.5");
   expect(prettyModel("claude-opus-5-5")).toBe("Opus 5.5");
+  expect(prettyModel("claude-fable-5-1")).toBe("Fable 5.1");
   expect(prettyModel("claude-instant-20230101")).toBe("instant");
 });

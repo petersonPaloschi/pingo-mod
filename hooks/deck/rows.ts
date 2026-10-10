@@ -4,6 +4,7 @@
 // dot never carries the meaning alone.
 
 import type { FeatureId } from "../../types";
+import { TIERS } from "../core/contracts.ts";
 import { text, type Locale } from "../i18n.ts";
 import { displayWidth } from "../layout.ts";
 import { EFFORTS, fmtUsd, shortModel, stripTool, type Agent, type DeckRow, type RouteView, type Spend } from "./model.ts";
@@ -146,59 +147,73 @@ export function routeCellsTerminal(row: DeckRow, routeHist: readonly string[], l
 export function routeSvg(row: DeckRow, W: number, routeHist: readonly string[], locale: Locale): string {
   const v = row.route;
   if (!v) return "";
+  const layout = DECK_DESIGN.route;
+  const labelPixels = DECK_DESIGN.type.measure.labelPixelsPerChar;
   let x = 0;
   if (v.noAnswer) {
-    let o = `<text x="0" y="15" style="font:400 12px ${FONT};fill:${SVG_TEXT.dim}">${text("deck.route.kept", locale)}</text>`;
-    x = 34;
-    const w = textWidth(v.to, 6.4) + 14;
-    o += `<rect x="${x}" y="3" width="${w}" height="16" rx="4" fill="${tierColor(v.to)}"/><text x="${x + 7}" y="15" style="font:500 11.5px ${FONT};fill:${SVG_ON_FILL}">${esc(v.to)}</text>`;
-    x += w + 12;
-    o += `<text x="${x}" y="15" style="font:500 12px ${FONT};fill:${STYLE.warn.desk}">! ${esc(v.reason)}</text>`;
-    x += textWidth("! " + v.reason, 6.6) + 10;
+    const kept = text("deck.route.kept", locale);
+    const pill = layout.pill;
+    let o = `<text x="0" y="${layout.baselinePixels}" style="font:400 ${DECK_DESIGN.type.svgBodyPixels}px ${FONT};fill:${SVG_TEXT.dim}">${kept}</text>`;
+    x = Math.ceil(textWidth(kept, labelPixels) + layout.keptLabelGapPixels);
+    const w = textWidth(v.to, labelPixels) + pill.horizontalPaddingPixels * 2;
+    o += `<rect x="${x}" y="${pill.y}" width="${w}" height="${pill.height}" rx="${pill.radius}" fill="${tierColor(v.to)}"/><text x="${x + pill.horizontalPaddingPixels}" y="${layout.baselinePixels}" style="font:500 ${DECK_DESIGN.type.svgSmallPixels}px ${FONT};fill:${SVG_ON_FILL}">${esc(v.to)}</text>`;
+    x += w + layout.keptPillGapPixels;
+    const reason = `! ${v.reason}`;
+    o += `<text x="${x}" y="${layout.baselinePixels}" style="font:500 ${DECK_DESIGN.type.svgBodyPixels}px ${FONT};fill:${STYLE.warn.desk}">${esc(reason)}</text>`;
+    x += textWidth(reason, DECK_DESIGN.type.measure.reasonPixelsPerChar) + layout.reasonGapPixels;
     if (v.hint) {
-      o += `<text x="${x}" y="15" style="font:400 11.5px ${FONT};fill:${SVG_TEXT.muted}">· ${esc(v.hint)}</text>`;
-      x += textWidth("· " + v.hint, 6.4) + 10;
+      const hint = `· ${v.hint}`;
+      o += `<text x="${x}" y="${layout.baselinePixels}" style="font:400 ${DECK_DESIGN.type.svgSmallPixels}px ${FONT};fill:${SVG_TEXT.muted}">${esc(hint)}</text>`;
+      x += textWidth(hint, labelPixels) + layout.hintGapPixels;
     }
     return o + historyStrip(routeHist, W, x);
   }
-  let out = `<text x="0" y="15" style="font:400 12px ${FONT};fill:${SVG_TEXT.dim}">${esc(v.from)}</text>`;
-  x += textWidth(v.from, 6.4) + 6;
-  out += `<text x="${x}" y="15" style="font:500 12px ${FONT};fill:${dirColor(v.dir, true)}">${v.dir === "=" ? "=" : "→"}</text>`;
-  x += 14;
-  for (const t of ["haiku", "sonnet", "opus"]) {
+  let out = `<text x="0" y="${layout.baselinePixels}" style="font:400 ${DECK_DESIGN.type.svgBodyPixels}px ${FONT};fill:${SVG_TEXT.dim}">${esc(v.from)}</text>`;
+  x += textWidth(v.from, labelPixels) + layout.fromGapPixels;
+  out += `<text x="${x}" y="${layout.baselinePixels}" style="font:500 ${DECK_DESIGN.type.svgBodyPixels}px ${FONT};fill:${dirColor(v.dir, true)}">${v.dir === "=" ? "=" : "→"}</text>`;
+  x += layout.directionGapPixels;
+  const pill = layout.pill;
+  for (const t of TIERS) {
     const on = t === v.to;
     const want = t === v.want && !on;
-    const w = textWidth(t, 6.4) + 14;
-    out += `<rect x="${x}" y="3" width="${w}" height="16" rx="4" fill="${on ? tierColor(t) : SVG_TRACK}" fill-opacity="${on ? 1 : 0.16}"${want ? ` stroke="${tierColor(t)}" stroke-dasharray="2 2"` : ""}/>`;
-    out += `<text x="${x + 7}" y="15" style="font:${on ? 500 : 400} 11.5px ${FONT};fill:${on ? SVG_ON_FILL : SVG_TEXT.muted}">${t}</text>`;
-    x += w + 4;
+    const w = textWidth(t, labelPixels) + pill.horizontalPaddingPixels * 2;
+    out += `<rect x="${x}" y="${pill.y}" width="${w}" height="${pill.height}" rx="${pill.radius}" fill="${on ? tierColor(t) : SVG_TRACK}" fill-opacity="${on ? 1 : 0.16}"${want ? ` stroke="${tierColor(t)}" stroke-dasharray="2 2"` : ""}/>`;
+    out += `<text x="${x + pill.horizontalPaddingPixels}" y="${layout.baselinePixels}" style="font:${on ? 500 : 400} ${DECK_DESIGN.type.svgSmallPixels}px ${FONT};fill:${on ? SVG_ON_FILL : SVG_TEXT.muted}">${t}</text>`;
+    x += w + layout.tierGapPixels;
   }
-  x += 8;
+  x += layout.tierSectionGapPixels;
   if (v.effort) {
     const lvl = Math.max(1, EFFORTS.indexOf(v.effort as (typeof EFFORTS)[number]) + 1);
-    for (let i = 1; i <= 4; i++) {
-      out += `<rect x="${x + (i - 1) * 7}" y="${17 - (3 + i * 3)}" width="5" height="${3 + i * 3}" rx="1.5" fill="${i <= lvl ? STYLE.run.desk : SVG_TRACK}" fill-opacity="${i <= lvl ? 1 : 0.25}"/>`;
+    const effort = layout.effort;
+    for (let i = 1; i <= effort.barCount; i++) {
+      const height = effort.minimumHeightPixels + i * effort.heightStepPixels;
+      out += `<rect x="${x + (i - 1) * (effort.widthPixels + effort.gapPixels)}" y="${effort.baselinePixels - height}" width="${effort.widthPixels}" height="${height}" rx="${effort.radiusPixels}" fill="${i <= lvl ? STYLE.run.desk : SVG_TRACK}" fill-opacity="${i <= lvl ? 1 : effort.inactiveOpacity}"/>`;
     }
-    x += 32;
-    out += `<text x="${x}" y="15" style="font:400 12px ${FONT};fill:${SVG_TEXT.body}">${esc(v.effort)}</text>`;
-    x += textWidth(v.effort, 6.4) + 14;
+    x += effort.reservedWidthPixels;
+    out += `<text x="${x}" y="${layout.baselinePixels}" style="font:400 ${DECK_DESIGN.type.svgBodyPixels}px ${FONT};fill:${SVG_TEXT.body}">${esc(v.effort)}</text>`;
+    x += textWidth(v.effort, labelPixels) + effort.labelGapPixels;
   }
   if (v.conf != null) {
     const c = v.conf >= 0.6 ? STYLE.ok.desk : STYLE.warn.desk;
-    out += `<text x="${x}" y="15" style="font:400 11.5px ${FONT};fill:${SVG_TEXT.dim}">${text("deck.route.conf", locale)}</text>`;
-    x += 30;
-    out += `<rect x="${x}" y="8" width="44" height="6" rx="3" fill="${SVG_TRACK}" fill-opacity=".25"/><rect x="${x}" y="8" width="${(44 * v.conf).toFixed(1)}" height="6" rx="3" fill="${c}"/>`;
-    x += 50;
-    out += `<text x="${x}" y="15" style="font:400 11.5px ${FONT};fill:${SVG_TEXT.muted}">${v.conf.toFixed(2)}</text>`;
-    x += 40;
+    const label = text("deck.route.conf", locale);
+    const confidence = layout.confidence;
+    const value = v.conf.toFixed(2);
+    out += `<text x="${x}" y="${layout.baselinePixels}" style="font:400 ${DECK_DESIGN.type.svgSmallPixels}px ${FONT};fill:${SVG_TEXT.dim}">${label}</text>`;
+    x += textWidth(label, labelPixels) + confidence.labelGapPixels;
+    out += `<rect x="${x}" y="${confidence.trackY}" width="${confidence.trackWidthPixels}" height="${confidence.trackHeightPixels}" rx="${confidence.trackRadiusPixels}" fill="${SVG_TRACK}" fill-opacity=".25"/><rect x="${x}" y="${confidence.trackY}" width="${(confidence.trackWidthPixels * v.conf).toFixed(1)}" height="${confidence.trackHeightPixels}" fill="${c}"/>`;
+    x += confidence.trackWidthPixels + confidence.trackValueGapPixels;
+    out += `<text x="${x}" y="${layout.baselinePixels}" style="font:400 ${DECK_DESIGN.type.svgSmallPixels}px ${FONT};fill:${SVG_TEXT.muted}">${value}</text>`;
+    x += textWidth(value, labelPixels) + confidence.valueGapPixels;
   }
   if (v.risky != null && v.risky > 0.7) {
-    out += `<text x="${x}" y="15" style="font:500 11.5px ${FONT};fill:${STYLE.hot.desk}">⚠ ${text("deck.route.risky", locale)}</text>`;
-    x += 56;
+    const risky = `⚠ ${text("deck.route.risky", locale)}`;
+    out += `<text x="${x}" y="${layout.baselinePixels}" style="font:500 ${DECK_DESIGN.type.svgSmallPixels}px ${FONT};fill:${STYLE.hot.desk}">${risky}</text>`;
+    x += textWidth(risky, labelPixels) + layout.riskyGapPixels;
   }
   if (v.unapplied) {
-    out += `<text x="${x}" y="15" style="font:400 11.5px ${FONT};fill:${SVG_TEXT.dim}">${text("deck.route.notApplied", locale)}</text>`;
-    x += 72;
+    const unapplied = text("deck.route.notApplied", locale);
+    out += `<text x="${x}" y="${layout.baselinePixels}" style="font:400 ${DECK_DESIGN.type.svgSmallPixels}px ${FONT};fill:${SVG_TEXT.dim}">${unapplied}</text>`;
+    x += textWidth(unapplied, labelPixels) + layout.unappliedGapPixels;
   }
   return out + historyStrip(routeHist, W, x);
 }
@@ -224,7 +239,7 @@ export function ringSvg(pct: number, color: string, icon: "usd" | "week" | "cloc
   const C = 2 * Math.PI * r;
   const glyph =
     icon === "usd"
-      ? `<text x="11" y="15" text-anchor="middle" style="font:600 10px ui-sans-serif,system-ui,sans-serif;fill:${color}">$</text>`
+    ? `<text x="11" y="15" text-anchor="middle" style="font:600 ${DECK_DESIGN.type.svgTinyPixels}px ${FONT};fill:${color}">$</text>`
       : icon === "week"
         ? `<rect x="7.2" y="7.6" width="7.6" height="7" rx="1.2" fill="none" stroke="${color}" stroke-width="1.3"/><rect x="7.2" y="7.6" width="7.6" height="2" fill="${color}"/>`
         : `<path d="M11 7.2V11l2.4 1.6" fill="none" stroke="${color}" stroke-width="1.4" stroke-linecap="round"/>`;
@@ -254,7 +269,7 @@ export function rowSvg(row: DeckRow, W: number, o: RowDrawOptions): { height: nu
     source:
       `<svg xmlns="http://www.w3.org/2000/svg" width="${total}" height="${H}" viewBox="0 ${-pad} ${total} ${H}">` +
       track +
-      `<text x="${total - 4}" y="${TRACK_H / 2 + 4.2}" text-anchor="end" style="font:400 12px ${FONT};fill:${right};font-variant-numeric:tabular-nums">${esc(row.right)}</text>` +
+      `<text x="${total - 4}" y="${TRACK_H / 2 + 4.2}" text-anchor="end" style="font:400 ${DECK_DESIGN.type.svgBodyPixels}px ${FONT};fill:${right};font-variant-numeric:tabular-nums">${esc(row.right)}</text>` +
       strips +
       "</svg>",
   };

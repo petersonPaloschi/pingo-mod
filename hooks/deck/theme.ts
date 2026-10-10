@@ -1,11 +1,13 @@
 // Colors and small helpers shared by the Deck drawings. Pure, no I/O.
 // Every color comes from hooks/theme.ts: the state and tier hues, the track and tick tones, and the text tones.
 import type { AgentState as ModelAgentState } from "./model.ts";
-import { css, DECK_ACCENT, DECK_GLYPH, HUE, PAINT, SVG_PAINT } from "../theme.ts";
+import { CLAUDE_MODEL, type Tier } from "../core/contracts.ts";
+import { css, DECK_ACCENT, DECK_DESIGN, DECK_GLYPH, HUE, PAINT, SVG_PAINT, type DeckGlyphName } from "../theme.ts";
 export { DECK_DESIGN, DECK_STYLE_NAMES, DECK_STYLE_ORDER, type DeckStyleName } from "../theme.ts";
 export type RGB = [number, number, number];
-export type StyleName = keyof typeof DECK_GLYPH;
-export type TierName = "haiku" | "sonnet" | "opus";
+export type StyleName = DeckGlyphName;
+export type TierName = Tier;
+const TYPE_MEASURE = DECK_DESIGN.type.measure;
 
 /** fill and pill-text colors for the terminal, glyph, and the desktop color (text on it is `on`) */
 export interface Style {
@@ -84,9 +86,9 @@ export const STYLE: Record<StyleName, Style> = {
 export const AGENT_STYLE: Record<AgentState, StyleName> = { running: "run", waiting: "ask", error: "hot", done: "done" };
 
 export const TIER: Record<TierName, { term: string; desk: string }> = {
-  haiku: { term: fill(HUE.brand), desk: fill(HUE.brand) },
-  sonnet: { term: fill(HUE.info), desk: fill(HUE.info) },
-  opus: { term: fill(HUE.plum), desk: fill(HUE.plum) },
+  [CLAUDE_MODEL.HAIKU.name]: { term: fill(HUE.brand), desk: fill(HUE.brand) },
+  [CLAUDE_MODEL.SONNET.name]: { term: fill(HUE.info), desk: fill(HUE.info) },
+  [CLAUDE_MODEL.OPUS.name]: { term: fill(HUE.plum), desk: fill(HUE.plum) },
 };
 
 /** The empty part of a terminal bar: a glyph color, and the ground under a solid or pixel bar. */
@@ -130,9 +132,9 @@ export function esc(s: string | number): string {
   return String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c] ?? c);
 }
 
-export function textWidth(s: string, px = 6.7): number {
+export function textWidth(s: string, px: number = TYPE_MEASURE.defaultPixelsPerChar): number {
   let w = 0;
-  for (const ch of String(s)) w += /[ilI.,:;'|!]/.test(ch) ? 3.4 : /[mwMW]/.test(ch) ? 9.5 : /[　-鿿]/.test(ch) ? 12 : px;
+  for (const ch of String(s)) w += /[ilI.,:;'|!]/.test(ch) ? TYPE_MEASURE.narrowPixelsPerChar : /[mwMW]/.test(ch) ? TYPE_MEASURE.widePixelsPerChar : /[　-鿿]/.test(ch) ? TYPE_MEASURE.fullWidthPixelsPerChar : px;
   return w;
 }
 

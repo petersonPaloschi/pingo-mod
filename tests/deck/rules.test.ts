@@ -76,6 +76,12 @@ test("saved settings read back as they were written", () => {
   expect(DEFAULT_SETTINGS.show.pet).toBe(true);
 });
 
+test("unknown bounded style ids survive a settings round-trip", () => {
+  const s = parseSettings({ style: { terminal: "future-terminal", desktop: "future-desktop" } });
+  expect(s.style).toEqual({ terminal: "future-terminal", desktop: "future-desktop" });
+  expect(parseSettings(serializeSettings(s)).style).toEqual(s.style);
+});
+
 test("expand and collapse set the band and reply", () => {
   const open = applyDeckCommand(DEFAULT_SETTINGS, "expand", "en");
   expect(open.settings.open).toBe(true);

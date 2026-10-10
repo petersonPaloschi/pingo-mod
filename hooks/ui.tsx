@@ -35,6 +35,7 @@ import { renderDeck, type DeckBand, type Surface } from "./deck/band.tsx";
 import { COLLAPSED, SECTIONS, SIZES, type DeckSettings } from "./deck/settings.ts";
 import { DESKTOP_STYLE_NAMES, DESKTOP_STYLES } from "./deck/styles-desktop.ts";
 import { CLAUDE_MODELS, defaultPolicy, MODEL_LABEL, PROFILE_EFFORTS, ROLES, type OrchestrationPolicy, type Profile, type Role, type WorkMode } from "./core/orchestration.ts";
+import { EFFORT_TEXT_VALUES, MODEL_TEXT_VALUES } from "./core/contracts.ts";
 import { TERMINAL_STYLE_NAMES, TERMINAL_STYLES } from "./deck/styles-terminal.ts";
 
 /** The pane needs Select and Input, which the terminal and the desktop app draw. */
@@ -719,10 +720,38 @@ function overview(els: Els, view: View, act: Actions) {
 
 /** AI calls the Logs screen lists, newest first. */
 const CALLS_SHOWN = 20;
+/** Entries the Live log and the Logs request log draw at most; older ones stay in the kept history. */
+export const ENTRIES_SHOWN = 50;
+
+/** The newest `ENTRIES_SHOWN` entries of a log, newest first: what Live and Logs draw, a new one pushing the oldest out. */
+function newestFirst<T>(list: readonly T[]): T[] {
+  return list.slice(-ENTRIES_SHOWN).reverse();
+}
+
+/** The latest Jev call in the live log (its line, rewritten when the call ends), if one is still kept. */
+function lastJevCall(feed: readonly FeedEntry[]): FeedEntry | undefined {
+  return feed.findLast((entry) => entry.who === "jev" && entry.kind === "call");
+}
+
+/**
+ * What the Live log draws: the latest Jev call pinned on top, so newer lines never push it out, then the newest
+ * other lines, newest first, `ENTRIES_SHOWN` in all.
+ */
+function liveLines(feed: readonly FeedEntry[]): { pinned: FeedEntry | undefined; lines: FeedEntry[] } {
+  const pinned = lastJevCall(feed);
+  if (!pinned) return { pinned, lines: newestFirst(feed) };
+  return { pinned, lines: newestFirst(feed.filter((entry) => entry.seq !== pinned.seq)).slice(0, ENTRIES_SHOWN - 1) };
+}
+
+/** Rows the entries newer than `since` take at the top of a newest-first log, as drawn at `width`. */
+function rowsAbove<T extends { seq: number }>(shown: readonly T[], since: number, draw: (entry: T) => RenderChildren, width: number): number {
+  return shown.filter((entry) => entry.seq > since).reduce((sum, entry) => sum + rowsOf(draw(entry), width), 0);
+}
 
 /**
  * The Logs screen: a node of reason groups, each with a dot meter for its share of the largest, then the request
- * log itself, newest first, one line per request with its outcome's glyph in its color, then the latest AI calls.
+ * log itself, its newest `ENTRIES_SHOWN` newest first, one line per request with its outcome's glyph in its color,
+ * then the latest AI calls.
  */
 function logView(els: Els, view: View) {
   const { Box, Text } = els;
@@ -731,7 +760,7 @@ function logView(els: Els, view: View) {
   const colorFor = (who: string) => (who === text("reason.who.failed", view.locale) ? INK.fail : who === text("reason.who.asked", view.locale) ? INK.pass : INK.dim);
   const most = Math.max(1, ...grouped.map((reason) => reason.count));
   const reasonsShown = grouped.slice(0, 6);
-  const rows = [...view.events].reverse();
+  const rows = newestFirst(view.events);
   // Every AI call (Jev's and the features' own) as Live wrote it, newest first: the same lines, not a second record.
   const calls = view.feed.filter((entry) => entry.kind === "call");
   const shownCalls = calls.slice(-CALLS_SHOWN).reverse();
@@ -1156,7 +1185,7 @@ function orchestrationCard(els: Els, view: View, orch: OrchestrationView, act: A
     <Input
       key="orch-command"
       value={orch.draft}
-      placeholder={text("ui.orch.commandPlaceholder", locale)}
+      placeholder={text("ui.orch.commandPlaceholder", locale, { ...MODEL_TEXT_VALUES, ...EFFORT_TEXT_VALUES })}
       submitLabel={text("ui.orch.commandSubmit", locale)}
       onInput={(value) => act.orchestrationType(value)}
       onSubmit={(value) => act.orchestrationSubmit(value)}
@@ -1201,7 +1230,7 @@ function deckView(els: Els, view: View, act: Actions) {
   if (!deck) return <Text color={INK.faint} wrap="wrap">{text("ui.deck.intro", locale)}</Text>;
   const { settings } = deck;
   const toggle = (key: string, on: boolean, label: string, command: string) => toggleButton(els, key, on, label, () => act.deck(`${command} ${on ? "off" : "on"}`));
-  const choices = (names: Record<string, string>, list: readonly string[]) => list.map((value) => ({ value, label: names[value] ?? value }));
+  const choices = <T extends string,>(names: Readonly<Record<T, string>>, list: readonly T[]) => list.map((value) => ({ value, label: names[value] }));
   const verb = deck.note?.verb;
   const noteGroup = !verb ? undefined
     : ["expand", "collapse", "style", "collapsed", "size"].includes(verb) ? "ui.deck.band"
@@ -1392,8 +1421,9 @@ function feedLine(els: Els, view: View, entry: FeedEntry, maxRows?: number) {
 }
 
 /**
- * The log as a conversation, newest last: no gaps between speakers, the face and name drawn where
- * the speaker changes. The Live tab draws every line; a subagent's pane draws only its own.
+ * The log as a conversation, in the order given: no gaps between speakers, the face and name drawn where
+ * the speaker changes. The Live tab draws its newest lines newest first; a subagent's pane draws only its own,
+ * newest last.
  */
 function conversation(els: Els, view: View, lines: readonly FeedEntry[], empty: string, maxEntryRows?: number) {
   const { Box, Text } = els;
@@ -1444,24 +1474,24 @@ function logRule(els: Els, view: View, title: string) {
   );
 }
 
-/** The live log: who speaks, then every observable event, newest last. */
-function liveView(els: Els, view: View, act: Actions, rows: number) {
+/** The live log: who speaks, the latest Jev call pinned, then its newest `ENTRIES_SHOWN` events, newest first. */
+function liveView(els: Els, view: View) {
   const { Box } = els;
   const empty = text("ui.live.emptyFeed", view.locale);
+  const { pinned, lines } = liveLines(view.feed);
   const head = (
     <Box flexDirection="column" rowGap={UI_DESIGN.space.xs}>
       {liveTop(els, view)}
       {logRule(els, view, text("ui.live.title", view.locale))}
     </Box>
   );
-  if (!view.fixed) return <Box flexDirection="column" rowGap={UI_DESIGN.space.xs}>{head}{conversation(els, view, view.feed, empty)}</Box>;
-  const { back, max } = feedBack("live", view, view.feed);
-  act.layout(max, true);
-  const headRows = Math.min(rowsOf(head, view.width), Math.max(2, rows - 4));
-  return <Box flexDirection="column" height={rows} overflow="hidden">
-    <Box flexDirection="column" height={headRows} overflow="hidden" flexShrink={0}>{head}</Box>
-    {stuckLog(els, view, view.feed, Math.max(1, rows - headRows), empty, back)}
-  </Box>;
+  return (
+    <Box flexDirection="column" rowGap={UI_DESIGN.space.xs}>
+      {head}
+      {pinned ? card(els, text("ui.live.pinnedJev", view.locale), feedLine(els, { ...view, width: view.width - 4 }, pinned), { width: view.width, rule: pinned.tone === "bad" ? INK.fail : INK.brand }) : null}
+      {lines.length || !pinned ? conversation(els, view, lines, empty) : null}
+    </Box>
+  );
 }
 
 /** Jev calls observed in this session; token counts stay unknown when a response did not report them. */
@@ -1866,19 +1896,19 @@ export function renderPane(els: Els, view: View, act: Actions) {
       {main}
     </Box>
   );
-  if (!view.fixed) return frame([top, tabBody(els, inner, act, view.rows)]);
+  if (!view.fixed) return frame([top, tabBody(els, inner, act)]);
   const rows = Math.max(4, view.rows - rowsOf(top, width));
-  if (view.tab === "live") return frame([top, liveView(els, inner, act, rows)]);
-  const body = <Box flexDirection="column" flexShrink={0}>{tabBody(els, inner, act, rows)}</Box>;
+  const body = <Box flexDirection="column" flexShrink={0}>{tabBody(els, inner, act)}</Box>;
   const total = rowsOf(body, width);
   const max = Math.max(0, total - rows + 1);
-  // Logs has its newest on top: scrolled down, it keeps to the requests it showed.
-  const newest = view.events.at(-1)?.seq ?? 0;
+  // Logs and Live have their newest on top: scrolled down, each keeps to the entries it showed.
   const offset =
     view.tab === "logs"
-      ? anchored("log", view.scroll, newest, (since) => view.events.filter((event) => event.seq > since).reduce((s, event) => s + rowsOf(logEntry(els, { ...inner, width: width - 4 }, event), width - 4), 0), max)
-      : Math.min(view.scroll, max);
-  act.layout(view.tab === "logs" && max ? view.scroll + max - offset : max, false);
+      ? anchored("log", view.scroll, view.events.at(-1)?.seq ?? 0, (since) => rowsAbove(newestFirst(view.events), since, (event) => logEntry(els, { ...inner, width: width - 4 }, event), width - 4), max)
+      : view.tab === "live"
+        ? anchored("live", view.scroll, view.feed.at(-1)?.seq ?? 0, (since) => rowsAbove(liveLines(view.feed).lines, since, (entry) => feedLine(els, inner, entry), width), max)
+        : Math.min(view.scroll, max);
+  act.layout((view.tab === "logs" || view.tab === "live") && max ? view.scroll + max - offset : max, false);
   const more = total - offset > rows - 1;
   return frame([
     top,
@@ -1896,9 +1926,9 @@ export function renderPane(els: Els, view: View, act: Actions) {
 }
 
 /** What the active tab draws under the header. */
-function tabBody(els: Els, view: View, act: Actions, rows: number) {
+function tabBody(els: Els, view: View, act: Actions) {
   return view.tab === "live"
-      ? liveView(els, view, act, rows)
+      ? liveView(els, view)
       : view.tab === "agents"
         ? agentsView(els, view, act)
       : view.tab === "models"
@@ -1937,7 +1967,8 @@ export function renderAbove(els: ElementTable, view: View, deck: DeckBand | null
 
 /**
  * Above the prompt, in the dashboard's language: Pingo's face and Jev's state in the mood's color with the last five
- * minutes beside it, then the main model's dot, what Claude is doing, and a dot per subagent at work in its color.
+ * minutes beside it, then Jev's latest call (when and what, kept after it ends), then the main model's dot, what
+ * Claude is doing, and a dot per subagent at work in its color.
  */
 export function renderBand(els: ElementTable, view: View) {
   const { Box, Text } = els;
@@ -1948,6 +1979,7 @@ export function renderBand(els: ElementTable, view: View) {
   const now = view.live;
   const runningAgents = view.agents.filter((run) => run.state === "running");
   const running = runningAgents.length;
+  const lastJev = lastJevCall(view.feed);
   return (
     <Box flexDirection="column">
       <Box flexDirection="row" columnGap={UI_DESIGN.space.xs} flexWrap="wrap">
@@ -1956,6 +1988,12 @@ export function renderBand(els: ElementTable, view: View) {
         <Text color={INK.border}>·</Text>
         <Text color={stats.failures > 0 ? INK.fail : INK.dim}>{`${stats.failures > 0 ? `${GLYPH.warn} ` : ""}${statsLine(stats, view.locale)}`}</Text>
         {statsPartial(stats, view.locale) ? <Text color={INK.faint}>{statsPartial(stats, view.locale)}</Text> : null}
+      </Box>
+      <Box flexDirection="row" columnGap={UI_DESIGN.space.xs}>
+        <Text bold color={!lastJev ? INK.faint : lastJev.tone === "bad" ? INK.fail : INK.brand}>{GLYPH.on}</Text>
+        <Text color={lastJev ? INK.ink : INK.faint} wrap="truncate-end">
+          {lastJev ? text("ui.band.lastJev", view.locale, { age: formatAge(view.now - lastJev.time, view.locale), what: lastJev.text }) : text("ui.band.noJev", view.locale)}
+        </Text>
       </Box>
       <Box flexDirection="row" columnGap={UI_DESIGN.space.xs} flexWrap="wrap">
         <Text color={INK.claude}>{GLYPH.on}</Text>

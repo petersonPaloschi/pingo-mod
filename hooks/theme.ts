@@ -63,14 +63,67 @@ export const DECK_STYLE_ORDER = {
   terminal: ["segments", "line", "solid", "dots", "pixel", "spark"],
 } as const;
 export type DeckStyleName = (typeof DECK_STYLE_ORDER.desktop)[number];
+const DECK_STYLE_LABELS = { pixel: "Pixel", segments: "Segments", line: "Line", solid: "Solid", dots: "Dots", spark: "Spark" } as const;
 export const DECK_STYLE_NAMES = {
-  desktop: { pixel: "Pixel", segments: "Segments", line: "Line", solid: "Solid", dots: "Dots", spark: "Spark" },
-  terminal: { segments: "Segments", line: "Line", solid: "Solid", dots: "Dots", pixel: "Pixel dots", spark: "Spark" },
+  desktop: DECK_STYLE_LABELS,
+  terminal: { ...DECK_STYLE_LABELS, pixel: "Pixel dots" },
 } as const satisfies Record<"desktop" | "terminal", Record<DeckStyleName, string>>;
 
 /** Visual parameters shared by the Deck's SVG, terminal-cell and mascot renderers. */
 export const DECK_DESIGN = {
-  type: { svg: "'Anthropic Sans',ui-sans-serif,system-ui,-apple-system,sans-serif" },
+  type: {
+    svg: "'Anthropic Sans',ui-sans-serif,system-ui,-apple-system,sans-serif",
+    svgBodyPixels: 12,
+    svgSmallPixels: 11.5,
+    svgTinyPixels: 10,
+    svgTagPixels: 10.5,
+    measure: {
+      defaultPixelsPerChar: 6.7,
+      labelPixelsPerChar: 6.4,
+      reasonPixelsPerChar: 6.6,
+      countPixelsPerChar: 6.5,
+      stripNamePixelsPerChar: 6.9,
+      modelTagPixelsPerChar: 6,
+      narrowPixelsPerChar: 3.4,
+      widePixelsPerChar: 9.5,
+      fullWidthPixelsPerChar: 12,
+    },
+  },
+  route: {
+    baselinePixels: 15,
+    fromGapPixels: 6,
+    directionGapPixels: 14,
+    keptLabelGapPixels: 8,
+    keptPillGapPixels: 12,
+    reasonGapPixels: 10,
+    hintGapPixels: 10,
+    tierGapPixels: 4,
+    tierSectionGapPixels: 8,
+    pill: { y: 3, height: 16, radius: 4, horizontalPaddingPixels: 7 },
+    effort: {
+      barCount: 4,
+      baselinePixels: 17,
+      minimumHeightPixels: 3,
+      heightStepPixels: 3,
+      widthPixels: 5,
+      gapPixels: 2,
+      radiusPixels: 1.5,
+      inactiveOpacity: 0.25,
+      reservedWidthPixels: 32,
+      labelGapPixels: 14,
+    },
+    confidence: {
+      labelGapPixels: 6,
+      trackY: 8,
+      trackWidthPixels: 44,
+      trackHeightPixels: 6,
+      trackRadiusPixels: 3,
+      trackValueGapPixels: 6,
+      valueGapPixels: 14,
+    },
+    riskyGapPixels: 10,
+    unappliedGapPixels: 10,
+  },
   breakpoints: { narrowWidth: 360 },
   motion: {
     frameMs: 150,
@@ -100,12 +153,30 @@ export const DECK_DESIGN = {
     desktop: {
       minimumShare: 80,
       shareRatio: 0.62,
+      pillMinimumWidth: 80,
+      pillMaximumShare: 0.55,
       segmentMin: 8,
       segmentMax: 40,
       segmentWidth: 9,
       segmentGap: 2,
       dotCount: 10,
       stepLimit: 16,
+      dotStartX: 8,
+      dotSpacing: 16,
+      stepGapMinimum: 12,
+      stepGapMaximum: 26,
+      stepGapReserve: 16,
+      stepConnectorInset: 5,
+      stepConnectorHeight: 1.5,
+      stepConnectorActiveOpacity: 0.8,
+      stepConnectorIdleOpacity: 0.3,
+      dotRadius: 5,
+      stepActiveCoreRadius: 2.4,
+      stepIdleRadius: 4.5,
+      stepActiveStrokeWidth: 2,
+      stepIdleStrokeWidth: 1.5,
+      stepIdleOpacity: 0.45,
+      dotIdleOpacity: 0.2,
       sparkMinWidth: 60,
       sparkRatio: 0.26,
       sparklineMinimumWidth: 60,
@@ -127,14 +198,62 @@ export const DECK_DESIGN = {
       historyLimit: 24,
     },
   },
-  strips: { height: 18, gap: 3, textFill: "#F0EEFC" },
+  strips: {
+    height: 18,
+    gap: 3,
+    textFill: "#F0EEFC",
+    indentPixels: 12,
+    narrowNameReservePixels: 30,
+    nameWidthRatio: 0.45,
+    nameStartPixels: 19,
+    toolGapPixels: 12,
+    textBaselinePixels: 12.5,
+    timeRightInsetPixels: 9,
+    stateDot: { x: 10, radius: 3 },
+    modelTag: { textPaddingPixels: 12, boxRightInsetPixels: 52, textRightInsetPixels: 46, topPixels: 3, heightPixels: 12, radiusPixels: 3 },
+    texture: {
+      columnPitchPixels: 3,
+      rowCount: 4,
+      rowPitchPixels: 3.6,
+      topInsetPixels: 3,
+      cellPixels: 2,
+      runSeedOffset: 41,
+      patternSeed: 5,
+      density: 0.2,
+      paletteSeed: 6,
+      paletteBuckets: 4,
+      opacity: 0.32,
+    },
+  },
   band: {
     pixelsPerColumn: 8,
     titleMaxChars: 22,
     titleMaxPixels: 160,
     defaultMaxRows: 14,
+    defaultPanelColumns: 100,
     headerPetHeight: 28,
     headerPetScale: 0.7,
+    minimumDesktopWidth: 320,
+    desktop: {
+      titleWidthRatio: 0.28,
+      trackMinimumWidth: 120,
+      trackMaximumWidth: 1400,
+      trackReservePixels: 70,
+      inlinePetMinimumWidth: 80,
+      inlinePetReservedPixels: 170,
+      inlinePetExtraPixelsPerChar: 7.5,
+    },
+    terminal: {
+      minimumRows: 2,
+      labelMinimumColumns: 10,
+      labelMaximumColumns: 22,
+      labelRatio: 0.18,
+      rightValueColumns: 11,
+      barReservedColumns: 9,
+      valueColumns: 4,
+      agentLabelMinimumColumns: 8,
+      agentLabelInsetColumns: 2,
+    },
     /** The expanded band's feature switches: a title line, then the switches packed into lines under it. */
     features: {
       /** Columns the title and the switch lines sit in from the band's left edge, under the rows' titles. */
@@ -148,6 +267,7 @@ export const DECK_DESIGN = {
       minimumRows: 2,
     },
     collapsed: {
+      gap: { desktop: 4, terminal: 3 },
       desktop: { reservePixels: 140, extraPixelsPerChar: 7.5, titlePixelsPerChar: 8.5, itemPaddingPixels: 76 },
       terminal: { reserveColumns: 10, extraColumnsPerChar: 1, itemPaddingColumns: 10 },
     },
@@ -169,7 +289,8 @@ export const DECK_DESIGN = {
     speed: { walk: 0.035, run: 0.11 },
     body: { width: 48, height: 38, viewBox: "-4 -6 48 38", size: 34, x: 20, floorY: 29.5 },
     braille: { columns: 12, rows: 4 },
-    lane: { desktopHeight: 62, desktopScale: 1.05, bodyGap: 2, backgroundSpacing: 12, sidePadding: 2, maximumColumns: 512 },
+    props: { sleepZFontPixels: 6, sleepZSmallFontPixels: 4.5, alertMarkFontPixels: 7 },
+    lane: { desktopHeight: 62, desktopBandHeight: { compact: 44, roomy: 54 }, desktopScale: 1.05, bodyGap: 2, backgroundSpacing: 12, sidePadding: 2, maximumColumns: 512 },
     motion: {
       breatheSeconds: 2.4,
       sleepSeconds: 3,
@@ -196,6 +317,20 @@ export const DECK_DESIGN = {
       sleepZY: 14,
       puffPixels: 8,
     },
+  },
+  cast: {
+    joinMs: 1200,
+    leaveMs: 1500,
+    lane: {
+      labelHeight: 12,
+      memberPixels: 24,
+      namePixels: 6,
+      memberWidthPaddingColumns: 2,
+      labelPaddingColumns: 1,
+      maximumLabelColumns: 16,
+    },
+    desktop: { memberPaddingPixels: 10, labelPaddingPixels: 8 },
+    motion: { hopSeconds: 0.6, askingSeconds: 0.5, eyeSpinSeconds: 0.8, hopEasing: "cubic-bezier(.3,.6,.4,1)" },
   },
 } as const;
 
@@ -235,7 +370,14 @@ export const UI_INK = {
 } as const;
 export const UI_DESIGN = {
   space: { none: 0, xs: 1, sm: 2, md: 3 },
-  layout: { indent: 3, gutter: 3, minCardWidth: 10, gridMinWidth: 34, gridMaxColumns: 2 },
+  layout: {
+    indent: 3,
+    gutter: 3,
+    minCardWidth: 10,
+    gridMinWidth: 34,
+    gridMaxColumns: 2,
+    viewport: { minimumColumns: 40, panelColumns: 60, defaultColumns: 80, defaultRows: 30 },
+  },
 } as const;
 
 /** The same roles for an SVG source, which cannot name a theme key: mid-tones that hold on both grounds. */
@@ -244,10 +386,11 @@ export const SVG_PAINT = {
   onFill: "#ffffff",
 } as const;
 
-/** Colors specific to the mascot's props; the main mood colors continue to come from HUE. */
+/** Colors specific to the mascot's props and cast; the main mood colors continue to come from HUE. */
 export const PET_PALETTE = {
   shadow: "#000000",
   laneLight: "#ffffff",
+  eye: 0xf4f4f4,
   accents: {
     gold: "#ffd23f",
     red: "#e0245e",
@@ -321,6 +464,7 @@ export const DECK_GLYPH = {
   ok: "◔",
   warn: "◑",
 } as const;
+export type DeckGlyphName = keyof typeof DECK_GLYPH;
 
 /**
  * A meter of `dots` dots filled to `fraction`, in halves: [filled, empty], so each part takes its own color.

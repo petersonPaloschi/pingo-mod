@@ -93,7 +93,7 @@ export function world(
   table: Record<string, Answer> = { ...DEFAULT_ANSWERS },
   { empty = () => false }: WorldOptions = {},
 ) {
-  mock.clock(on, { now: Date.parse("2026-10-07T12:00:00Z") });
+  const clock = mock.clock(on, { now: Date.parse("2026-10-07T12:00:00Z") });
   mockEngineServices(on);
 
   const store: MutableStore = {
@@ -144,7 +144,7 @@ export function world(
         };
   });
 
-  return { jev, sent, store, toasts };
+  return { jev, sent, store, toasts, clock };
 }
 
 export async function step(

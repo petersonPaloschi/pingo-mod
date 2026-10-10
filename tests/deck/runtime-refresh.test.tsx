@@ -1,7 +1,8 @@
 import { expect, test } from "claude-code/testing";
 
 import { cellsOf } from "../../hooks/dots.ts";
-import { createPet, petLaneCells, petLaneColumns } from "../../hooks/deck/pet.ts";
+import { castLaneCells, castOf } from "../../hooks/deck/cast.ts";
+import { createPet, petLaneColumns } from "../../hooks/deck/pet.ts";
 import { ASK, NOW, TERMINAL, deckWorld } from "./helpers.ts";
 
 const OPTIONS = { options: { locale: "en" }, plugins: [] } as const;
@@ -56,7 +57,9 @@ test("the terminal pet blits a styled frame every 100 ms without a UI invalidati
   const lane = await ui.find({ type: "Raster", key: "deck-pet" } as never);
   const columns = petLaneColumns(110);
   const expectedPet = { ...createPet(NOW), act: "jump" as const, dur: 5000, hat: "cowboy", shades: true };
-  expect(lane?.props.cells).toBe(cellsOf(petLaneCells(expectedPet, NOW, columns)));
+  // no subagent at work: Jev alone stands with the pet
+  const cast = castOf([], false, NOW);
+  expect(lane?.props.cells).toBe(cellsOf(castLaneCells(expectedPet, cast, NOW, columns)));
   invalidations.length = 0;
 
   await clock.advance(100);
@@ -66,7 +69,7 @@ test("the terminal pet blits a styled frame every 100 ms without a UI invalidati
   await clock.advance(50);
 
   expect(blits.length).toBeGreaterThan(at100);
-  expect(blits.at(-1)?.cells).toBe(cellsOf(petLaneCells(expectedPet, NOW + 200, columns)));
+  expect(blits.at(-1)?.cells).toBe(cellsOf(castLaneCells(expectedPet, cast, NOW + 200, columns)));
   expect(invalidations).toEqual([]);
   await ui.unmount();
 });

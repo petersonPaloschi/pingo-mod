@@ -3,11 +3,16 @@ import type { AskJev } from "./request.ts";
 import { truncate } from "./state.ts";
 import { askTimed } from "./request.ts";
 import { readChoice } from "./selection.ts";
-import { catalogueModel, CLAUDE_MODELS } from "./orchestration.ts";
+import { catalogueModel } from "./orchestration.ts";
 import type { Answer, Json, ModelContext, Questions } from "./types.ts";
 import { text, type Locale, type LocaleKey } from "../i18n.ts";
 import {
+  CLAUDE_MODEL,
+  EFFORT,
   EFFORTS,
+  EFFORT_TEXT_VALUES,
+  MODEL_ID_BY_TIER,
+  TIERS,
   type AgentPlan,
   type Effort,
   type Features,
@@ -18,7 +23,7 @@ import {
 } from "./contracts.ts";
 
 export { DEFAULT_FEATURES } from "./contracts.ts";
-export { EFFORTS };
+export { EFFORTS, TIERS };
 export { readChoice } from "./selection.ts";
 export type {
   AgentPlan,
@@ -43,8 +48,6 @@ export interface AgentPlanConfig {
   promptLocale?: Locale;
 }
 
-export const TIERS: readonly Tier[] = ["haiku", "sonnet", "opus"];
-
 function modelIdTail(id: string): string {
   return id.toLowerCase().slice(id.lastIndexOf("/") + 1);
 }
@@ -59,9 +62,10 @@ interface ParsedModelId {
 function parseModelId(id: string | undefined): ParsedModelId | undefined {
   if (!id) return undefined;
   const fullId = id.toLowerCase();
-  if (fullId === "haiku" || fullId === "sonnet" || fullId === "opus") return { tier: fullId as Tier, alias: true };
+  if (TIERS.includes(fullId as Tier)) return { tier: fullId as Tier, alias: true };
   const model = modelIdTail(fullId).replace(/^(?:[a-z0-9-]+\.)?anthropic\./, "");
-  const match = model.match(/^claude-(?:(\d+)(?:-(\d+))?-(haiku|sonnet|opus)|(haiku|sonnet|opus)-(\d+)(?:-(\d+))?)(.*)$/);
+  const tiers = TIERS.join("|");
+  const match = model.match(new RegExp(`^claude-(?:(\\d+)(?:-(\\d+))?-(${tiers})|(${tiers})-(\\d+)(?:-(\\d+))?)(.*)$`));
   if (!match || !/^(?:-\d{8})?(?:-v\d+(?::\d+|@\d{8}))?(?:@\d{8})?(?:\[1m\])?$/.test(match[7] ?? "")) return undefined;
   return {
     tier: (match[3] ?? match[4]) as Tier,
@@ -80,39 +84,25 @@ export function supportsEffort(modelId: string | undefined): boolean {
   if (catalogueModel(modelId)) return true;
   const model = parseModelId(modelId);
   if (!model) return false;
-  if (model.alias) return model.tier !== "haiku";
+  if (model.alias) return model.tier !== CLAUDE_MODEL.HAIKU.name;
   const major = model.major ?? 0;
   const minor = model.minor ?? 0;
-  if (model.tier === "haiku") return major > 5 || (major === 5 && minor >= 5);
-  return model.tier === "opus" ? major > 4 || (major === 4 && minor >= 5) : major > 4 || (major === 4 && minor >= 6);
+  if (model.tier === CLAUDE_MODEL.HAIKU.name) return major > 5 || (major === 5 && minor >= 5);
+  return model.tier === CLAUDE_MODEL.OPUS.name ? major > 4 || (major === 4 && minor >= 5) : major > 4 || (major === 4 && minor >= 6);
 }
 /** Defaults use the first three catalogue entries (Haiku, Sonnet, Opus); native agents accept tier aliases. */
-export const TIER_MODEL: Record<Tier, string> = {
-  haiku: CLAUDE_MODELS[0],
-  sonnet: CLAUDE_MODELS[1],
-  opus: CLAUDE_MODELS[2],
-};
+export const TIER_MODEL = MODEL_ID_BY_TIER;
 
 export const MODEL_KEY = "model";
 export const EFFORT_KEY = "effort";
 const SAFE_MODEL_ID = /^[\p{L}\p{N}_.:/-]{1,128}$/u;
 const NATIVE_AGENT_TYPES = new Set(["Explore", "Plan"]);
 
-const MODEL_CRITERIA: Record<Tier, LocaleKey> = {
-  haiku: "planning.model.haiku",
-  sonnet: "planning.model.sonnet",
-  opus: "planning.model.opus",
-};
-const EFFORT_CRITERIA: Record<Effort, LocaleKey> = {
-  low: "planning.effort.low",
-  medium: "planning.effort.medium",
-  high: "planning.effort.high",
-  xhigh: "planning.effort.xhigh",
-  max: "planning.effort.max",
-};
+const MODEL_CRITERIA = Object.fromEntries(TIERS.map((tier) => [tier, `planning.model.${tier}`])) as Record<Tier, LocaleKey>;
+const EFFORT_CRITERIA = Object.fromEntries(EFFORTS.map((effort) => [effort, `planning.effort.${effort}`])) as Record<Effort, LocaleKey>;
 
 const criteria = (keys: Record<string, LocaleKey>, locale?: Locale) =>
-  Object.fromEntries(Object.entries(keys).map(([key, value]) => [key, text(value, locale)]));
+  Object.fromEntries(Object.entries(keys).map(([key, value]) => [key, text(value, locale, EFFORT_TEXT_VALUES)]));
 
 function modelCriteria(session: ModelContext, locale?: Locale): Record<string, Json> {
   const options: Record<string, Json> = {};
@@ -136,7 +126,7 @@ export function agentQuestions(features: Features, locale?: Locale, session: Mod
     ...(Object.keys(models).length ? {
       [MODEL_KEY]: { type: "choice" as const, instructions: text("planning.agent.model.question", locale), criteria: models },
     } : {}),
-    [EFFORT_KEY]: { type: "choice", instructions: text("planning.agent.effort.question", locale), criteria: criteria(EFFORT_CRITERIA, locale) },
+    [EFFORT_KEY]: { type: "choice", instructions: text("planning.agent.effort.question", locale, EFFORT_TEXT_VALUES), criteria: criteria(EFFORT_CRITERIA, locale) },
   };
 }
 

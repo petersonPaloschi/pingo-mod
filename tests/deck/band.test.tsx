@@ -5,6 +5,7 @@ import { ASK, ORIGIN } from "./helpers.ts";
 import { DECK_VERSION } from "../../hooks/deck/model.ts";
 import { displayWidth } from "../../hooks/layout.ts";
 import { DECK_DESIGN } from "../../hooks/theme.ts";
+import { routeSvg } from "../../hooks/deck/rows.ts";
 import { DESKTOP_STYLES } from "../../hooks/deck/styles-desktop.ts";
 import { TERMINAL_STYLES } from "../../hooks/deck/styles-terminal.ts";
 import { shot } from "../textshot.ts";
@@ -181,6 +182,14 @@ test("a router with no answer shows the reason, not a stale route", { ...LOCALE,
   expect(out.text).toMatch(/⇄ Model route — no answer \(typesafe 402\), kept opus · check router key or credit/);
   const term = await $.ui.mount({ ...BAND, surface: TERMINAL });
   expect(await term.find({ type: "Text", text: /! typesafe 402/ })).toBeDefined();
+});
+
+test("the route SVG leaves room for the localized kept label", () => {
+  const row = { route: { noAnswer: true, to: "opus", reason: "router unavailable", hint: "" } } as never;
+  const english = routeSvg(row, 320, [], "en");
+  const portuguese = routeSvg(row, 320, [], "pt");
+  expect(english).toContain('<rect x="34"');
+  expect(portuguese).toContain('<rect x="53"');
 });
 
 test("a VS Code surface gets the Desktop look", LOCALE, async ($, on) => {

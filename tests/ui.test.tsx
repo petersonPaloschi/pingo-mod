@@ -104,7 +104,8 @@ test("Lapida's model calls show in Live and in Logs, as the same lines", async (
   await ui.press({ key: "tab-live" });
   for (let i = 0; i < 200 && !(await lines()).some((line) => line.startsWith("✓")); i++) await new Promise<void>((resolve) => setTimeout(() => resolve(), 5));
   const live = await lines();
-  expect(live).toEqual(["Lapida · this conversation — no conversation to fork yet", "✓ Lapida · opus-5-5"]);
+  // Live draws its newest line on top.
+  expect(live).toEqual(["✓ Lapida · opus-5-5", "Lapida · this conversation — no conversation to fork yet"]);
   await ui.press({ key: "tab-logs" });
   expect(await ui.find({ type: "Text", text: "AI calls" })).toBeDefined();
   expect((await lines()).sort()).toEqual([...live].sort());

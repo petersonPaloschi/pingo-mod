@@ -12,6 +12,7 @@ import { channelFile, channelReader, FOLLOW_SCRIPT } from "./core/channel.ts";
 import { compactContextSession, contextReductionRatio, resolveContextConfig, type ContextJevAsker, type ContextJevResponse, type ContextResult, type ContextSessionMessage, type ResolvedContextConfig } from "./core/compaction.ts";
 import { createAskJev, isProvider, observeAskJev, PROVIDERS, redact, resolveModel, validateKey, type AskJev, type JevEvent, type JevSent, type ProviderId, type Transport } from "./core/jev.ts";
 import type { ModelContext } from "./core/types.ts";
+import { CLAUDE_MODEL } from "./core/contracts.ts";
 import { featureGate, sizeRequest, totalInput, type FeatureContext } from "./core/runtime.ts";
 import {
   DEFAULT_FEATURES,
@@ -95,14 +96,15 @@ import {
   type DeckState,
   type ToolCall,
 } from "./deck/model.ts";
-import { createPet, petLaneCells, petLaneColumns, stepPet, PET_BRAILLE, type Pet } from "./deck/pet.ts";
+import { createPet, petLaneCells, petLaneColumns, PET_BRAILLE, stepPet, type Pet } from "./deck/pet.ts";
+import { castKey, castLaneCells, castOf, LANE_ROWS, type CastMember } from "./deck/cast.ts";
 import { cellsOf } from "./dots.ts";
 import { FOLD_FADE, FOLD_STEP, TRACK_H, toTrackRow, type DrawCaches } from "./deck/rows.ts";
 import { DESKTOP_STYLES, DESKTOP_STYLE_NAMES, desktopTrack } from "./deck/styles-desktop.ts";
 import { TERMINAL_STYLES, TERMINAL_STYLE_NAMES, terminalBar } from "./deck/styles-terminal.ts";
 import { applyDeckCommand, deckUsage, deckWords, openReply } from "./deck/wire.ts";
 import { DIM, runs } from "./deck/theme.ts";
-import { DECK_DESIGN, GLYPH, PAINT, UI_DESIGN } from "./theme.ts";
+import { DECK_DESIGN, GLYPH, PAINT, UI_DESIGN, type DeckStyleName } from "./theme.ts";
 
 const PANE = "jev";
 type FeatureId = keyof FeatureFlags;
@@ -213,6 +215,10 @@ let mainModel: string | undefined;
 let deck: DeckState | undefined;
 let deckCaches: DrawCaches = { head: new Map(), strip: new Map() };
 let deckPet: Pet | undefined;
+/** Who stands with the pet: Jev, then the subagents at work, as the last tick or band draw found them. */
+let deckCast: CastMember[] = [];
+/** The subagent list as last written or read, for the cast: the Deck's clock draws from it without a read. */
+let castRuns: readonly AgentRun[] = [];
 let sessionPetHat = "tophat";
 let petHatOverride: string | undefined;
 let petHatOverrideUntil = 0;
@@ -380,9 +386,15 @@ async function patch($: EngineInterface, seq: number, change: Partial<Pick<FeedE
   await update($, feed, (list) => (list.some((entry) => entry.seq === seq) ? list.map((entry) => (entry.seq === seq ? { ...entry, ...change } : entry)) : list));
 }
 
+/** Changes the subagent list, and keeps the copy the Deck's cast is drawn from in step, so its clock never reads it. */
+async function updateAgents($: EngineInterface, change: (list: AgentRun[]) => AgentRun[]): Promise<AgentRun[]> {
+  castRuns = [...await update($, agents, change)];
+  return [...castRuns];
+}
+
 /** Changes one subagent's record, when it is still kept. */
 async function updateRun($: EngineInterface, id: string, change: (run: AgentRun) => AgentRun): Promise<void> {
-  await update($, agents, (list) => (list.some((run) => run.id === id) ? list.map((run) => (run.id === id ? change(run) : run)) : list));
+  await updateAgents($,(list) => (list.some((run) => run.id === id) ? list.map((run) => (run.id === id ? change(run) : run)) : list));
 }
 
 /** The Flow tab's record as kept; a value of another schema reads as empty. */
@@ -447,7 +459,7 @@ async function advisorInfo($: EngineInterface): Promise<AdvisorInfo> {
 async function addRun($: EngineInterface, run: Omit<AgentRun, "n" | "mascot">): Promise<AgentRun> {
   let added: AgentRun | undefined;
   const reserved = await update($, agentCount, (last) => last + 1);
-  await update($, agents, (list) => {
+  await updateAgents($,(list) => {
     const n = Math.max(reserved, ...list.map((one) => one.n + 1));
     // A mascot no running subagent wears, so two at once never look alike.
     const mascot = pickMascot(list.filter((one) => one.state === "running").map((one) => one.mascot), n);
@@ -466,7 +478,7 @@ async function addRun($: EngineInterface, run: Omit<AgentRun, "n" | "mascot">): 
 async function wakeRun($: EngineInterface, id: string, mate: AgentInfo, locale: Locale): Promise<void> {
   mate.awake = true;
   let kept = false;
-  await update($, agents, (list) => {
+  await updateAgents($,(list) => {
     const run = list.find((one) => one.id === id);
     if (!run) return list;
     kept = true;
@@ -510,7 +522,7 @@ function agentTitle(run: AgentRun): string {
 /** Takes finished subagents off the Agents tab and closes their panes; running ones stay. */
 async function removeRuns($: EngineInterface, which: (run: AgentRun) => boolean): Promise<AgentRun[]> {
   let removed: AgentRun[] = [];
-  await update($, agents, (list) => {
+  await updateAgents($,(list) => {
     removed = list.filter((run) => run.state !== "running" && which(run));
     return list.filter((run) => !removed.includes(run));
   });
@@ -536,13 +548,24 @@ async function setLive($: EngineInterface, change: Partial<LiveNow>): Promise<vo
   });
 }
 
-/** Marks the live status while a Jev request is in flight. */
+/** Jev requests open now, whoever asked, each by when it started: the live status says "asking" while any is. */
+const jevOpen = new Set<symbol>();
+
+/** One Jev request opens or closes; other open calls keep "asking" on. */
+async function jevBusy($: EngineInterface, request: symbol, open: boolean): Promise<void> {
+  if (open) jevOpen.add(request);
+  else jevOpen.delete(request);
+  await setLive($, { asking: jevOpen.size ? true : undefined });
+}
+
+/** Marks the live status while `work` plans with Jev. */
 async function asking<T>($: EngineInterface, work: () => Promise<T>): Promise<T> {
-  await setLive($, { asking: true });
+  const request = Symbol("asking");
+  await jevBusy($, request, true);
   try {
     return await work();
   } finally {
-    await setLive($, { asking: undefined });
+    await jevBusy($, request, false);
   }
 }
 
@@ -552,28 +575,38 @@ type JevWhere = ConsultWhere & { origin: JevCaller["origin"]; trigger?: string }
 /**
  * Where every Jev call lands, the mod's own and sift's: one live-log line per call, naming the
  * function that asked and each question's prompt, turned into Jev's answers with their odds when
- * it ends; the Flow tab counts it in the run it was asked for. `where` is read as each call
- * starts, since sift's calls arrive from whichever loop ran the command.
+ * it ends; the Flow tab counts it in the run it was asked for, and the live status says "asking"
+ * while it is open. `where` is read as each call starts, since sift's calls arrive from whichever
+ * loop ran the command.
  */
 function jevReporter($: EngineInterface, locale: Locale, where: () => JevWhere): (event: JevEvent) => Promise<void> {
-  const open = new Map<string, { consult: string; startedAt: number; line: number; sent: JevSent; caller: JevCaller }>();
+  const open = new Map<string, { consult: string; startedAt: number; line: number; sent: JevSent; caller: JevCaller; request: symbol }>();
   return async (event) => {
     if (event.phase === "start") {
       const at = where();
       const caller: JevCaller = { origin: at.origin, ...(at.trigger ? { trigger: at.trigger } : {}) };
       const card = jevAsked(event.sent, caller, locale);
-      const line = await log($, "jev", "call", "info", card.text, undefined, { detail: card.detail, meta: text("feed.jev.asking", locale) });
-      let consult = "";
-      await updateTrace($, (s) => {
-        const [next, id] = consultStart(s, at, { origin: at.origin, model: event.sent.model, questions: event.sent.questions, startedAt: event.at });
-        consult = id;
-        return next;
-      });
-      open.set(event.call, { consult, startedAt: event.at, line, sent: event.sent, caller });
+      // Call numbers are only unique per reporter: the status keeps each call by its own token.
+      const request = Symbol(event.call);
+      await jevBusy($, request, true);
+      try {
+        const line = await log($, "jev", "call", "info", card.text, undefined, { detail: card.detail, meta: text("feed.jev.asking", locale) });
+        let consult = "";
+        await updateTrace($, (s) => {
+          const [next, id] = consultStart(s, at, { origin: at.origin, model: event.sent.model, questions: event.sent.questions, startedAt: event.at });
+          consult = id;
+          return next;
+        });
+        open.set(event.call, { consult, startedAt: event.at, line, sent: event.sent, caller, request });
+      } catch (error) {
+        await jevBusy($, request, false);
+        throw error;
+      }
       return;
     }
     const call = open.get(event.call);
     open.delete(event.call);
+    if (call) await jevBusy($, call.request, false);
     const meta = call ? `${formatNumber(Math.max(0, event.at - call.startedAt), locale)} ms` : undefined;
     if (event.phase === "fail") {
       if (call) await updateTrace($, (s) => consultEnd(s, call.consult, event.at, event.error));
@@ -862,6 +895,12 @@ function petOf(now: number): Pet {
   return deckPet;
 }
 
+/** The pet's cast at `now`, kept for the lane's repaints: Jev (asked while a request is open), then every subagent at work or just ended. */
+function castNow(now: number): CastMember[] {
+  deckCast = castOf(castRuns, jevOpen.size > 0, now);
+  return deckCast;
+}
+
 async function styledPet($: EngineInterface, now: number): Promise<Pet> {
   const pet = petOf(now);
   const preferences = await readFeaturePreferences($);
@@ -1075,13 +1114,16 @@ async function tickDeck($: EngineInterface): Promise<void> {
   const petOn = cfg.show.pet && await featureEnabled($, "pingoVivo");
   const pet = petOn ? await styledPet($, now) : undefined;
   const moved = pet ? stepPet(pet, petMood(s, rows, now), now) : false;
+  // a subagent joining or leaving, or Jev being asked, changes the cast: on the desktop that is a new picture too
+  const castWas = castKey(deckCast);
+  const recast = pet ? castKey(castNow(now)) !== castWas : false;
   // What is on screen decides what moves. A band never drawn, or drawn long ago, stays still. The terminal pet is
-  // repainted in place and asks for no redraw; a desktop band moves by CSS and is redrawn once per new scene; the
-  // terminal's rows step their frames, so they are redrawn, every other frame, or every fourth with the dashboard
+  // repainted in place and asks for no redraw; a desktop band moves by CSS and is redrawn once per new scene or cast;
+  // the terminal's rows step their frames, so they are redrawn, every other frame, or every fourth with the dashboard
   // open (every redraw draws that again too).
   const desktop = now - deckShownDesktopAt < ON_SCREEN_MS;
   const terminal = now - deckShownTerminalAt < ON_SCREEN_MS;
-  let redraw = (moved && desktop) || (cues.sounds.length > 0 && (terminal || desktop));
+  let redraw = ((moved || recast) && desktop) || (cues.sounds.length > 0 && (terminal || desktop));
   const animated = rows.some((r) => r.animating) || (blitBroken && cfg.show.pet);
   // (half a frame short of the step, so a timer a little late does not skip a whole one)
   if (terminal && animated && now - rowsRedrawnAt >= ((now - paneShownAt < ON_SCREEN_MS ? 4 : 2) - 0.5) * FRAME_MS) {
@@ -1103,10 +1145,10 @@ async function paintLanes($: EngineInterface, now: number, pet: Pet): Promise<vo
       deckLanes.delete(requestId);
       continue;
     }
-    const cells = cellsOf(petLaneCells(pet, now, lane.columns));
+    const cells = cellsOf(castLaneCells(pet, deckCast, now, lane.columns));
     if (cells === lane.cells) continue;
     try {
-      const result = await $.ui.blit({ requestId, key: "deck-pet", cells, columns: lane.columns, rows: PET_BRAILLE.rows });
+      const result = await $.ui.blit({ requestId, key: "deck-pet", cells, columns: lane.columns, rows: LANE_ROWS });
       // not mounted, or another size: the next draw of the band puts the site back
       if (result.deny) deckLanes.delete(requestId);
       else lane.cells = cells;
@@ -1370,6 +1412,8 @@ async function deckBandOf($: EngineInterface, cols: number, surface: Surface, ma
   const s = deckOf(now);
   const rows = collectRows(s, show, now, config.locale);
   const flags = await read($, features);
+  // a draw reads the subagent list itself, so a restored session shows its subagents before any is written
+  castRuns = await read($, agents);
   return {
     rows,
     ...(folding && deckFold ? { shown: foldCount(rows.length, now) } : {}),
@@ -1387,6 +1431,7 @@ async function deckBandOf($: EngineInterface, cols: number, surface: Surface, ma
       cfg.show.weather ? weatherText(s.weather, cfg.city, surface === "desktop", config.locale) : "",
     ].filter(Boolean),
     pet: await styledPet($, now),
+    cast: castNow(now),
     toggle: () => void toggleDeck($),
     dismiss: (row) => void dismissDeckRow($, row),
     foldAge: folding && deckFold?.dir === "open" ? foldAgeOf(deckFold, now) : null,
@@ -1412,7 +1457,7 @@ function noteLane($: EngineInterface, requestId: string, band: DeckBand, surface
   }
   const columns = petLaneColumns(band.cols);
   const wasEmpty = deckLanes.size === 0;
-  deckLanes.set(requestId, { columns, cells: cellsOf(petLaneCells(band.pet, band.now, columns)), seenAt: band.now });
+  deckLanes.set(requestId, { columns, cells: cellsOf(castLaneCells(band.pet, band.cast ?? [], band.now, columns)), seenAt: band.now });
   if (wasEmpty && !blitBroken) startDeckPetClock($);
 }
 
@@ -1440,8 +1485,8 @@ function stylePicker(
   const { Box, Text, Button } = els;
   const desktop = surface === "desktop";
   const { Svg } = els as ElementTable<"desktop">;
-  const list: readonly string[] = desktop ? DESKTOP_STYLES : TERMINAL_STYLES;
-  const names: Record<string, string> = desktop ? DESKTOP_STYLE_NAMES : TERMINAL_STYLE_NAMES;
+  const list: readonly DeckStyleName[] = desktop ? DESKTOP_STYLES : TERMINAL_STYLES;
+  const names: Record<DeckStyleName, string> = desktop ? DESKTOP_STYLE_NAMES : TERMINAL_STYLE_NAMES;
   const current = desktop ? cfg.style.desktop : cfg.style.terminal;
   const picker = DECK_DESIGN.stylePicker;
   const pw = Math.max(picker.desktopMinWidth, Math.min(picker.desktopMaxWidth, cols * DECK_DESIGN.band.pixelsPerColumn - picker.desktopReservedPixels));
@@ -1475,7 +1520,7 @@ function stylePicker(
     );
   });
   return (
-    <Box flexDirection="column" gap={desktop ? picker.rowGap : 0}>
+    <Box flexDirection="column" gap={desktop ? picker.rowGap : UI_DESIGN.space.none}>
       {lines}
       <Text color={DIM}>{text("deck.picker.hint", locale, { keys: list.map((_, i) => i + 1).join("/") })}</Text>
     </Box>
@@ -1520,7 +1565,7 @@ async function clearHistory($: EngineInterface): Promise<void> {
     await update($, events, () => []);
   });
   await update($, feed, () => []);
-  await update($, agents, (list) => list.filter((run) => run.state === "running"));
+  await updateAgents($,(list) => list.filter((run) => run.state === "running"));
   await updateTrace($, clearTrace);
 }
 
@@ -1813,7 +1858,7 @@ function parseClarezaReview(raw: string) {
 async function reviewClareza($: EngineInterface, ask: string, answer: string, wasRewrite: boolean) {
   const prefs = await readFeaturePreferences($);
   const known = await readClarezaTerms($);
-  const result = await completeModel($, "clareza", { model: "haiku", system: CLAREZA_REVIEW_SYSTEM, prompt: `Reader level: ${prefs.plainLevel}. Known terms: ${known.join(", ") || "none"}.\nUser request:\n<request>${ask || "(none)"}</request>\nFinal answer:\n<answer>${answer}</answer>`, maxTokens: 300, timeoutMs: 15000 });
+  const result = await completeModel($, "clareza", { model: CLAUDE_MODEL.HAIKU.name, system: CLAREZA_REVIEW_SYSTEM, prompt: `Reader level: ${prefs.plainLevel}. Known terms: ${known.join(", ") || "none"}.\nUser request:\n<request>${ask || "(none)"}</request>\nFinal answer:\n<answer>${answer}</answer>`, maxTokens: 300, timeoutMs: 15000 });
   const review = result.isAnswered ? parseClarezaReview(result.text) : null;
   if (!review) { await update($, clarezaStatus, () => "Answer review unavailable"); return; }
   await update($, clarezaStatus, () => review.status);
@@ -2069,7 +2114,7 @@ async function lapidaAbove($: EngineInterface, e: { props: { hasSurvey?: boolean
   };
   const label = phase === "enhancing" ? "Lapida…" : phase === "ready" ? (pt ? "Lapida · revise o rascunho" : "Lapida · review the rewrite") : phase === "error" ? await read($, lapidaNote) : "Lapida";
   const notes = phase === "ready" ? await read($, lapidaChanges) : [];
-  const width = Math.max(10, (e.props.bodyColumns || 80) - 2);
+  const width = Math.max(UI_DESIGN.layout.minCardWidth, (e.props.bodyColumns || UI_DESIGN.layout.viewport.defaultColumns) - UI_DESIGN.space.sm);
   // The node and label, then each button, move whole to the next line on a narrow band instead of being squeezed.
   return <Box flexDirection="column"><Box flexDirection="row" flexWrap="wrap" columnGap={UI_DESIGN.space.xs}><Box flexDirection="row" columnGap={UI_DESIGN.space.xs}><Text color={PAINT.brand}>{GLYPH.on}</Text><Text dimColor wrap="truncate-end">{label}</Text></Box>{!enhancing && <Box flexShrink={0}><Button key="lapida-enhance" label={pt ? "Lapidar (e)" : "Enhance (e)"} hotkey="e" onPress={enhanceDraft} /></Box>}{!enhancing && <Box flexShrink={0}><Button key="lapida-send" label={pt ? "Enviar (s)" : "Send (s)"} hotkey="s" onPress={send} /></Box>}</Box>{notes.map((line) => <Text key={line} dimColor wrap="truncate-end">{`+ ${line}`.slice(0, width)}</Text>)}{below}</Box>;
 }
@@ -2320,7 +2365,7 @@ async function summarizeVigia($: EngineInterface, answer: string) {
   if (!(await readFeaturePreferences($)).trackerSummary || !(await featureEnabled($, "vigia"))) return;
   const own = await ensureVigia($);
   const prompt = ["Summarize where this coding session stands for a teammate.", "Reply with exactly four lines, no markdown:", "TITLE: <2-5 word name for the work>", "DONE: <what is done, under 100 chars>", "DOING: <what is in progress or waiting, under 100 chars>", "NEXT: <concrete next step, under 100 chars>", `Previous: ${own.title ?? "-"} | ${own.done ?? "-"} | ${own.doing ?? "-"} | ${own.next ?? "-"}`, `Tasks: ${own.tasks.map((task) => `[${task.status}] ${task.text}`).join("; ") || "none"}`, `Files: ${(own.files ?? []).join(", ") || "none"}`, `Latest prompt: ${own.lastPrompt ?? "-"}`, `Latest answer:\n${answer.slice(-6000)}`].join("\n");
-  const result = await completeModel($, "vigia", { model: "haiku", prompt, maxTokens: 300, timeoutMs: 30000 });
+  const result = await completeModel($, "vigia", { model: CLAUDE_MODEL.HAIKU.name, prompt, maxTokens: 300, timeoutMs: 30000 });
   if (!result.isAnswered) return;
   const pick = (label: string) => result.text.match(new RegExp(`^\\s*${label}:\\s*(.+)$`, "mi"))?.[1]?.trim();
   await saveVigia($, (record) => { record.title = pick("TITLE") ?? record.title; record.done = pick("DONE") ?? record.done; record.doing = pick("DOING") ?? record.doing; record.next = pick("NEXT") ?? record.next; });
@@ -2744,6 +2789,7 @@ function actor(agentId: string | undefined): Speaker {
 }
 
 export const register: Register = (on, given) => {
+  jevOpen.clear();
   options = given as ModOptions;
   contextCompacting = false;
   const contextConfig = resolveContextConfig({
@@ -2806,7 +2852,7 @@ export const register: Register = (on, given) => {
     await registerSentinela($);
     await registerVigia($);
     mainModel = await $.session.model();
-    await setLive($, { model: mainModel });
+    await setLive($, { model: mainModel, asking: undefined });
     const advisor = await advisorInfo($);
     await updateTrace($, (s) => setAdvisorInfo(s, advisor));
     // Deck's preferences, usage history and this session's spend: the store is read once, here.
@@ -3579,8 +3625,8 @@ export const register: Register = (on, given) => {
       return <Text>{await statusText($)}</Text>;
     }
     const els = $.ui.resolve(e);
-    const width = Math.max(1, e.props.bodyColumns ?? 60);
-    const rows = e.props.scroll?.bodyRows ?? e.viewport?.rows ?? 30;
+    const width = Math.max(1, e.props.bodyColumns ?? UI_DESIGN.layout.viewport.panelColumns);
+    const rows = e.props.scroll?.bodyRows ?? e.viewport?.rows ?? UI_DESIGN.layout.viewport.defaultRows;
     const key = await scrollKeyOf($, PANE);
     const shown = await view($, width, rows, e.surface, key);
     paneShownAt = shown.now;
@@ -3734,8 +3780,8 @@ export const register: Register = (on, given) => {
   on("ui.render", { component: "Pane" }, async ($, e, next) => {
     if (!e.requestId.startsWith(AGENT_PANE)) return next(e);
     const n = Number(e.requestId.slice(AGENT_PANE.length));
-    const width = Math.max(1, e.props.bodyColumns ?? 60);
-    const rows = e.props.scroll?.bodyRows ?? e.viewport?.rows ?? 30;
+    const width = Math.max(1, e.props.bodyColumns ?? UI_DESIGN.layout.viewport.panelColumns);
+    const rows = e.props.scroll?.bodyRows ?? e.viewport?.rows ?? UI_DESIGN.layout.viewport.defaultRows;
     const shown = await view($, width, rows, e.surface, e.requestId);
     const run = shown.agents.find((one) => one.n === n);
     if (e.surface !== "terminal" && e.surface !== "desktop") {
@@ -3869,13 +3915,13 @@ export const register: Register = (on, given) => {
     const locale = (await getSettings($)).locale;
     const cfg = await read($, deckSettings);
     const row = collectRows(deckOf(now), cfg.show, now, locale).find((r) => r.kind === "bar") ?? sampleRow(locale);
-    return stylePicker($, $.ui.resolve(e), deckSurface(e.surface), cfg, row, locale, Math.max(40, e.props.bodyColumns ?? 80), now);
+    return stylePicker($, $.ui.resolve(e), deckSurface(e.surface), cfg, row, locale, Math.max(UI_DESIGN.layout.viewport.minimumColumns, e.props.bodyColumns ?? UI_DESIGN.layout.viewport.defaultColumns), now);
   });
 
   // the band as a pane of its own (/deck panel): expanded, every row at once
   on("ui.render", { component: "Pane", requestId: "deck-panel" }, async ($, e) => {
     const surface = deckSurface(e.surface);
-    const band = await deckBandOf($, Math.max(40, e.props.bodyColumns ?? 100), surface, undefined, false);
+    const band = await deckBandOf($, Math.max(UI_DESIGN.layout.viewport.minimumColumns, e.props.bodyColumns ?? DECK_DESIGN.band.defaultPanelColumns), surface, undefined, false);
     noteLane($, e.requestId, band, surface);
     return renderDeck($.ui.resolve(e), { ...band, expanded: true, pane: true }, surface);
   });
@@ -3884,7 +3930,7 @@ export const register: Register = (on, given) => {
     if (e.props.hasSurvey) return next(e);
     const els = $.ui.resolve(e);
     const { Box } = els;
-    const cols = e.props.bodyColumns ?? 80;
+    const cols = e.props.bodyColumns ?? UI_DESIGN.layout.viewport.defaultColumns;
     const surface = deckSurface(e.surface);
     const band = await deckBandOf($, cols, surface, e.props.maxRows);
     noteLane($, e.requestId, band, surface);

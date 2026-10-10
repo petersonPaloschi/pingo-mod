@@ -2,7 +2,8 @@ import { expect, test } from "claude-code/testing";
 
 import { DESKTOP, TERMINAL, TODOS, deckWorld } from "./helpers.ts";
 
-import { PET_BRAILLE, petLaneColumns } from "../../hooks/deck/pet.ts";
+import { LANE_ROWS } from "../../hooks/deck/cast.ts";
+import { petLaneColumns } from "../../hooks/deck/pet.ts";
 
 // What the Deck's animation costs: how often the UI is drawn again, and how the terminal pet moves without that.
 const BAND = {
@@ -116,16 +117,17 @@ test("the terminal pet is repainted in place, on the lane the band drew", OPTION
   const ui = await $.ui.mount({ ...BAND, surface: TERMINAL });
   const lane = await ui.find({ type: "Raster", key: "deck-pet" } as never);
   expect(lane?.props.columns).toBe(petLaneColumns(110));
-  expect(lane?.props.rows).toBe(PET_BRAILLE.rows);
+  // the bodies' four rows and, above them, the row of names
+  expect(lane?.props.rows).toBe(LANE_ROWS);
   await threeSeconds(ui, clock, statuses);
   await threeSeconds(ui, clock, statuses);
   expect(blits.length).toBeGreaterThan(3);
-  const bytes = petLaneColumns(110) * PET_BRAILLE.rows * 12;
+  const bytes = petLaneColumns(110) * LANE_ROWS * 12;
   for (const blit of blits) {
     expect(blit.requestId).toBe("above-prompt");
     expect(blit.key).toBe("deck-pet");
     expect(blit.columns).toBe(petLaneColumns(110));
-    expect(blit.rows).toBe(PET_BRAILLE.rows);
+    expect(blit.rows).toBe(LANE_ROWS);
     expect(blit.cells).toHaveLength(Math.ceil(bytes / 3) * 4);
   }
   // a frame that did not change is not sent again

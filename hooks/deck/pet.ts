@@ -217,13 +217,13 @@ function propsSvg(state: PetAct): string {
     );
   if (state === "sleep")
     return (
-      `<text x="31" y="6" font-size="6" fill="${hex(PROP.gray)}" font-family="${DECK_DESIGN.type.svg}" style="animation:zz ${PET_MOTION.sleepZSeconds}s infinite">z</text>` +
-      `<text x="34" y="3" font-size="4.5" fill="${hex(PROP.gray)}" font-family="${DECK_DESIGN.type.svg}" style="animation:zz ${PET_MOTION.sleepZSeconds}s infinite ${PET_MOTION.sleepZDelaySeconds}s">z</text>`
+      `<text x="31" y="6" font-size="${DECK_DESIGN.pet.props.sleepZFontPixels}" fill="${hex(PROP.gray)}" font-family="${DECK_DESIGN.type.svg}" style="animation:zz ${PET_MOTION.sleepZSeconds}s infinite">z</text>` +
+      `<text x="34" y="3" font-size="${DECK_DESIGN.pet.props.sleepZSmallFontPixels}" fill="${hex(PROP.gray)}" font-family="${DECK_DESIGN.type.svg}" style="animation:zz ${PET_MOTION.sleepZSeconds}s infinite ${PET_MOTION.sleepZDelaySeconds}s">z</text>`
     );
   if (state === "alert")
     return (
       `<g style="animation:shake ${PET_MOTION.shakeSeconds}s infinite"><circle cx="33.5" cy="1.5" r="4.5" fill="${hex(PROP.amber)}"/>` +
-      `<text x="33.5" y="4.3" font-size="7" font-weight="600" text-anchor="middle" fill="${hex(PROP.mark)}" font-family="${DECK_DESIGN.type.svg}">!</text></g>`
+      `<text x="33.5" y="4.3" font-size="${DECK_DESIGN.pet.props.alertMarkFontPixels}" font-weight="600" text-anchor="middle" fill="${hex(PROP.mark)}" font-family="${DECK_DESIGN.type.svg}">!</text></g>`
     );
   if (state === "celebrate")
     return CONFETTI.map(
@@ -451,7 +451,7 @@ type Pixels = readonly (readonly [number, number])[];
 const RING: Pixels = [[0, 0], [1, 0], [2, 0], [2, 1], [2, 2], [1, 2], [0, 2], [0, 1]];
 
 /** An eye's dots, from its top left corner. Three dots across and down; the pill is two across. */
-function eyePixels(eyes: (typeof MOODS)[Mood]["eyes"], t: number, side: 1 | -1): Pixels {
+export function eyePixels(eyes: (typeof MOODS)[Mood]["eyes"], t: number, side: 1 | -1): Pixels {
   switch (eyes) {
     case "line":
       return [[0, 1], [1, 1], [2, 1]];

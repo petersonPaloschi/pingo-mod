@@ -1,11 +1,10 @@
-// The Flow tab: the run record (trace.ts) built from the SDK's events in the orders they come, and
-// the drawing of it (flow.ts), pure and in the pane.
+// The Flow tab: record the SDK's events and show their chronological trail in the pane.
 import type { On } from "claude-code";
 import { describe, expect, mock, test, type Engine } from "claude-code/testing";
 
 import type { TraceState } from "../types";
-import { flowLines, flowScene, flowSummary, prettyModel } from "../hooks/flow.ts";
-import { displayWidth } from "../hooks/layout.ts";
+import { flowSummary } from "../hooks/flow.ts";
+import { trailLines } from "../hooks/trail.ts";
 import { PANE_PROPS as basePaneProps, mockEngineServices, step } from "./helpers.ts";
 import {
   advisorBlocker,
@@ -33,9 +32,10 @@ import {
 } from "../hooks/trace.ts";
 
 const NOW = Date.parse("2026-10-07T12:00:00Z");
-const drawn = (lines: ReturnType<typeof flowLines>) => lines.map((parts) => parts.map((part) => part.text).join("")).join("\n");
-const draw = (trace: TraceState, width = 72, locale: "en" | "pt" = "en") => drawn(flowLines({ trace, now: NOW, width, locale }));
 const runOf = (s: TraceState, id: string) => s.runs.find((run) => run.id === id)!;
+const trailText = (trace: TraceState) => trailLines({ trace, now: NOW, width: 100, locale: "en" })
+  .map((line) => line.map((part) => part.text).join(""))
+  .join("\n");
 
 /** An idle prompt the engine runs: prompt.submit, Jev, turn.start while it enters, then its `next` resolves. */
 function submitIdle(s: TraceState, text: string, turnId: string, at: number): TraceState {
@@ -164,9 +164,10 @@ describe("the run record", () => {
     s = startTurn(s, "t2", "also fix the tests", NOW - 9e3);
     expect(runOf(s, "t2").kind).toBe("unlinked");
     expect(runOf(s, "t2").message).toBeUndefined();
-    const picture = draw(s);
-    expect(picture).toContain("“also fix the tests” · association pending");
-    expect(picture).toContain("#1 ✓ “refactor the router”");
+    const shown = trailText(s);
+    expect(shown).toContain("also fix the tests");
+    expect(shown).toContain("and the docs");
+    expect(shown.indexOf("also fix the tests")).toBeLessThan(shown.indexOf("and the docs"));
   });
 
   test("a continuation turn has a run of its own", () => {
@@ -174,7 +175,7 @@ describe("the run record", () => {
     s = completeTurn(s, "t1", NOW - 15e3, "answer");
     s = startTurn(s, "t2", "", NOW - 10e3);
     expect(runOf(s, "t2").kind).toBe("continuation");
-    expect(draw(s)).toContain("continuation · no new message");
+    expect(trailText(s)).toContain("The turn continues, no new message");
   });
 
   test("a refused prompt stays out of every run and says why", () => {
@@ -182,7 +183,9 @@ describe("the run record", () => {
     const s = promptEntered(submitted, id, "blocked by policy");
     expect(s.runs).toEqual([]);
     expect(s.inbox[0]).toMatchObject({ state: "dropped", dropped: "blocked by policy" });
-    expect(draw(s)).toContain("⊘ “rm -rf /” · refused: blocked by policy");
+    expect(trailText(s)).toContain("Request refused");
+    expect(trailText(s)).toContain("rm -rf /");
+    expect(trailText(s)).toContain("refused: blocked by policy");
   });
 
   test("a turn that starts after its prompt already entered is not tied to it", () => {
@@ -298,154 +301,12 @@ describe("the run record", () => {
   });
 });
 
-describe("the drawing", () => {
-  test("no sample: an empty record says nothing has run yet", () => {
-    const picture = draw(emptyTrace());
-    expect(picture).toContain("No runs recorded yet.");
-    expect(picture).not.toMatch(/PRE-SHIP|SUBAGENTS/);
+describe("the Flow status summary", () => {
+  test("an empty trace reports that no runs were recorded", () => {
     expect(flowSummary(emptyTrace(), "en")).toBe("Flow: no runs recorded yet");
   });
 
-  test("a subagent consultation is distinct from a main-turn Jev plan", () => {
-    const promptAt = NOW - 10e3;
-    let s = emptyTrace();
-    [s] = submitPrompt(s, { text: "coordinate the work", at: promptAt, origin: "composer" });
-    s = startTurn(s, "t1", "coordinate the work", promptAt + 100);
-    s = agentStart(s, { id: "a1", type: "Explore", description: "inspect the code", at: promptAt + 200 });
-    let consult: string;
-    [s, consult] = consultStart(s, { agentId: "a1" }, { origin: "agent", model: "jev-model", questions: ["model"], startedAt: promptAt + 300 });
-    s = consultEnd(s, consult, promptAt + 400);
-
-    const picture = draw(s);
-    expect(picture).toContain("No Jev call for this prompt");
-    expect(picture).toContain("1 Jev call in this run");
-    expect(picture).not.toContain("No Jev calls observed");
-  });
-
-  test("a run from its message to its answer: Jev, models, tools by source, subagents, advisor", () => {
-    const s = setAdvisorInfo(busyRun(), { configured: "claude-opus-5-5" });
-    const picture = draw(s, 100);
-    const expected = [
-      "FLOW · RUN 1 · RUNNING",
-      "“check the site before launch”",
-      "historical route hint",
-      "1 Jev call in this run",
-      "Opus 5.5 → sent Sonnet 5.5",
-      "answered Sonnet 5.5",
-      "1 request · effort high",
-      "Claude Code 3 · MCP github 1",
-      "1 denied · 1 failed",
-      "Lead · Sonnet 5.5",
-      "Subagent dispatcher",
-      "3 subagents",
-      "group 1",
-      "✓ 15s",
-      "used Haiku 4.5",
-      "group 2",
-      "error",
-      "group 3",
-      "running 1m 10s",
-      "effort medium",
-      "2 calls observed",
-      "result received: 1",
-      "not observed: 1",
-      "configured in settings",
-      "exposed",
-      "Return to main",
-      "1 edit · 1 file",
-      "confirmed models: Sonnet 5.5",
-      "Haiku 4.5",
-    ];
-    const missing = expected.filter((line) => !picture.includes(line));
-    if (missing.length) throw new Error(`Missing Flow output: ${missing.join(" | ")}`);
-  });
-
-  test("wide tree orders the lead, Jev, dispatcher and return while keeping advisor separate", () => {
-    const picture = draw(busyRun(), 96);
-    const at = (label: string) => picture.split("\n").findIndex((line) => line.includes(label));
-    expect(at("Lead")).toBeLessThan(at("Jev"));
-    expect(at("Jev")).toBeLessThan(at("tools"));
-    expect(at("tools")).toBeLessThan(at("Subagent dispatcher"));
-    expect(at("Subagent dispatcher")).toBeLessThan(at("Return to main"));
-    expect(picture).not.toContain("RECORDED REVIEWS");
-    expect(picture).toContain("advisor");
-    expect(picture).toContain("group 1");
-    expect(picture).toContain("group 2");
-    expect(picture).toContain("group 3");
-  });
-
-  test("running agent duration advances in the recent activity log", () => {
-    let s = submitIdle(emptyTrace(), "delegate the search", "t1", NOW - 20e3);
-    s = agentStart(s, { id: "a1", toolUseId: "tu-a1", type: "Explore", description: "background search", at: NOW - 10e3 });
-    const renderAt = (now: number) => drawn(flowLines({ trace: s, now, width: 100, locale: "en" }));
-    expect(renderAt(NOW)).toContain("Explore · running 10s");
-    expect(renderAt(NOW)).not.toContain("Explore · running 0s");
-    expect(renderAt(NOW + 5e3)).toContain("Explore · running 15s");
-  });
-
-  test("Flow shows recorded checkpoint history without empty policy rows", () => {
-    let s = busyRun();
-    s = {
-      ...s,
-      runs: s.runs.map((run) => run.id === "t1"
-        ? { ...run, checkpoints: [{ kind: "plan", at: NOW - 89e3 }] }
-        : run),
-    };
-    const picture = draw(s, 100);
-    expect(picture).toContain("RECORDED REVIEWS");
-    expect(picture).toContain("requested at");
-    expect(picture).not.toContain("not requested");
-  });
-
-  test("wide view shows historical checkpoints and observed models", () => {
-    let s = busyRun();
-    const messageId = runOf(s, "t1").message!.id;
-    s = planMessage(s, messageId, {
-      outcome: "consulted",
-      reason: "hint",
-      summary: "historical route hint",
-      checkpoints: [{ kind: "plan", at: NOW - 89e3 }],
-    });
-    s = {
-      ...s,
-      runs: s.runs.map((run) => run.id === "t1"
-        ? { ...run, checkpoints: [...(run.checkpoints ?? []), { kind: "recovery", at: NOW - 75e3, agentId: "a2", tool: "mcp__github__get_issue", attempts: 2 }] }
-        : run),
-    };
-    const picture = draw(s, 100);
-    for (const line of [
-      "requested at",
-      "mcp__github__get_issue",
-      "×2",
-      "Lead · Sonnet 5.5",
-      "Session timeline",
-      "Recent run activity",
-    ]) expect(picture).toContain(line);
-    expect(picture).not.toContain("passed");
-  });
-
-  test("every line fits in compact and wide panes, in both languages", () => {
-    const s = setAdvisorInfo(busyRun(), { configured: "claude-opus-5-5", blocked: { kind: "flags", variable: "DISABLE_TELEMETRY" } });
-    for (const locale of ["en", "pt"] as const) {
-      for (const width of [20, 45, 60, 72, 90, 96, 120, 160]) {
-        const lines = flowLines({ trace: s, now: NOW, width, locale });
-        for (const line of lines) expect(displayWidth(line.map((part) => part.text).join(""))).toBeLessThanOrEqual(width);
-        const picture = drawn(lines);
-        expect(picture).toContain(width >= 90 ? (locale === "pt" ? "Líder" : "Lead") : (locale === "pt" ? "principal" : "main"));
-        expect(picture).toContain(width >= 90 ? (locale === "pt" ? "Retorno" : "Return to main") : (locale === "pt" ? "resposta" : "answer"));
-      }
-    }
-  });
-
-  test("wide characters in a label stay within the pane", () => {
-    let s = submitIdle(emptyTrace(), "检查网站设计和移动版本".repeat(4), "t1", NOW - 5000);
-    s = agentStart(s, { id: "a1", type: "Explore", description: "检查网站设计和移动版本", at: NOW - 4000 });
-    for (const width of [20, 33, 60]) {
-      for (const line of flowLines({ trace: s, now: NOW, width, locale: "en" })) expect(displayWidth(line.map((part) => part.text).join(""))).toBeLessThanOrEqual(width);
-    }
-  });
-
-  test("a subagent spawned twice under one id is drawn and counted once", () => {
+  test("a repeated subagent is counted once while it finishes", () => {
     let s = submitIdle(emptyTrace(), "check", "t1", NOW - 5000);
     s = agentStart(s, { id: "mate", type: "teammate", description: "reviewer", at: NOW - 4000 });
     s = completeTurn(s, "w1", NOW - 3000, "answer", "mate");
@@ -457,14 +318,7 @@ describe("the drawing", () => {
     expect(summary).toContain("all work");
     expect(summary).toContain("1 subagent");
   });
-
-  test("model names: old ids and date suffixes", () => {
-    expect(prettyModel("claude-haiku-4-5-20251001")).toBe("Haiku 4.5");
-    expect(prettyModel("claude-opus-5-5")).toBe("Opus 5.5");
-    expect(prettyModel("claude-fable-5-1")).toBe("Fable 5.1");
-  });
 });
-
 // --- In the pane ---
 
 const PANE_PROPS = {
@@ -640,46 +494,6 @@ describe("the Flow tab in the pane", () => {
     const ui = await $.ui.mount({ plugin: "jev", surface: "terminal", component: "Pane", requestId: "jev", props: PANE_PROPS });
     expect(await ui.find({ type: "Text", text: /Nothing yet: send a request/ })).toBeDefined();
     await ui.unmount();
-  });
-});
-
-// --- Phase D: the motion ---
-
-describe("the scene", () => {
-  test("the node at work follows what was observed and a finished run has no active node", () => {
-    let s = submitIdle(emptyTrace(), "fix it", "t1", NOW - 10e3);
-    const at = (state: TraceState) => {
-      const scene = flowScene(state, NOW, "en");
-      return scene.active === undefined ? "none" : scene.nodes[scene.active]!.id;
-    };
-    // Open, nothing in flight: the answer is what is awaited.
-    expect(at(s)).toBe("answer");
-    s = stepStart(s, { turnId: "t1", index: 0, original: "claude-opus-5-5", sent: "claude-opus-5-5", at: NOW - 9e3 });
-    expect(at(s)).toBe("main");
-    s = stepEnd(s, { turnId: "t1", index: 0, at: NOW - 8e3, stop: "tool_use" });
-    s = toolStart(s, { id: "tu", name: "Bash", at: NOW - 7e3 });
-    expect(at(s)).toBe("tools");
-    let consult: string;
-    [s, consult] = consultStart(s, {}, { origin: "tool", model: "jev-1", questions: ["tool"], startedAt: NOW - 6e3 });
-    expect(at(s)).toBe("jev");
-    s = consultEnd(toolEnd(s, { id: "tu", at: NOW - 5e3, result: "ok" }), consult, NOW - 5e3);
-    s = agentStart(s, { id: "bg", type: "Explore", description: "keep looking", background: true, at: NOW - 4e3 });
-    s = completeTurn(s, "t1", NOW - 3e3, "answer");
-    // The main turn ended, the background subagent still runs.
-    expect(at(s)).toBe("agents");
-    s = completeTurn(s, "x", NOW - 2e3, "answer", "bg");
-    expect(at(s)).toBe("none");
-    expect(flowScene(s, NOW, "en").active).toBeUndefined();
-  });
-
-  test("the active branch is marked in place with no frame state", () => {
-    let s = submitIdle(emptyTrace(), "fix it", "t1", NOW - 10e3);
-    s = stepStart(s, { turnId: "t1", index: 0, original: "claude-opus-5-5", sent: "claude-opus-5-5", at: NOW - 9e3 });
-    const scene = flowScene(s, NOW, "en");
-    expect(scene.nodes[scene.active!]?.id).toBe("main");
-    expect(scene).not.toHaveProperty("frame");
-    expect(scene).not.toHaveProperty("moving");
-    expect(drawn(flowLines({ trace: s, now: NOW, width: 100, locale: "en" }))).toContain("Lead · Opus 5.5 •");
   });
 });
 

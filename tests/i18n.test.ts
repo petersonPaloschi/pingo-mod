@@ -4,7 +4,6 @@ import { formatDecimal, formatNumber, formatPercent, localeFor, text, type Local
 import { resolveSettings } from "../hooks/config.ts";
 import { DEFAULT_FEATURES, agentQuestions } from "../hooks/core/plan.ts";
 import { status, tiles } from "../hooks/events.ts";
-import { flowLines } from "../hooks/flow.ts";
 import { emptyTrace, startTurn } from "../hooks/trace.ts";
 import { en } from "../hooks/strings/en.ts";
 import { pt } from "../hooks/strings/pt.ts";
@@ -35,15 +34,4 @@ test("agent questions and dashboard summaries use Portuguese", () => {
   expect(question.effort?.instructions).toContain("Escolha");
   expect(status([], false, 0, "pt").title).toBe(text("status.baseline.title", "pt"));
   expect(tiles([], "pt")[0]?.label).toBe("Solicitações");
-});
-
-test("the Flow drawing uses Portuguese labels", () => {
-  const now = Date.parse("2026-10-07T12:00:00Z");
-  const trace = startTurn(emptyTrace(), "t1", "", now - 5000);
-  const lines = flowLines({ trace, now, width: 72, locale: "pt" });
-  const drawn = lines.map((row) => row.map((part) => part.text).join("")).join("\n");
-  expect(drawn).toContain("FLOW · EXECUÇÃO 1 · EM ANDAMENTO");
-  expect(drawn).toContain("principal");
-  expect(drawn).toContain("continuação · sem nova mensagem");
-  expect(drawn).toContain("em andamento · 5s");
 });
