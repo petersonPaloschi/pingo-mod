@@ -17,6 +17,7 @@ export interface LastStrip {
 const H = DECK_DESIGN.bar.height;
 const FONT = DECK_DESIGN.type.svg;
 const NARROW = DECK_DESIGN.breakpoints.narrowWidth;
+const SVG = DECK_DESIGN.bar.desktop.svg;
 
 const ICON_PATH: Partial<Record<StyleName, string>> = {
   ask: "M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3M12 17h.01",
@@ -31,7 +32,7 @@ export function twinkleCss(nowMs: number, done: boolean): string {
   const durs = done ? doneSeconds : activeSeconds;
   let css = "";
   durs.forEach((d, i) => {
-    css += `.t${i}{animation:tw ${d}s ease-in-out infinite;animation-delay:-${((t + phaseSeconds[i]!) % d).toFixed(2)}s}`;
+    css += `.t${i}{animation:tw ${d}s ${DECK_DESIGN.motion.twinkle.easing} infinite;animation-delay:-${((t + phaseSeconds[i]!) % d).toFixed(2)}s}`;
   });
   return css + `@keyframes tw{0%,100%{opacity:1}50%{opacity:${done ? doneOpacity : activeOpacity}}}@media (prefers-reduced-motion:reduce){.t0,.t1,.t2,.t3{animation:none}}`;
 }
@@ -47,32 +48,34 @@ const EASE = `calcMode="spline" keyTimes="0;1" keySplines="${DECK_DESIGN.motion.
 function pillMarkup(row: Row, W: number, fx: number, from: number, st: Style): string {
   const icon = ICON_PATH[row.style];
   const color = st.desk;
+  const layout = SVG.pill;
   let knob: string;
   let kw: number;
   if (W < NARROW) {
     kw = H;
     knob = `<circle cx="0" cy="${H / 2}" r="${H / 2}" fill="${color}"/>`;
   } else {
-    const iconW = icon ? 16 : 0;
-    const countW = row.count ? textWidth(row.count, DECK_DESIGN.type.measure.countPixelsPerChar) + 6 : 0;
+    const iconW = icon ? layout.iconWidthPixels : 0;
+    const countW = row.count ? textWidth(row.count, DECK_DESIGN.type.measure.countPixelsPerChar) + DECK_DESIGN.type.measure.countGapPixels : 0;
     const maxW = Math.max(DECK_DESIGN.bar.desktop.pillMinimumWidth, W * DECK_DESIGN.bar.desktop.pillMaximumShare);
     let shown = row.name;
-    while (shown.length > 3 && 20 + iconW + textWidth(shown) + countW > maxW) shown = shown.slice(0, -1);
+    while (shown.length > layout.minimumNameCharacters && layout.nameWidthReservePixels + iconW + textWidth(shown) + countW > maxW) shown = shown.slice(0, -1);
     if (shown !== row.name) shown = shown.trimEnd() + "…";
-    kw = Math.round(20 + iconW + textWidth(shown) + countW);
-    const left = -kw / 2 + 10;
+    kw = Math.round(layout.nameWidthReservePixels + iconW + textWidth(shown) + countW);
+    const left = -kw / 2 + layout.leftInsetPixels;
     knob = `<rect x="${-kw / 2}" y="0" width="${kw}" height="${H}" rx="${H / 2}" fill="${color}"/>`;
-    if (icon) knob += `<path d="${icon}" transform="translate(${left} 5) scale(.5)" fill="none" stroke="${SVG_ON_FILL}" stroke-width="3.6" stroke-linecap="round" stroke-linejoin="round"/>`;
-    knob += `<text x="${left + iconW}" y="${H / 2 + 4.2}" style="font:${DECK_DESIGN.type.svgWeights.medium} ${DECK_DESIGN.type.svgBodyPixels}px ${FONT};fill:${SVG_ON_FILL}">${esc(shown)}${row.count ? `<tspan dx="${DECK_DESIGN.type.measure.countGapPixels}" style="font-weight:${DECK_DESIGN.type.svgWeights.regular};fill-opacity:.75">${esc(row.count)}</tspan>` : ""}</text>`;
+    if (icon) knob += `<path d="${icon}" transform="translate(${left} ${layout.iconTopPixels}) scale(${layout.iconScale})" fill="none" stroke="${SVG_ON_FILL}" stroke-width="${layout.iconStrokeWidth}" stroke-linecap="round" stroke-linejoin="round"/>`;
+    knob += `<text x="${left + iconW}" y="${H / 2 + layout.labelBaselineOffsetPixels}" style="font:${DECK_DESIGN.type.svgWeights.medium} ${DECK_DESIGN.type.svgBodyPixels}px ${FONT};fill:${SVG_ON_FILL}">${esc(shown)}${row.count ? `<tspan dx="${DECK_DESIGN.type.measure.countGapPixels}" style="font-weight:${DECK_DESIGN.type.svgWeights.regular};fill-opacity:${layout.countOpacity}">${esc(row.count)}</tspan>` : ""}</text>`;
   }
   const at = (x: number) => Math.max(kw / 2, Math.min(W - kw / 2, x >= kw ? x - kw / 2 : x + kw / 2));
   const kx = at(fx);
   const kFrom = at(from);
-  const glide = Math.abs(kFrom - kx) > 0.5 ? `<animateTransform attributeName="transform" type="translate" from="${kFrom.toFixed(1)} 0" to="${kx.toFixed(1)} 0" dur=".45s" ${EASE} fill="freeze"/>` : "";
+  const glide = Math.abs(kFrom - kx) > DECK_DESIGN.motion.glideThresholdPixels ? `<animateTransform attributeName="transform" type="translate" from="${kFrom.toFixed(1)} 0" to="${kx.toFixed(1)} 0" dur=".45s" ${EASE} fill="freeze"/>` : "";
   return `<g transform="translate(${kx.toFixed(1)} 0)">${glide}${knob}</g>`;
 }
 
 function pixel(row: Row, W: number, nowMs: number, lastHead: LastHead): string {
+  const design = SVG.pixel;
   const done = row.style === "done";
   const st = STYLE[row.style];
   const fx = (Math.max(0, Math.min(100, row.pct)) / 100) * W;
@@ -81,37 +84,38 @@ function pixel(row: Row, W: number, nowMs: number, lastHead: LastHead): string {
   const light = mix(acc, [255, 255, 255], DECK_DESIGN.bar.desktop.pixelLightMix);
   const grey = hex(DECK_DESIGN.bar.desktop.pixelBase);
   const seed = Math.abs(seedOf(row.id) % 997);
-  const buckets = [0, 1, 2, 3, 4].map((b) => {
-    const m = b / 4;
-    const dense = done ? 0.8 : 0.22 + 0.78 * Math.pow(m, 1.5);
-    return { color: rgb(done ? light : mix(grey, light, m)), opacity: (0.35 + 0.65 * dense).toFixed(2) };
+  const buckets = Array.from({ length: design.bucketCount }, (_, b) => {
+    const m = b / design.bucketDivisor;
+    const dense = done ? design.doneDensity : design.startDensity + design.densityRange * Math.pow(m, design.densityExponent);
+    return { color: rgb(done ? light : mix(grey, light, m)), opacity: (design.densityOpacityBase + design.densityOpacityRange * dense).toFixed(2) };
   });
   let px = "";
-  for (let col = 0; col * 3 < fx; col++) {
-    const x = col * 3;
-    const u = Math.min(1, (x + 1.5) / fx);
-    const dense = done ? 0.8 : 0.22 + 0.78 * Math.pow(u, 1.5);
-    const bucket = done ? 4 : Math.min(4, Math.floor(Math.min(1, Math.pow(u, 0.9) * 1.1) * 4.99));
-    for (let r = 0; r < 7; r++) {
+  for (let col = 0; col * design.columnPitchPixels < fx; col++) {
+    const x = col * design.columnPitchPixels;
+    const u = Math.min(1, (x + design.sampleOffsetPixels) / fx);
+    const dense = done ? design.doneDensity : design.startDensity + design.densityRange * Math.pow(u, design.densityExponent);
+    const bucket = done ? design.bucketCount - 1 : Math.min(design.bucketCount - 1, Math.floor(Math.min(1, Math.pow(u, design.bucketCurveExponent) * design.bucketCurveScale) * design.bucketIndexCeiling));
+    for (let r = 0; r < design.rowCount; r++) {
       if (hash(col + seed, r, 1) > dense + 0.1) continue;
-      px += `<rect x="${x}" y="${1 + r * 3}" class="pxd b${bucket} t${Math.floor(hash(col + seed, r, 2) * 4)}"/>`;
+      px += `<rect x="${x}" y="${design.topInsetPixels + r * design.rowPitchPixels}" class="pxd b${bucket} t${Math.floor(hash(col + seed, r, 2) * 4)}"/>`;
     }
   }
   let marks = "";
   for (const m of row.marks) {
     const x = m.f * W;
-    const passed = x < fx - 1;
-    const h = m.stage ? H : 8;
-    marks += `<rect x="${(x - (m.stage ? 1 : 0.75)).toFixed(1)}" y="${(H - h) / 2}" width="${m.stage ? 2 : 1.5}" height="${h}" rx=".75" fill="${passed ? rgb(mix(light, [255, 255, 255], 0.45)) : SVG_TRACK}" opacity="${passed ? (m.stage ? 0.95 : 0.6) : m.stage ? 0.7 : 0.45}"/>`;
+    const mark = design.marks;
+    const passed = x < fx - mark.passedInsetPixels;
+    const h = m.stage ? H : mark.regularHeightPixels;
+    marks += `<rect x="${(x - (m.stage ? mark.stageInsetPixels : mark.regularInsetPixels)).toFixed(1)}" y="${(H - h) / 2}" width="${m.stage ? mark.stageWidthPixels : mark.regularWidthPixels}" height="${h}" rx="${mark.radiusPixels}" fill="${passed ? rgb(mix(light, [255, 255, 255], 0.45)) : SVG_TRACK}" opacity="${passed ? (m.stage ? mark.passedStageOpacity : mark.passedRegularOpacity) : m.stage ? mark.futureStageOpacity : mark.futureRegularOpacity}"/>`;
   }
   const id = "p" + seed;
-  const glideFill = Math.abs(from - fx) > 0.5 ? `<animate attributeName="width" from="${from.toFixed(1)}" to="${fx.toFixed(1)}" dur="${DECK_DESIGN.motion.glideSeconds}s" ${EASE} fill="freeze"/>` : "";
-  const css = buckets.map((b, i) => `.b${i}{fill:${b.color};fill-opacity:${b.opacity}}`).join("") + ".pxd{width:2px;height:2px}" + twinkleCss(nowMs, done);
+  const glideFill = Math.abs(from - fx) > DECK_DESIGN.motion.glideThresholdPixels ? `<animate attributeName="width" from="${from.toFixed(1)}" to="${fx.toFixed(1)}" dur="${DECK_DESIGN.motion.glideSeconds}s" ${EASE} fill="freeze"/>` : "";
+  const css = buckets.map((b, i) => `.b${i}{fill:${b.color};fill-opacity:${b.opacity}}`).join("") + `.pxd{width:${design.cellPixels}px;height:${design.cellPixels}px}` + twinkleCss(nowMs, done);
   return (
     `<style>${css}</style>` +
     `<defs><clipPath id="${id}a"><rect width="${W}" height="${H}" rx="${H / 2}"/></clipPath><clipPath id="${id}b"><rect width="${fx.toFixed(1)}" height="${H}">${glideFill}</rect></clipPath>` +
-    `<linearGradient id="${id}g" x1="0" x2="${Math.max(1, fx).toFixed(1)}" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="${rgb(acc)}" stop-opacity="${done ? 0.3 : 0.05}"/><stop offset="1" stop-color="${rgb(acc)}" stop-opacity=".33"/></linearGradient></defs>` +
-    `<g clip-path="url(#${id}a)"><rect width="${W}" height="${H}" fill="${SVG_TRACK}" fill-opacity=".16"/>` +
+    `<linearGradient id="${id}g" x1="0" x2="${Math.max(1, fx).toFixed(1)}" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="${rgb(acc)}" stop-opacity="${done ? design.gradient.doneStartOpacity : design.gradient.activeStartOpacity}"/><stop offset="1" stop-color="${rgb(acc)}" stop-opacity="${design.gradient.endOpacity}"/></linearGradient></defs>` +
+    `<g clip-path="url(#${id}a)"><rect width="${W}" height="${H}" fill="${SVG_TRACK}" fill-opacity="${design.trackOpacity}"/>` +
     `<g clip-path="url(#${id}b)"><rect width="${fx.toFixed(1)}" height="${H}" fill="url(#${id}g)"/>${px}</g>${marks}</g>` +
     pillMarkup(row, W, fx, from, st)
   );
@@ -128,6 +132,7 @@ function barShare(W: number): number {
 
 function segments(row: Row, W: number, nowMs: number, lastHead: LastHead): string {
   const st = STYLE[row.style];
+  const design = SVG.segments;
   const color = st.desk;
   const bw = barShare(W);
   const { segmentMin, segmentMax, segmentWidth, segmentGap } = DECK_DESIGN.bar.desktop;
@@ -138,50 +143,52 @@ function segments(row: Row, W: number, nowMs: number, lastHead: LastHead): strin
   const stages = new Set(row.marks.filter((m) => m.stage).map((m) => Math.round(m.f * n)));
   let out = "";
   for (let i = 0; i < n; i++) {
-    const x = i * (sw + gap) + (stages.has(i) ? 2 : 0);
+    const x = i * (sw + gap) + (stages.has(i) ? design.stageInsetPixels : 0);
     const on = i < Math.floor(filled);
     const head = !on && i === Math.floor(filled) && row.animating;
-    out += `<rect x="${x.toFixed(1)}" y="5" width="${(sw - (stages.has(i) ? 2 : 0)).toFixed(1)}" height="12" rx="2" fill="${on || head ? color : SVG_TRACK}" fill-opacity="${on ? 1 : head ? 0.5 : 0.18}"${head ? ' class="t1"' : ""}/>`;
+    out += `<rect x="${x.toFixed(1)}" y="${design.y}" width="${(sw - (stages.has(i) ? design.stageInsetPixels : 0)).toFixed(1)}" height="${design.heightPixels}" rx="${design.radiusPixels}" fill="${on || head ? color : SVG_TRACK}" fill-opacity="${on ? 1 : head ? design.headOpacity : design.trackOpacity}"${head ? ' class="t1"' : ""}/>`;
   }
   glideFrom(lastHead, row.id, 0);
-  return `<style>${twinkleCss(nowMs, false)}</style>${out}${label(row, bw + 12, color)}`;
+  return `<style>${twinkleCss(nowMs, false)}</style>${out}${label(row, bw + design.labelGapPixels, color)}`;
 }
 
 function line(row: Row, W: number, _nowMs: number, lastHead: LastHead): string {
+  const design = SVG.line;
   const color = STYLE[row.style].desk;
   const bw = barShare(W);
   const fx = (row.pct / 100) * bw;
   const from = glideFrom(lastHead, row.id, fx);
-  const glide = Math.abs(from - fx) > 0.5 ? `<animate attributeName="width" from="${from.toFixed(1)}" to="${fx.toFixed(1)}" dur="${DECK_DESIGN.motion.glideSeconds}s" ${EASE} fill="freeze"/>` : "";
-  const glideDot = Math.abs(from - fx) > 0.5 ? `<animate attributeName="cx" from="${from.toFixed(1)}" to="${fx.toFixed(1)}" dur="${DECK_DESIGN.motion.glideSeconds}s" ${EASE} fill="freeze"/>` : "";
+  const glide = Math.abs(from - fx) > DECK_DESIGN.motion.glideThresholdPixels ? `<animate attributeName="width" from="${from.toFixed(1)}" to="${fx.toFixed(1)}" dur="${DECK_DESIGN.motion.glideSeconds}s" ${EASE} fill="freeze"/>` : "";
+  const glideDot = Math.abs(from - fx) > DECK_DESIGN.motion.glideThresholdPixels ? `<animate attributeName="cx" from="${from.toFixed(1)}" to="${fx.toFixed(1)}" dur="${DECK_DESIGN.motion.glideSeconds}s" ${EASE} fill="freeze"/>` : "";
   let marks = "";
-  for (const m of row.marks) marks += `<rect x="${(m.f * bw).toFixed(1)}" y="${m.stage ? 6 : 8}" width="1.5" height="${m.stage ? 10 : 6}" rx=".75" fill="${m.f * bw < fx ? color : SVG_TRACK}" opacity=".7"/>`;
-  const pulse = row.animating ? `<animate attributeName="r" values="4;5.5;4" dur="${DECK_DESIGN.motion.progressPulseSeconds}s" repeatCount="indefinite"/>` : "";
+  for (const m of row.marks) marks += `<rect x="${(m.f * bw).toFixed(1)}" y="${m.stage ? design.marks.stageY : design.marks.regularY}" width="${design.marks.widthPixels}" height="${m.stage ? design.marks.stageHeightPixels : design.marks.regularHeightPixels}" rx="${design.marks.radiusPixels}" fill="${m.f * bw < fx ? color : SVG_TRACK}" opacity="${design.marks.opacity}"/>`;
+  const pulse = row.animating ? `<animate attributeName="r" values="${design.head.pulseRadii.join(";")}" dur="${DECK_DESIGN.motion.progressPulseSeconds}s" repeatCount="indefinite"/>` : "";
   return (
-    `<rect x="0" y="10" width="${bw}" height="2" rx="1" fill="${SVG_TRACK}" fill-opacity=".25"/>` +
-    `<rect x="0" y="9.5" width="${fx.toFixed(1)}" height="3" rx="1.5" fill="${color}">${glide}</rect>${marks}` +
-    `<circle cx="${fx.toFixed(1)}" cy="11" r="4" fill="${color}">${glideDot}${pulse}</circle>` +
-    label(row, bw + 14, color)
+    `<rect x="0" y="${design.track.y}" width="${bw}" height="${design.track.heightPixels}" rx="${design.track.radiusPixels}" fill="${SVG_TRACK}" fill-opacity="${design.track.opacity}"/>` +
+    `<rect x="0" y="${design.fill.y}" width="${fx.toFixed(1)}" height="${design.fill.heightPixels}" rx="${design.fill.radiusPixels}" fill="${color}">${glide}</rect>${marks}` +
+    `<circle cx="${fx.toFixed(1)}" cy="${design.head.y}" r="${design.head.radiusPixels}" fill="${color}">${glideDot}${pulse}</circle>` +
+    label(row, bw + design.labelGapPixels, color)
   );
 }
 
 function solid(row: Row, W: number, nowMs: number, lastHead: LastHead): string {
+  const design = SVG.solid;
   const st = STYLE[row.style];
   const fx = (row.pct / 100) * W;
   const from = glideFrom(lastHead, row.id, fx);
   const id = "s" + Math.abs(seedOf(row.id) % 997);
-  const glide = Math.abs(from - fx) > 0.5 ? `<animate attributeName="width" from="${from.toFixed(1)}" to="${fx.toFixed(1)}" dur="${DECK_DESIGN.motion.glideSeconds}s" ${EASE} fill="freeze"/>` : "";
+  const glide = Math.abs(from - fx) > DECK_DESIGN.motion.glideThresholdPixels ? `<animate attributeName="width" from="${from.toFixed(1)}" to="${fx.toFixed(1)}" dur="${DECK_DESIGN.motion.glideSeconds}s" ${EASE} fill="freeze"/>` : "";
   const sweepSeconds = DECK_DESIGN.motion.solidSweepSeconds;
   const t = (nowMs / 1000) % sweepSeconds;
   const sweep = row.animating
-    ? `<rect x="-60" y="0" width="60" height="${H}" fill="${SVG_ON_FILL}" fill-opacity=".18"><animate attributeName="x" from="-60" to="${W}" dur="${sweepSeconds}s" begin="-${t.toFixed(2)}s" repeatCount="indefinite"/></rect>`
+    ? `<rect x="${design.sweepStartX}" y="0" width="${design.sweepWidthPixels}" height="${H}" fill="${SVG_ON_FILL}" fill-opacity="${design.sweepOpacity}"><animate attributeName="x" from="${design.sweepStartX}" to="${W}" dur="${sweepSeconds}s" begin="-${t.toFixed(2)}s" repeatCount="indefinite"/></rect>`
     : "";
   const text = esc(row.name) + (row.count ? " · " + esc(row.count) : "");
   return (
-    `<defs><clipPath id="${id}a"><rect width="${W}" height="${H}" rx="6"/></clipPath><clipPath id="${id}b"><rect width="${fx.toFixed(1)}" height="${H}">${glide}</rect></clipPath></defs>` +
-    `<g clip-path="url(#${id}a)"><rect width="${W}" height="${H}" fill="${SVG_TRACK}" fill-opacity=".16"/>` +
-    `<text x="10" y="${DECK_DESIGN.type.svgBaselinePixels}" style="font:${DECK_DESIGN.type.svgWeights.medium} ${DECK_DESIGN.type.svgBodyPixels}px ${FONT};fill:${SVG_TEXT.muted}">${text}</text>` +
-    `<g clip-path="url(#${id}b)"><rect width="${W}" height="${H}" fill="${st.desk}"/>${sweep}<text x="10" y="${DECK_DESIGN.type.svgBaselinePixels}" style="font:${DECK_DESIGN.type.svgWeights.medium} ${DECK_DESIGN.type.svgBodyPixels}px ${FONT};fill:${SVG_ON_FILL}">${text}</text></g></g>`
+    `<defs><clipPath id="${id}a"><rect width="${W}" height="${H}" rx="${design.clipRadiusPixels}"/></clipPath><clipPath id="${id}b"><rect width="${fx.toFixed(1)}" height="${H}">${glide}</rect></clipPath></defs>` +
+    `<g clip-path="url(#${id}a)"><rect width="${W}" height="${H}" fill="${SVG_TRACK}" fill-opacity="${design.trackOpacity}"/>` +
+    `<text x="${design.labelX}" y="${DECK_DESIGN.type.svgBaselinePixels}" style="font:${DECK_DESIGN.type.svgWeights.medium} ${DECK_DESIGN.type.svgBodyPixels}px ${FONT};fill:${SVG_TEXT.muted}">${text}</text>` +
+    `<g clip-path="url(#${id}b)"><rect width="${W}" height="${H}" fill="${st.desk}"/>${sweep}<text x="${design.labelX}" y="${DECK_DESIGN.type.svgBaselinePixels}" style="font:${DECK_DESIGN.type.svgWeights.medium} ${DECK_DESIGN.type.svgBodyPixels}px ${FONT};fill:${SVG_ON_FILL}">${text}</text></g></g>`
   );
 }
 
@@ -215,33 +222,34 @@ function dots(row: Row, W: number, nowMs: number, lastHead: LastHead): string {
       x += dotSpacing;
     }
   }
-  return `<style>${twinkleCss(nowMs, false)}</style>${out}${label(row, x + 6, color)}`;
+  return `<style>${twinkleCss(nowMs, false)}</style>${out}${label(row, x + SVG.dots.labelGapPixels, color)}`;
 }
 
 // a slim bar, a sparkline of recent history ending in a dot, then the label and its rate
 function spark(row: Row, W: number, _nowMs: number, lastHead: LastHead): string {
+  const design = SVG.spark;
   const st = STYLE[row.style];
   const color = st.desk;
   const { sparkMinWidth, sparkRatio, historyLimit } = DECK_DESIGN.bar.desktop;
   const bw = Math.max(sparkMinWidth, Math.round(W * sparkRatio));
   const fx = (row.pct / 100) * bw;
   const from = glideFrom(lastHead, row.id, fx);
-  const glide = Math.abs(from - fx) > 0.5 ? `<animate attributeName="width" from="${from.toFixed(1)}" to="${fx.toFixed(1)}" dur="${DECK_DESIGN.motion.glideSeconds}s" ${EASE} fill="freeze"/>` : "";
-  let out = `<rect x="0" y="7" width="${bw}" height="8" rx="4" fill="${SVG_TRACK}" fill-opacity=".2"/><rect x="0" y="7" width="${fx.toFixed(1)}" height="8" rx="4" fill="${color}">${glide}</rect>`;
+  const glide = Math.abs(from - fx) > DECK_DESIGN.motion.glideThresholdPixels ? `<animate attributeName="width" from="${from.toFixed(1)}" to="${fx.toFixed(1)}" dur="${DECK_DESIGN.motion.glideSeconds}s" ${EASE} fill="freeze"/>` : "";
+  let out = `<rect x="0" y="${design.barY}" width="${bw}" height="${design.barHeightPixels}" rx="${design.barRadiusPixels}" fill="${SVG_TRACK}" fill-opacity="${design.trackOpacity}"/><rect x="0" y="${design.barY}" width="${fx.toFixed(1)}" height="${design.barHeightPixels}" rx="${design.barRadiusPixels}" fill="${color}">${glide}</rect>`;
   const sw = Math.max(DECK_DESIGN.bar.desktop.sparklineMinimumWidth, Math.round(W * DECK_DESIGN.bar.desktop.sparklineRatio));
-  const sx = bw + 14;
+  const sx = bw + design.historyGapPixels;
   const hist = (row.hist ?? []).slice(-historyLimit);
   if (hist.length > 1) {
     const lo = Math.min(...hist);
     const hi = Math.max(...hist);
-    const pts = hist.map((v, i): [number, number] => [sx + (i * sw) / (hist.length - 1), 18 - ((v - lo) / Math.max(1e-9, hi - lo)) * 14]);
-    out += `<path d="${pts.map(([x, y], i) => (i ? "L" : "M") + x.toFixed(1) + "," + y.toFixed(1)).join(" ")}" fill="none" stroke="${color}" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round"/>`;
+    const pts = hist.map((v, i): [number, number] => [sx + (i * sw) / (hist.length - 1), design.chartBaselineY - ((v - lo) / Math.max(1e-9, hi - lo)) * design.chartHeightPixels]);
+    out += `<path d="${pts.map(([x, y], i) => (i ? "L" : "M") + x.toFixed(1) + "," + y.toFixed(1)).join(" ")}" fill="none" stroke="${color}" stroke-width="${design.chartStrokeWidth}" stroke-linejoin="round" stroke-linecap="round"/>`;
     const [lx, ly] = pts[pts.length - 1]!;
-    out += `<circle cx="${lx.toFixed(1)}" cy="${ly.toFixed(1)}" r="2.6" fill="${color}"><animate attributeName="r" values="2.6;3.6;2.6" dur="${DECK_DESIGN.motion.sparkPulseSeconds}s" repeatCount="indefinite"/></circle>`;
+    out += `<circle cx="${lx.toFixed(1)}" cy="${ly.toFixed(1)}" r="${design.dotRadiusPixels}" fill="${color}"><animate attributeName="r" values="${design.dotPulseRadii.join(";")}" dur="${DECK_DESIGN.motion.sparkPulseSeconds}s" repeatCount="indefinite"/></circle>`;
   } else {
-    out += `<rect x="${sx}" y="10.5" width="${sw}" height="1" fill="${SVG_TRACK}" fill-opacity=".3"/>`;
+    out += `<rect x="${sx}" y="${design.fallbackY}" width="${sw}" height="${design.fallbackHeightPixels}" fill="${SVG_TRACK}" fill-opacity="${design.fallbackOpacity}"/>`;
   }
-  const lx = sx + sw + 14;
+  const lx = sx + sw + design.labelGapPixels;
   out += `<text x="${lx}" y="${DECK_DESIGN.type.svgBaselinePixels}" style="font:${DECK_DESIGN.type.svgWeights.medium} ${DECK_DESIGN.type.svgBodyPixels}px ${FONT};fill:${color}">${esc(row.name)}${row.rate ? `<tspan dx="${DECK_DESIGN.type.measure.rateGapPixels}" style="font-weight:${DECK_DESIGN.type.svgWeights.regular};fill:${SVG_TEXT.muted}">${esc(row.rate)}</tspan>` : row.count ? `<tspan dx="${DECK_DESIGN.type.measure.countGapPixels}" style="font-weight:${DECK_DESIGN.type.svgWeights.regular};fill:${SVG_TEXT.muted}">${esc(row.count)}</tspan>` : ""}</text>`;
   return out;
 }
@@ -309,10 +317,10 @@ export function stripsSvg(
     if (a.model && !narrow) {
       const tc = tierColor(a.model);
       const tw = textWidth(a.model, DECK_DESIGN.type.measure.modelTagPixelsPerChar) + design.modelTag.textPaddingPixels;
-      tag = `<rect x="${W - design.modelTag.boxRightInsetPixels - tw}" y="${y + design.modelTag.topPixels}" width="${tw}" height="${design.modelTag.heightPixels}" rx="${design.modelTag.radiusPixels}" fill="${tc}" fill-opacity=".25"/><text x="${W - design.modelTag.textRightInsetPixels - tw}" y="${y + design.textBaselinePixels}" style="font:${DECK_DESIGN.type.svgWeights.medium} ${DECK_DESIGN.type.svgTagPixels}px ${FONT};fill:${tc}">${esc(a.model)}</text>`;
+      tag = `<rect x="${W - design.modelTag.boxRightInsetPixels - tw}" y="${y + design.modelTag.topPixels}" width="${tw}" height="${design.modelTag.heightPixels}" rx="${design.modelTag.radiusPixels}" fill="${tc}" fill-opacity="${design.modelTag.fillOpacity}"/><text x="${W - design.modelTag.textRightInsetPixels - tw}" y="${y + design.textBaselinePixels}" style="font:${DECK_DESIGN.type.svgWeights.medium} ${DECK_DESIGN.type.svgTagPixels}px ${FONT};fill:${tc}">${esc(a.model)}</text>`;
     }
     out +=
-      `<rect x="0" y="${y}" width="${W}" height="${STRIP_H}" rx="${STRIP_H / 2}" fill="${c}" fill-opacity=".15">${flow}</rect>${px}` +
+      `<rect x="0" y="${y}" width="${W}" height="${STRIP_H}" rx="${STRIP_H / 2}" fill="${c}" fill-opacity="${design.backgroundOpacity}">${flow}</rect>${px}` +
       `<circle cx="${design.stateDot.x + indent}" cy="${y + STRIP_H / 2}" r="${design.stateDot.radius}" fill="${c}"${a.state === "running" ? ' class="sd"' : ""}>${flow}</circle>` +
       `<text x="${nameX}" y="${y + design.textBaselinePixels}" class="sn">${esc(name)}</text>` +
       (narrow
@@ -325,14 +333,14 @@ export function stripsSvg(
   if (v.hidden.length) {
     const y = v.shown.length * (STRIP_H + STRIP_GAP);
     const done = v.hidden.filter((a) => a.state === "done").length;
-    out += `<rect x="0" y="${y}" width="${W}" height="${STRIP_H}" rx="${STRIP_H / 2}" fill="${SVG_TRACK}" fill-opacity=".14"/><text x="${design.stateDot.x}" y="${y + design.textBaselinePixels}" class="sn st">${esc(more(v.hidden.length, done))}</text>`;
+    out += `<rect x="0" y="${y}" width="${W}" height="${STRIP_H}" rx="${STRIP_H / 2}" fill="${SVG_TRACK}" fill-opacity="${design.hiddenOpacity}"/><text x="${design.stateDot.x}" y="${y + design.textBaselinePixels}" class="sn st">${esc(more(v.hidden.length, done))}</text>`;
   }
   return (
-    `<style>.sn{font:${DECK_DESIGN.type.svgWeights.regular} ${DECK_DESIGN.type.svgSmallPixels}px ${FONT};fill:${design.textFill}}.st{fill-opacity:.65}` +
+    `<style>.sn{font:${DECK_DESIGN.type.svgWeights.regular} ${DECK_DESIGN.type.svgSmallPixels}px ${FONT};fill:${design.textFill}}.st{fill-opacity:${design.secondaryOpacity}}` +
     twinkleCss(nowMs, false) +
-    `.sd{animation:sp ${DECK_DESIGN.motion.stripPulseSeconds}s ease-in-out infinite}@keyframes sp{50%{opacity:.3}}` +
-    `.mi{animation:mi ${DECK_DESIGN.motion.toolChangeSeconds}s ease-out both}@keyframes mi{from{opacity:0;filter:blur(3px)}}` +
-    `.mo{animation:mo ${DECK_DESIGN.motion.toolChangeSeconds}s ease-in both}@keyframes mo{to{opacity:0;filter:blur(3px)}}` +
+    `.sd{animation:sp ${DECK_DESIGN.motion.stripPulseSeconds}s ${DECK_DESIGN.motion.twinkle.easing} infinite}@keyframes sp{50%{opacity:${design.statePulseOpacity}}}` +
+    `.mi{animation:mi ${DECK_DESIGN.motion.toolChangeSeconds}s ${DECK_DESIGN.motion.toolChangeEasing.enter} both}@keyframes mi{from{opacity:0;filter:blur(${DECK_DESIGN.motion.toolChangeBlurPixels}px)}}` +
+    `.mo{animation:mo ${DECK_DESIGN.motion.toolChangeSeconds}s ${DECK_DESIGN.motion.toolChangeEasing.exit} both}@keyframes mo{to{opacity:0;filter:blur(${DECK_DESIGN.motion.toolChangeBlurPixels}px)}}` +
     "@media (prefers-reduced-motion:reduce){.sd,.mi,.mo{animation:none}.mo{opacity:0}}</style>" +
     out
   );

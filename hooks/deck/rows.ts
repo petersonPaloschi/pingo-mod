@@ -235,18 +235,19 @@ function historyStrip(routeHist: readonly string[], W: number, x: number): strin
 
 // a small progress ring with an icon in the middle
 export function ringSvg(pct: number, color: string, icon: "usd" | "week" | "clock"): string {
-  const { size, center, radius: r, strokeWidth } = DECK_DESIGN.ring;
+  const design = DECK_DESIGN.ring;
+  const { size, center, radius: r, strokeWidth } = design;
   const C = 2 * Math.PI * r;
   const glyph =
     icon === "usd"
-      ? `<text x="11" y="${DECK_DESIGN.type.svgBaselinePixels}" text-anchor="middle" style="font:${DECK_DESIGN.type.svgWeights.semibold} ${DECK_DESIGN.type.svgTinyPixels}px ${FONT};fill:${color}">$</text>`
+      ? `<text x="${center}" y="${DECK_DESIGN.type.svgBaselinePixels}" text-anchor="middle" style="font:${DECK_DESIGN.type.svgWeights.semibold} ${DECK_DESIGN.type.svgTinyPixels}px ${FONT};fill:${color}">$</text>`
       : icon === "week"
-        ? `<rect x="7.2" y="7.6" width="7.6" height="7" rx="1.2" fill="none" stroke="${color}" stroke-width="1.3"/><rect x="7.2" y="7.6" width="7.6" height="2" fill="${color}"/>`
-        : `<path d="M11 7.2V11l2.4 1.6" fill="none" stroke="${color}" stroke-width="1.4" stroke-linecap="round"/>`;
+        ? `<rect x="${design.icons.week.x}" y="${design.icons.week.y}" width="${design.icons.week.widthPixels}" height="${design.icons.week.heightPixels}" rx="${design.icons.week.radiusPixels}" fill="none" stroke="${color}" stroke-width="${design.icons.week.strokeWidth}"/><rect x="${design.icons.week.x}" y="${design.icons.week.y}" width="${design.icons.week.widthPixels}" height="${design.icons.week.headerHeightPixels}" fill="${color}"/>`
+        : `<path d="${design.icons.clock.handPath}" fill="none" stroke="${color}" stroke-width="${design.icons.clock.strokeWidth}" stroke-linecap="round"/>`;
   return (
     `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" viewBox="0 0 ${size} ${size}">` +
-    `<circle cx="${center}" cy="${center}" r="${r}" fill="none" stroke="${SVG_TRACK}" stroke-opacity=".3" stroke-width="${strokeWidth}"/>` +
-    `<circle cx="${center}" cy="${center}" r="${r}" fill="none" stroke="${color}" stroke-width="${strokeWidth}" stroke-linecap="round" stroke-dasharray="${((C * Math.min(100, pct)) / 100).toFixed(1)} ${C.toFixed(1)}" transform="rotate(-90 ${center} ${center})"/>` +
+    `<circle cx="${center}" cy="${center}" r="${r}" fill="none" stroke="${SVG_TRACK}" stroke-opacity="${design.trackOpacity}" stroke-width="${strokeWidth}"/>` +
+    `<circle cx="${center}" cy="${center}" r="${r}" fill="none" stroke="${color}" stroke-width="${strokeWidth}" stroke-linecap="round" stroke-dasharray="${((C * Math.min(100, pct)) / 100).toFixed(1)} ${C.toFixed(1)}" transform="rotate(${design.startAngleDegrees} ${center} ${center})"/>` +
     glyph +
     "</svg>"
   );
@@ -254,22 +255,23 @@ export function ringSvg(pct: number, color: string, icon: "usd" | "week" | "cloc
 
 // a row's full SVG: its track, its right-hand value, and its agent strips below
 export function rowSvg(row: DeckRow, W: number, o: RowDrawOptions): { height: number; width: number; source: string } {
+  const layout = DECK_DESIGN.rows;
   const sv = stripsView(row, o.locale);
-  const stripsH = sv ? 5 + stripsHeight(sv.view) : 0;
+  const stripsH = sv ? layout.stripGapPixels + stripsHeight(sv.view) : 0;
   // compact rows sit with no gap between them; a little air above and below keeps the pills apart
   const pad = o.size === "roomy" ? 0 : DECK_DESIGN.bar.compactPadding;
   const H = TRACK_H + stripsH + pad * 2;
   const total = W + RIGHT_W;
   const track = row.kind === "route" ? routeSvg(row, W, o.routeHist, o.locale) : desktopTrack(o.style, toTrackRow(row), W, o.now, o.caches.head);
   const right = rightColor(row);
-  const strips = sv ? `<g transform="translate(0 ${TRACK_H + 5})">${stripsSvg(sv.view, W, o.now, sv.label, (m) => tierColor(m), o.caches.strip, (hidden, done) => text("deck.strips.moreDone", o.locale, { count: hidden, done }))}</g>` : "";
+  const strips = sv ? `<g transform="translate(0 ${TRACK_H + layout.stripGapPixels})">${stripsSvg(sv.view, W, o.now, sv.label, (m) => tierColor(m), o.caches.strip, (hidden, done) => text("deck.strips.moreDone", o.locale, { count: hidden, done }))}</g>` : "";
   return {
     height: H,
     width: total,
     source:
       `<svg xmlns="http://www.w3.org/2000/svg" width="${total}" height="${H}" viewBox="0 ${-pad} ${total} ${H}">` +
       track +
-      `<text x="${total - 4}" y="${TRACK_H / 2 + 4.2}" text-anchor="end" style="font:${DECK_DESIGN.type.svgWeights.regular} ${DECK_DESIGN.type.svgBodyPixels}px ${FONT};fill:${right};font-variant-numeric:tabular-nums">${esc(row.right)}</text>` +
+      `<text x="${total - layout.rightValueInsetPixels}" y="${TRACK_H / 2 + layout.rightValueBaselineOffsetPixels}" text-anchor="end" style="font:${DECK_DESIGN.type.svgWeights.regular} ${DECK_DESIGN.type.svgBodyPixels}px ${FONT};fill:${right};font-variant-numeric:tabular-nums">${esc(row.right)}</text>` +
       strips +
       "</svg>",
   };
