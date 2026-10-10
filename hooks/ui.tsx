@@ -964,7 +964,7 @@ function featurePanel(els: Els, view: View, act: Actions, ai: boolean) {
 /** The language and history controls; the provider and its key are on the AI screen. */
 function configurationView(els: Els, view: View, act: Actions) {
   const { Box, Text, Button, Select } = els;
-  const cardWidth = view.width >= 101 ? Math.floor((view.width - GUTTER) / 2) : view.width;
+  const cardWidth = view.width >= UI_DESIGN.layout.configurationTwoColumnMinWidth ? Math.floor((view.width - GUTTER) / 2) : view.width;
   return (
     <Box flexDirection="column" rowGap={UI_DESIGN.space.xs}>
       <Box flexDirection="row" flexWrap="wrap" columnGap={GUTTER} rowGap={UI_DESIGN.space.xs}>
@@ -1892,7 +1892,7 @@ export function renderPane(els: Els, view: View, act: Actions) {
   );
   const fixed = view.fixed ? { height: view.rows, overflow: "hidden" as const } : {};
   const frame = (main: RenderChildren) => (
-    <Box flexDirection="column" {...(view.fixed ? fixed : { rowGap: 1 })}>
+          <Box flexDirection="column" {...(view.fixed ? fixed : { rowGap: UI_DESIGN.space.xs })}>
       {main}
     </Box>
   );

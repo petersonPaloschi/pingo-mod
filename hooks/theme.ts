@@ -278,6 +278,7 @@ export const DECK_DESIGN = {
     toolGapPixels: 12,
     textBaselinePixels: 12.5,
     timeRightInsetPixels: 9,
+    minimumVisibleNameCharacters: 4,
     stateDot: { x: 10, radius: 3 },
     modelTag: { textPaddingPixels: 12, boxRightInsetPixels: 52, textRightInsetPixels: 46, topPixels: 3, heightPixels: 12, radiusPixels: 3, fillOpacity: 0.25 },
     texture: {
@@ -479,6 +480,7 @@ export const UI_DESIGN = {
     minCardWidth: 10,
     gridMinWidth: 34,
     gridMaxColumns: 2,
+    configurationTwoColumnMinWidth: 101,
     viewport: { minimumColumns: 40, panelColumns: 60, defaultColumns: 80, defaultRows: 30 },
   },
 } as const;

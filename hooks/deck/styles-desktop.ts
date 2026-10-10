@@ -303,7 +303,7 @@ export function stripsSvg(
     const room = narrow ? W - design.narrowNameReservePixels - indent : W * design.nameWidthRatio;
     const full = (a.depth > 0 ? "╰ " : "") + a.title;
     let name = full;
-    while (name.length > 4 && textWidth(name, DECK_DESIGN.type.measure.stripNamePixelsPerChar) > room) name = name.slice(0, -1);
+    while (name.length > design.minimumVisibleNameCharacters && textWidth(name, DECK_DESIGN.type.measure.stripNamePixelsPerChar) > room) name = name.slice(0, -1);
     if (name !== full) name = name.trimEnd() + "…";
     const nameX = design.nameStartPixels + indent;
     const toolX = nameX + textWidth(name, DECK_DESIGN.type.measure.stripNamePixelsPerChar) + design.toolGapPixels;
