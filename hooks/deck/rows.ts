@@ -95,11 +95,12 @@ function dirColor(dir: RouteView["dir"], desktop: boolean): string {
 
 // one route-history slot: a failure, a suggestion the router did not apply, or an applied model
 export function histSquare(t: string, hx: number): string {
-  if (t === "none") return `<rect x="${hx + 0.5}" y="8" width="6" height="6" rx="2" fill="none" stroke="${STYLE.warn.desk}"/>`;
+  const design = DECK_DESIGN.route.historySquare;
+  if (t === "none") return `<rect x="${hx + design.none.xInsetPixels}" y="${design.none.y}" width="${design.none.sizePixels}" height="${design.none.sizePixels}" rx="${design.none.radiusPixels}" fill="none" stroke="${STYLE.warn.desk}"/>`;
   if (t.startsWith("~")) {
-    return `<rect x="${hx + 0.75}" y="8.25" width="5.5" height="5.5" rx="1.75" fill="none" stroke="${tierColor(t.slice(1))}" stroke-width="1.5"/>`;
+    return `<rect x="${hx + design.suggested.xInsetPixels}" y="${design.suggested.y}" width="${design.suggested.sizePixels}" height="${design.suggested.sizePixels}" rx="${design.suggested.radiusPixels}" fill="none" stroke="${tierColor(t.slice(1))}" stroke-width="${design.suggested.strokeWidth}"/>`;
   }
-  return `<rect x="${hx}" y="7.5" width="7" height="7" rx="2" fill="${tierColor(t)}" fill-opacity=".85"/>`;
+  return `<rect x="${hx}" y="${design.applied.y}" width="${design.applied.sizePixels}" height="${design.applied.sizePixels}" rx="${design.applied.radiusPixels}" fill="${tierColor(t)}" fill-opacity="${design.applied.opacity}"/>`;
 }
 
 // the same slot as a terminal glyph and its color
@@ -135,8 +136,8 @@ export function routeCellsTerminal(row: DeckRow, routeHist: readonly string[], l
     push("▁▃▅▇█".slice(0, Math.min(5, lvl)), STYLE.run.fill);
     push("·".repeat(Math.max(0, 4 - lvl)) + " " + v.effort, DIM);
   }
-  if (v.conf != null) push("  " + text("deck.route.conf", locale) + " " + v.conf.toFixed(2), v.conf >= 0.6 ? STYLE.ok.fill : STYLE.warn.fill);
-  if (v.risky != null && v.risky > 0.7) push("  ⚠ " + text("deck.route.risky", locale), STYLE.hot.fill);
+  if (v.conf != null) push("  " + text("deck.route.conf", locale) + " " + v.conf.toFixed(2), v.conf >= DECK_DESIGN.route.confidence.colorThreshold ? STYLE.ok.fill : STYLE.warn.fill);
+  if (v.risky != null && v.risky > DECK_DESIGN.route.riskyDisplayThreshold) push("  ⚠ " + text("deck.route.risky", locale), STYLE.hot.fill);
   if (v.ms != null) push("  " + v.ms + "ms", DIM);
   push("  ", MUTED);
   for (const t of routeHist) push(...histCell(t));
@@ -177,7 +178,7 @@ export function routeSvg(row: DeckRow, W: number, routeHist: readonly string[], 
     const on = t === v.to;
     const want = t === v.want && !on;
     const w = textWidth(t, labelPixels) + pill.horizontalPaddingPixels * 2;
-    out += `<rect x="${x}" y="${pill.y}" width="${w}" height="${pill.height}" rx="${pill.radius}" fill="${on ? tierColor(t) : SVG_TRACK}" fill-opacity="${on ? 1 : 0.16}"${want ? ` stroke="${tierColor(t)}" stroke-dasharray="2 2"` : ""}/>`;
+    out += `<rect x="${x}" y="${pill.y}" width="${w}" height="${pill.height}" rx="${pill.radius}" fill="${on ? tierColor(t) : SVG_TRACK}" fill-opacity="${on ? layout.tier.selectedOpacity : layout.tier.inactiveOpacity}"${want ? ` stroke="${tierColor(t)}" stroke-dasharray="${layout.tier.requestedStrokeDashArray}"` : ""}/>`;
     out += `<text x="${x + pill.horizontalPaddingPixels}" y="${DECK_DESIGN.type.svgBaselinePixels}" style="font:${on ? DECK_DESIGN.type.svgWeights.medium : DECK_DESIGN.type.svgWeights.regular} ${DECK_DESIGN.type.svgSmallPixels}px ${FONT};fill:${on ? SVG_ON_FILL : SVG_TEXT.muted}">${t}</text>`;
     x += w + layout.tierGapPixels;
   }
@@ -194,18 +195,18 @@ export function routeSvg(row: DeckRow, W: number, routeHist: readonly string[], 
     x += textWidth(v.effort, labelPixels) + effort.labelGapPixels;
   }
   if (v.conf != null) {
-    const c = v.conf >= 0.6 ? STYLE.ok.desk : STYLE.warn.desk;
+    const c = v.conf >= layout.confidence.colorThreshold ? STYLE.ok.desk : STYLE.warn.desk;
     const label = text("deck.route.conf", locale);
     const confidence = layout.confidence;
     const value = v.conf.toFixed(2);
     out += `<text x="${x}" y="${DECK_DESIGN.type.svgBaselinePixels}" style="font:${DECK_DESIGN.type.svgWeights.regular} ${DECK_DESIGN.type.svgSmallPixels}px ${FONT};fill:${SVG_TEXT.dim}">${label}</text>`;
     x += textWidth(label, labelPixels) + confidence.labelGapPixels;
-    out += `<rect x="${x}" y="${confidence.trackY}" width="${confidence.trackWidthPixels}" height="${confidence.trackHeightPixels}" rx="${confidence.trackRadiusPixels}" fill="${SVG_TRACK}" fill-opacity=".25"/><rect x="${x}" y="${confidence.trackY}" width="${(confidence.trackWidthPixels * v.conf).toFixed(1)}" height="${confidence.trackHeightPixels}" fill="${c}"/>`;
+    out += `<rect x="${x}" y="${confidence.trackY}" width="${confidence.trackWidthPixels}" height="${confidence.trackHeightPixels}" rx="${confidence.trackRadiusPixels}" fill="${SVG_TRACK}" fill-opacity="${confidence.trackOpacity}"/><rect x="${x}" y="${confidence.trackY}" width="${(confidence.trackWidthPixels * v.conf).toFixed(1)}" height="${confidence.trackHeightPixels}" fill="${c}"/>`;
     x += confidence.trackWidthPixels + confidence.trackValueGapPixels;
     out += `<text x="${x}" y="${DECK_DESIGN.type.svgBaselinePixels}" style="font:${DECK_DESIGN.type.svgWeights.regular} ${DECK_DESIGN.type.svgSmallPixels}px ${FONT};fill:${SVG_TEXT.muted}">${value}</text>`;
     x += textWidth(value, labelPixels) + confidence.valueGapPixels;
   }
-  if (v.risky != null && v.risky > 0.7) {
+  if (v.risky != null && v.risky > layout.riskyDisplayThreshold) {
     const risky = `⚠ ${text("deck.route.risky", locale)}`;
     out += `<text x="${x}" y="${DECK_DESIGN.type.svgBaselinePixels}" style="font:${DECK_DESIGN.type.svgWeights.medium} ${DECK_DESIGN.type.svgSmallPixels}px ${FONT};fill:${STYLE.hot.desk}">${risky}</text>`;
     x += textWidth(risky, labelPixels) + layout.riskyGapPixels;

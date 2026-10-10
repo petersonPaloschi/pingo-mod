@@ -104,6 +104,13 @@ export const DECK_DESIGN = {
     hintGapPixels: 10,
     tierGapPixels: 4,
     tierSectionGapPixels: 8,
+    tier: { selectedOpacity: 1, inactiveOpacity: 0.16, requestedStrokeDashArray: "2 2" },
+    historySquare: {
+      applied: { y: 7.5, sizePixels: 7, radiusPixels: 2, opacity: 0.85 },
+      none: { xInsetPixels: 0.5, y: 8, sizePixels: 6, radiusPixels: 2 },
+      suggested: { xInsetPixels: 0.75, y: 8.25, sizePixels: 5.5, radiusPixels: 1.75, strokeWidth: 1.5 },
+    },
+    riskyDisplayThreshold: 0.7,
     pill: { y: 3, height: 16, radius: 4, horizontalPaddingPixels: 7 },
     effort: {
       barCount: 4,
@@ -118,11 +125,13 @@ export const DECK_DESIGN = {
       labelGapPixels: 14,
     },
     confidence: {
+      colorThreshold: 0.6,
       labelGapPixels: 6,
       trackY: 8,
       trackWidthPixels: 44,
       trackHeightPixels: 6,
       trackRadiusPixels: 3,
+      trackOpacity: 0.25,
       trackValueGapPixels: 6,
       valueGapPixels: 14,
     },
