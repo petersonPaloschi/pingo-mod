@@ -5,7 +5,7 @@ import { expect, mock, test } from "claude-code/testing";
 import { rowGlyph } from "../hooks/deck/rows.ts";
 import { SVG_TEXT } from "../hooks/deck/theme.ts";
 import type { DeckRow } from "../hooks/deck/model.ts";
-import { css, dotMeter, HUE, PAINT, SVG_PAINT } from "../hooks/theme.ts";
+import { css, dotMeter, FONT_WEIGHT, HUE, PAINT, PRISMA_GALLERY_CSS, PRISMA_GALLERY_DESIGN, SVG_PAINT } from "../hooks/theme.ts";
 import { PANE_PROPS } from "./helpers.ts";
 
 /** WCAG relative luminance and contrast ratio of two "#rrggbb" colors. */
@@ -30,6 +30,13 @@ test("every hue keeps 3:1 on a dark and a light terminal, and the ink on it keep
 test("SVG body text stays readable on light and dark backgrounds", () => {
   expect(contrast(SVG_TEXT.body, "#1e1e1e") >= 3).toBe(true);
   expect(contrast(SVG_TEXT.body, "#ffffff") >= 3).toBe(true);
+});
+
+test("the Prisma browser gallery inherits shared brand and layout tokens", () => {
+  expect(PRISMA_GALLERY_DESIGN.palette.accent).toBe(css(HUE.brand));
+  expect(PRISMA_GALLERY_DESIGN.palette.inverse).toBe(PAINT.onFill);
+  expect(PRISMA_GALLERY_CSS).toContain(`minmax(${PRISMA_GALLERY_DESIGN.grid.minimumCardWidthPixels}px,1fr)`);
+  expect(PRISMA_GALLERY_CSS).toContain(`font-weight:${FONT_WEIGHT.semibold}`);
 });
 
 test("a dot meter fills by halves and always keeps its length", () => {

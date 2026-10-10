@@ -69,12 +69,14 @@ export const DECK_STYLE_NAMES = {
   terminal: { ...DECK_STYLE_LABELS, pixel: "Pixel dots" },
 } as const satisfies Record<"desktop" | "terminal", Record<DeckStyleName, string>>;
 
+export const FONT_WEIGHT = { regular: 400, medium: 500, semibold: 600 } as const;
+
 /** Visual parameters shared by the Deck's SVG, terminal-cell and mascot renderers. */
 export const DECK_DESIGN = {
   type: {
     svg: "'Anthropic Sans',ui-sans-serif,system-ui,-apple-system,sans-serif",
     svgBaselinePixels: 15,
-    svgWeights: { regular: 400, medium: 500, semibold: 600 },
+    svgWeights: FONT_WEIGHT,
     svgBodyPixels: 12,
     svgSmallPixels: 11.5,
     svgTinyPixels: 10,
@@ -484,6 +486,31 @@ export const UI_DESIGN = {
     viewport: { minimumColumns: 40, panelColumns: 60, defaultColumns: 80, defaultRows: 30 },
   },
 } as const;
+
+/** The isolated browser gallery for Prisma design-choice previews. */
+export const PRISMA_GALLERY_DESIGN = {
+  palette: { page: "#f4f4f2", ink: "#1a1a1a", card: "#ffffff", muted: "#666666", outline: "#999999", accent: css(HUE.brand), border: "#cccccc", strongBorder: "#333333", inverse: PAINT.onFill, shadow: "#0002" },
+  page: { fontPixels: 15, lineHeight: 1.4, marginPixels: 24 },
+  grid: { minimumCardWidthPixels: 300, gapPixels: 18 },
+  card: { radiusPixels: 10, shadowOffsetYPixels: 1, shadowBlurPixels: 3, outlineWidthPixels: 3, textPaddingYPixels: 10, textPaddingXPixels: 14 },
+  kbd: { radiusPixels: 4, paddingYPixels: 1, paddingXPixels: 7 },
+  input: { marginTopPixels: 12, maximumWidthPixels: 480, paddingYPixels: 8, paddingXPixels: 10, borderWidthPixels: 1, radiusPixels: 6 },
+  button: { marginTopPixels: 18, marginRightPixels: 10, paddingYPixels: 9, paddingXPixels: 16, borderWidthPixels: 1, radiusPixels: 7 },
+  disabledOpacity: 0.4,
+} as const;
+const gallery = PRISMA_GALLERY_DESIGN;
+export const PRISMA_GALLERY_CSS = [
+  `body{font:${gallery.page.fontPixels}px/${gallery.page.lineHeight} system-ui,sans-serif;margin:${gallery.page.marginPixels}px;background:${gallery.palette.page};color:${gallery.palette.ink}}`,
+  `.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(${gallery.grid.minimumCardWidthPixels}px,1fr));gap:${gallery.grid.gapPixels}px}`,
+  `.card{all:unset;cursor:pointer;display:block;background:${gallery.palette.card};border-radius:${gallery.card.radiusPixels}px;overflow:hidden;box-shadow:0 ${gallery.card.shadowOffsetYPixels}px ${gallery.card.shadowBlurPixels}px ${gallery.palette.shadow};outline:${gallery.card.outlineWidthPixels}px solid transparent}`,
+  `.card:hover{outline-color:${gallery.palette.outline}}.card.on{outline-color:${gallery.palette.accent}}`,
+  `.card img{display:block;width:100%;height:auto}.card span{display:block;padding:${gallery.card.textPaddingYPixels}px ${gallery.card.textPaddingXPixels}px;font-weight:${FONT_WEIGHT.semibold}}`,
+  `small{display:block;font-weight:${FONT_WEIGHT.regular};color:${gallery.palette.muted}}`,
+  `kbd{background:${gallery.palette.ink};color:${gallery.palette.inverse};border-radius:${gallery.kbd.radiusPixels}px;padding:${gallery.kbd.paddingYPixels}px ${gallery.kbd.paddingXPixels}px}`,
+  `.other{margin-top:${gallery.input.marginTopPixels}px;width:100%;max-width:${gallery.input.maximumWidthPixels}px;padding:${gallery.input.paddingYPixels}px ${gallery.input.paddingXPixels}px;border:${gallery.input.borderWidthPixels}px solid ${gallery.palette.border};border-radius:${gallery.input.radiusPixels}px;font:inherit}`,
+  `#submit,.mix{margin:${gallery.button.marginTopPixels}px ${gallery.button.marginRightPixels}px 0 0;padding:${gallery.button.paddingYPixels}px ${gallery.button.paddingXPixels}px;border:${gallery.button.borderWidthPixels}px solid ${gallery.palette.strongBorder};border-radius:${gallery.button.radiusPixels}px;background:${gallery.palette.card};font:inherit;cursor:pointer}`,
+  `#submit{background:${gallery.palette.ink};color:${gallery.palette.inverse}}#submit:disabled{opacity:${gallery.disabledOpacity}}.mix.on{background:${gallery.palette.accent};color:${gallery.palette.inverse}}`,
+].join("");
 
 /** The same roles for an SVG source, which cannot name a theme key: mid-tones that hold on both grounds. */
 export const SVG_PAINT = {

@@ -8,6 +8,7 @@ The dashboard uses host UI primitives. The Deck draws SVG with inline CSS on Des
 - `hooks/deck/theme.ts` maps shared colors to Deck states and exposes the shared Deck tokens.
 - `hooks/deck/styles-desktop.ts` and `hooks/deck/styles-terminal.ts` render the Deck visual alternatives for each surface. `hooks/deck/rows.ts`, `hooks/deck/band.tsx`, `hooks/deck/pet.ts`, and `hooks/deck/cast.ts` compose rows, layout, the mascot, and its cast from those tokens. `DECK_DESIGN.cast` holds the cast lane sizes and timing; `PET_PALETTE` holds its shared light and eye colors.
 - `hooks/ui.tsx` owns dashboard structure and uses `UI_INK`/`UI_DESIGN` for its colors and repeated spacing. `hooks/register.tsx` composes command and prompt panes, including the Deck picker, from the same shared tokens. `hooks/dots.ts`, `hooks/flow.ts`, `hooks/trail.ts`, and `hooks/mascots/` render related views and reuse the shared palettes.
+- The Prisma browser choice gallery is an isolated preview surface; `PRISMA_GALLERY_DESIGN` and its generated `PRISMA_GALLERY_CSS` live in `hooks/theme.ts`, and `hooks/register.tsx` consumes that CSS.
 
 ## Style alternatives
 
