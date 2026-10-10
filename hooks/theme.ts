@@ -73,6 +73,8 @@ export const DECK_STYLE_NAMES = {
 export const DECK_DESIGN = {
   type: {
     svg: "'Anthropic Sans',ui-sans-serif,system-ui,-apple-system,sans-serif",
+    svgBaselinePixels: 15,
+    svgWeights: { regular: 400, medium: 500, semibold: 600 },
     svgBodyPixels: 12,
     svgSmallPixels: 11.5,
     svgTinyPixels: 10,
@@ -82,6 +84,8 @@ export const DECK_DESIGN = {
       labelPixelsPerChar: 6.4,
       reasonPixelsPerChar: 6.6,
       countPixelsPerChar: 6.5,
+      countGapPixels: 6,
+      rateGapPixels: 8,
       stripNamePixelsPerChar: 6.9,
       modelTagPixelsPerChar: 6,
       narrowPixelsPerChar: 3.4,
@@ -90,7 +94,6 @@ export const DECK_DESIGN = {
     },
   },
   route: {
-    baselinePixels: 15,
     fromGapPixels: 6,
     directionGapPixels: 14,
     keptLabelGapPixels: 8,
@@ -323,6 +326,7 @@ export const DECK_DESIGN = {
     leaveMs: 1500,
     lane: {
       labelHeight: 12,
+      labelBaselineInsetPixels: 3,
       memberPixels: 24,
       namePixels: 6,
       memberWidthPaddingColumns: 2,

@@ -357,7 +357,7 @@ function buildCastSvg(pet: Pet, cast: readonly CastMember[], now: number, W: num
   for (const slot of slots) {
     const w = widthOf(slot);
     const name = esc(clipName(slot.label, SLOT_MAX));
-    group += `<text x="${(x + w / 2).toFixed(1)}" y="${CAST_LABEL_PX - 3}" text-anchor="middle" style="font:600 ${DECK_DESIGN.type.svgTinyPixels}px ${DECK_DESIGN.type.svg};fill:${hex(slot.color)}">${name}</text>`;
+    group += `<text x="${(x + w / 2).toFixed(1)}" y="${CAST_LABEL_PX - DECK_DESIGN.cast.lane.labelBaselineInsetPixels}" text-anchor="middle" style="font:${DECK_DESIGN.type.svgWeights.semibold} ${DECK_DESIGN.type.svgTinyPixels}px ${DECK_DESIGN.type.svg};fill:${hex(slot.color)}">${name}</text>`;
     if (slot.member) {
       const left = x + (w - MW) / 2;
       const top = H - MW - gap;
@@ -374,7 +374,7 @@ function buildCastSvg(pet: Pet, cast: readonly CastMember[], now: number, W: num
     }
     x += w;
   }
-  if (hidden) group += `<text x="${x + NAME_PX}" y="${CAST_LABEL_PX - 3}" style="font:600 ${DECK_DESIGN.type.svgTinyPixels}px ${DECK_DESIGN.type.svg};fill:${hex(HUE.neutral)}">+${hidden}</text>`;
+  if (hidden) group += `<text x="${x + NAME_PX}" y="${CAST_LABEL_PX - DECK_DESIGN.cast.lane.labelBaselineInsetPixels}" style="font:${DECK_DESIGN.type.svgWeights.semibold} ${DECK_DESIGN.type.svgTinyPixels}px ${DECK_DESIGN.type.svg};fill:${hex(HUE.neutral)}">+${hidden}</text>`;
   let dots = "";
   if (scale >= 1) for (let d = 4; d < W; d += DECK_DESIGN.pet.lane.backgroundSpacing) dots += `<rect x="${d}" y="${H - 4}" width="4" height="1" fill="${PET_PALETTE.laneLight}" opacity=".07"/>`;
   return (

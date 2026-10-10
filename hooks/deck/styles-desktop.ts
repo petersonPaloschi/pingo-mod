@@ -63,7 +63,7 @@ function pillMarkup(row: Row, W: number, fx: number, from: number, st: Style): s
     const left = -kw / 2 + 10;
     knob = `<rect x="${-kw / 2}" y="0" width="${kw}" height="${H}" rx="${H / 2}" fill="${color}"/>`;
     if (icon) knob += `<path d="${icon}" transform="translate(${left} 5) scale(.5)" fill="none" stroke="${SVG_ON_FILL}" stroke-width="3.6" stroke-linecap="round" stroke-linejoin="round"/>`;
-    knob += `<text x="${left + iconW}" y="${H / 2 + 4.2}" style="font:500 ${DECK_DESIGN.type.svgBodyPixels}px ${FONT};fill:${SVG_ON_FILL}">${esc(shown)}${row.count ? `<tspan dx="6" style="font-weight:400;fill-opacity:.75">${esc(row.count)}</tspan>` : ""}</text>`;
+    knob += `<text x="${left + iconW}" y="${H / 2 + 4.2}" style="font:${DECK_DESIGN.type.svgWeights.medium} ${DECK_DESIGN.type.svgBodyPixels}px ${FONT};fill:${SVG_ON_FILL}">${esc(shown)}${row.count ? `<tspan dx="${DECK_DESIGN.type.measure.countGapPixels}" style="font-weight:${DECK_DESIGN.type.svgWeights.regular};fill-opacity:.75">${esc(row.count)}</tspan>` : ""}</text>`;
   }
   const at = (x: number) => Math.max(kw / 2, Math.min(W - kw / 2, x >= kw ? x - kw / 2 : x + kw / 2));
   const kx = at(fx);
@@ -118,7 +118,7 @@ function pixel(row: Row, W: number, nowMs: number, lastHead: LastHead): string {
 }
 
 function label(row: Row, x: number, color: string): string {
-  return `<text x="${x}" y="15" style="font:500 ${DECK_DESIGN.type.svgBodyPixels}px ${FONT};fill:${color}">${esc(row.name)}${row.count ? `<tspan dx="6" style="font-weight:400;fill:${SVG_TEXT.muted}">${esc(row.count)}</tspan>` : ""}</text>`;
+  return `<text x="${x}" y="${DECK_DESIGN.type.svgBaselinePixels}" style="font:${DECK_DESIGN.type.svgWeights.medium} ${DECK_DESIGN.type.svgBodyPixels}px ${FONT};fill:${color}">${esc(row.name)}${row.count ? `<tspan dx="${DECK_DESIGN.type.measure.countGapPixels}" style="font-weight:${DECK_DESIGN.type.svgWeights.regular};fill:${SVG_TEXT.muted}">${esc(row.count)}</tspan>` : ""}</text>`;
 }
 
 function barShare(W: number): number {
@@ -180,8 +180,8 @@ function solid(row: Row, W: number, nowMs: number, lastHead: LastHead): string {
   return (
     `<defs><clipPath id="${id}a"><rect width="${W}" height="${H}" rx="6"/></clipPath><clipPath id="${id}b"><rect width="${fx.toFixed(1)}" height="${H}">${glide}</rect></clipPath></defs>` +
     `<g clip-path="url(#${id}a)"><rect width="${W}" height="${H}" fill="${SVG_TRACK}" fill-opacity=".16"/>` +
-    `<text x="10" y="15" style="font:500 ${DECK_DESIGN.type.svgBodyPixels}px ${FONT};fill:${SVG_TEXT.muted}">${text}</text>` +
-    `<g clip-path="url(#${id}b)"><rect width="${W}" height="${H}" fill="${st.desk}"/>${sweep}<text x="10" y="15" style="font:500 ${DECK_DESIGN.type.svgBodyPixels}px ${FONT};fill:${SVG_ON_FILL}">${text}</text></g></g>`
+    `<text x="10" y="${DECK_DESIGN.type.svgBaselinePixels}" style="font:${DECK_DESIGN.type.svgWeights.medium} ${DECK_DESIGN.type.svgBodyPixels}px ${FONT};fill:${SVG_TEXT.muted}">${text}</text>` +
+    `<g clip-path="url(#${id}b)"><rect width="${W}" height="${H}" fill="${st.desk}"/>${sweep}<text x="10" y="${DECK_DESIGN.type.svgBaselinePixels}" style="font:${DECK_DESIGN.type.svgWeights.medium} ${DECK_DESIGN.type.svgBodyPixels}px ${FONT};fill:${SVG_ON_FILL}">${text}</text></g></g>`
   );
 }
 
@@ -242,7 +242,7 @@ function spark(row: Row, W: number, _nowMs: number, lastHead: LastHead): string 
     out += `<rect x="${sx}" y="10.5" width="${sw}" height="1" fill="${SVG_TRACK}" fill-opacity=".3"/>`;
   }
   const lx = sx + sw + 14;
-  out += `<text x="${lx}" y="15" style="font:500 ${DECK_DESIGN.type.svgBodyPixels}px ${FONT};fill:${color}">${esc(row.name)}${row.rate ? `<tspan dx="8" style="font-weight:400;fill:${SVG_TEXT.muted}">${esc(row.rate)}</tspan>` : row.count ? `<tspan dx="6" style="font-weight:400;fill:${SVG_TEXT.muted}">${esc(row.count)}</tspan>` : ""}</text>`;
+  out += `<text x="${lx}" y="${DECK_DESIGN.type.svgBaselinePixels}" style="font:${DECK_DESIGN.type.svgWeights.medium} ${DECK_DESIGN.type.svgBodyPixels}px ${FONT};fill:${color}">${esc(row.name)}${row.rate ? `<tspan dx="${DECK_DESIGN.type.measure.rateGapPixels}" style="font-weight:${DECK_DESIGN.type.svgWeights.regular};fill:${SVG_TEXT.muted}">${esc(row.rate)}</tspan>` : row.count ? `<tspan dx="${DECK_DESIGN.type.measure.countGapPixels}" style="font-weight:${DECK_DESIGN.type.svgWeights.regular};fill:${SVG_TEXT.muted}">${esc(row.count)}</tspan>` : ""}</text>`;
   return out;
 }
 
@@ -309,7 +309,7 @@ export function stripsSvg(
     if (a.model && !narrow) {
       const tc = tierColor(a.model);
       const tw = textWidth(a.model, DECK_DESIGN.type.measure.modelTagPixelsPerChar) + design.modelTag.textPaddingPixels;
-      tag = `<rect x="${W - design.modelTag.boxRightInsetPixels - tw}" y="${y + design.modelTag.topPixels}" width="${tw}" height="${design.modelTag.heightPixels}" rx="${design.modelTag.radiusPixels}" fill="${tc}" fill-opacity=".25"/><text x="${W - design.modelTag.textRightInsetPixels - tw}" y="${y + design.textBaselinePixels}" style="font:500 ${DECK_DESIGN.type.svgTagPixels}px ${FONT};fill:${tc}">${esc(a.model)}</text>`;
+      tag = `<rect x="${W - design.modelTag.boxRightInsetPixels - tw}" y="${y + design.modelTag.topPixels}" width="${tw}" height="${design.modelTag.heightPixels}" rx="${design.modelTag.radiusPixels}" fill="${tc}" fill-opacity=".25"/><text x="${W - design.modelTag.textRightInsetPixels - tw}" y="${y + design.textBaselinePixels}" style="font:${DECK_DESIGN.type.svgWeights.medium} ${DECK_DESIGN.type.svgTagPixels}px ${FONT};fill:${tc}">${esc(a.model)}</text>`;
     }
     out +=
       `<rect x="0" y="${y}" width="${W}" height="${STRIP_H}" rx="${STRIP_H / 2}" fill="${c}" fill-opacity=".15">${flow}</rect>${px}` +
@@ -328,7 +328,7 @@ export function stripsSvg(
     out += `<rect x="0" y="${y}" width="${W}" height="${STRIP_H}" rx="${STRIP_H / 2}" fill="${SVG_TRACK}" fill-opacity=".14"/><text x="${design.stateDot.x}" y="${y + design.textBaselinePixels}" class="sn st">${esc(more(v.hidden.length, done))}</text>`;
   }
   return (
-    `<style>.sn{font:400 ${DECK_DESIGN.type.svgSmallPixels}px ${FONT};fill:${design.textFill}}.st{fill-opacity:.65}` +
+    `<style>.sn{font:${DECK_DESIGN.type.svgWeights.regular} ${DECK_DESIGN.type.svgSmallPixels}px ${FONT};fill:${design.textFill}}.st{fill-opacity:.65}` +
     twinkleCss(nowMs, false) +
     `.sd{animation:sp ${DECK_DESIGN.motion.stripPulseSeconds}s ease-in-out infinite}@keyframes sp{50%{opacity:.3}}` +
     `.mi{animation:mi ${DECK_DESIGN.motion.toolChangeSeconds}s ease-out both}@keyframes mi{from{opacity:0;filter:blur(3px)}}` +
