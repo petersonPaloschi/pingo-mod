@@ -1,6 +1,6 @@
 // Colors and small helpers shared by the Deck drawings. Pure, no I/O.
 // Every color comes from hooks/theme.ts: the state and tier hues, the track and tick tones, and the text tones.
-import type { AgentState as ModelAgentState } from "./model.ts";
+import type { AgentState as ModelAgentState } from "./model/types.ts";
 import { CLAUDE_MODEL, type Tier } from "../core/contracts.ts";
 import { css, DECK_ACCENT, DECK_DESIGN, DECK_GLYPH, HUE, PAINT, SVG_PAINT, type DeckGlyphName } from "../theme.ts";
 export { DECK_DESIGN, DECK_STYLE_NAMES, DECK_STYLE_ORDER, type DeckStyleName } from "../theme.ts";
