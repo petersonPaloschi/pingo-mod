@@ -1,6 +1,6 @@
 import type { ElementTable, RenderChildren } from "claude-code";
 import type { FeatureId, FeedEntry, FeedTone, JevTab, RouteEvent } from "../../types";
-import { at, categories, category, int, RANGES, status, tally, type Category, type StatusKind, type Tile } from "../events.ts";
+import { at, categories, category, int, pct, RANGES, status, tally, type Category, type StatusKind, type Tile } from "../events.ts";
 import { cellsOf, DOT, hex } from "../dots.ts";
 import { traceConsults } from "../trace.ts";
 import { formatAge, formatClock, formatCompact, formatNumber, text, type Locale, type LocaleKey } from "../i18n.ts";

@@ -1,7 +1,7 @@
 import type { RenderNode } from "claude-code";
 import type { AgentProposal, ChaveiroRule, OficinaCheck, EnsaioRun, PortaoCheck, PortaoRun, QualityCycle, RumoGoal, QualityItem, ComandanteDecision, ComandanteFilter, ComandanteRecord, ComandanteSource } from "../../types";
 import { features } from "../feed.ts";
-import { at, status } from "../events.ts";
+import { at, pct, status } from "../events.ts";
 import { hex } from "../dots.ts";
 import { formatClock, formatNumber, text, type LocaleKey } from "../i18n.ts";
 import { FEATURE_MASCOT_PALETTE, GLYPH, UI_DESIGN, UI_INK as INK } from "../theme.ts";

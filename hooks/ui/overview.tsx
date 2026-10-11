@@ -1,6 +1,6 @@
 import type { RenderChildren } from "claude-code";
 import type { RouteEvent } from "../../types";
-import { at, category, int, reasons, routed, status, tiles, type Tile, type TileGroup } from "../events.ts";
+import { at, category, int, pct, reasons, routed, status, tiles, type Tile, type TileGroup } from "../events.ts";
 import { hex } from "../dots.ts";
 import { failureHint, failureKind } from "../errors.ts";
 import { formatDecimal, formatNumber, reasonTitle, text, type Locale } from "../i18n.ts";
