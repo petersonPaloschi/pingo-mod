@@ -15,10 +15,10 @@ import type { ModelContext } from "./core/types.ts";
 import { CLAUDE_MODEL } from "./core/contracts.ts";
 import { errorMessage } from "./core/reasons.ts";
 import { QUALITY_SYSTEM } from "./core/prompts.ts";
-import { parseQualityReport, QUALITY_AGENT, QUALITY_HISTORY, QUALITY_MAX_TURNS, qualityAsks, qualityCall, qualityRequest, qualityVerdict } from "./core/quality.ts";
+import { parseQualityReport, QUALITY_AGENT, QUALITY_HISTORY, QUALITY_MAX_TURNS, qualityAsks, qualityCall, qualityHelperBrief, qualityHelperRefusal, qualityRequest, qualityVerdict, type QualityRole } from "./core/quality.ts";
 import { featureGate, sizeRequest, totalInput, usageFacts, type FeatureContext } from "./core/runtime.ts";
-import { COMANDANTE_FOLDER, COMANDANTE_KEEP, comandanteProject, comandanteRecords, comandanteRequest, comandanteVerdict, mergeComandante, normalizeComandanteFilter, type ComandanteAlert, type ComandanteVerdict } from "./core/comandante.ts";
-import type { ComandanteRecord, ComandanteRuling } from "../types";
+import { COMANDANTE_FOLDER, COMANDANTE_KEEP, comandanteProject, comandanteRecords, comandanteRequest, comandanteVerdict, mergeComandante, normalizeComandanteFilter, normalizeComandanteSources, type ComandanteAlert, type ComandanteVerdict } from "./core/comandante.ts";
+import type { ComandanteRecord, ComandanteRuling, ComandanteSource } from "../types";
 import { readVigiaLetter, vigiaAlive, vigiaCommand, vigiaDigest, vigiaDoing, vigiaFlat, vigiaHold, vigiaHoldReason, vigiaInboxNote, vigiaLabel, vigiaName, vigiaNext, vigiaProject, vigiaRelative, vigiaShared, vigiaTargets, VIGIA_MAIL_KEEP, VIGIA_MAX_HOLDS, writeVigiaLetter, type VigiaLetter } from "./core/vigia.ts";
 import {
   DEFAULT_FEATURES,
@@ -40,6 +40,9 @@ import {
   emptyTrace,
   noteAdvice,
   promptEntered,
+  promptRow,
+  queuedDelivered,
+  rowText,
   setAdvisorInfo,
   startTurn,
   stepEnd,
@@ -50,7 +53,7 @@ import {
   traceOf,
   type ConsultWhere,
 } from "./trace.ts";
-import { renderAbove, renderAgentPane, renderPane, type Actions, type ComandantePanel, type DeckPanel, type QualityPanel, type View } from "./ui.tsx";
+import { featureHead, lineTab, renderAbove, renderAgentPane, renderPane, sheetCard, type Actions, type ComandantePanel, type DeckPanel, type QualityPanel, type View } from "./ui.tsx";
 import { flowSummary } from "./flow.ts";
 import * as orch from "./orchestrate.ts";
 import { MODEL_LABEL } from "./core/orchestration.ts";
@@ -104,13 +107,13 @@ import {
 } from "./deck/model.ts";
 import { createPet, petLaneCells, petLaneColumns, PET_BRAILLE, stepPet, type Pet } from "./deck/pet.ts";
 import { castColor, castKey, castLaneCells, castOf, LANE_ROWS, PINGO_INK, SPEAKER_IDS, SPEAKER_NAMES, type CastMember, type CastSpeaker, type SpeakerId } from "./deck/cast.ts";
-import { cellsOf } from "./dots.ts";
+import { cellsOf, hex } from "./dots.ts";
 import { FOLD_FADE, FOLD_STEP, TRACK_H, toTrackRow, type DrawCaches } from "./deck/rows.ts";
 import { DESKTOP_STYLES, DESKTOP_STYLE_NAMES, desktopTrack } from "./deck/styles-desktop.ts";
 import { TERMINAL_STYLES, TERMINAL_STYLE_NAMES, terminalBar } from "./deck/styles-terminal.ts";
 import { applyDeckCommand, deckUsage, deckWords, openReply } from "./deck/wire.ts";
 import { DIM, runs } from "./deck/theme.ts";
-import { DECK_DESIGN, GLYPH, PAINT, PRISMA_GALLERY_CSS, UI_DESIGN, type DeckStyleName } from "./theme.ts";
+import { DECK_DESIGN, GLYPH, meter, PAINT, PRISMA_GALLERY_CSS, UI_DESIGN, type DeckStyleName } from "./theme.ts";
 
 const PANE = "jev";
 type FeatureId = keyof FeatureFlags;
@@ -119,6 +122,7 @@ const PET_HATS = ["tophat", "party", "crown", "wizard", "cowboy", "propeller", "
 const DEFAULT_FEATURE_PREFERENCES: FeaturePreferences = {
   assumptionScope: "all", plainLevel: "beginner", plainReview: true, plainSound: true, petHat: "random", petShades: false,
   designSurface: "auto", ideaNudges: true, promptLearning: true, monitorEveryMs: 2000, trackerSummary: true, clashMinutes: 30,
+  comandanteSources: normalizeComandanteSources(undefined),
 };
 const featurePreferences = atom({ plugin: "jev", key: "featurePreferences" } as const, DEFAULT_FEATURE_PREFERENCES);
 const events = atom({ plugin: "jev", key: "events" } as const, [] as RouteEvent[]);
@@ -259,6 +263,11 @@ let clarityLastAsk = "";
 const sementeTopics = new Set<string>();
 let sementeShelvedThisTurn = new Set<string>();
 const sementeDismissed = new Set<string>();
+/** The main conversation's turns so far: a nudge judged for an earlier turn is dropped. */
+let sementeTurn = 0;
+/** Ideas the Comandante kept out of the nudge in this run, and its ruling on each idea the nudge offers now. */
+const sementeNudgeRejected = new Set<string>();
+const sementeNudgeRulings = new Map<string, ComandanteRuling>();
 let sentinelaDir = "";
 let sentinelaMe = "";
 let sentinelaRefreshedAt = 0;
@@ -276,9 +285,8 @@ let vigiaLastDigest = "";
 const vigiaReads = new Map<string, number>();
 const vigiaHolds = new Map<string, number>();
 let vigiaMailSeq = 0;
-/** This session's own Comandante records as its file holds them, read once per session id; and the last refresh. */
+/** This session's own Comandante records as its file holds them, read once per session id. */
 let comandanteMine: { session: string; records: ComandanteRecord[] } | undefined;
-let comandanteRefreshedAt = 0;
 let comandanteSeq = 0;
 /** The band's clock (every 150 ms), its frame count, the fold in progress and its timer, and the demo's timer. */
 let deckLoop: Timer | undefined;
@@ -1743,6 +1751,8 @@ async function setFeature($: EngineInterface, id: FeatureId, enabled: boolean): 
   await $.store.set(STORE_FEATURES, flags);
   const name = featureList(locale).find((feature) => feature.id === id)?.name ?? id;
   await log($, "you", "feature", enabled ? "good" : "muted", text("feed.feature.state", locale, { name, state: text(enabled ? "feed.feature.enabled" : "feed.feature.disabled", locale) }));
+  // the Comandante, or an assistant it watches, switched on: what waits unjudged is judged now
+  if (enabled) void comandanteCatchUp($).catch(() => undefined);
 }
 
 async function clearHistory($: EngineInterface): Promise<void> {
@@ -1790,6 +1800,8 @@ async function setFeaturePreference<K extends keyof FeaturePreferences>(
   await $.store.set("featurePreferences", next);
   await update($, featurePreferences, () => next);
   tickPreferences = next;
+  // a source switched on has its items still waiting judged now, not at some later beat
+  if (key === "comandanteSources") void comandanteCatchUp($).catch(() => undefined);
   return next;
 }
 
@@ -1809,6 +1821,7 @@ function normalizeFeaturePreferences(value: unknown): FeaturePreferences {
     monitorEveryMs: source.monitorEveryMs === 5000 || source.monitorEveryMs === 10000 ? source.monitorEveryMs : 2000,
     trackerSummary: source.trackerSummary !== false,
     clashMinutes: source.clashMinutes === 15 || source.clashMinutes === 60 ? source.clashMinutes : 30,
+    comandanteSources: normalizeComandanteSources(source.comandanteSources),
   };
 }
 
@@ -1943,8 +1956,8 @@ async function farolAfterStop<T extends { block?: unknown }>($: EngineInterface,
   const feedback = due ? await farolFeedback($) : "";
   return feedback ? { ...result, block: feedback } : result;
 }
-/** The Comandante's ruling on an assumption it did not approve, as the Farol pane shows it: its decision, reason and question. */
-function farolRuling(ruling: ComandanteRuling, locale: Locale): string {
+/** The Comandante's ruling on an item it did not approve, as the Farol and Semente panes show it: its decision, reason and question. */
+function rulingLine(ruling: ComandanteRuling, locale: Locale): string {
   const line = text("feature.farol.comandante", locale, { decision: text(`feature.comandante.decision.${ruling.decision}`, locale), reason: text(`feature.comandante.reason.${ruling.reason}` as LocaleKey, locale) });
   return ruling.decision === "questioned" ? `${line} ${text(`feature.comandante.question.${ruling.reason}` as LocaleKey, locale)}` : line;
 }
@@ -2077,9 +2090,11 @@ async function reviewClareza($: EngineInterface, ask: string, answer: string, wa
     // with the Comandante on, Jev judges the plan before the person sees it: rejected is dropped (its notice says so),
     // the others are shown with the ruling
     // the alert's text is the summary the Comandante tab shows the person: its fallback comes from the locale
-    const ruling = await comandanteReview($, { source: "clareza", text: review.problems.join("; ") || text("feature.clareza.unclear", (await getSettings($)).locale), context: prompt });
+    const watched = await comandanteWatches($, "clareza");
+    const ruling = watched ? await comandanteReview($, { source: "clareza", text: review.problems.join("; ") || text("feature.clareza.unclear", (await getSettings($)).locale), context: prompt }) : undefined;
     if (ruling?.decision === "rejected") return;
     const at = await $.clock.now();
+    if (watched && !ruling) comandanteTried.add(`clareza:${at}`);
     await update($, clarezaProposal, () => ({ problems: review.problems, prompt, at, ...(ruling ? { comandante: { decision: ruling.decision, reason: ruling.reason } } : {}) }));
   }
 }
@@ -2112,9 +2127,11 @@ async function saveSemente($: EngineInterface, change: (list: SementeIdea[]) => 
   await update($, sementeIdeas, () => list);
   await $.store.set(await sementeKey($), list);
 }
-async function addSemente($: EngineInterface, value: string, source: SementeIdea["source"] = "you") {
+/** One idea onto the shelf, with the Comandante's ruling when it judged it first; the person's own is judged now. */
+async function addSemente($: EngineInterface, value: string, source: SementeIdea["source"] = "you", comandante?: ComandanteRuling) {
   const id = `${await $.clock.now()}-${Math.random().toString(36).slice(2, 7)}`;
-  await saveSemente($, (list) => [...list, { id, text: value.trim(), source }]);
+  await saveSemente($, (list) => [...list, { id, text: value.trim(), source, ...(comandante ? { comandante } : {}) }]);
+  if (source === "you") void comandanteCatchUp($).catch(() => undefined);
   return id;
 }
 async function sendSemente($: EngineInterface, picked: SementeIdea[]) {
@@ -2238,7 +2255,7 @@ async function farolAbove($: EngineInterface, e: { props: { hasSurvey?: boolean 
   const label = open
     ? text(open === 1 ? "deck.speech.farol.one" : "deck.speech.farol.many", locale, { count: formatNumber(open, locale) })
     : text(rules.length === 1 ? "feature.farol.rules.one" : "feature.farol.rules.many", locale, { count: rules.length });
-  return <Box flexDirection="column"><Button key="farol-open" label={`${GLYPH.on} ${label} · Farol`} plain onPress={() => void $.ui.open({ id: "farol", title: "Farol", focus: true })} />{below}</Box>;
+  return <Box flexDirection="column"><Box flexDirection="row" columnGap={UI_DESIGN.space.xs}>{lineTab(renderElements($, e), castColor("farol"))}<Button key="farol-open" label={`${label} · Farol`} plain onPress={() => void $.ui.open({ id: "farol", title: "Farol", focus: true })} /></Box>{below}</Box>;
 }
 
 async function clarezaStart($: EngineInterface) {
@@ -2295,8 +2312,8 @@ async function clarezaAbove($: EngineInterface, e: { props: { hasSurvey?: boolea
   // with a plan waiting and no mascot to say so, the problems open Clareza's pane, where it is sent or rejected
   const verdict = grade && (plan && !(await castShown($))
     ? <Button key="clareza-open" label={`✗ ${grade.problems.join("; ")} ${GLYPH.leader} ${text("feature.clareza.seePlan", locale)}`} plain onPress={() => void openFeaturePane($, "clareza")} />
-    : <Text color={grade.pass ? "success" : "error"}>{grade.pass ? `${GLYPH.ok} Clareza` : `✗ ${grade.problems.join("; ")}`}{grade.fixing ? ` · ${text("feature.clareza.rewriting", locale)}` : ""}</Text>);
-  const top = <Box flexDirection="row" columnGap={1}><Text dimColor wrap="truncate-end">{GLYPH.on} {line}</Text>{verdict}</Box>;
+    : <Text color={grade.pass ? PAINT.ok : PAINT.fail}>{grade.pass ? `${GLYPH.ok} Clareza` : `✗ ${grade.problems.join("; ")}`}{grade.fixing ? ` · ${text("feature.clareza.rewriting", locale)}` : ""}</Text>);
+  const top = <Box flexDirection="row" columnGap={1}>{lineTab(renderElements($, e), castColor("clareza"))}<Text dimColor wrap="truncate-end">{line}</Text>{verdict}</Box>;
   const offered = grade?.offered.length ? <Box flexDirection="row" flexWrap="wrap" columnGap={1}><Text dimColor>{text("feature.clareza.know", locale)}</Text>{grade.offered.map((term) => <Button key={`clareza-${term}`} label={term} dimColor onPress={() => void knowClarezaTerm($, term)} />)}</Box> : null;
   return <Box flexDirection="column">{top}{offered}{below}</Box>;
 }
@@ -2325,9 +2342,11 @@ async function sementeCompose($: EngineInterface, e: PromptComposeEvent, result:
   return { sections: [...result.sections, { id: "jev:semente:guidance", text: guidance, scope: "session" as const }] };
 }
 async function sementeTurnStarted($: EngineInterface, e: { text: string }) {
+  sementeTurn++;
   sementeTopics.clear();
   for (const word of sementeWords(e.text)) sementeTopics.add(word);
   sementeShelvedThisTurn = new Set();
+  sementeNudgeRulings.clear();
   await update($, sementeNudges, () => []);
 }
 function sementeFileEdited(path: string, succeeded: boolean) {
@@ -2338,7 +2357,35 @@ async function sementeTurnCompleted($: EngineInterface, e: { agentId?: string; i
   if (e.agentId !== undefined || e.isAborted || !sementeTopics.size || !(await featureEnabled($, "semente")) || !prefs.ideaNudges) return;
   const ideas = await read($, sementeIdeas);
   const fits = ideas.filter((idea) => !sementeShelvedThisTurn.has(idea.id) && !sementeDismissed.has(idea.id) && sementeWords(idea.text).some((word) => sementeTopics.has(word)));
+  // with the Comandante watching Semente, the nudge waits for its verdicts; not awaited, Jev may take a while
+  if (fits.length && await comandanteWatches($, "semente")) {
+    void judgeSementeNudges($, fits, sementeTurn).catch(() => undefined);
+    return;
+  }
   await update($, sementeNudges, () => fits.map((idea) => idea.id));
+}
+
+/**
+ * Before the nudge offers saved ideas that fit the recent work, the Comandante judges each one, one at a time:
+ * approved is offered; questioned is offered marked with its question; rejected is left out and not judged again in
+ * this run, as is an idea its shelf ruling rejected. One it could not judge is offered as without the Comandante.
+ * A turn begun meanwhile drops this nudge.
+ */
+async function judgeSementeNudges($: EngineInterface, fits: readonly SementeIdea[], turn: number) {
+  const topics = [...sementeTopics].slice(0, 20).join(", ");
+  const offered: string[] = [];
+  for (const idea of fits) {
+    if (idea.comandante?.decision === "rejected" || sementeNudgeRejected.has(idea.id)) continue;
+    const ruling = await comandanteReview($, { source: "semente", text: idea.text, context: `The recent work touched: ${topics}`, nudge: true }, undefined, idea.id);
+    if (turn !== sementeTurn) return;
+    if (ruling?.decision === "rejected") {
+      sementeNudgeRejected.add(idea.id);
+      continue;
+    }
+    if (ruling) sementeNudgeRulings.set(idea.id, { decision: ruling.decision, reason: ruling.reason });
+    offered.push(idea.id);
+  }
+  await update($, sementeNudges, () => offered);
 }
 async function sementeAbove($: EngineInterface, e: { props: { hasSurvey?: boolean; isWorking?: boolean } }, below: RenderChildren): Promise<RenderChildren> {
   if (e.props.hasSurvey || e.props.isWorking || !(await featureEnabled($, "semente")) || !(await readFeaturePreferences($)).ideaNudges) return below;
@@ -2350,7 +2397,7 @@ async function sementeAbove($: EngineInterface, e: { props: { hasSurvey?: boolea
   const locale = (await getSettings($)).locale;
   const label = text(found.length === 1 ? "feature.semente.fits.one" : "feature.semente.fits.many", locale, { count: found.length });
   // the idea text is cut to the line here; pressing the label opens Semente's pane with every idea whole
-  return <Box flexDirection="column"><Box><Text color={PAINT.brand}>{GLYPH.on} </Text><Button key="semente-open" label={`${label}:`} plain onPress={() => void openFeaturePane($, "semente")} /><Text dimColor wrap="truncate-end"> {found.map((idea) => idea.text).join(" · ")} </Text><Button key="send" label={text("feature.semente.send", locale)} variant="primary" onPress={() => void sendSemente($, found)} /><Button key="dismiss" label={text("feature.semente.dismiss", locale)} role="dismiss" onPress={() => void dismissSemente($, found)} /></Box>{below}</Box>;
+  return <Box flexDirection="column"><Box columnGap={UI_DESIGN.space.xs}>{lineTab(renderElements($, e), castColor("semente"))}<Button key="semente-open" label={`${label}:`} plain onPress={() => void openFeaturePane($, "semente")} /><Text dimColor wrap="truncate-end"> {found.map((idea) => sementeNudgeRulings.get(idea.id)?.decision === "questioned" ? `${GLYPH.ask} ${idea.text}` : idea.text).join(" · ")} </Text><Button key="send" label={text("feature.semente.send", locale)} variant="primary" onPress={() => void sendSemente($, found)} /><Button key="dismiss" label={text("feature.semente.dismiss", locale)} role="dismiss" onPress={() => void dismissSemente($, found)} /></Box>{below}</Box>;
 }
 
 async function lapidaStart($: EngineInterface) {
@@ -2379,7 +2426,7 @@ async function lapidaAbove($: EngineInterface, e: { props: { hasSurvey?: boolean
   const notes = phase === "ready" ? await read($, lapidaChanges) : [];
   const width = Math.max(UI_DESIGN.layout.minCardWidth, (e.props.bodyColumns || UI_DESIGN.layout.viewport.defaultColumns) - UI_DESIGN.space.sm);
   // The node and label, then each button, move whole to the next line on a narrow band instead of being squeezed.
-  return <Box flexDirection="column"><Box flexDirection="row" flexWrap="wrap" columnGap={UI_DESIGN.space.xs}><Box flexDirection="row" columnGap={UI_DESIGN.space.xs}><Text color={PAINT.brand}>{GLYPH.on}</Text><Text dimColor wrap="truncate-end">{label}</Text></Box>{!enhancing && <Box flexShrink={0}><Button key="lapida-enhance" label={text("feature.lapida.enhance", locale)} hotkey="e" onPress={enhanceDraft} /></Box>}{!enhancing && <Box flexShrink={0}><Button key="lapida-send" label={text("feature.lapida.send", locale)} hotkey="s" onPress={send} /></Box>}</Box>{notes.map((line) => <Text key={line} dimColor wrap="truncate-end">{`+ ${line}`.slice(0, width)}</Text>)}{below}</Box>;
+  return <Box flexDirection="column"><Box flexDirection="row" flexWrap="wrap" columnGap={UI_DESIGN.space.xs}><Box flexDirection="row" columnGap={UI_DESIGN.space.xs}>{lineTab(renderElements($, e), castColor("lapida"))}<Text dimColor wrap="truncate-end">{label}</Text></Box>{!enhancing && <Box flexShrink={0}><Button key="lapida-enhance" label={text("feature.lapida.enhance", locale)} hotkey="e" onPress={enhanceDraft} /></Box>}{!enhancing && <Box flexShrink={0}><Button key="lapida-send" label={text("feature.lapida.send", locale)} hotkey="s" onPress={send} /></Box>}</Box>{notes.map((line) => <Text key={line} dimColor wrap="truncate-end">{`+ ${line}`.slice(0, width)}</Text>)}{below}</Box>;
 }
 
 type PrismaQuestionInput = { question: string; header: string; multiSelect?: boolean; options?: { label: string; description?: string; preview?: string }[] };
@@ -2564,7 +2611,7 @@ async function sentinelaAbove($: EngineInterface, e: { props: { hasSurvey?: bool
   const { Box, Button, Text } = renderElements($, e);
   const locale = (await getSettings($)).locale;
   // Each part moves whole to the next line on a narrow band: the button is never split from its node or cut.
-  return <Box flexDirection="column"><Box flexDirection="row" flexWrap="wrap" columnGap={UI_DESIGN.space.sm}><Box flexDirection="row" flexShrink={0} columnGap={UI_DESIGN.space.xs}><Text color={PAINT.brand}>{GLYPH.on}</Text><Button key="sessions" label={text("feature.sentinela.sessions", locale)} onPress={() => void toggleSentinela($)} /></Box><Box flexShrink={0}><Text color="error">{GLYPH.ask} {text("feature.sentinela.band.waiting", locale, { count: count("waiting") })}</Text></Box><Box flexShrink={0}><Text color="warning">{GLYPH.on} {text("feature.sentinela.band.working", locale, { count: count("working") })}</Text></Box><Box flexShrink={0}><Text color="success">{GLYPH.ok} {text("feature.sentinela.band.done", locale, { count: count("done") })}</Text></Box></Box>{below}</Box>;
+  return <Box flexDirection="column"><Box flexDirection="row" flexWrap="wrap" columnGap={UI_DESIGN.space.sm}><Box flexDirection="row" flexShrink={0} columnGap={UI_DESIGN.space.xs}>{lineTab(renderElements($, e), castColor("sentinela"))}<Button key="sessions" label={text("feature.sentinela.sessions", locale)} onPress={() => void toggleSentinela($)} /></Box><Box flexShrink={0}><Text color={PAINT.fail}>{GLYPH.ask} {text("feature.sentinela.band.waiting", locale, { count: count("waiting") })}</Text></Box><Box flexShrink={0}><Text color={PAINT.warn}>{GLYPH.on} {text("feature.sentinela.band.working", locale, { count: count("working") })}</Text></Box><Box flexShrink={0}><Text color={PAINT.ok}>{GLYPH.ok} {text("feature.sentinela.band.done", locale, { count: count("done") })}</Text></Box></Box>{below}</Box>;
 }
 
 async function ensureVigia($: EngineInterface) {
@@ -2700,7 +2747,7 @@ async function vigiaReceive($: EngineInterface, e: SessionReceiveInput): Promise
   // With the Comandante on, a message is judged first: rejected is held from Claude, questioned reaches it with the
   // question shown here. A clash notice is Vigia's own and goes through.
   const ruling = letter.kind === "message" ? await comandanteReview($, { source: "vigia", text: letter.text, context: `Sent by the session "${received.peer}".` }) : undefined;
-  const item: VigiaMail = ruling ? { ...received, comandante: { decision: ruling.decision, reason: ruling.reason } } : received;
+  const item: VigiaMail = ruling ? { ...received, comandante: { decision: ruling.decision, reason: ruling.reason, record: ruling.record } } : received;
   if (ruling?.decision !== "rejected") vigiaPending = [...vigiaPending, item].slice(-VIGIA_MAIL_KEEP);
   await update($, vigiaMail, (mail) => [item, ...mail].slice(0, VIGIA_MAIL_KEEP));
   const locale = (await getSettings($)).locale;
@@ -2711,6 +2758,22 @@ async function vigiaReceive($: EngineInterface, e: SessionReceiveInput): Promise
   $.ui.toast(shown, { timeoutMs: 10000 });
   await log($, "mod", "feature", letter.kind === "clash" || ruling?.decision === "rejected" ? "warn" : "info", shown);
   return "Vigia";
+}
+/**
+ * The person lets a message the Comandante held through: it joins the inbox and reaches Claude as any delivered
+ * message does, with its next tool result or prompt. The ruling stays on the message; the pane shows who released it,
+ * and so does the Comandante tab, on the ruling's record.
+ */
+async function releaseVigia($: EngineInterface, id: string) {
+  const item = (await read($, vigiaMail)).find((one) => one.id === id);
+  if (!item || item.isReleased || item.comandante?.decision !== "rejected") return;
+  const released: VigiaMail = { ...item, isReleased: true };
+  vigiaPending = [...vigiaPending, released].slice(-VIGIA_MAIL_KEEP);
+  await update($, vigiaMail, (mail) => mail.map((one) => (one.id === id ? released : one)));
+  if (item.comandante.record) await noteComandanteRelease($, item.comandante.record).catch(() => undefined);
+  const said = text("feature.vigia.msg.releasedToast", (await getSettings($)).locale, { session: item.peer });
+  $.ui.toast(said, { timeoutMs: 8000 });
+  await log($, "mod", "feature", "info", said);
 }
 /** What arrived since the model last read, as one note; emptied once it rides along. */
 async function vigiaTakeInbox($: EngineInterface): Promise<string | undefined> {
@@ -2776,8 +2839,8 @@ async function vigiaAbove($: EngineInterface, e: { props: { hasSurvey?: boolean 
   const locale = (await getSettings($)).locale;
   const collapsed = await read($, vigiaCollapsed);
   const toggle = <Button key="vigia-toggle" label={text(collapsed ? "feature.vigia.show" : "feature.vigia.hide", locale)} plain dimColor onPress={async () => { const value = !await read($, vigiaCollapsed); await update($, vigiaCollapsed, () => value); await $.store.set("vigia:collapsed", value); }} />;
-  if (collapsed) return <Box flexDirection="column"><Box gap={1}><Text color={PAINT.brand}>{GLYPH.on}</Text><Text dimColor>{text(others.length === 1 ? "feature.vigia.others.one" : "feature.vigia.others.many", locale, { count: others.length })} ·</Text>{conflicts.length > 0 && <Text color="error">! {text(conflicts.length === 1 ? "feature.vigia.clashes.one" : "feature.vigia.clashes.many", locale, { count: conflicts.length })} ·</Text>}{toggle}</Box>{below}</Box>;
-  return <Box flexDirection="column"><Box flexDirection="column"><Box gap={1}><Text color={PAINT.brand}>{GLYPH.on}</Text><Text dimColor>{text("feature.vigia.title", locale)}</Text>{toggle}</Box>{conflicts.slice(0, 2).map((conflict) => <Text key={`${conflict.other.id}-${conflict.file}`} color="error" wrap="truncate">  ! {text("feature.vigia.clash", locale)}: {conflict.file} · {vigiaName(conflict.other)} · {formatAge(now - conflict.at, locale)}</Text>)}{others.slice(0, 3).map((record) => <Box key={record.id} flexDirection="column" paddingLeft={2}><Text wrap="truncate"><Text color={record.isBusy ? "warning" : "success"}>{record.isBusy ? `${GLYPH.on} ` : "◐ "}</Text><Text bold>{vigiaName(record)}</Text><Text dimColor> · {text(record.isBusy ? "feature.vigia.working" : "feature.vigia.waiting", locale)}</Text></Text>{(vigiaDoing(record) ?? record.lastPrompt) && <Text wrap="truncate">{GLYPH.branch} {vigiaDoing(record) ?? record.lastPrompt}{vigiaNext(record) ? ` → ${vigiaNext(record)}` : ""}</Text>}</Box>)}</Box>{below}</Box>;
+  if (collapsed) return <Box flexDirection="column"><Box gap={1}>{lineTab(renderElements($, e), castColor("vigia"))}<Text dimColor>{text(others.length === 1 ? "feature.vigia.others.one" : "feature.vigia.others.many", locale, { count: others.length })} ·</Text>{conflicts.length > 0 && <Text color={PAINT.fail}>! {text(conflicts.length === 1 ? "feature.vigia.clashes.one" : "feature.vigia.clashes.many", locale, { count: conflicts.length })} ·</Text>}{toggle}</Box>{below}</Box>;
+  return <Box flexDirection="column"><Box flexDirection="column"><Box gap={1}>{lineTab(renderElements($, e), castColor("vigia"))}<Text dimColor>{text("feature.vigia.title", locale)}</Text>{toggle}</Box>{conflicts.slice(0, 2).map((conflict) => <Text key={`${conflict.other.id}-${conflict.file}`} color={PAINT.fail} wrap="truncate">  ! {text("feature.vigia.clash", locale)}: {conflict.file} · {vigiaName(conflict.other)} · {formatAge(now - conflict.at, locale)}</Text>)}{others.slice(0, 3).map((record) => <Box key={record.id} flexDirection="column" paddingLeft={2}><Text wrap="truncate"><Text color={record.isBusy ? PAINT.warn : PAINT.ok}>{record.isBusy ? `${GLYPH.run} ` : `${GLYPH.ask} `}</Text><Text bold>{vigiaName(record)}</Text><Text dimColor> · {text(record.isBusy ? "feature.vigia.working" : "feature.vigia.waiting", locale)}</Text></Text>{(vigiaDoing(record) ?? record.lastPrompt) && <Text wrap="truncate">{GLYPH.branch} {vigiaDoing(record) ?? record.lastPrompt}{vigiaNext(record) ? ` → ${vigiaNext(record)}` : ""}</Text>}</Box>)}</Box>{below}</Box>;
 }
 
 // Code Quality: after a turn in which Claude changed code, an agent of Pingo's own reviews the pending changes against
@@ -2788,6 +2851,10 @@ const qualityEdited = new Set<string>();
 /** The running cycle's agent, once its spawn answered with an id. */
 let qualityAgentId: string | undefined;
 let qualityRegistered = false;
+/** The helpers cycle agents started, by the ids their spawns answered: their calls stay gated for as long as they live. */
+const qualityHelpers = new Set<string>();
+/** How many helpers the running cycle has started. */
+let qualityHelpersStarted = 0;
 
 /**
  * Defines the agent type, hidden from the model (agent.offer): only Pingo starts it. Answers why the host refused it,
@@ -2802,8 +2869,8 @@ async function qualityStart($: EngineInterface): Promise<string | undefined> {
     model: CLAUDE_MODEL.SONNET.name,
     maxTurns: QUALITY_MAX_TURNS,
     background: true,
-    // it runs unattended: no question to the person, no new files, no agents of its own
-    disallowedTools: ["AskUserQuestion", "Agent", "Write", "NotebookEdit"],
+    // it runs unattended: no question to the person, no new files; the helpers it starts are gated as it is
+    disallowedTools: ["AskUserQuestion", "Write", "NotebookEdit"],
   }).then(() => { qualityRegistered = true; return undefined; }, errorMessage);
 }
 
@@ -2827,6 +2894,10 @@ async function startQuality($: EngineInterface): Promise<void> {
   });
   if (!started) return;
   qualityEdited.clear();
+  qualityHelpersStarted = 0;
+  // helpers still at work stay gated; the ones that ended are forgotten
+  const agents = await $.agent.list().catch(() => undefined);
+  if (agents) for (const id of qualityHelpers) if (!agents.some((agent) => agent.id === id && (agent.status === "running" || agent.status === "pending"))) qualityHelpers.delete(id);
   const refused = await qualityStart($);
   const spawned = refused === undefined
     ? await $.agent.spawn({ subagentType: QUALITY_TYPE, prompt: qualityRequest(files, locale), description: text("feature.codeQuality.name", locale) }).catch((error: unknown) => ({ deny: errorMessage(error) }))
@@ -2856,9 +2927,21 @@ async function qualityAlive($: EngineInterface): Promise<boolean> {
   return !list || list.some((agent) => (agent.id === qualityAgentId || agent.type === QUALITY_TYPE) && (agent.status === "running" || agent.status === "pending"));
 }
 
-/** Whether a call runs in the cycle agent's loop: looked up only while a cycle runs, so other subagents cost nothing. */
-async function inQualityLoop($: EngineInterface, id: string): Promise<boolean> {
-  return (await read($, qualityCycles))[0]?.state === "running" && isQualityAgent($, id);
+/**
+ * Whose loop a call runs in: the cycle agent's, a helper's it started, or neither. A known helper is one whatever the
+ * cycle's state; anything else is looked up only while a cycle runs, so other subagents cost nothing. A helper's first
+ * calls may come before its spawn answered: the session's agent list then leads from it up to the cycle agent.
+ */
+async function qualityRole($: EngineInterface, id: string): Promise<QualityRole | undefined> {
+  if (qualityHelpers.has(id)) return "helper";
+  if ((await read($, qualityCycles))[0]?.state !== "running") return undefined;
+  if (id === qualityAgentId) return "cycle";
+  const agents = new Map((await $.agent.list().catch(() => [])).map((agent) => [agent.id, agent]));
+  if (agents.get(id)?.type === QUALITY_TYPE) return "cycle";
+  for (let parent = agents.get(id)?.parentId, hops = 0; parent && hops < agents.size; parent = agents.get(parent)?.parentId, hops++) {
+    if (parent === qualityAgentId || qualityHelpers.has(parent) || agents.get(parent)?.type === QUALITY_TYPE) return "helper";
+  }
+  return undefined;
 }
 
 /** A subagent's turn ended: when it was the running cycle's agent, its report goes on the tab. */
@@ -2904,16 +2987,44 @@ async function comandanteOwn($: EngineInterface, own: VigiaSession, dir: string)
   return records;
 }
 
-/** Every session's decisions, read again from their files: the tab's log. A file still being written waits for the next read. */
-async function refreshComandante($: EngineInterface) {
+/** The other sessions' files as last read, by path: one is read again only when its time or size changed. */
+const comandantePeerFiles = new Map<string, { mtimeMs: number; size: number; records: ComandanteRecord[] }>();
+
+/**
+ * Every session's decisions, from their files: the tab's log. Each other session's file is read again only when it
+ * changed; one still being written keeps its last whole read until the next look. `onlyChanged` (the clock's look)
+ * leaves the log alone when no file changed: this session's own decisions reach it the moment they are recorded.
+ */
+async function refreshComandante($: EngineInterface, onlyChanged = false) {
   if (!(await featureEnabled($, "comandante"))) return;
-  comandanteRefreshedAt = await $.clock.now();
   const { own, dir } = await comandanteDir($);
   const lists: ComandanteRecord[][] = [await comandanteOwn($, own, dir).catch(() => [])];
+  const seen = new Set<string>();
+  let changed = !onlyChanged;
   if (await $.fs.exists(dir)) for (const entry of await $.fs.list(dir)) {
     if (entry.kind !== "file" || !entry.name.endsWith(".json") || entry.name === `${own.id}.json`) continue;
-    try { lists.push(comandanteRecords(JSON.parse(await $.fs.read(`${dir}/${entry.name}`)))); } catch { /* another session may still be writing its file */ }
+    const path = `${dir}/${entry.name}`;
+    seen.add(path);
+    const kept = comandantePeerFiles.get(path);
+    if (kept && kept.mtimeMs === entry.mtimeMs && kept.size === entry.size) {
+      lists.push(kept.records);
+      continue;
+    }
+    try {
+      const records = comandanteRecords(JSON.parse(await $.fs.read(path)));
+      comandantePeerFiles.set(path, { mtimeMs: entry.mtimeMs, size: entry.size, records });
+      lists.push(records);
+      changed = true;
+    } catch {
+      // another session may still be writing its file
+      if (kept) lists.push(kept.records);
+    }
   }
+  for (const path of comandantePeerFiles.keys()) if (!seen.has(path)) {
+    comandantePeerFiles.delete(path);
+    changed = true;
+  }
+  if (!changed) return;
   const next = mergeComandante(lists);
   if (JSON.stringify(next) !== JSON.stringify(await read($, comandanteLog))) await update($, comandanteLog, () => next);
 }
@@ -2939,8 +3050,11 @@ function comandanteNotice(source: ComandanteAlert["source"], ruling: ComandanteV
   });
 }
 
-/** One decision into the tab's log, the live log and this session's file; a file that cannot be written is said, never thrown. */
-async function recordComandante($: EngineInterface, alert: ComandanteAlert, ruling: ComandanteVerdict, agentId?: string) {
+/**
+ * One decision into the tab's log, the live log and this session's file; a file that cannot be written is said, never
+ * thrown. Returns the record's id.
+ */
+async function recordComandante($: EngineInterface, alert: ComandanteAlert, ruling: ComandanteVerdict, agentId?: string): Promise<string> {
   const { own, dir } = await comandanteDir($);
   const at = await $.clock.now();
   const agent = agentId ? agentRuns.get(agentId)?.type ?? "agent" : undefined;
@@ -2970,17 +3084,37 @@ async function recordComandante($: EngineInterface, alert: ComandanteAlert, ruli
   } catch (error) {
     await log($, "mod", "feature", "warn", text("feature.comandante.saveFailed", locale, { reason: short(errorMessage(error), 160) }));
   }
+  return record.id;
+}
+
+/** The person let a message the Comandante held through to Claude: its record says when, in the tab and this session's file. */
+async function noteComandanteRelease($: EngineInterface, id: string) {
+  const { own, dir } = await comandanteDir($);
+  const at = await $.clock.now();
+  const records = (await comandanteOwn($, own, dir).catch(() => [])).map((one) => (one.id === id ? { ...one, releasedAt: at } : one));
+  const released = records.find((one) => one.id === id);
+  if (!released) return;
+  comandanteMine = { session: own.id, records };
+  // the released copy goes first, so it is the one the merge keeps
+  await update($, comandanteLog, (list) => mergeComandante([[released], list]));
+  try {
+    await $.fs.write(`${dir}/${own.id}.json`, JSON.stringify(records));
+  } catch (error) {
+    await log($, "mod", "feature", "warn", text("feature.comandante.saveFailed", (await getSettings($)).locale, { reason: short(errorMessage(error), 160) }));
+  }
 }
 
 /**
  * The Comandante's verdict on one alert, decided in the session where it arose: Jev picks a verdict from what the
  * user asked last and the items of its kind already recorded, and the decision is kept in this session's file of the
- * project's shared folder, which every session's tab reads. Undefined when the Comandante is off or could not judge
- * (no key, Jev failed, no usable verdict): the caller then does exactly what it does without the Comandante.
- * `judging` names a Farol assumption already recorded that is judged now, so it is not taken for its own repeat.
+ * project's shared folder, which every session's tab reads. Undefined when the Comandante is off, does not watch the
+ * alert's source, or could not judge (no key, Jev failed, no usable verdict): the caller then does exactly what it
+ * does without the Comandante. A source switched off asks Jev nothing and records nothing.
+ * `judging` names a Farol assumption or a Semente idea already recorded that is judged now, so it is not taken for
+ * its own repeat.
  */
-async function comandanteReview($: EngineInterface, alert: ComandanteAlert, agentId?: string, judging?: number): Promise<(ComandanteVerdict & { message: string }) | undefined> {
-  if (!(await featureEnabled($, "comandante"))) return;
+async function comandanteReview($: EngineInterface, alert: ComandanteAlert, agentId?: string, judging?: number | string): Promise<(ComandanteVerdict & { message: string; record: string }) | undefined> {
+  if (!(await comandanteWatches($, alert.source))) return;
   const config = await getSettings($);
   const locale = config.locale;
   comandanteAsking++;
@@ -2988,7 +3122,7 @@ async function comandanteReview($: EngineInterface, alert: ComandanteAlert, agen
   try {
     if (!config.apiKey) throw new Error(text("feature.comandante.noKey", locale));
     const known = alert.source === "semente"
-      ? (await read($, sementeIdeas)).map((idea) => idea.text)
+      ? (await read($, sementeIdeas)).filter((idea) => idea.id !== judging).map((idea) => idea.text)
       : alert.source === "farol"
         ? [...(await read($, farolRules)).map((rule) => `${rule.correction} (not: ${rule.assumption})`), ...(await read($, farolItems)).filter((item) => item.id !== judging).map((item) => item.text)]
         : [];
@@ -2996,8 +3130,8 @@ async function comandanteReview($: EngineInterface, alert: ComandanteAlert, agen
     const ask = tracedAskJev($, config, { origin: "comandante", trigger: alert.source, ...(agentId ? { agentId } : {}) });
     const ruling = comandanteVerdict(await ask({ model: config.jevModel, ...comandanteRequest(alert, request, known) }));
     if (!ruling) throw new Error(text("feature.comandante.noVerdict", locale));
-    await recordComandante($, alert, ruling, agentId);
-    return { ...ruling, message: comandanteMessage(alert.source, ruling, locale) };
+    const record = await recordComandante($, alert, ruling, agentId);
+    return { ...ruling, message: comandanteMessage(alert.source, ruling, locale), record };
   } catch (error) {
     await log($, "mod", "feature", "warn", text("feature.comandante.skipped", locale, { reason: short(errorMessage(error), 160) })).catch(() => undefined);
     return;
@@ -3007,51 +3141,113 @@ async function comandanteReview($: EngineInterface, alert: ComandanteAlert, agen
   }
 }
 
-/** `/comandante` opens its tab; the session's own decisions and the others' are read once at the start. */
+/**
+ * `/comandante` opens its tab; the session's own decisions and the others' are read once at the start, and what
+ * waits unjudged from before (the project's open assumptions, its saved ideas) is judged now.
+ */
 async function registerComandante($: EngineInterface) {
   await $.command.register({ name: "comandante", description: text("feature.comandante.command", (await getSettings($)).locale) });
   await refreshComandante($);
+  void comandanteCatchUp($).catch(() => undefined);
 }
 
 /**
- * While the Jev pane is on screen with the Comandante tab open, the other sessions' decisions are read again at the
- * monitor's interval. The pane's own one-second clock calls it: the Comandante adds no clock of its own.
+ * While the Jev pane is on screen with the Comandante tab open, the other sessions' files are looked at on each beat
+ * of the pane's one-second clock, and only one that changed is read again: a decision another session records shows
+ * within a second. The Comandante adds no clock of its own.
  */
-async function comandanteTick($: EngineInterface, now: number) {
-  // the switches and preferences come from the copies the clock keeps: switched off, it reads nothing more
-  const { flags, preferences } = await tickSwitches($);
-  if (!flags.comandante || now - comandanteRefreshedAt < preferences.monitorEveryMs || (await read($, tab)) !== "comandante") return;
-  await refreshComandante($);
+async function comandanteTick($: EngineInterface) {
+  // the switches come from the copies the clock keeps: switched off, it reads nothing more
+  const { flags } = await tickSwitches($);
+  if (!flags.comandante || (await read($, tab)) !== "comandante") return;
+  await refreshComandante($, true);
 }
 
-/** Farol assumptions the backlog already put to Jev in this run: one Jev could not judge is not asked again at every beat. */
-const farolBacklogTried = new Set<number>();
-let farolBacklogAt = 0;
-let farolBacklogBusy = false;
+/** Whether the Comandante judges this source's alerts now: its switch is on, and so is the source's in its list. */
+async function comandanteWatches($: EngineInterface, source: ComandanteSource): Promise<boolean> {
+  return (await featureEnabled($, "comandante")) && (await readFeaturePreferences($)).comandanteSources[source];
+}
 
 /**
- * A Farol assumption still open that the Comandante never judged (raised while it was off, or when Jev could not
- * answer) is judged once, the oldest first and one at a time: approved is marked right and told to Claude with its
- * next step, as the person's ✓ is; rejected or questioned stays open for the person, with the ruling beside it.
- * The pane's one-second clock calls it at the monitor's interval; switched off, it reads nothing.
+ * Items already put to Jev in this run, as `<source>:<id>`: judged when they arrived or by the catch-up, they are never
+ * asked again, even when Jev could not answer.
  */
-async function farolBacklogTick($: EngineInterface, now: number) {
-  const { flags, preferences } = await tickSwitches($);
-  if (!flags.comandante || !flags.farol || farolBacklogBusy || now - farolBacklogAt < preferences.monitorEveryMs) return;
-  farolBacklogAt = now;
-  const item = (await read($, farolItems)).find((one) => one.verdict === "open" && !one.comandante && !farolBacklogTried.has(one.id));
-  if (!item) return;
-  farolBacklogBusy = true;
-  farolBacklogTried.add(item.id);
+const comandanteTried = new Set<string>();
+let comandanteDraining = false;
+let comandanteDrainAgain = false;
+
+/** One item still waiting for a verdict: its alert, and what the ruling changes on it. */
+type ComandanteWaiting = { key: string; alert: ComandanteAlert; judging?: number | string; apply: (ruling: ComandanteRuling) => Promise<void> };
+
+/**
+ * The oldest item still waiting in a source the Comandante watches: open, without a ruling, and never put to Jev.
+ * A Farol assumption approved is marked right and told to Claude with its next step, as the person's ✓ is; rejected
+ * or questioned, it stays open for the person with the ruling beside it. A Semente idea stays on the shelf whatever
+ * the ruling, shown beside it: only the person removes a saved idea. A Clareza plan rejected is dropped, as when
+ * judged on arrival; otherwise it waits for the person with the ruling. Each change leaves alone what the person
+ * decided meanwhile.
+ */
+async function comandanteNext($: EngineInterface): Promise<ComandanteWaiting | undefined> {
+  const flags = await read($, features);
+  if (!flags.comandante) return;
+  const { comandanteSources: watched } = await readFeaturePreferences($);
+  if (flags.farol && watched.farol) {
+    const item = (await read($, farolItems)).find((one) => one.verdict === "open" && !one.comandante && !comandanteTried.has(`farol:${one.id}`));
+    if (item) return {
+      key: `farol:${item.id}`,
+      alert: { source: "farol", text: item.text, ...(item.context ? { context: item.context } : {}) },
+      judging: item.id,
+      apply: async (comandante) => {
+        await update($, farolItems, (list) => list.map((one) => one.id !== item.id || one.verdict !== "open" ? one
+          : comandante.decision === "approved" ? { ...one, comandante, verdict: "right" as const, sent: false } : { ...one, comandante }));
+      },
+    };
+  }
+  if (flags.semente && watched.semente) {
+    const idea = (await read($, sementeIdeas)).find((one) => !one.comandante && !comandanteTried.has(`semente:${one.id}`));
+    if (idea) return {
+      key: `semente:${idea.id}`,
+      alert: { source: "semente", text: idea.text },
+      judging: idea.id,
+      apply: (comandante) => saveSemente($, (list) => list.map((one) => (one.id === idea.id ? { ...one, comandante } : one))),
+    };
+  }
+  if (flags.clareza && watched.clareza) {
+    const plan = await read($, clarezaProposal);
+    if (plan && !plan.comandante && !comandanteTried.has(`clareza:${plan.at}`)) return {
+      key: `clareza:${plan.at}`,
+      alert: { source: "clareza", text: plan.problems.join("; ") || text("feature.clareza.unclear", (await getSettings($)).locale), context: plan.prompt },
+      apply: async (comandante) => {
+        await update($, clarezaProposal, (current) => current?.at !== plan.at ? current : comandante.decision === "rejected" ? null : { ...current, comandante });
+      },
+    };
+  }
+}
+
+/**
+ * Judges every item still waiting in the sources the Comandante watches, one at a time and the oldest first. It runs
+ * the moment that set may grow: the Comandante or a source switched on, the person saving an idea, the session or the
+ * project opening. A call while it runs makes it look once more at the end. Without a key it asks nothing and marks
+ * nothing: the items wait. Switched off, it reads nothing more.
+ */
+async function comandanteCatchUp($: EngineInterface): Promise<void> {
+  if (comandanteDraining) {
+    comandanteDrainAgain = true;
+    return;
+  }
+  comandanteDraining = true;
   try {
-    const ruling = await comandanteReview($, { source: "farol", text: item.text, ...(item.context ? { context: item.context } : {}) }, undefined, item.id);
-    if (!ruling) return;
-    const comandante: ComandanteRuling = { decision: ruling.decision, reason: ruling.reason };
-    // the person may have judged it meanwhile: their verdict stands
-    await update($, farolItems, (list) => list.map((one) => one.id !== item.id || one.verdict !== "open" ? one
-      : ruling.decision === "approved" ? { ...one, comandante, verdict: "right" as const, sent: false } : { ...one, comandante }));
+    if (!(await featureEnabled($, "comandante")) || !(await getSettings($)).apiKey) return;
+    do {
+      comandanteDrainAgain = false;
+      for (let item = await comandanteNext($); item; item = await comandanteNext($)) {
+        comandanteTried.add(item.key);
+        const ruling = await comandanteReview($, item.alert, undefined, item.judging);
+        if (ruling) await item.apply({ decision: ruling.decision, reason: ruling.reason });
+      }
+    } while (comandanteDrainAgain);
   } finally {
-    farolBacklogBusy = false;
+    comandanteDraining = false;
   }
 }
 
@@ -3091,6 +3287,9 @@ async function openPane($: EngineInterface, which: JevTab): Promise<void> {
   await update($, tab, () => which);
   await $.ui.open({ id: PANE, title: "Jev", focus: true });
 }
+
+/** The columns a pane's body has, as the host reports them, or the panel's default: the width of its cards. */
+const paneColumns = (e: { props: { bodyColumns?: number } }) => Math.max(UI_DESIGN.layout.minCardWidth, e.props.bodyColumns ?? UI_DESIGN.layout.viewport.panelColumns);
 
 /** Opens a feature's own pane, where what its mascot says is shown whole, with its choices. */
 async function openFeaturePane($: EngineInterface, id: SpeakerId): Promise<void> {
@@ -3583,9 +3782,7 @@ export const register: Register = (on, given) => {
       if (tick - deckShownTerminalAt < ON_SCREEN_MS || tick - deckShownDesktopAt < ON_SCREEN_MS || tick - paneShownAt < ON_SCREEN_MS) {
         $.ui.invalidate("ui.render");
       }
-      if (tick - paneShownAt < ON_SCREEN_MS) await comandanteTick($, tick).catch(() => undefined);
-      // not awaited: Jev's answer may take longer than a beat, and the backlog asks one at a time
-      void farolBacklogTick($, tick).catch(() => undefined);
+      if (tick - paneShownAt < ON_SCREEN_MS) await comandanteTick($).catch(() => undefined);
     });
     return next(e);
   });
@@ -3604,6 +3801,9 @@ export const register: Register = (on, given) => {
     await reloadSementeIdeas($);
     await refreshSentinela($);
     if (await featureEnabled($, "vigia")) await saveVigia($);
+    // another project's assumptions and ideas: what they hold unjudged is judged now
+    comandanteTried.clear();
+    void comandanteCatchUp($).catch(() => undefined);
     return result;
   }).catch(($, e, next) => next(e));
 
@@ -3641,6 +3841,8 @@ export const register: Register = (on, given) => {
       sessionId = deckSessionId.slice(0, 8);
       await resetPet($, now);
       if (await featureEnabled($, "vigia")) await saveVigia($);
+      comandanteTried.clear();
+      void comandanteCatchUp($).catch(() => undefined);
     }
     return next(e);
   }).catch((_$, e, next) => next(e));
@@ -3675,7 +3877,8 @@ export const register: Register = (on, given) => {
       messageId = id;
       return nextState;
     });
-    // Once it entered (the turn it started has fired turn.start meanwhile) or was refused.
+    // Once it entered or was refused. The engine settles `next` before turn.start fires, so an idle message that
+    // entered stays the next turn's: the run takes it at turn.start.
     const entered = async (result: Awaited<ReturnType<typeof next>>) => {
       const dropped = "drop" in result && typeof result.drop === "string" ? result.drop : undefined;
       // Past `next`, the record is best effort: the engine keeps what `next` settled to (its guard replays it,
@@ -3695,12 +3898,24 @@ export const register: Register = (on, given) => {
     return entered(await next(notes.length ? { ...enriched, context: [...(enriched.context ?? []), ...notes] } : enriched));
   }).catch((_$, e, next) => next(e));
 
+  // The conversation's own rows say where a message went: a prompt row on the main loop means it entered and the next
+  // turn carries it (several queued ones run as one turn); a queued_command delivery means Claude read it inside the
+  // turn it was typed in. A message typed during a turn that neither row names was taken back.
+  on("session.append", { door: "prompt" }, async ($, e, next) => {
+    if (!e.agentId) await updateTrace($, (s) => promptRow(s, rowText(e.message.content))).catch(() => undefined);
+    return next(e);
+  }).catch((_$, e, next) => next(e));
+  on("session.append", { door: "delivery" }, async ($, e, next) => {
+    if (!e.agentId && e.message.name === "queued_command") await updateTrace($, (s) => queuedDelivered(s, rowText(e.message.content))).catch(() => undefined);
+    return next(e);
+  }).catch((_$, e, next) => next(e));
+
   on("turn.start", async ($, e, next) => {
     const locale = (await getSettings($)).locale;
     if (e.text.trim()) await log($, "you", "turn", "info", short(e.text, 600));
     else await log($, "you", "turn", "muted", text("feed.request.continues", locale), undefined, { minor: true });
     await setLive($, { activity: text("feed.activity.waiting", locale) });
-    // The run opens here, tied to the idle message whose submission is still entering, if any.
+    // The run opens here, carrying the messages whose prompt rows entered, else the idle message submitted last.
     const at = await $.clock.now();
     await updateTrace($, (s) => startTurn(s, e.turnId, e.text, at));
     turnStarted(deckOf(at), e.text, at, locale);
@@ -3830,7 +4045,7 @@ export const register: Register = (on, given) => {
     try {
       if (trackedEdit) sementeFileEdited(trackedEdit, result.deny === undefined && !result.isError);
       if (trackedEdit && result.deny === undefined && !result.isError) orch.noteEdit(e.agentId, trackedEdit);
-      if (trackedEdit && result.deny === undefined && !result.isError && (!e.agentId || (agentRuns.has(e.agentId) && !(await isQualityAgent($, e.agentId))))) qualityEdited.add(trackedEdit);
+      if (trackedEdit && result.deny === undefined && !result.isError && (!e.agentId || (agentRuns.has(e.agentId) && !qualityHelpers.has(e.agentId) && !(await isQualityAgent($, e.agentId))))) qualityEdited.add(trackedEdit);
       // A subagent's mandatory review verdict reaches its parent with the Agent tool's result.
       const reviewNote = e.tool === "Agent" && result.deny === undefined
         ? await orch.agentToolNote(orchIo($), e.tool_use_id, resultText(result.result)).catch(() => undefined)
@@ -3896,6 +4111,18 @@ export const register: Register = (on, given) => {
   on("agent.spawn", async ($, e, next) => {
     // Code Quality's own agent: its model is set where it is registered, and its tab follows it
     if (e.subagentType === QUALITY_TYPE) return next(e);
+    // A helper the cycle agent starts: refused past the cycle's limits, else run in the foreground with the cycle's
+    // rules ahead of its job, on the model its type or its parent runs on (it cannot ask for a dearer one), and gated
+    // as its parent is; like it, left out of planning and the Agents tab
+    const qualityParent = e.parentAgentId ? await qualityRole($, e.parentAgentId) : undefined;
+    if (qualityParent) {
+      const refused = qualityHelperRefusal(qualityHelpersStarted, qualityParent, e);
+      if (refused !== undefined) return { deny: refused };
+      qualityHelpersStarted += 1;
+      const result = await next({ ...e, prompt: qualityHelperBrief(e.prompt), background: false, model: undefined });
+      if (result.agentId) qualityHelpers.add(result.agentId);
+      return result;
+    }
     if (e.workflow) {
       // Not planned and not on the Agents tab, but still a subagent of the run.
       const result = await next(e);
@@ -4141,11 +4368,14 @@ export const register: Register = (on, given) => {
     const context = typeof input.context === "string" && input.context.trim() ? input.context.trim() : undefined;
     // With the Comandante on, Jev judges it first: rejected is denied, questioned goes back unrecorded, approved is
     // recorded already confirmed. Off, or unable to judge, it is recorded open, as always.
-    const ruling = await comandanteReview($, { source: "farol", text: assumption, ...(context ? { context } : {}) }, (e as { agentId?: string }).agentId);
+    const watched = await comandanteWatches($, "farol");
+    const ruling = watched ? await comandanteReview($, { source: "farol", text: assumption, ...(context ? { context } : {}) }, (e as { agentId?: string }).agentId) : undefined;
     if (ruling?.decision === "rejected") return { deny: ruling.message };
     if (ruling?.decision === "questioned") return { result: ruling.message };
     let id = 0;
     await update($, farolSeq, (value) => (id = value + 1));
+    // put to Jev already: the catch-up never asks again about one Jev could not judge
+    if (watched && !ruling) comandanteTried.add(`farol:${id}`);
     const item: FarolAssumption = { id, text: assumption, ...(context ? { context } : {}), verdict: ruling ? "right" : "open", sent: Boolean(ruling), ...(ruling ? { comandante: { decision: ruling.decision, reason: ruling.reason } } : {}) };
     await update($, farolItems, (list) => [...list, item]);
     return { result: ruling ? `${text("feature.farol.recorded", locale, { id })} ${ruling.message}` : text("feature.farol.recorded", locale, { id }) };
@@ -4171,11 +4401,14 @@ export const register: Register = (on, given) => {
     const input = e as unknown as { text?: unknown };
     const value = typeof input.text === "string" ? input.text.trim() : "";
     if (!value) return { deny: "Semente needs a non-empty idea." };
-    // With the Comandante on, Jev judges it first: rejected is denied, questioned goes back unsaved, approved is shelved.
-    const ruling = await comandanteReview($, { source: "semente", text: value }, (e as { agentId?: string }).agentId);
+    // With the Comandante on, Jev judges it first: rejected is denied, questioned goes back unsaved, approved is shelved
+    // with its ruling, so the catch-up does not judge it again.
+    const watched = await comandanteWatches($, "semente");
+    const ruling = watched ? await comandanteReview($, { source: "semente", text: value }, (e as { agentId?: string }).agentId) : undefined;
     if (ruling?.decision === "rejected") return { deny: ruling.message };
     if (ruling?.decision === "questioned") return { result: ruling.message };
-    const id = await addSemente($, value, "claude");
+    const id = await addSemente($, value, "claude", ruling ? { decision: ruling.decision, reason: ruling.reason } : undefined);
+    if (watched && !ruling) comandanteTried.add(`semente:${id}`);
     sementeShelvedThisTurn.add(id);
     $.ui.toast(text("feature.semente.claudeSaved", locale, { idea: value }));
     return { result: ruling ? `${text("feature.semente.shelved", locale, { idea: value })} ${ruling.message}` : text("feature.semente.shelved", locale, { idea: value }) };
@@ -4366,17 +4599,17 @@ export const register: Register = (on, given) => {
     const rules = await read($, farolRules);
     const newest = [...list].reverse().find((item) => item.verdict === "open");
     if (!list.length && !rules.length) return <Text dimColor>{text("feature.farol.none", locale)}</Text>;
+    const width = paneColumns(e);
     return <Box flexDirection="column" gap={1}>
-      <Text bold>{text("feature.farol.summary", locale, { assumptions: list.length, rules: rules.length })}</Text>
-      {rules.map((rule, i) => <Box key={`rule-${i}`}><Text>• {rule.correction} <Text dimColor>({text("feature.farol.rule.not", locale)}: {rule.assumption})</Text></Text><Button key={`delete-rule-${i}`} label={text("feature.farol.delete", locale)} dimColor onPress={() => void saveFarolRules($, (all) => all.filter((item) => item !== rule))} /></Box>)}
+      {featureHead(ui, "Farol", castColor("farol"), text("feature.farol.summary", locale, { assumptions: list.length, rules: rules.length }))}
+      {rules.length > 0 && sheetCard(ui, text(rules.length === 1 ? "feature.farol.rules.one" : "feature.farol.rules.many", locale, { count: rules.length }), rules.map((rule, i) => <Box key={`rule-${i}`}><Text>{GLYPH.leader} {rule.correction} <Text dimColor>({text("feature.farol.rule.not", locale)}: {rule.assumption})</Text></Text><Button key={`delete-rule-${i}`} label={text("feature.farol.delete", locale)} dimColor onPress={() => void saveFarolRules($, (all) => all.filter((item) => item !== rule))} /></Box>), { width, rule: hex(castColor("farol")) })}
       <Text dimColor>{text("feature.farol.hint", locale)}</Text>
-      {[...list].reverse().map((item) => <Box key={`assumption-${item.id}`} flexDirection="column">
-        <Text bold>{item.verdict === "right" ? GLYPH.ok : item.verdict === "wrong" ? "✗" : GLYPH.ask} #{item.id} {item.text}</Text>
-        {item.context && <Text dimColor>{item.context}</Text>}{item.note && <Text>→ {item.note}</Text>}
-        {item.comandante && item.comandante.decision !== "approved" && <Text dimColor wrap="wrap">{farolRuling(item.comandante, locale)}</Text>}
-        <Box flexDirection="row" gap={1}><Button key={`right-${item.id}`} label={`${GLYPH.ok} ${text("feature.farol.right", locale)}`} hotkey={item === newest ? "y" : undefined} onPress={() => void farolJudge($, item.id, "right")} /><Button key={`wrong-${item.id}`} label={`✗ ${text("feature.farol.wrong", locale)}`} hotkey={item === newest ? "n" : undefined} onPress={() => void farolJudge($, item.id, "wrong", item.note)} />{item.verdict !== "open" && <Text dimColor>{text(!item.sent ? "feature.farol.pending" : item.comandante?.decision === "approved" && item.verdict === "right" ? "feature.farol.byComandante" : "feature.farol.sent", locale)}</Text>}</Box>
-        {Input && item.verdict !== "right" && <Input key={`fix-${item.id}`} placeholder={text("feature.farol.fix", locale)} value={item.note ?? ""} onSubmit={(value) => { if (value.trim()) void farolJudge($, item.id, "wrong", value.trim()); }} />}
-      </Box>)}
+      {[...list].reverse().map((item) => <Box key={`assumption-${item.id}`} flexDirection="column">{sheetCard(ui, `#${item.id} ${item.text}`, [
+        item.context ? <Text dimColor wrap="wrap">{item.context}</Text> : null, item.note ? <Text wrap="wrap">{GLYPH.route} {item.note}</Text> : null,
+        item.comandante && item.comandante.decision !== "approved" ? <Text dimColor wrap="wrap">{rulingLine(item.comandante, locale)}</Text> : null,
+        <Box flexDirection="row" gap={1}><Button key={`right-${item.id}`} label={`${GLYPH.ok} ${text("feature.farol.right", locale)}`} hotkey={item === newest ? "y" : undefined} onPress={() => void farolJudge($, item.id, "right")} /><Button key={`wrong-${item.id}`} label={`✗ ${text("feature.farol.wrong", locale)}`} hotkey={item === newest ? "n" : undefined} onPress={() => void farolJudge($, item.id, "wrong", item.note)} />{item.verdict !== "open" && <Text dimColor>{text(!item.sent ? "feature.farol.pending" : item.comandante?.decision === "approved" && item.verdict === "right" ? "feature.farol.byComandante" : "feature.farol.sent", locale)}</Text>}</Box>,
+        Input && item.verdict !== "right" ? <Input key={`fix-${item.id}`} placeholder={text("feature.farol.fix", locale)} value={item.note ?? ""} onSubmit={(value) => { if (value.trim()) void farolJudge($, item.id, "wrong", value.trim()); }} /> : null,
+      ], { width, glyph: item.verdict === "right" ? GLYPH.ok : item.verdict === "wrong" ? "✗" : GLYPH.ask, rule: item.verdict === "right" ? PAINT.ok : item.verdict === "wrong" ? PAINT.fail : PAINT.warn })}</Box>)}
       {list.some((item) => item.sent) && <Button key="clear-reviewed" label={text("feature.farol.clear", locale)} dimColor onPress={() => void update($, farolItems, (all) => all.filter((item) => item.verdict === "open" || !item.sent))} />}
     </Box>;
   });
@@ -4392,18 +4625,14 @@ export const register: Register = (on, given) => {
     const status = await read($, clarezaStatus);
     const offered = grade?.offered ?? [];
     const terms = offered.length ? <Box flexDirection="row" flexWrap="wrap" columnGap={1}><Text dimColor>{text("feature.clareza.know", locale)}</Text>{offered.map((term) => <Button key={`clareza-pane-${term}`} label={term} dimColor onPress={() => void knowClarezaTerm($, term)} />)}</Box> : null;
-    if (!plan) return <Box flexDirection="column" gap={1}><Text dimColor>{text("feature.clareza.noPlan", locale)}</Text>{status && <Text dimColor>{status}</Text>}{terms}</Box>;
+    const ui = $.ui.resolve(e);
+    if (!plan) return <Box flexDirection="column" gap={1}>{featureHead(ui, "Clareza", castColor("clareza"))}<Text dimColor>{text("feature.clareza.noPlan", locale)}</Text>{status && <Text dimColor>{status}</Text>}{terms}</Box>;
     const problems = plan.problems.length ? plan.problems : [text("feature.clareza.unclear", locale)];
+    const width = paneColumns(e);
     return <Box flexDirection="column" gap={1}>
-      <Text bold>{text("feature.clareza.plan.title", locale)}</Text>
-      <Box flexDirection="column">
-        <Text dimColor>{text("feature.clareza.plan.problems", locale)}</Text>
-        {problems.map((problem, i) => <Text key={`clareza-problem-${i}`}>• {problem}</Text>)}
-      </Box>
-      <Box flexDirection="column">
-        <Text dimColor>{text("feature.clareza.plan.request", locale)}</Text>
-        <Text>{plan.prompt}</Text>
-      </Box>
+      {featureHead(ui, "Clareza", castColor("clareza"), text("feature.clareza.plan.title", locale))}
+      {sheetCard(ui, text("feature.clareza.plan.problems", locale), problems.map((problem, i) => <Text key={`clareza-problem-${i}`} wrap="wrap">{GLYPH.leader} {problem}</Text>), { width, glyph: GLYPH.warn, rule: PAINT.warn })}
+      {sheetCard(ui, text("feature.clareza.plan.request", locale), <Text wrap="wrap">{plan.prompt}</Text>, { width, rule: hex(castColor("clareza")) })}
       {plan.comandante && <Text dimColor wrap="wrap">{comandanteMessage("clareza", plan.comandante, locale)}</Text>}
       {terms}
       <Box flexDirection="row" gap={1}>
@@ -4423,17 +4652,19 @@ export const register: Register = (on, given) => {
     const nudged = await read($, sementeNudges);
     // the ideas Semente's mascot is saying fit the recent work, first and whole, each to send or dismiss
     const matching = list.filter((idea) => nudged.includes(idea.id));
-    return <Box flexDirection="column">
-      {matching.length > 0 && <Box key="semente-fit" flexDirection="column" marginBottom={1}>
-        <Text bold>{text("feature.semente.fits.title", locale)}</Text>
-        {matching.map((idea) => <Box key={`fit-${idea.id}`} flexDirection="column">
-          <Text>{idea.text}</Text>
+    const width = paneColumns(e);
+    // the Comandante's ruling beside an idea it did not approve: on the nudge, its question; on the shelf, why
+    const ruling = (one: ComandanteRuling | undefined) => one && one.decision !== "approved" ? <Text dimColor wrap="wrap">{`${one.decision === "questioned" ? GLYPH.ask : GLYPH.fail} ${rulingLine(one, locale)}`}</Text> : null;
+    return <Box flexDirection="column" gap={1}>
+      {featureHead(ui, "Semente", castColor("semente"), matching.length ? text(matching.length === 1 ? "feature.semente.fits.one" : "feature.semente.fits.many", locale, { count: matching.length }) : undefined)}
+      {matching.length > 0 && <Box key="semente-fit" flexDirection="column">{sheetCard(ui, text("feature.semente.fits.title", locale), matching.map((idea) => <Box key={`fit-${idea.id}`} flexDirection="column">
+          <Text wrap="wrap">{idea.text}</Text>
+          {ruling(sementeNudgeRulings.get(idea.id))}
           <Box flexDirection="row" gap={1}><Button key={`fit-send-${idea.id}`} label={text("feature.semente.send", locale)} variant="primary" onPress={() => void sendSemente($, [idea])} /><Button key={`fit-dismiss-${idea.id}`} label={text("feature.semente.dismiss", locale)} role="dismiss" onPress={() => void dismissSemente($, [idea])} /></Box>
-        </Box>)}
-      </Box>}
+        </Box>), { width, rule: hex(castColor("semente")) })}</Box>}
       {Input && <Input key="new-idea" label="+ " placeholder={text("feature.semente.new", locale)} submitLabel={text("feature.semente.save", locale)} onSubmit={(value) => { if (value.trim()) void addSemente($, value); }} />}
       {!list.length && <Text dimColor>{text("feature.semente.empty", locale)}</Text>}
-      {list.map((idea) => <Box key={idea.id} flexDirection="row" gap={1}><Button key={`send-${idea.id}`} label={text("feature.semente.send", locale)} onPress={() => void sendSemente($, [idea])} /><Button key={`delete-${idea.id}`} label="×" dimColor onPress={() => void saveSemente($, (all) => all.filter((item) => item.id !== idea.id))} /><Text dimColor>{idea.source === "claude" ? "Claude" : text("feature.semente.you", locale)}:</Text><Text>{idea.text}</Text></Box>)}
+      {list.map((idea) => <Box key={idea.id} flexDirection="column"><Box flexDirection="row" gap={1}><Button key={`send-${idea.id}`} label={text("feature.semente.send", locale)} onPress={() => void sendSemente($, [idea])} /><Button key={`delete-${idea.id}`} label="×" dimColor onPress={() => void saveSemente($, (all) => all.filter((item) => item.id !== idea.id))} /><Text dimColor>{idea.source === "claude" ? "Claude" : text("feature.semente.you", locale)}:</Text><Text>{idea.text}</Text></Box>{ruling(idea.comandante)}</Box>)}
     </Box>;
   });
 
@@ -4462,12 +4693,13 @@ export const register: Register = (on, given) => {
     };
     const prefs = await readFeaturePreferences($);
     return <Box flexDirection="column" gap={1}>
+      {featureHead(ui, "Prisma", castColor("prisma"))}
       {picker.questions.map((question, qi) => <Box key={`question-${qi}`} flexDirection="column">
         <Text bold>{question.header}: {question.question}{question.multiSelect ? ` ${text("feature.prisma.pickAny", locale)}` : prismaMixing(picker, qi) ? ` ${text("feature.prisma.mixTwo", locale)}` : ""}</Text>
         <Box flexDirection="row" flexWrap="wrap" gap={1}>{question.options.map((option, oi) => {
           const selected = picker.picks[qi]?.includes(option.label) ?? false;
           const hotkey = qi + oi < 9 ? String(qi + oi + 1) : undefined;
-          return <Box key={`option-${qi}-${oi}`} flexDirection="column" width={e.surface === "terminal" ? 30 : undefined} borderStyle="round" borderColor={selected ? "green" : undefined} borderDimColor={!selected} paddingX={1}>
+          return <Box key={`option-${qi}-${oi}`} flexDirection="column" width={e.surface === "terminal" ? 30 : undefined} borderStyle="round" borderColor={selected ? PAINT.ok : undefined} borderDimColor={!selected} paddingX={1}>
             {Svg && option.svg && <Svg source={option.svg} alt={option.label} width={300} />}
             {!Svg && option.svg && <Text dimColor>{text(prefs.designSurface === "pane" ? "feature.prisma.preview.browserMode" : "feature.prisma.preview.openBrowser", locale)}</Text>}
             <Button key={`pick-${qi}-${oi}`} hotkey={hotkey} label={`${selected ? `${GLYPH.ok} ` : ""}${option.label}`} onPress={() => void choose(qi, option.label)} />
@@ -4496,12 +4728,12 @@ export const register: Register = (on, given) => {
     const replying = list.find((row) => row.id === target);
     const trouble = await read($, sentinelaProblem);
     return <Box flexDirection="column">
-      <Text dimColor>{text("feature.sentinela.total", locale, { count: list.length })} · {text("feature.sentinela.autoRefresh", locale)}</Text>
-      {trouble && <Text color="error">{trouble}</Text>}{!list.length && <Text dimColor>{text("feature.sentinela.none", locale)}</Text>}
+      {featureHead(ui, "Sentinela", castColor("sentinela"), `${text("feature.sentinela.total", locale, { count: list.length })} · ${text("feature.sentinela.autoRefresh", locale)}`)}
+      {trouble && <Text color={PAINT.fail}>{trouble}</Text>}{!list.length && <Text dimColor>{text("feature.sentinela.none", locale)}</Text>}
       {list.map((row) => {
         const isMe = row.id === sentinelaMe;
         const state = row.waitingFor || text(row.status === "waiting" ? "feature.sentinela.state.waiting" : row.status === "working" ? "feature.sentinela.state.working" : "feature.sentinela.state.done", locale);
-        return <Box key={row.id} flexDirection="row" gap={1}><Box flexGrow={1} flexShrink={1}><Text wrap="truncate-end"><Text color={row.status === "waiting" ? "error" : row.status === "working" ? "warning" : "success"}>{row.status === "waiting" ? `${GLYPH.ask} ` : row.status === "working" ? `${GLYPH.on} ` : `${GLYPH.ok} `}</Text><Text bold>{sentinelaLabel(row)}</Text>{isMe && <Text dimColor>{` ${text("feature.sentinela.this", locale)}`}</Text>}<Text> · {state}</Text><Text dimColor> · {sentinelaAge(now - row.since)} · {row.project}</Text></Text></Box>
+        return <Box key={row.id} flexDirection="row" gap={1}><Box flexGrow={1} flexShrink={1}><Text wrap="truncate-end"><Text color={row.status === "waiting" ? PAINT.fail : row.status === "working" ? PAINT.warn : PAINT.ok}>{row.status === "waiting" ? `${GLYPH.ask} ` : row.status === "working" ? `${GLYPH.on} ` : `${GLYPH.ok} `}</Text><Text bold>{sentinelaLabel(row)}</Text>{isMe && <Text dimColor>{` ${text("feature.sentinela.this", locale)}`}</Text>}<Text> · {state}</Text><Text dimColor> · {sentinelaAge(now - row.since)} · {row.project}</Text></Text></Box>
           {Input && !isMe && row.status === "waiting" && <Button key={`reply-${row.id}`} label={text("feature.sentinela.reply.label", locale)} plain onPress={async () => { await update($, sentinelaReplyTo, (value) => value === row.id ? "" : row.id); await resizeSentinela($); await $.ui.focus({ requestId: "sentinela", key: "reply-text" }).catch(() => {}); }} />}
           {!isMe && <Button key={`jump-${row.id}`} label={text("feature.sentinela.jump.label", locale)} plain dimColor onPress={(surface) => void jumpSentinela($, row, surface.surface)} />}
         </Box>;
@@ -4511,7 +4743,8 @@ export const register: Register = (on, given) => {
   });
 
   on("ui.render", { component: "Pane", requestId: "vigia" }, async ($, e) => {
-    const { Box, Text } = $.ui.resolve(e);
+    const ui = $.ui.resolve(e);
+    const { Box, Text, Button } = ui;
     const locale = (await getSettings($)).locale;
     if (!(await featureEnabled($, "vigia"))) return <Text dimColor>{text("feature.vigia.off", locale)}</Text>;
     // a draw only reads: the list is refreshed before the pane opens and on Vigia's 15 s beat, never here
@@ -4520,11 +4753,17 @@ export const register: Register = (on, given) => {
     const conflicts = await vigiaClashes($, now);
     const own = await ensureVigia($);
     const mail = await read($, vigiaMail);
-    const taskBar = (tasks: VigiaTask[]) => { const done = tasks.filter((task) => task.status === "completed").length; const cells = Math.min(10, tasks.length); const filled = Math.round((done / tasks.length) * cells); return `${"▰".repeat(filled)}${"▱".repeat(cells - filled)} ${done}/${tasks.length}`; };
+    const taskBar = (tasks: VigiaTask[]) => { const done = tasks.filter((task) => task.status === "completed").length; return `${meter(done / tasks.length, Math.min(10, tasks.length)).join("")} ${done}/${tasks.length}`; };
     return <Box flexDirection="column" gap={1}>
+      {featureHead(ui, "Vigia", castColor("vigia"), text("feature.vigia.title", locale))}
       {!list.length && <Text dimColor>{text("feature.vigia.none", locale)}</Text>}
-      {conflicts.length > 0 && <Box flexDirection="column" borderStyle="round" borderColor="red" paddingX={1}><Text bold color="red">⚠ {text("feature.vigia.clashes.title", locale)} · {text("feature.vigia.clashes.window", locale, { minutes: (await readFeaturePreferences($)).clashMinutes })}</Text>{conflicts.slice(0, 6).map((conflict) => <Text key={`${conflict.other.id}-${conflict.file}`} wrap="truncate">{conflict.file} · {vigiaName(conflict.other)} · {formatAge(now - conflict.at, locale)}</Text>)}</Box>}
-      {mail.length > 0 && <Box flexDirection="column" borderStyle="round" borderColor={PAINT.brand} paddingX={1}><Text bold color={PAINT.brand}>✉ {text("feature.vigia.messages", locale)}</Text>{mail.slice(0, 6).map((item) => <Text key={item.id} wrap="truncate"><Text color={item.kind === "clash" ? "error" : item.way === "in" ? PAINT.brand : PAINT.you}>{item.kind === "clash" ? "⚠" : item.way === "in" ? "←" : "→"} {item.peer}</Text>: {item.kind === "clash" ? item.file : item.text}<Text dimColor> · {formatAge(now - item.at, locale)}</Text>{item.isDelivered === false && <Text color="error"> · {text("feature.vigia.msg.undelivered", locale)}</Text>}{item.comandante?.decision === "rejected" && <Text color="error"> · {text("feature.vigia.msg.held", locale)}</Text>}{item.comandante?.decision === "questioned" && <Text dimColor> · {text("feature.vigia.msg.questioned", locale)}</Text>}</Text>)}</Box>}
+      {conflicts.length > 0 && <Box flexDirection="column" borderStyle="round" borderColor={PAINT.fail} paddingX={1}><Text bold color={PAINT.fail}>⚠ {text("feature.vigia.clashes.title", locale)} · {text("feature.vigia.clashes.window", locale, { minutes: (await readFeaturePreferences($)).clashMinutes })}</Text>{conflicts.slice(0, 6).map((conflict) => <Text key={`${conflict.other.id}-${conflict.file}`} wrap="truncate">{conflict.file} · {vigiaName(conflict.other)} · {formatAge(now - conflict.at, locale)}</Text>)}</Box>}
+      {mail.length > 0 && <Box flexDirection="column" borderStyle="round" borderColor={PAINT.brand} paddingX={1}><Text bold color={PAINT.brand}>✉ {text("feature.vigia.messages", locale)}</Text>{mail.slice(0, 6).map((item) => {
+        // a message the Comandante held waits here until the person releases it to Claude
+        const held = item.comandante?.decision === "rejected" && !item.isReleased;
+        return <Box key={item.id} flexDirection="row" gap={1}><Box flexGrow={1} flexShrink={1}><Text wrap="truncate"><Text color={item.kind === "clash" ? PAINT.fail : item.way === "in" ? PAINT.brand : PAINT.you}>{item.kind === "clash" ? "⚠" : item.way === "in" ? "←" : "→"} {item.peer}</Text>: {item.kind === "clash" ? item.file : item.text}<Text dimColor> · {formatAge(now - item.at, locale)}</Text>{item.isDelivered === false && <Text color={PAINT.fail}> · {text("feature.vigia.msg.undelivered", locale)}</Text>}{held && <Text color={PAINT.fail}> · {text("feature.vigia.msg.held", locale)}</Text>}{item.isReleased && <Text dimColor> · {text("feature.vigia.msg.released", locale)}</Text>}{item.comandante?.decision === "questioned" && <Text dimColor> · {text("feature.vigia.msg.questioned", locale)}</Text>}</Text></Box>
+          {held && <Button key={`release-${item.id}`} label={text("feature.vigia.msg.release", locale)} onPress={() => void releaseVigia($, item.id)} />}</Box>;
+      })}</Box>}
       {list.slice(0, 8).map((record) => {
         const isMe = record.id === own.id;
         const current = vigiaAlive(record, now);
@@ -4532,10 +4771,10 @@ export const register: Register = (on, given) => {
         const doing = vigiaDoing(record);
         const next = vigiaNext(record);
         return <Box key={record.id} flexDirection="column" borderStyle="round" borderColor={isMe ? PAINT.you : current ? PAINT.warn : PAINT.rule} borderDimColor={!current} paddingX={1}>
-          <Box justifyContent="space-between"><Text bold wrap="truncate">{isMe ? "★ " : ""}{vigiaName(record)}</Text><Text color={current ? record.isBusy ? "warning" : "success" : "gray"}>{current ? record.isBusy ? `${GLYPH.on} ${text("feature.vigia.working", locale)}` : `◐ ${text("feature.vigia.waiting", locale)}` : `${GLYPH.off} ${text("feature.vigia.ended", locale)} ${formatAge(now - record.beatAt, locale)}`}</Text></Box>
+          <Box justifyContent="space-between"><Text bold wrap="truncate">{isMe ? "★ " : ""}{vigiaName(record)}</Text><Text color={current ? record.isBusy ? PAINT.warn : PAINT.ok : PAINT.muted}>{current ? record.isBusy ? `${GLYPH.run} ${text("feature.vigia.working", locale)}` : `${GLYPH.ask} ${text("feature.vigia.waiting", locale)}` : `${GLYPH.off} ${text("feature.vigia.ended", locale)} ${formatAge(now - record.beatAt, locale)}`}</Text></Box>
           <Text dimColor>{isMe ? text("feature.vigia.thisSession", locale) : record.id.slice(0, 8)} · {text("feature.vigia.turns", locale, { count: record.turns ?? 0 })} · {formatAge(now - record.startedAt, locale)}</Text>
-          {record.done && <Text wrap="wrap"><Text color="success">{GLYPH.ok} {text("feature.vigia.done", locale)}  </Text>{record.done}</Text>}{doing && <Text wrap="wrap"><Text color="warning">{GLYPH.run} {text("feature.vigia.doing", locale)} </Text>{doing}</Text>}{next && <Text wrap="wrap"><Text color={PAINT.brand}>{GLYPH.route} {text("feature.vigia.next", locale)}  </Text>{next}</Text>}
-          {record.tasks.length > 0 && <Text color="magenta">☰ {text("feature.vigia.tasks", locale)} {taskBar(record.tasks)}</Text>}{!!record.files?.length && <Text dimColor wrap="truncate">✎ {text("feature.vigia.files", locale)} {record.files.slice(0, 5).join(", ")}</Text>}{!!overlap.length && <Text color="error" wrap="truncate">⚠ {text("feature.vigia.alsoEdited", locale)}: {overlap.join(", ")}</Text>}
+          {record.done && <Text wrap="wrap"><Text color={PAINT.ok}>{GLYPH.ok} {text("feature.vigia.done", locale)}  </Text>{record.done}</Text>}{doing && <Text wrap="wrap"><Text color={PAINT.warn}>{GLYPH.run} {text("feature.vigia.doing", locale)} </Text>{doing}</Text>}{next && <Text wrap="wrap"><Text color={PAINT.brand}>{GLYPH.route} {text("feature.vigia.next", locale)}  </Text>{next}</Text>}
+          {record.tasks.length > 0 && <Text color={PAINT.plum}>☰ {text("feature.vigia.tasks", locale)} {taskBar(record.tasks)}</Text>}{!!record.files?.length && <Text dimColor wrap="truncate">✎ {text("feature.vigia.files", locale)} {record.files.slice(0, 5).join(", ")}</Text>}{!!overlap.length && <Text color={PAINT.fail} wrap="truncate">⚠ {text("feature.vigia.alsoEdited", locale)}: {overlap.join(", ")}</Text>}
           {!current && <Text dimColor>↺ claude --resume {record.id}</Text>}
         </Box>;
       })}
@@ -4641,13 +4880,14 @@ export const register: Register = (on, given) => {
   // a permission prompt held past its delay: the bar turns to a question, and the pet alerts
   on("tool.check", async ($, e, next) => {
     const verdict = await next(e);
-    // Code Quality's own agent asks the person nothing: the cycle's own calls run, and everything else is refused
-    if (e.agentId && await inQualityLoop($, e.agentId)) {
+    // Code Quality's own agent and its helpers ask the person nothing: the cycle's own calls run, and everything else is refused
+    const qualityLoop = e.agentId ? await qualityRole($, e.agentId) : undefined;
+    if (e.agentId && qualityLoop) {
       const root = await $.session.root();
-      const kept = qualityVerdict(e.tool, e.input, verdict, root);
+      const kept = qualityVerdict(e.tool, e.input, verdict, root, qualityLoop);
       // With the Comandante on, a call that would ask the person and is not one of the cycle's own is judged and logged.
       // Its ruling may explain the refusal, never lift it: text in the reviewed code could sway Jev as well.
-      const ruling = qualityAsks(e.tool, e.input, verdict, root) ? await comandanteReview($, { source: "codeQuality", text: qualityCall(e.tool, e.input) }, e.agentId) : undefined;
+      const ruling = qualityAsks(e.tool, e.input, verdict, root, qualityLoop) ? await comandanteReview($, { source: "codeQuality", text: qualityCall(e.tool, e.input) }, e.agentId) : undefined;
       return ruling && ruling.decision !== "approved" ? { decision: "deny", reason: ruling.message } : kept;
     }
     try {

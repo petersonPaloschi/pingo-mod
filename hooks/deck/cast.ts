@@ -3,16 +3,16 @@
 // something for the person or is at work, and is gone as soon as it has not; a subagent joins when it starts and
 // leaves shortly after it ends. Each member is a small body in its own color, the subagents shaped after their names
 // (Tetra a triangle, Gem a cut gem, Can a can, Coil a spring, Top a spinning top), Jev and the features spheres like
-// Pingo's, drawn with Pingo's halftone dots and eyes, with its name on a row above it; the one speaking has its name
+// Pingo's, drawn as pixel art like him, in half blocks, with its name on a row above it; the one speaking has its name
 // in a balloon. The group stands in a fixed order, the features then Jev at Pingo's left and the subagents at his
 // right, everyone facing Pingo, and it walks wherever Pingo walks. Unlike Pingo's scenes nothing here is random: a
 // frame is a pure function of its inputs, so the host can repaint it in place and a test can check it exactly.
 import type { AgentRun } from "../../types";
-import { brailleBit, brailleChar, DEPTH, hex, type BrailleCell } from "../dots.ts";
+import { hex } from "../dots.ts";
 import { AGENT_MASCOTS, isMascot, MASCOT_ORDER, type MascotId } from "../mascots/agents.ts";
-import { bayer } from "../mascots/pingo.ts";
-import { DECK_DESIGN, FEATURE_MASCOT_PALETTE, HUE, PET_PALETTE } from "../theme.ts";
-import { eyePixels, PET_BRAILLE, PET_CSS, petFrame, petSvgBody, petX, type Pet } from "./pet.ts";
+import { DETAIL, mirror, pixelGrid, put, renderPixels, stamp, type PixelCell } from "../mascots/pixel.ts";
+import { DECK_DESIGN, DOT_DEPTH, FEATURE_MASCOT_PALETTE, HUE, inkOn, PET_PALETTE, shadeOf, TERMINAL_DEFAULT } from "../theme.ts";
+import { PET_BRAILLE, PET_CSS, petFrame, petSvgBody, petX, type Pet } from "./pet.ts";
 import { esc } from "./theme.ts";
 
 /** The features that join the lane as mascots of their own. */
@@ -88,52 +88,60 @@ export function castOf(runs: readonly AgentRun[], asking: boolean, now: number, 
 /** What a cast draws: equal keys draw the same members in the same states. */
 export const castKey = (cast: readonly CastMember[]): string => cast.map((m) => `${m.id}:${m.state}:${m.label}${m.speaking ? ":says" : ""}`).join("|");
 
-// ---------- one member, in a terminal: a 16 by 16 dot grid, 8 cells by 4 rows ----------
+// ---------- one member, in a terminal: a grid of 8 by 8 pixels, 8 cells by 4 rows ----------
 
-/** A member's cells in a terminal: 8 columns by 4 rows, so a 16 by 16 dot grid. */
-export const MEMBER_BRAILLE = { columns: 8, rows: PET_BRAILLE.rows } as const;
+/** A member's cells in a terminal: 8 columns by 4 rows of half blocks, a grid of 8 by 8 pixels. (The name is the old braille one, kept for its importers.) */
+export const MEMBER_BRAILLE = DECK_DESIGN.pet.member;
 /** The lane's rows in a terminal: the names, then the bodies. */
 export const LANE_ROWS = PET_BRAILLE.rows + 1;
 
+/** The desktop's box for a member: 16 units across, the middle at 8. */
 const DOTS_W = MEMBER_BRAILLE.columns * 2;
-const DOTS_H = MEMBER_BRAILLE.rows * 4;
 const MID = DOTS_W / 2;
-/** The dot row the bodies stand on, where the floor line lies. */
-const FLOOR = DOTS_H - 1;
-const EYE = PET_PALETTE.eye;
-export const PINGO_INK = DEPTH[4];
+/** The pixel row the bodies' shadow lies on, under the shade of their feet. */
+const FLOOR = MEMBER_BRAILLE.rows * 2 - 1;
+export const PINGO_INK = TERMINAL_DEFAULT;
+/** Pingo's name on the desktop, which has no terminal default to take. */
+const PINGO_NAME_INK = DOT_DEPTH[4];
 
 interface Shape {
-  /** Half its width at height `y` (a dot's centre), or a negative number above and below it. */
-  half: (y: number) => number;
-  /** Its eyes: the dot row of their top, and the dots between each and the middle. */
-  eyes: { y: number; apart: number };
+  /** Eight rows of pixels, top first: the body "#", its underside "d", the floor's shadow "s". */
+  rows: readonly string[];
+  /** The row the tops of the eyes lie on: each eye is a box two pixels across and down, the left at column 1, the right at 5. */
+  eyeRow: number;
 }
-
-/** A flat ring of the spring, `c` its centre row: full width at the centre, none past `ry`. */
-const ring = (y: number, c: number, ry = 1.9) => (Math.abs(y - c) <= ry ? 6.5 * Math.sqrt(1 - ((y - c) / ry) ** 2) : -1);
-
-/** A sphere like Pingo's, smaller: Jev's body, and every feature's. */
-const SPHERE: Shape = { half: (y) => (Math.abs(y - 8.6) <= 6.2 ? 6.2 * Math.sqrt(1 - ((y - 8.6) / 6.2) ** 2) : -1), eyes: { y: 5, apart: 2 } };
 
 /** Something in each feature's own color, by feature: `make` for every one of them. */
 const perSpeaker = <T>(make: (id: SpeakerId, i: number) => T) => Object.fromEntries(SPEAKER_IDS.map((id, i) => [id, make(id, i)])) as Record<SpeakerId, T>;
 
-// Every shape stands on row 14 and keeps two dots free above it for a hop. The eyes, three dots tall, sit inside one
-// row of cells (dots 4 to 7, or 8 to 11), so clearing their cells never cuts two rows out of the body.
+/** A sphere like Pingo's, smaller: Jev's body, and every feature's. */
+const SPHERE: Shape = { rows: ["........", "..####..", ".######.", "########", "########", ".######.", "..dddd..", "..ssss.."], eyeRow: 3 };
+
+// Row 0 is kept free for a hop. The eyes sit where the body is eight pixels or six wide, so each has body around it.
 const SHAPES: Record<CastKind, Shape> = {
   jev: SPHERE,
   ...perSpeaker(() => SPHERE),
   // a triangle standing on its base
-  tetra: { half: (y) => (y >= 2.5 && y <= 14.5 ? 0.6 + ((y - 2.5) / 12) * 6.6 : -1), eyes: { y: 9, apart: 1 } },
+  tetra: { rows: ["........", "...##...", "..####..", "..####..", ".######.", ".######.", "dddddddd", "..ssss.."], eyeRow: 4 },
   // a cut gem: a flat table, the crown widening to the girdle, the pavilion narrowing to its point
-  gem: { half: (y) => (y < 2.5 || y > 14.5 ? -1 : y < 6 ? 3 + (y - 2.5) * 1.15 : (7.1 * (14.5 - y)) / 8.5 + 0.4), eyes: { y: 5, apart: 2 } },
+  gem: { rows: ["........", ".######.", "########", ".######.", "..####..", "...##...", "...dd...", "..ssss.."], eyeRow: 2 },
   // a can: straight sides, its rims rounded off
-  can: { half: (y) => (y < 2.5 || y > 14.5 ? -1 : y < 3.5 || y > 13.5 ? 5 : 6), eyes: { y: 5, apart: 2 } },
+  can: { rows: ["........", ".######.", "########", "########", "########", "########", ".dddddd.", "..ssss.."], eyeRow: 3 },
   // a spring: three coils on a thin core, the face on the top one
-  coil: { half: (y) => (y < 2.5 || y > 14.5 ? -1 : Math.max(1.2, ring(y, 5), ring(y, 9.2), ring(y, 13.1))), eyes: { y: 4, apart: 2 } },
+  coil: { rows: ["........", ".######.", "########", "...##...", ".######.", "...##...", ".dddddd.", "..ssss.."], eyeRow: 1 },
   // a spinning top: a stem, a wide shoulder, a point to spin on
-  cone: { half: (y) => (y < 2.5 || y > 14.5 ? -1 : y < 4.5 ? 1 : y < 8 ? 1 + (y - 4.5) * 1.75 : (7.1 * (14.5 - y)) / 6.5 + 0.3), eyes: { y: 8, apart: 2 } },
+  cone: { rows: ["........", "...##...", ".######.", "########", ".######.", "..####..", "...dd...", "..ssss.."], eyeRow: 3 },
+};
+
+/** Where the eyes sit on the desktop's 16-unit box: the row of their top, and the units between each and the middle. */
+const SVG_EYES: Record<CastKind, { y: number; apart: number }> = {
+  jev: { y: 5, apart: 2 },
+  ...perSpeaker(() => ({ y: 5, apart: 2 })),
+  tetra: { y: 9, apart: 1 },
+  gem: { y: 5, apart: 2 },
+  can: { y: 5, apart: 2 },
+  coil: { y: 4, apart: 2 },
+  cone: { y: 8, apart: 2 },
 };
 
 /** Each kind blinks at its own moment, so the group never blinks as one. */
@@ -145,48 +153,37 @@ export function castColor(kind: CastKind): number {
   return isSpeaker(kind) ? FEATURE_MASCOT_PALETTE[kind] : AGENT_MASCOTS[kind].color;
 }
 
-/** A color darkened toward black by `k` (0 keeps it, 1 is black): the shade side of a body. */
-function darker(color: number, k: number): number {
-  const channel = (shift: number) => Math.round(((color >> shift) & 0xff) * (1 - k));
-  return (channel(16) << 16) | (channel(8) << 8) | channel(0);
+/** The four pixels of an eye's box, clockwise: a spinner lights one. */
+const EYE_RING: readonly (readonly [number, number])[] = [[0, 0], [1, 0], [1, 1], [0, 1]];
+
+/**
+ * An eye's pixels in its two by two box, for a member facing right (facing left is the grid turned round): a pill
+ * that blinks and looks ahead when idle, a lit pixel walking round the box while asked, a slash that leans in to
+ * join and to leave ("/ \", happy), and the same leaning out ("\ /") for a subagent that failed.
+ */
+function eyeDots(state: CastState, t: number, side: 1 | -1): readonly (readonly [number, number])[] {
+  if (state === "asking") return [EYE_RING[(((Math.floor(t * 6) * side) % 4) + 4) % 4]!];
+  if (state === "failed") return side === -1 ? [[0, 0], [1, 1]] : [[1, 0], [0, 1]];
+  if (state === "join" || state === "done") return side === -1 ? [[0, 1], [1, 0]] : [[0, 0], [1, 1]];
+  return (t * 0.9) % 4.2 < 0.14 ? [[1, 1]] : [[1, 0], [1, 1]];
 }
 
-interface Grid {
-  bits: number[];
-  color: number[];
-  rank: number[];
-}
-
-const cellOf = (x: number, y: number) => (y >> 2) * MEMBER_BRAILLE.columns + (x >> 1);
-const inGrid = (x: number, y: number) => x >= 0 && y >= 0 && x < DOTS_W && y < DOTS_H;
-
-/** Lights a dot; its cell takes the dot's color when the rank is at least the cell's own. */
-function light(grid: Grid, x: number, y: number, color: number, rank: number) {
-  if (!inGrid(x, y)) return;
-  const cell = cellOf(x, y);
-  grid.bits[cell]! |= brailleBit(x, y);
-  if (rank >= grid.rank[cell]!) {
-    grid.rank[cell] = rank;
-    grid.color[cell] = color;
-  }
-}
-
-/** How far the body sits above its rest, in dots (negative is up): hops to join and to leave, a bob to walk or to think. */
+/** How far the body sits above its rest, in pixels (negative is up): hops to join and to leave, a bob to walk or to think. */
 function liftOf(state: CastState, t: number, age: number, walking: boolean): number {
-  if (state === "join" || state === "done") return -Math.round(2 * Math.sin(Math.PI * ((age % 0.6) / 0.6)));
+  if (state === "join" || state === "done") return -Math.round(Math.sin(Math.PI * ((age % 0.6) / 0.6)));
   if (state === "asking") return -Math.round(Math.abs(Math.sin((t / 0.5) * Math.PI)));
   return walking ? -Math.round(Math.abs(Math.sin((t / 0.6) * Math.PI * 2))) : 0;
 }
 
-const memberFrames = new Map<string, BrailleCell[][]>();
+const memberFrames = new Map<string, PixelCell[][]>();
 const MEMBER_FRAMES_KEPT = 64;
 
 /**
- * A member as a braille grid at `now`, facing `dir` (toward Pingo). Its look follows its state: pill eyes that blink
- * when idle, a spinner while Jev is asked, happy eyes to join and to leave, crosses for a subagent that failed.
+ * A member as pixel cells at `now`, facing `dir` (toward Pingo). Its look follows its state: eyes that blink when
+ * idle, a spinner while Jev is asked, happy eyes to join and to leave, crosses for a subagent that failed.
  * Time is quantized to a tenth of a second, so two redraws inside the same tenth give the same cells.
  */
-export function memberFrame(member: Pick<CastMember, "kind" | "state" | "since">, now: number, dir: 1 | -1, walking: boolean): BrailleCell[][] {
+export function memberFrame(member: Pick<CastMember, "kind" | "state" | "since">, now: number, dir: 1 | -1, walking: boolean): PixelCell[][] {
   const tick = Math.floor(now / 100);
   const hops = member.state === "join" || member.state === "done";
   const ageTick = hops ? Math.floor(Math.max(0, now - member.since) / 100) : 0;
@@ -196,50 +193,16 @@ export function memberFrame(member: Pick<CastMember, "kind" | "state" | "since">
   const t = tick / 10;
   const shape = SHAPES[member.kind];
   const color = castColor(member.kind);
-  const shade = darker(color, 0.45);
-  const cells = MEMBER_BRAILLE.columns * MEMBER_BRAILLE.rows;
-  const grid: Grid = { bits: new Array<number>(cells).fill(0), color: new Array<number>(cells).fill(DEPTH[0]), rank: new Array<number>(cells).fill(-Infinity) };
-  for (let x = 3; x < DOTS_W - 3; x++) light(grid, x, FLOOR, PET_PALETTE.props.dark, -1);
-  const lift = liftOf(member.state, t, ageTick / 10, walking);
-  const shake = member.state === "failed" && tick % 2 === 1 ? 1 : 0;
-  const inside = (x: number, y: number) => {
-    const half = shape.half(y + 0.5);
-    return half >= 0 && Math.abs(x + 0.5 - MID) <= half;
-  };
-  for (let y = 0; y < DOTS_H; y++) {
-    for (let x = 0; x < DOTS_W; x++) {
-      if (!inside(x, y)) continue;
-      const edge = !inside(x - 1, y) || !inside(x + 1, y) || !inside(x, y - 1) || !inside(x, y + 1);
-      // lit from above and to the left like Pingo: dense where it faces the light, sparse on the far side
-      const u = (x + 0.5 - MID) / 7;
-      const v = (y + 0.5 - 8.5) / 6.5;
-      const nz = Math.sqrt(Math.max(0, 1 - Math.min(1, u * u + v * v)));
-      const lit = Math.max(0, -0.45 * u - 0.55 * v + 0.7 * nz);
-      if (!edge && 0.3 + 0.7 * lit <= bayer(x, y)) continue;
-      light(grid, x + shake, y + lift, lit > 0.5 ? color : shade, lit > 0.5 ? 2 : 1);
-    }
-  }
-  const eyes = member.state === "asking" ? "spinner" : member.state === "failed" ? "x" : hops ? "happy" : "pill";
-  const wide = eyes === "pill" ? 2 : 3;
-  const dots: { x: number; y: number }[] = [];
+  const grid = pixelGrid(DOTS_W / 2, MEMBER_BRAILLE.rows * 2);
+  // a subagent that failed shakes: it jumps a pixel every other tenth
+  const lift = member.state === "failed" ? (tick % 2 === 1 ? -1 : 0) : liftOf(member.state, t, ageTick / 10, walking);
+  stamp(grid, 0, FLOOR, [shape.rows[FLOOR]!], { s: PET_PALETTE.floor });
+  stamp(grid, 0, lift, shape.rows.slice(0, FLOOR), { "#": color, d: shadeOf(color) });
   for (const side of [-1, 1] as const) {
-    const x0 = (side === -1 ? MID - shape.eyes.apart - wide : MID + shape.eyes.apart) + dir + shake;
-    for (const [dx, dy] of eyePixels(eyes, t + BLINK_PHASE[member.kind], side)) dots.push({ x: x0 + dx, y: shape.eyes.y + dy + lift });
+    const x0 = side === -1 ? 1 : 5;
+    for (const [dx, dy] of eyeDots(member.state, t + BLINK_PHASE[member.kind], side)) put(grid, x0 + dx, shape.eyeRow + dy + lift, PET_PALETTE.eyeInk | DETAIL);
   }
-  // a cell holds one color: the body dots in an eye's cells go, so the eye keeps its shape and its own color
-  for (const dot of dots) {
-    if (!inGrid(dot.x, dot.y)) continue;
-    const cell = cellOf(dot.x, dot.y);
-    grid.bits[cell] = 0;
-    grid.rank[cell] = -Infinity;
-  }
-  for (const dot of dots) light(grid, dot.x, dot.y, EYE, Infinity);
-  const frame = Array.from({ length: MEMBER_BRAILLE.rows }, (_, r) =>
-    Array.from({ length: MEMBER_BRAILLE.columns }, (_, c): BrailleCell => {
-      const cell = r * MEMBER_BRAILLE.columns + c;
-      return [brailleChar(grid.bits[cell]!), grid.color[cell]!];
-    }),
-  );
+  const frame = renderPixels(dir > 0 ? grid : mirror(grid));
   if (memberFrames.size >= MEMBER_FRAMES_KEPT) memberFrames.delete(memberFrames.keys().next().value!);
   memberFrames.set(key, frame);
   return frame;
@@ -281,7 +244,7 @@ export function clipName(label: string, room: number): string {
  * so everyone faces Pingo. `pingoSpeaks`: Pingo is the one speaking, for Claude's own turn.
  */
 export function castLayout(cast: readonly CastMember[], columns: number, pingoSpeaks = false): { slots: CastSlot[]; hidden: number; width: number } {
-  const pingo: CastSlot = { label: "Pingo", color: PINGO_INK, width: Math.max(PET_BRAILLE.columns, slotWidth("Pingo") + (pingoSpeaks ? BALLOON_ENDS : 0)), dir: 1, ...(pingoSpeaks ? { speaking: true } : {}) };
+  const pingo: CastSlot = { label: "Pingo", color: PINGO_NAME_INK, width: Math.max(PET_BRAILLE.columns, slotWidth("Pingo") + (pingoSpeaks ? BALLOON_ENDS : 0)), dir: 1, ...(pingoSpeaks ? { speaking: true } : {}) };
   let width = pingo.width;
   const jev = cast.find((m) => m.kind === "jev");
   const jevSlot: CastSlot | undefined = jev && width + memberWidth(jev) <= columns
@@ -308,12 +271,12 @@ export function castLayout(cast: readonly CastMember[], columns: number, pingoSp
   return { slots: [...features, ...(jevSlot ? [jevSlot] : []), pingo, ...agents], hidden: queue.length - fitted.size, width };
 }
 
-/** A lane cell: a character, its color, and the ground behind it when it has one (a speaker's balloon). */
-export type LaneCell = [char: string, color: number, background?: number];
+/** A lane cell: a character, its color, and the ground behind it when it has one (a speaker's balloon, a pixel's detail). */
+export type LaneCell = PixelCell;
 
-const BLANK: LaneCell = [" ", DEPTH[0]];
-/** The ink of a name inside its balloon: dark on the speaker's color. */
-const BALLOON_INK = DEPTH[0];
+const BLANK: LaneCell = [" ", TERMINAL_DEFAULT];
+/** Pingo's own balloon is stone: its body is the terminal's color, so it has no color of its own to fill one with. */
+const PINGO_BALLOON = HUE.neutral;
 
 /**
  * The whole lane at `now`, `columns` cells wide and `LANE_ROWS` tall: the names on the top row (the speaker's in a
@@ -332,9 +295,11 @@ export function castLaneCells(pet: Pet, cast: readonly CastMember[], now: number
   for (const slot of slots) {
     const speaking = slot.speaking === true;
     const name = [...clipName(slot.label, slot.width - LABEL_PADDING - (speaking ? BALLOON_ENDS : 0))];
+    const ink = slot.member ? slot.color : TERMINAL_DEFAULT;
+    const ground = slot.member ? slot.color : PINGO_BALLOON;
     const cells: LaneCell[] = speaking
-      ? [["▐", slot.color], ...name.map((char): LaneCell => [char, BALLOON_INK, slot.color]), ["▌", slot.color]]
-      : name.map((char): LaneCell => [char, slot.color]);
+      ? [["▐", ground], ...name.map((char): LaneCell => [char, inkOn(ground), ground]), ["▌", ground]]
+      : name.map((char): LaneCell => [char, ink]);
     const nameAt = x + Math.floor((slot.width - cells.length) / 2);
     cells.forEach((cell, i) => put(0, nameAt + i, cell));
     const sprite = slot.member ? memberFrame(slot.member, now, slot.dir, walking) : petFrame(pet.act, Math.max(0, now - pet.start), pet.dir, pet.hat, pet.shades);
@@ -368,7 +333,7 @@ const SHAPE_SVG: Record<CastKind, (fill: string) => string> = {
 
 /** A member's eyes in its 16-unit box, looking toward `dir`. */
 function eyesSvg(kind: CastKind, state: CastState, dir: 1 | -1): string {
-  const { y, apart } = SHAPES[kind].eyes;
+  const { y, apart } = SVG_EYES[kind];
   const look = dir * 0.8;
   return ([-1, 1] as const).map((side) => {
     const cx = MID + side * (apart + 1.2) + look;
@@ -438,7 +403,7 @@ function buildCastSvg(pet: Pet, cast: readonly CastMember[], now: number, W: num
         `<rect x="${bx.toFixed(1)}" y="0" width="${bw.toFixed(1)}" height="${CAST_LABEL_PX}" rx="${balloon.radiusPixels}" fill="${hex(slot.color)}"/>` +
         `<path d="M${(cx - balloon.tailPixels).toFixed(1)} ${CAST_LABEL_PX}h${2 * balloon.tailPixels}l-${balloon.tailPixels} ${balloon.tailPixels}Z" fill="${hex(slot.color)}"/>`;
     }
-    group += `<text x="${(x + w / 2).toFixed(1)}" y="${CAST_LABEL_PX - DECK_DESIGN.cast.lane.labelBaselineInsetPixels}" text-anchor="middle" style="font:${DECK_DESIGN.type.svgWeights.semibold} ${DECK_DESIGN.type.svgTinyPixels}px ${DECK_DESIGN.type.svg};fill:${hex(speaking ? BALLOON_INK : slot.color)}">${name}</text>`;
+    group += `<text x="${(x + w / 2).toFixed(1)}" y="${CAST_LABEL_PX - DECK_DESIGN.cast.lane.labelBaselineInsetPixels}" text-anchor="middle" style="font:${DECK_DESIGN.type.svgWeights.semibold} ${DECK_DESIGN.type.svgTinyPixels}px ${DECK_DESIGN.type.svg};fill:${hex(speaking ? inkOn(slot.color) : slot.color)}">${name}</text>`;
     if (slot.member) {
       const left = x + (w - MW) / 2;
       const top = H - MW - gap;

@@ -1,7 +1,7 @@
 // Terminal bar styles. Each returns exactly W cells for a row. Pure, no I/O.
 import { DECK_DESIGN, DECK_STYLE_NAMES, DECK_STYLE_ORDER, STYLE, TRACK, TRACK_BG, TICK_ON, TICK_OFF, MUTED, TEXT, HEAD_DIM, SHINE, hash, seedOf, trunc, textCells, type DeckStyleName } from "./theme.ts";
 import type { Cell, Row, Style } from "./theme.ts";
-import { GLYPH } from "../theme.ts";
+import { DECK_DOTS } from "../theme.ts";
 
 export const TERMINAL_STYLES = DECK_STYLE_ORDER.terminal;
 export type TerminalStyle = DeckStyleName;
@@ -98,14 +98,14 @@ function dots(row: Row, W: number, frame: number): Cell[] {
     for (let i = 0; i < row.steps; i++) {
       const done = i < (row.finished ?? 0);
       const cur = i === row.finished && row.animating;
-      cells.push(done ? { ch: GLYPH.on, color: st.fill } : cur ? { ch: frame % animation.frameCycle < animation.activeFrames ? "◉" : GLYPH.off, color: st.fill } : { ch: GLYPH.off, color: TICK_OFF });
+      cells.push(done ? { ch: DECK_DOTS.full, color: st.fill } : cur ? { ch: frame % animation.frameCycle < animation.activeFrames ? DECK_DOTS.now : DECK_DOTS.empty, color: st.fill } : { ch: DECK_DOTS.empty, color: TICK_OFF });
       if (i < row.steps - 1) cells.push({ ch: done ? "─" : "┄", color: done ? st.fill : TRACK });
     }
   } else {
     const n = DECK_DESIGN.bar.terminal.dotCount;
     for (let i = 0; i < n; i++) {
       const v = row.pct / DECK_DESIGN.bar.terminal.dotCount - i;
-      cells.push({ ch: v >= 1 ? GLYPH.on : v > design.partialThreshold ? "◐" : GLYPH.off, color: v > design.partialThreshold ? st.fill : TICK_OFF });
+      cells.push({ ch: v >= 1 ? DECK_DOTS.full : v > design.partialThreshold ? DECK_DOTS.half : DECK_DOTS.empty, color: v > design.partialThreshold ? st.fill : TICK_OFF });
       if (i < n - 1) cells.push({ ch: " ", color: TRACK });
     }
   }
@@ -183,7 +183,7 @@ export function terminalMini(style: string, row: Row, W: number): Cell[] {
   for (let x = 0; x < W; x++) {
     if (style === "solid" || style === "pixel") cells.push({ ch: " ", color: st.fill, bg: x < f ? st.fill : TRACK_BG });
     else if (style === "line") cells.push({ ch: x < f ? "━" : "─", color: x < f ? st.fill : TRACK });
-    else if (style === "dots") cells.push({ ch: x < f ? GLYPH.on : GLYPH.off, color: x < f ? st.fill : TICK_OFF });
+    else if (style === "dots") cells.push({ ch: x < f ? DECK_DOTS.full : DECK_DOTS.empty, color: x < f ? st.fill : TICK_OFF });
     else if (style === "spark") cells.push({ ch: x < f ? "━" : "─", color: x < f ? st.fill : TRACK });
     else cells.push({ ch: x < f ? "▰" : "▱", color: x < f ? st.fill : TRACK });
   }

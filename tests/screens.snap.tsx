@@ -91,8 +91,8 @@ const REQUEST = "Refatore a arquitetura do fluxo de orquestração em hooks/orch
 const DONE = { input_tokens: 1200, output_tokens: 80, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 };
 
 test("screens: pane", LOCALE, async ($, on) => {
-  // The engine starts the turn while an idle prompt enters: its `next` is held until turn.start, so the
-  // message is tied to its run as in the real app.
+  // This world starts the turn while an idle prompt enters, its `next` held until turn.start; the real engine
+  // settles `next` first. The message is tied to its run either way.
   let reached = () => {};
   let release = () => {};
   const promptSubmit = async (_$: unknown, e: { text: string; turnId?: string }) => {
@@ -112,7 +112,7 @@ test("screens: pane", LOCALE, async ($, on) => {
   // One whole request: a complex message (the advisor turns on), a model call, a tool, a subagent, the answer.
   const bottom = new Promise<void>((resolve) => (reached = resolve));
   const submitted = $.prompt.submit({ text: REQUEST, wait: false, origin: { kind: "composer" } });
-  // An older checkout's world cannot hold the prompt: it then enters at once, and the run is not tied to it.
+  // An older checkout's world cannot hold the prompt: it then enters at once, before turn.start.
   await Promise.race([bottom, submitted]);
   await $.turn.start({ text: REQUEST, turnId: "t1" });
   release();

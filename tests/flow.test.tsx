@@ -19,6 +19,9 @@ import {
   KEPT_RUNS,
   planMessage,
   promptEntered,
+  promptRow,
+  queuedDelivered,
+  rowText,
   setAdvisorInfo,
   startTurn,
   stepEnd,
@@ -160,6 +163,8 @@ describe("the run record", () => {
     expect(runOf(s, "t1").received.map((one) => [one.text, one.state])).toEqual([["also fix the tests", "queued"], ["and the docs", "queued"]]);
     expect(s.entering).toBeUndefined();
     s = completeTurn(s, "t1", NOW - 10e3, "answer");
+    // No prompt row and no delivery named them: once t1 ended they were taken back.
+    expect(runOf(s, "t1").received.map((one) => one.state)).toEqual(["withdrawn", "withdrawn"]);
     // The next turn starts with text but no message entering: not guessed from the text.
     s = startTurn(s, "t2", "also fix the tests", NOW - 9e3);
     expect(runOf(s, "t2").kind).toBe("unlinked");
@@ -188,14 +193,86 @@ describe("the run record", () => {
     expect(trailText(s)).toContain("refused: blocked by policy");
   });
 
-  test("a turn that starts after its prompt already entered is not tied to it", () => {
-    let id: string;
-    let s: TraceState;
-    [s, id] = submitPrompt(emptyTrace(), { text: "queued by a plugin", at: NOW - 3000, origin: "plugin" });
-    s = promptEntered(s, id);
-    s = startTurn(s, "t1", "queued by a plugin", NOW - 2000);
-    expect(runOf(s, "t1").kind).toBe("unlinked");
-    expect(s.inbox[0]?.state).toBe("waiting");
+  test("an idle message is its turn's when its submission settles first, as the engine does, and Jev's call before the turn goes with it", () => {
+    // as Claude Code 2.1.296 ran "e ai?": prompt.submit, orchestration's Jev call (no message named), `next`
+    // settles, the prompt row, then turn.start. Before, the call opened a run of its own and the turn had no message.
+    for (const row of [true, false]) {
+      let id: string;
+      let consult: string;
+      let s: TraceState;
+      [s, id] = submitPrompt(emptyTrace(), { text: "e ai?", at: NOW - 5000, origin: "composer" });
+      [s, consult] = consultStart(s, {}, { origin: "prompt", model: "jev-1", questions: ["continuity", "work_mode"], startedAt: NOW - 4900 });
+      s = consultEnd(s, consult, NOW - 4500);
+      s = promptEntered(s, id);
+      if (row) s = promptRow(s, "e ai?");
+      s = startTurn(s, "t1", "e ai?", NOW - 4000);
+      expect({ row, runs: s.runs.map((run) => [run.id, run.n, run.kind]) }).toEqual({ row, runs: [["t1", 1, "message"]] });
+      expect(runOf(s, "t1").message?.text).toBe("e ai?");
+      expect(runOf(s, "t1").consults.map((one) => one.id)).toEqual([consult]);
+      expect(s.inbox).toEqual([]);
+      expect(s.entering).toBeUndefined();
+      const shown = trailText(s);
+      expect(shown).toContain("You: “e ai?”");
+      expect(shown).not.toContain("A turn with no linked message");
+    }
+  });
+
+  test("a Jev call with no turn running and no message entering is told in the latest run, never a run of its own", () => {
+    let s = submitIdle(emptyTrace(), "fix the parser", "t1", NOW - 20e3);
+    s = completeTurn(s, "t1", NOW - 15e3, "answer");
+    let consult: string;
+    [s, consult] = consultStart(s, {}, { origin: "comandante", model: "jev-1", questions: ["verdict"], startedAt: NOW - 10e3 });
+    expect(s.runs.map((run) => run.id)).toEqual(["t1"]);
+    expect(s.active).toBeUndefined();
+    expect(runOf(s, "t1").consults.map((one) => one.id)).toContain(consult);
+  });
+
+  test("two messages queued in a turn enter as their prompt rows come and run together as the next request", () => {
+    // as the engine ran them: both prompt rows before t1 ends, then one turn whose text is only the last message's
+    let s = submitIdle(emptyTrace(), "refactor the router", "t1", NOW - 20e3);
+    let first: string;
+    let second: string;
+    [s, first] = submitPrompt(s, { text: "probe B1", at: NOW - 15e3, origin: "composer", during: "t1" });
+    [s, second] = submitPrompt(s, { text: "probe B2", at: NOW - 14e3, origin: "composer", during: "t1" });
+    s = promptEntered(promptEntered(s, first), second);
+    s = promptRow(promptRow(s, "probe B1"), "probe B2");
+    s = completeTurn(s, "t1", NOW - 10e3, "answer");
+    s = startTurn(s, "t2", "probe B2", NOW - 10e3);
+    expect(runOf(s, "t2").kind).toBe("message");
+    expect(runOf(s, "t2").message?.text).toBe("probe B1");
+    expect(runOf(s, "t2").also?.map((one) => one.text)).toEqual(["probe B2"]);
+    expect(runOf(s, "t1").received.map((one) => [one.text, one.state, one.ranIn])).toEqual([["probe B1", "linked", "t2"], ["probe B2", "linked", "t2"]]);
+    expect(s.carried).toBeUndefined();
+    const shown = trailText(s);
+    expect(shown).toContain("You: “probe B1”");
+    expect(shown).toContain("You: “probe B2”");
+    expect(shown).toContain("ran as request 2");
+    expect(shown).not.toContain("A turn with no linked message");
+  });
+
+  test("a message typed while a tool runs, delivered into that turn, was read there; one taken back was withdrawn", () => {
+    let s = submitIdle(emptyTrace(), "run the slow script", "t1", NOW - 20e3);
+    let read: string;
+    let taken: string;
+    [s, read] = submitPrompt(s, { text: "probe typed during tool", at: NOW - 16e3, origin: "composer", during: "t1" });
+    [s, taken] = submitPrompt(s, { text: "probe four withdrawn", at: NOW - 15e3, origin: "composer", during: "t1" });
+    s = promptEntered(promptEntered(s, read), taken);
+    // the engine's queued_command row, as it came in the real run
+    const delivery = ["<system-reminder>", "The user sent a new message while you were working:", "probe typed during tool", "", "This is how Claude Code surfaces it.", "</system-reminder>"].join("\n");
+    s = queuedDelivered(s, rowText([{ type: "text", text: delivery }]));
+    expect(runOf(s, "t1").received.map((one) => one.state)).toEqual(["delivered", "queued"]);
+    s = completeTurn(s, "t1", NOW - 10e3, "answer");
+    expect(runOf(s, "t1").received.map((one) => one.state)).toEqual(["delivered", "withdrawn"]);
+    let shown = trailText(s);
+    expect(shown).toContain("Claude read it during this turn");
+    expect(shown).toContain("withdrawn before it ran");
+    // typed back later, its prompt row brings it back: it runs as the next request
+    s = promptRow(s, "probe four withdrawn");
+    s = startTurn(s, "t2", "probe four withdrawn", NOW - 5e3);
+    expect(runOf(s, "t2").message?.text).toBe("probe four withdrawn");
+    shown = trailText(s);
+    expect(shown).toContain("ran as request 2");
+    expect(shown).not.toContain("withdrawn before it ran");
   });
 
   test("a subagent's turns raise no turn.start: its steps and tools join the run that spawned it", () => {
@@ -463,7 +540,7 @@ describe("the Flow tab in the pane", () => {
     await enter($, "a long message that must wrap in a narrow pane", "t1");
     const ui = await $.ui.mount({ plugin: "jev", surface: "terminal", component: "Pane", requestId: "jev", props: { ...PANE_PROPS, bodyColumns: 20 } as never });
     await ui.press({ key: "tab-flow" });
-    expect(await ui.find({ type: "Text", text: /^● You: “a long/ })).toBeDefined();
+    expect(await ui.find({ type: "Text", text: /^■ You: “a long/ })).toBeDefined();
     expect(await ui.find({ type: "Text", text: /Running for/ })).toBeDefined();
     await ui.unmount();
   });

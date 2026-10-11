@@ -86,8 +86,8 @@ export const STYLE: Record<StyleName, Style> = {
 export const AGENT_STYLE: Record<AgentState, StyleName> = { running: "run", waiting: "ask", error: "hot", done: "done" };
 
 export const TIER: Record<TierName, { term: string; desk: string }> = {
-  [CLAUDE_MODEL.HAIKU.name]: { term: fill(HUE.brand), desk: fill(HUE.brand) },
-  [CLAUDE_MODEL.SONNET.name]: { term: fill(HUE.info), desk: fill(HUE.info) },
+  [CLAUDE_MODEL.HAIKU.name]: { term: fill(HUE.info), desk: fill(HUE.info) },
+  [CLAUDE_MODEL.SONNET.name]: { term: fill(HUE.brand), desk: fill(HUE.brand) },
   [CLAUDE_MODEL.OPUS.name]: { term: fill(HUE.plum), desk: fill(HUE.plum) },
 };
 

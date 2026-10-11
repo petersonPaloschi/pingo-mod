@@ -299,11 +299,16 @@ test("Pingo remains in the header without a frame timer", async ($, on) => {
     return { value: {} };
   });
   await $.session.start({ cwd: "/workspace" } as never).catch(() => undefined);
+  // the terminal draws Pingo as a still pixel sprite two cells tall; the desktop, which has no Raster, as its face
   const ui = await $.ui.mount({ plugin: "jev", surface: "terminal", component: "Pane", requestId: "jev", props: PANE_PROPS });
-  expect(await ui.find({ type: "Text", text: PINGO_FACE })).toBeDefined();
+  const mark = await ui.find({ type: "Raster", key: "pingo-mark" } as never);
+  expect(mark?.props.rows).toBe(2);
   await clock.advance(100);
   expect(blits).toEqual([]);
   await ui.unmount();
+  const desk = await $.ui.mount({ plugin: "jev", surface: "desktop", component: "Pane", requestId: "jev", props: PANE_PROPS });
+  expect(await desk.find({ type: "Text", text: PINGO_FACE })).toBeDefined();
+  await desk.unmount();
 });
 
 test("the band shows the status line", async ($, on) => {
@@ -614,15 +619,15 @@ test("a feature switched in the Deck is switched on the dashboard, and the rever
   for (const surface of [TERMINAL, DESKTOP]) {
     const band = await $.ui.mount({ ...DECK_BAND, surface });
     // every feature has its switch in the expanded band, named and showing its state
-    for (const id of Object.keys(DEFAULT_FEATURES)) expect((await band.find({ key: `deck-feature-${id}` }))?.props.label).toMatch(/^[●○] \S/);
-    expect((await band.find({ key: "deck-feature-clareza" }))?.props.label).toBe("● Clareza");
+    for (const id of Object.keys(DEFAULT_FEATURES)) expect((await band.find({ key: `deck-feature-${id}` }))?.props.label).toMatch(/^[▣□] \S/);
+    expect((await band.find({ key: "deck-feature-clareza" }))?.props.label).toBe("▣ Clareza");
     await band.press({ key: "deck-feature-clareza" });
-    expect((await band.find({ key: "deck-feature-clareza" }))?.props.label).toBe("○ Clareza");
+    expect((await band.find({ key: "deck-feature-clareza" }))?.props.label).toBe("□ Clareza");
     expect((await band.find({ key: "deck-feature-clareza" }))?.props.dimColor).toBe(true);
     expect((await pane.find({ key: "feature-clareza" }))?.props.dimColor).toBe(true);
     await pane.press({ key: "feature-clareza" });
     expect((await pane.find({ key: "feature-clareza" }))?.props.dimColor).toBe(false);
-    expect((await band.find({ key: "deck-feature-clareza" }))?.props.label).toBe("● Clareza");
+    expect((await band.find({ key: "deck-feature-clareza" }))?.props.label).toBe("▣ Clareza");
     await band.unmount();
   }
   await pane.unmount();

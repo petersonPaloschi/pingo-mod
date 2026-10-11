@@ -256,10 +256,67 @@ export function noteAdvice(s: TraceState, id: string, change: Partial<TraceAdvic
   });
 }
 
-/** prompt.submit's `next` resolved: the message entered (its run started meanwhile, or it waits), or was refused. */
+/**
+ * prompt.submit's `next` resolved: the message entered, or was refused. One that entered stays `entering`: the
+ * engine settles `next` before turn.start fires, so the turn that starts next is still its.
+ */
 export function promptEntered(s: TraceState, id: string, dropped?: string): TraceState {
+  if (dropped === undefined) return s;
   const next = s.entering === id ? omit(s, "entering") : s;
-  return dropped === undefined ? next : changeMessage(next, id, (message) => ({ ...message, state: "dropped", dropped: clip(dropped, 120) }));
+  return changeMessage(next, id, (message) => ({ ...message, state: "dropped", dropped: clip(dropped, 120) }));
+}
+
+/** A conversation row's words (session.append's content): the text itself, or its text blocks joined. */
+export function rowText(content: unknown): string {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  return content
+    .map((block) => (block && typeof block === "object" && (block as { type?: unknown }).type === "text" ? String((block as { text?: unknown }).text ?? "") : ""))
+    .filter(Boolean)
+    .join("\n");
+}
+
+/** Every message not yet in a run of its own: the inbox's, then each run's received ones. */
+const looseMessages = (s: TraceState) => [...s.inbox, ...s.runs.flatMap((run) => run.received)];
+
+/**
+ * The conversation took a prompt row on the main loop (session.append's `prompt` door): the oldest message with
+ * those words that waits, is queued, or was taken for withdrawn, entered, and the next main turn carries it.
+ */
+export function promptRow(s: TraceState, text: string): TraceState {
+  const said = clip(text);
+  const carried = s.carried ?? [];
+  const found = looseMessages(s)
+    .filter((message) => (message.state === "waiting" || message.state === "queued" || message.state === "withdrawn") && !carried.includes(message.id) && message.text === said)
+    .sort((a, b) => a.at - b.at)[0];
+  if (!found) return s;
+  const next = { ...s, carried: [...carried, found.id] };
+  return found.state === "withdrawn" ? changeMessage(next, found.id, (message) => ({ ...message, state: "queued" })) : next;
+}
+
+/**
+ * A message typed during the running turn reached the model inside it (session.append's `delivery` door, a
+ * queued_command): its row quotes the words, which Claude read there. The oldest such message is taken.
+ */
+export function queuedDelivered(s: TraceState, text: string): TraceState {
+  const row = text.replace(/\s+/g, " ");
+  const pool = activeRun(s)?.received ?? s.runs.flatMap((run) => run.received);
+  const found = pool
+    .filter((message) => (message.state === "queued" || message.state === "withdrawn") && row.includes(message.text.replace(/…$/, "")))
+    .sort((a, b) => a.at - b.at)[0];
+  return found ? changeMessage(s, found.id, (message) => ({ ...message, state: "delivered" })) : s;
+}
+
+/** What was typed during a turn that ended, neither read inside it nor entered after it, was taken back. */
+function withdrawLeft(s: TraceState): TraceState {
+  const carried = new Set(s.carried ?? []);
+  const left = (message: TraceMessage) => message.state === "queued" && !carried.has(message.id);
+  return {
+    ...s,
+    runs: s.runs.map((run) => (run.endedAt !== undefined && run.received.some(left)
+      ? { ...run, received: run.received.map((message) => (left(message) ? { ...message, state: "withdrawn" } : message)) }
+      : run)),
+  };
 }
 
 // --- Jev ---
@@ -282,6 +339,14 @@ export function consultStart(s: TraceState, where: ConsultWhere, consult: Omit<T
     if (linked) return [toRun(next, linked.id), id];
     const waiting = [...next.inbox, ...next.runs.flatMap((run) => run.received)].some((message) => message.id === where.messageId);
     if (waiting) return [changeMessage(next, where.messageId, (message) => ({ ...message, consults: [...message.consults, record].slice(-KEPT_CONSULTS) })), id];
+  }
+  if (!where.agentId && !next.active) {
+    // Asked with no turn running: for the message about to start one (its run takes the call), else told in the
+    // latest run; never a run of its own, which would show as a request with no message.
+    const entering = next.entering ? next.inbox.find((message) => message.id === next.entering && message.state === "waiting") : undefined;
+    if (entering) return [changeMessage(next, entering.id, (message) => ({ ...message, consults: [...message.consults, record].slice(-KEPT_CONSULTS) })), id];
+    const latest = next.runs.at(-1);
+    if (latest) return [toRun(next, latest.id), id];
   }
   const [placed, runId] = where.agentId ? ensureAgent(next, where.agentId, consult.startedAt) : ensureMain(next, consult.startedAt);
   return [toRun(placed, runId), id];
@@ -313,22 +378,40 @@ export function consultEnd(
 
 // --- Turns ---
 
-/** turn.start (the main loop's only): a run opens, tied to the idle message entering, if any. */
+/**
+ * turn.start (the main loop's only): a run opens, carrying the messages whose prompt rows entered (the engine runs
+ * several queued ones as one turn, its text only the last's), else the idle message entering, if any. What was
+ * queued in a turn that ended and did not enter is taken for withdrawn.
+ */
 export function startTurn(s: TraceState, turnId: string, text: string, at: number): TraceState {
   const known = s.runs.find((run) => run.id === turnId);
   if (known) return known.endedAt === undefined ? { ...s, active: known.id } : s;
   let next = s.active ? endRun(s, s.active, at, "superseded") : s;
+  const loose = looseMessages(next);
+  const carried = (next.carried ?? []).map((id) => loose.find((message) => message.id === id)).filter((message): message is TraceMessage => message !== undefined);
   const entering = next.entering ? next.inbox.find((message) => message.id === next.entering && message.state === "waiting") : undefined;
+  const taken = carried.length ? carried : entering ? [entering] : [];
   const turns = next.turns + 1;
-  const run = newRun(turnId, true, turns, entering ? "message" : text.trim() ? "unlinked" : "continuation", clip(text), at);
-  if (entering) {
-    // The consultations made for the message move to its run, which counts them.
-    run.message = { ...entering, state: "linked", consults: [] };
-    if (entering.plan?.checkpoints?.length) run.checkpoints = [...entering.plan.checkpoints];
-    run.consults = entering.consults;
-    run.consultCount = entering.consults.length;
-    next = { ...omit(next, "entering"), inbox: next.inbox.filter((message) => message.id !== entering.id) };
+  const run = newRun(turnId, true, turns, taken.length ? "message" : text.trim() ? "unlinked" : "continuation", clip(text), at);
+  if (taken.length) {
+    const [first, ...rest] = taken as [TraceMessage, ...TraceMessage[]];
+    // The consultations made for the messages move to their run, which counts them.
+    run.message = { ...first, state: "linked", consults: [] };
+    if (rest.length) run.also = rest.map((message) => ({ ...message, state: "linked", consults: [] }));
+    if (first.plan?.checkpoints?.length) run.checkpoints = [...first.plan.checkpoints];
+    run.consults = taken.flatMap((message) => message.consults).slice(-KEPT_CONSULTS);
+    run.consultCount = run.consults.length;
+    const ids = new Set(taken.map((message) => message.id));
+    // A queued one stays on the trail of the turn it was typed in, naming the run that carried it.
+    next = {
+      ...(entering && ids.has(entering.id) ? omit(next, "entering") : next),
+      inbox: next.inbox.filter((message) => !ids.has(message.id)),
+      runs: next.runs.map((one) => (one.received.some((message) => ids.has(message.id))
+        ? { ...one, received: one.received.map((message) => (ids.has(message.id) ? { ...message, state: "linked", ranIn: turnId, consults: [] } : message)) }
+        : one)),
+    };
   }
+  next = withdrawLeft(omit(next, "carried"));
   return prune({ ...next, turns, active: turnId, runs: [...next.runs, run] });
 }
 
@@ -481,7 +564,9 @@ export function completeTurn(s: TraceState, turnId: string, at: number, reason: 
   }
   const run = s.runs.find((one) => one.id === turnId) ?? (activeRun(s)?.confirmed === false ? activeRun(s) : undefined);
   if (!run) return s;
-  const ended = endRun(s, run.id, at, reason);
+  // The engine takes its queue in before the turn ends: what was typed during it and neither read in it nor entered
+  // was taken back (a later prompt row still brings one back).
+  const ended = withdrawLeft(endRun(s, run.id, at, reason));
   return prune(said ? withRun(ended, run.id, (one) => ({ ...one, answer: said })) : ended);
 }
 

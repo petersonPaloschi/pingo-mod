@@ -28,10 +28,10 @@ export type RouteEvent = {
 export type JevTab = "overview" | "live" | "models" | "agents" | "logs" | "configuration" | "deck" | "features" | "ai" | "flow" | "orchestration" | "quality" | "comandante";
 
 /**
- * A message as the Live run view records it. Its run is tied only when the engine confirms it: the turn
- * that starts while its idle submission is still entering. A message typed into a running turn
- * names that turn (`during`) and stays "queued": the engine may deliver it into that turn or run
- * it later, and nothing observable says which.
+ * A message as the Live run view records it. The conversation's own rows say where it went: a prompt row
+ * means it entered and the next main turn carries it; a queued_command delivery means Claude read it inside
+ * the turn it was typed in (`during`). A queued message neither row named was withdrawn. An idle message
+ * with no row seen is still the next turn's (`entering`): the engine settles its submission before turn.start.
  */
 export type TraceMessage = {
   id: string;
@@ -41,8 +41,14 @@ export type TraceMessage = {
   origin: string;
   /** The turn that was running when it was submitted (prompt.submit's turnId). */
   during?: string;
-  state: "waiting" | "linked" | "queued" | "dropped";
+  /**
+   * waiting: idle, its turn not started yet; queued: typed during a turn, not taken yet; linked: a run carries it;
+   * delivered: Claude read it inside the turn it was typed in; withdrawn: taken back before it ran; dropped: refused.
+   */
+  state: "waiting" | "linked" | "queued" | "delivered" | "withdrawn" | "dropped";
   dropped?: string;
+  /** For a queued message a later turn carried: that run's id. */
+  ranIn?: string;
   plan?: TracePlan;
   /** Jev calls made for it before its run started. */
   consults: TraceConsult[];
@@ -193,6 +199,8 @@ export type TraceRun = {
   /** The main loop's final answer, clipped. */
   answer?: string;
   message?: TraceMessage;
+  /** Further messages that entered with it: queued ones the engine runs together in one turn, oldest first. */
+  also?: TraceMessage[];
   /** Messages submitted while it ran. */
   received: TraceMessage[];
   consults: TraceConsult[];
@@ -223,8 +231,10 @@ export type TraceState = {
   turns: number;
   /** The main loop's running run, by id. */
   active?: string;
-  /** The idle message whose prompt.submit is still entering: the run that starts meanwhile is its. */
+  /** The idle message submitted last: the next main turn is its unless prompt rows name others (`carried`). */
   entering?: string;
+  /** Messages whose prompt row the conversation took, oldest first: the next main turn carries them. */
+  carried?: string[];
   /** Messages not tied to a run: awaiting their turn, or refused. */
   inbox: TraceMessage[];
   /** Oldest first: every run still active and the latest finished. */
@@ -285,6 +295,8 @@ export type FeaturePreferences = {
   monitorEveryMs: 2000 | 5000 | 10000;
   trackerSummary: boolean;
   clashMinutes: 15 | 30 | 60;
+  /** The assistants whose alerts the Comandante judges; one switched off goes on as if the Comandante were off. */
+  comandanteSources: ComandanteSources;
 };
 
 /** One Farol assumption; `comandante` is the Comandante's ruling on it, when it judged it. */
@@ -293,7 +305,8 @@ export type FarolRule = { assumption: string; correction: string };
 export type ClarezaGrade = { pass: boolean; problems: string[]; offered: string[]; fixing: boolean };
 /** Clareza's plan for an unclear answer: what may confuse, the rewrite request it would send once the person agrees, and the Comandante's ruling on it. */
 export type ClarezaProposal = { problems: string[]; prompt: string; at: number; comandante?: ComandanteRuling };
-export type SementeIdea = { id: string; text: string; source: "you" | "claude" };
+/** One idea on Semente's shelf; `comandante` is the Comandante's ruling on keeping it, when it judged it. */
+export type SementeIdea = { id: string; text: string; source: "you" | "claude"; comandante?: ComandanteRuling };
 export type LapidaPhase = "idle" | "enhancing" | "ready" | "error";
 export type PrismaOption = { label: string; description?: string; svg?: string; file?: string };
 export type PrismaQuestion = { question: string; header: string; multiSelect?: boolean; options: PrismaOption[] };
@@ -301,20 +314,26 @@ export type PrismaPicker = { id: string; questions: PrismaQuestion[]; picks: str
 export type SentinelaSession = { pid: number; id: string; name: string; cwd: string; project: string; status: "working" | "waiting" | "done"; waitingFor: string; since: number };
 export type VigiaTask = { id: string; text: string; status: "pending" | "in_progress" | "completed" };
 export type VigiaSession = { id: string; root: string; startedAt: number; beatAt: number; endedAt?: number; isBusy?: boolean; turns?: number; lastPrompt?: string; lastAnswer?: string; title?: string; done?: string; doing?: string; next?: string; tasks: VigiaTask[]; files?: string[]; edits?: Record<string, number> };
-/** One message or notice between two sessions of a project, as the Vigia pane lists it: `in` arrived here, `out` left from here; a message that arrived carries the Comandante's ruling, when it judged it. */
-export type VigiaMail = { id: string; at: number; way: "in" | "out"; peer: string; peerId: string; kind: "message" | "clash"; text: string; file?: string; isDelivered?: boolean; comandante?: ComandanteRuling };
+/** One message or notice between two sessions of a project, as the Vigia pane lists it: `in` arrived here, `out` left from here; a message that arrived carries the Comandante's ruling, when it judged it, and `isReleased` once the person let a held one through to Claude. */
+export type VigiaMail = { id: string; at: number; way: "in" | "out"; peer: string; peerId: string; kind: "message" | "clash"; text: string; file?: string; isDelivered?: boolean; comandante?: ComandanteRuling; isReleased?: boolean };
 /** Where an alert the Comandante judges came from: a Farol assumption, a Semente idea, a Vigia message, a Clareza plan, a call of the Code Quality agent. */
 export type ComandanteSource = "farol" | "semente" | "vigia" | "clareza" | "codeQuality";
+/** Which sources the Comandante judges: one switch per source. */
+export type ComandanteSources = Record<ComandanteSource, boolean>;
 /** The Comandante's decision: let it through, block it, or send a question back to whoever raised it. */
 export type ComandanteDecision = "approved" | "rejected" | "questioned";
-/** The Comandante's ruling as the item it judged keeps it: the decision and its reason, a key of COMANDANTE_VERDICTS. */
-export type ComandanteRuling = { decision: ComandanteDecision; reason: string };
+/**
+ * The Comandante's ruling as the item it judged keeps it: the decision and its reason, a key of COMANDANTE_VERDICTS,
+ * and its record's id in the log, so a later step can note on it what became of the item.
+ */
+export type ComandanteRuling = { decision: ComandanteDecision; reason: string; record?: string };
 /**
  * One decision of the Comandante, as the log every session of the project shares keeps it: when, the session
  * (id, name and project) and the agent that raised it, what it said, the decision and its reason, a key of
- * COMANDANTE_VERDICTS (hooks/core/comandante.ts), with Jev's confidence.
+ * COMANDANTE_VERDICTS (hooks/core/comandante.ts), with Jev's confidence; `releasedAt` once the person let a message
+ * it held (a Vigia message) through to Claude.
  */
-export type ComandanteRecord = { id: string; at: number; session: string; sessionName: string; project: string; source: ComandanteSource; agent?: string; summary: string; decision: ComandanteDecision; reason: string; confidence: number };
+export type ComandanteRecord = { id: string; at: number; session: string; sessionName: string; project: string; source: ComandanteSource; agent?: string; summary: string; decision: ComandanteDecision; reason: string; confidence: number; releasedAt?: number };
 /** The Comandante tab's filters: a session's id or "all", a decision or "all". */
 export type ComandanteFilter = { session: string; decision: ComandanteDecision | "all" };
 /** One finding of a Code Quality cycle: where it is (`file:line`, when the agent named it) and what it says. */

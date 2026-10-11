@@ -301,7 +301,7 @@ export function fadeInSvg(source: string, ageMs: number, fadeMs: number): string
 
 // ---------- glyphs ----------
 
-// a row's node on the trail: its state (● at work, ? a question, ! a failure, ✓ a finished plan, ◔ ◑ a limit's
+// a row's state glyph, after its share: its state (◆ at work, ? a question, ! a failure, ✓ a finished plan, ◔ ◑ a limit's
 // fill), or → for the route, which has no bar; the title beside it says what the row is
 export function rowGlyph(row: DeckRow): string {
   return row.kind === "route" ? GLYPH.route : STYLE[row.style].glyph;
@@ -436,7 +436,7 @@ export function collapsedRings(rows: readonly DeckRow[], spend: Spend, costOn: b
 export type FeatureSwitch = { id: FeatureId; name: string; on: boolean };
 
 /** A switch's label: its state glyph, then its name. */
-export const switchLabel = (sw: FeatureSwitch) => `${sw.on ? GLYPH.on : GLYPH.off} ${sw.name}`;
+export const switchLabel = (sw: FeatureSwitch) => `${sw.on ? GLYPH.check : GLYPH.off} ${sw.name}`;
 
 /**
  * The switches packed into terminal lines of `cols` columns, indented under their title. A switch that does not fit

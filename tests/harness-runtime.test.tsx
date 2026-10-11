@@ -171,7 +171,7 @@ describe("runtime without main-turn advice", () => {
     const ui = await $.ui.mount({ plugin: "jev", surface: "terminal", component: "Pane", requestId: "jev", props: PANE_PROPS });
     for (const [alias, label] of [["flow", "Flow"], ["reasons", "Logs"], ["features", "Configuration"], ["setup", "AI"], ["ai", "AI"], ["ia", "AI"], ["orch", "Orchestration"]]) {
       await $.command.run({ command: "jev", args: alias, origin: ORIGIN } as never);
-      expect(JSON.stringify(await ui.drawn())).toContain(`◉ ${label}`);
+      expect(JSON.stringify(await ui.drawn())).toContain(`▸ ${label}`);
     }
     expect(await $.command.run({ command: "jev", args: "baseline", origin: ORIGIN } as never)).toMatchObject({ text: expect.stringContaining("Usage:") });
     await ui.unmount();
@@ -193,7 +193,7 @@ describe("runtime without main-turn advice", () => {
     for (const [alias, tab] of listed) {
       expect(label[tab]).toBeDefined();
       await $.command.run({ command: "jev", args: alias, origin: ORIGIN } as never);
-      expect(JSON.stringify(await ui.drawn())).toContain(`◉ ${label[tab]}`);
+      expect(JSON.stringify(await ui.drawn())).toContain(`▸ ${label[tab]}`);
     }
     await ui.unmount();
   });

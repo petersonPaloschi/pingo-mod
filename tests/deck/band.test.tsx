@@ -261,7 +261,7 @@ test("a permission prompt held past the delay turns the bar amber and alarms the
   await $.tool.call({ tool: "TodoWrite", todos: TODOS } as never);
   await $.tool.check({ tool: "Bash", input: { command: "rm -rf build" } });
   let out = await $.command.run({ command: "deck", ...ASK, args: "status" });
-  expect(out.text).toMatch(/^● Tasks — Fixing auth 3\/5/m);
+  expect(out.text).toMatch(/^◆ Tasks — Fixing auth 3\/5/m);
   await clock.advance(800);
   out = await $.command.run({ command: "deck", ...ASK, args: "status" });
   expect(out.text).toMatch(/^\? Tasks — Fixing auth 3\/5/m);
@@ -299,7 +299,7 @@ test("agents with no live bar get their own Agents bar", LOCALE, async ($, on) =
   await $.agent.spawn(spawn("scan the repo"));
   await $.tool.call({ tool: "Read", file_path: "a.ts", agentId: "solo" } as never);
   const out = await $.command.run({ command: "deck", ...ASK, args: "status" });
-  expect(out.text).toMatch(/^● Agents — Agents 0\/1/m);
+  expect(out.text).toMatch(/^◆ Agents — Agents 0\/1/m);
   expect(out.text).toMatch(/↳ scan the repo: Read \[running\]/);
 });
 
@@ -352,7 +352,7 @@ test("a turn without a todo list gets an activity bar that follows the tools", L
   await $.tool.call({ tool: "Read", file_path: "/src/auth.ts" } as never);
   await $.tool.call({ tool: "Edit", file_path: "/src/auth.ts", old_string: "a", new_string: "b" } as never);
   let out = await $.command.run({ command: "deck", ...ASK, args: "status" });
-  expect(out.text).toMatch(/● Fix the login bug — Editing auth\.ts 2 tools/);
+  expect(out.text).toMatch(/◆ Fix the login bug — Editing auth\.ts 2 tools/);
   await $.turn.complete({ turnId: "t1", answer: "ok", durationMs: 5, isAborted: false, reason: "answer", usage: undefined });
   out = await $.command.run({ command: "deck", ...ASK, args: "status" });
   expect(out.text).toMatch(/✓ Fix the login bug — Done 2 tools/);
@@ -405,7 +405,7 @@ test("agents started without a todo list show as strips under the activity bar, 
   expect(out.text).toMatch(/Migrate the orders module — .* · 0\/2 agents/);
   expect(out.text).toMatch(/↳ Map the orders tables: Grep \[running\] \{haiku\}/);
   expect(out.text).toMatch(/↳ Draft the migration: Starting \[running\] \{sonnet\}/);
-  expect(out.text).not.toMatch(/^● Agents/m);
+  expect(out.text).not.toMatch(/^◆ Agents/m);
 });
 
 test("a usage update with one window keeps the other", LOCALE, async ($, on) => {
@@ -424,7 +424,7 @@ test("bar titles use the typed words, not system reminders around them", LOCALE,
   await $.turn.start({ text: "x", turnId: "t1" });
   await $.tool.call({ tool: "Read", file_path: "/a.ts" } as never);
   const out = await $.command.run({ command: "deck", ...ASK, args: "status" });
-  expect(out.text).toMatch(/● Use 2 subagents to list files — /);
+  expect(out.text).toMatch(/◆ Use 2 subagents to list files — /);
 });
 
 test("/deck collapsed text draws one plain status line with limits first", LOCALE, async ($, on) => {
@@ -544,13 +544,13 @@ test("at 40 columns the Deck pane draws every feature switch whole, on lines of 
   expect(lines.length).toBe(DECK_DESIGN.band.defaultMaxRows);
   for (const line of lines) expect(displayWidth(line)).toBeLessThanOrEqual(40);
   const title = lines.findIndex((line) => line.trim().startsWith("Features"));
-  expect(lines[title]).toContain("● On  ○ Off");
+  expect(lines[title]).toContain("▣ On  □ Off");
   // the switch lines sit under the title, only switches on them, each glyph and name whole
-  const switchLines = lines.slice(title + 1).filter((line) => /^ {2}[●○] /.test(line));
+  const switchLines = lines.slice(title + 1).filter((line) => /^ {2}[▣□] /.test(line));
   const drawn = switchLines.join("  ");
   // Agents is off by default, Lapida was just turned off
-  for (const label of ["○ Agents", "● Farol", "● Clareza", "● Pingo Vivo", "● Prisma", "● Semente", "○ Lapida", "● Sentinela", "● Vigia", "● Context"]) expect(drawn).toContain(label);
-  for (const line of switchLines) expect(line.trim().split(/ {2}/).every((part) => /^[●○] \S/.test(part))).toBe(true);
+  for (const label of ["□ Agents", "▣ Farol", "▣ Clareza", "▣ Pingo Vivo", "▣ Prisma", "▣ Semente", "□ Lapida", "▣ Sentinela", "▣ Vigia", "▣ Context"]) expect(drawn).toContain(label);
+  for (const line of switchLines) expect(line.trim().split(/ {2}/).every((part) => /^[▣□] \S/.test(part))).toBe(true);
   await pane.unmount();
 });
 

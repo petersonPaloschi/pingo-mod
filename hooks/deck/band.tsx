@@ -34,7 +34,7 @@ import {
 } from "./rows.ts";
 import { AGENT_STYLE, BODY, DECK_DESIGN, DIM, MUTED, PILL_INK, STYLE, TEXT, TRACK, runs, textWidth, trunc } from "./theme.ts";
 import { terminalBar } from "./styles-terminal.ts";
-import { GLYPH, UI_DESIGN } from "../theme.ts";
+import { GLYPH, TERMINAL_DEFAULT, UI_DESIGN } from "../theme.ts";
 
 const BRANCH = GLYPH.branch;
 
@@ -132,7 +132,7 @@ export function renderDeck(els: ElementTable, band: DeckBand, surface: Surface) 
   }
   const count = band.rows.length;
   const countText = "· " + (count === 1 ? text("deck.rows.one", band.locale, { count }) : text("deck.rows.many", band.locale, { count }));
-  // the head of the trail: the toggle and the row count, the clock and weather at the far end
+  // the band's head: the toggle and the row count, the clock and weather at the far end
   const header = (
     <Box flexDirection="row" columnGap={UI_DESIGN.space.xs} alignItems="center">
       {toggle}
@@ -164,7 +164,7 @@ function featureSwitches(els: ElementTable, band: DeckBand, desktop: boolean, ha
   const { Box, Button, Text } = els;
   if (!band.features.length) return { node: null, lines: 0 };
   const { indent, columnGap, desktopColumnGap, desktopRowGap, minimumRows } = DECK_DESIGN.band.features;
-  const legend = `${GLYPH.on} ${text("ui.configuration.enabledValue", band.locale)}  ${GLYPH.off} ${text("ui.configuration.disabledValue", band.locale)}`;
+  const legend = `${GLYPH.check} ${text("ui.configuration.enabledValue", band.locale)}  ${GLYPH.off} ${text("ui.configuration.disabledValue", band.locale)}`;
   const title = (
     <Box key="deck-features-title" flexDirection="row" columnGap={columnGap} paddingLeft={indent}>
       <Text color={TEXT} bold>{text("deck.features.title", band.locale)}</Text>
@@ -357,9 +357,9 @@ const pctOf = (row: DeckRow) => `${Math.round(Math.max(0, Math.min(100, row.pct)
 
 /** The value column: wide enough for "100%". */
 
-// the expanded rows in the terminal, a trail: each row's node (its state), the title, the bar, its share right after
-// it, what is left of the right-hand value (a reset, a rate), the ✕, and the agents hanging under it. `reserved`
-// lines (the feature switches) are already taken from the budget.
+// the expanded rows in the terminal, each filed like a card: a tab in its state's color before its title, the bar, its
+// share right after it and its state's glyph, what is left of the right-hand value (a reset, a rate), the ✕, and the
+// agents hanging under it. `reserved` lines (the feature switches) are already taken from the budget.
 function terminalRows(els: ElementTable, band: DeckBand, shown: number, hasLane: boolean, reserved: number) {
   const { Box, Text } = els;
   const layout = DECK_DESIGN.band.terminal;
@@ -376,11 +376,12 @@ function terminalRows(els: ElementTable, band: DeckBand, shown: number, hasLane:
       const { cells, dirColor } = routeCellsTerminal(row, band.routeHist, band.locale);
       lines.push(
         <Box key={"row-" + row.id} flexDirection="row" columnGap={UI_DESIGN.space.xs}>
-          <Text color={STYLE.run.fill}>{rowGlyph(row)}</Text>
+          <Text color={STYLE.run.fill} bold>{GLYPH.tab}</Text>
           <Box width={labelW} flexShrink={0}>
             <Text color={TEXT} bold wrap="truncate">{trunc(row.title, labelW)}</Text>
           </Box>
-          <Box flexGrow={1} flexDirection="row">{runs(Text, cells.slice(0, barW + layout.valueColumns + 1))}</Box>
+          <Text color={STYLE.run.fill} bold>{rowGlyph(row)}</Text>
+          <Box flexGrow={1} flexDirection="row">{runs(Text, cells.slice(0, barW + layout.valueColumns))}</Box>
           <Box flexShrink={0} justifyContent="flex-end">
             <Text color={dirColor}>{row.right}</Text>
           </Box>
@@ -394,7 +395,7 @@ function terminalRows(els: ElementTable, band: DeckBand, shown: number, hasLane:
     const rest = row.right && row.right !== value ? row.right : "";
     lines.push(
       <Box key={"row-" + row.id} flexDirection="row" columnGap={UI_DESIGN.space.xs}>
-        <Text color={st.fill} bold>{rowGlyph(row)}</Text>
+        <Text color={st.fill} bold>{GLYPH.tab}</Text>
         <Box width={labelW} flexShrink={0}>
           <Text color={TEXT} bold wrap="truncate">{trunc(row.title, labelW)}</Text>
         </Box>
@@ -402,6 +403,7 @@ function terminalRows(els: ElementTable, band: DeckBand, shown: number, hasLane:
         <Box width={layout.valueColumns} flexShrink={0} justifyContent="flex-end">
           <Text color={row.style === "run" ? TEXT : st.fill} bold>{value}</Text>
         </Box>
+        <Text color={st.fill} bold>{rowGlyph(row)}</Text>
         {rightW ? (
           <Box width={rightW} flexShrink={0} justifyContent="flex-end">
             <Text color={MUTED}>{rest}</Text>
@@ -458,6 +460,9 @@ function rowAlt(row: DeckRow, locale: Locale): string {
   return row.title + ": " + (row.name ?? "") + (row.count ? " " + row.count : "") + ", " + row.right;
 }
 
+/** A speaker's color as a Text paints it: the terminal's own color (Pingo's) is the theme's text color. */
+const inkOf = (color: number) => (color === TERMINAL_DEFAULT ? TEXT : hex(color));
+
 /** Terminal lines the lane takes: its rows, and the speech line under it while a feature has something to say. */
 function laneLines(band: DeckBand, hasLane: boolean): number {
   return hasLane ? LANE_ROWS + (band.speech?.length ? 1 : 0) : 0;
@@ -490,7 +495,7 @@ function speechLine(els: ElementTable, band: DeckBand) {
   return (
     <Box key="deck-speech" flexDirection="row" columnGap={UI_DESIGN.space.xs} overflow="hidden">
       <Box flexShrink={0}>
-        <Text color={hex(lead.color)} bold>{head}</Text>
+        <Text color={inkOf(lead.color)} bold>{head}</Text>
       </Box>
       <Button key={"deck-speech-" + lead.id} label={trunc(lead.text, room) + open} plain onPress={lead.open} />
       {named.map((one) => (

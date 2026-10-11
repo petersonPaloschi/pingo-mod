@@ -1,28 +1,28 @@
-// The Flow tab as a trail: for each request, what Pingo actually did, in the order it happened. The message,
-// the controlled advisor's decision (its branch, highlighted, when it was on), every Jev call, every model
-// request with its model and effort, every tool with its result, each subagent's work and result, the
-// native advisor's calls and the answer, each a node on one vertical line with its time. Pure: the pane
-// draws exactly these lines, and a test reads them.
+// The Flow tab as a log of events: for each request, what Pingo actually did, in the order it happened. The
+// message, the controlled advisor's decision (its branch, marked down its lines, when it was on), every Jev call,
+// every model request with its model and effort, every tool with its result, each subagent's work and result, the
+// native advisor's calls and the answer, each with its glyph and its time, its details indented under it. Pure: the
+// pane draws exactly these lines, and a test reads them.
 import type { TraceAdvice, TraceAgent, TraceMessage, TraceRun, TraceState } from "../types";
 import { CLAUDE_MODEL, MODEL_NAMES, TIERS } from "./core/contracts.ts";
 import { formatClock, formatCompact, formatDuration, localeFor, text, type Locale, type LocaleKey } from "./i18n.ts";
 import { displayWidth } from "./layout.ts";
 import { css, GLYPH, HUE, PAINT } from "./theme.ts";
 
-// The four Trilha hues name the nodes; text takes the person's theme.
+// Four hues of the identity name the events; text takes the person's theme.
 const C = {
   ink: PAINT.text,
   dim: PAINT.muted,
   rule: PAINT.rule,
-  lime: css(HUE.brand),
+  brand: css(HUE.brand),
   amber: css(HUE.warn),
   rose: css(HUE.fail),
-  lavender: css(HUE.info),
+  info: css(HUE.info),
 } as const;
 
 /** The advisor's branch: a heavy bar in its color down the lines that belong to it. */
 const BRANCH = "┃";
-const ADVISOR = "◆";
+const ADVISOR = "◈";
 /** Requests drawn, newest first; the trace keeps more. */
 const RUNS_SHOWN = 6;
 const HEAD_LINES = 2;
@@ -117,14 +117,14 @@ function messageEvents(message: TraceMessage | undefined, run: TraceRun | undefi
   if (!message) {
     if (!run) return [];
     const key: LocaleKey = run.kind === "continuation" ? "trail.message.continuation" : "trail.message.unlinked";
-    return [{ at: run.startedAt, rank: 0, glyph: GLYPH.off, color: C.lavender, head: text(key, locale, { text: run.text }), details: [] }];
+    return [{ at: run.startedAt, rank: 0, glyph: GLYPH.off, color: C.info, head: text(key, locale, { text: run.text }), details: [] }];
   }
   const you = message.origin === "composer" || message.origin === "bridge" || message.origin === "sdk";
   return [{
     at: message.at,
     rank: 0,
     glyph: GLYPH.on,
-    color: C.lavender,
+    color: C.info,
     head: text(you ? "trail.message.you" : "trail.message.from", locale, { text: quote(message.text), origin: message.origin }),
     bold: true,
     details: message.state === "dropped" ? [{ text: text("trail.message.dropped", locale, { why: message.dropped ?? "" }), color: C.rose }] : [],
@@ -185,11 +185,24 @@ function agentName(run: TraceRun, agentId: string | undefined): string | undefin
   return run.agents.find((agent) => agent.id === agentId)?.type ?? agentId;
 }
 
-function runEvents(run: TraceRun, now: number, locale: Locale): Event[] {
+/** What became of a message typed during the turn: read inside it, carried by a later request, or taken back. */
+function receivedFate(message: TraceMessage, numberOf: (runId: string) => number | undefined, locale: Locale): Line[] {
+  if (message.state === "delivered") return [{ text: text("trail.message.delivered", locale), color: C.dim }];
+  if (message.state === "withdrawn") return [{ text: text("trail.message.withdrawn", locale), color: C.amber }];
+  if (message.state === "linked" && message.ranIn) {
+    const n = numberOf(message.ranIn);
+    return [{ text: n === undefined ? text("trail.message.ranLater", locale) : text("trail.message.ranAs", locale, { n: String(n) }), color: C.dim }];
+  }
+  return [];
+}
+
+function runEvents(run: TraceRun, now: number, locale: Locale, numberOf: (runId: string) => number | undefined): Event[] {
   const events: Event[] = [...messageEvents(run.message, run, locale)];
+  // queued messages the engine ran together with the first, each as typed
+  for (const message of run.also ?? []) events.push(...messageEvents(message, run, locale));
   if (run.message) events.push(...adviceEvents(run.message.advice, run.message.at, locale));
   for (const message of run.received) {
-    events.push({ at: message.at, rank: 0, glyph: GLYPH.off, color: C.lavender, head: text("trail.message.received", locale, { text: quote(message.text) }), details: [] });
+    events.push({ at: message.at, rank: 0, glyph: GLYPH.off, color: C.info, head: text("trail.message.received", locale, { text: quote(message.text) }), details: receivedFate(message, numberOf, locale) });
   }
   for (const consult of run.consults) {
     const purpose = text(`trail.jev.origin.${consult.origin}` as LocaleKey, locale);
@@ -198,7 +211,7 @@ function runEvents(run: TraceRun, now: number, locale: Locale): Event[] {
       at: consult.startedAt,
       rank: 2,
       glyph: consult.error ? GLYPH.fail : ended ? GLYPH.on : GLYPH.run,
-      color: consult.error ? C.rose : C.lime,
+      color: consult.error ? C.rose : C.brand,
       head: consult.error
         ? text("trail.jev.failed", locale, { purpose, error: consult.error })
         : ended
@@ -227,7 +240,7 @@ function runEvents(run: TraceRun, now: number, locale: Locale): Event[] {
       at: step.startedAt,
       rank: 3,
       glyph: step.endedAt === undefined ? GLYPH.run : GLYPH.on,
-      color: C.lavender,
+      color: C.info,
       head: text("trail.step", locale, { number: String(step.index + 1), model: modelText(step.sent, step.effort) }),
       details,
       ...(agent ? { agent } : {}),
@@ -240,7 +253,7 @@ function runEvents(run: TraceRun, now: number, locale: Locale): Event[] {
       at: tool.startedAt,
       rank: 4,
       glyph: result === "ok" ? GLYPH.ok : result === "error" ? GLYPH.fail : result === "denied" ? GLYPH.warn : GLYPH.run,
-      color: result === "error" ? C.rose : result === "denied" ? C.amber : C.lime,
+      color: result === "error" ? C.rose : result === "denied" ? C.amber : C.brand,
       head: text("trail.tool", locale, {
         tool: tool.name,
         result: text(`trail.tool.result.${result}` as LocaleKey, locale),
@@ -277,21 +290,21 @@ function agentEvents(run: TraceRun, agent: TraceAgent, now: number, locale: Loca
     at: agent.startedAt,
     rank: 5,
     glyph: GLYPH.on,
-    color: C.lavender,
+    color: C.info,
     bold: true,
     head: text("trail.agent.start", locale, { type: agent.type, description: agent.description }),
     details: agent.model ? [{ text: text("trail.agent.model", locale, { model: prettyModel(agent.model) }), color: C.dim }] : [],
     ...(parent ? { agent: parent } : {}),
   };
   if (agent.state === "running") {
-    return [start, { at: now, rank: 5.5, glyph: GLYPH.run, color: C.lime, head: text("trail.agent.running", locale, { type: agent.type, duration: since(agent.startedAt, now, locale) }), details: [], ...(parent ? { agent: parent } : {}) }];
+    return [start, { at: now, rank: 5.5, glyph: GLYPH.run, color: C.brand, head: text("trail.agent.running", locale, { type: agent.type, duration: since(agent.startedAt, now, locale) }), details: [], ...(parent ? { agent: parent } : {}) }];
   }
   const failed = agent.state !== "done";
   return [start, {
     at: agent.endedAt ?? agent.startedAt,
     rank: 5.5,
     glyph: failed ? GLYPH.fail : GLYPH.ok,
-    color: failed ? C.rose : C.lime,
+    color: failed ? C.rose : C.brand,
     head: text(`trail.agent.end.${agent.state}` as LocaleKey, locale, {
       type: agent.type,
       duration: since(agent.startedAt, agent.endedAt ?? agent.startedAt, locale),
@@ -305,7 +318,7 @@ function agentEvents(run: TraceRun, agent: TraceAgent, now: number, locale: Loca
 
 function answerEvent(run: TraceRun, now: number, locale: Locale): Event {
   if (run.endedAt === undefined) {
-    return { at: now, rank: 9, glyph: GLYPH.run, color: C.lime, head: text("trail.answer.running", locale, { duration: since(run.startedAt, now, locale) }), details: [] };
+    return { at: now, rank: 9, glyph: GLYPH.run, color: C.brand, head: text("trail.answer.running", locale, { duration: since(run.startedAt, now, locale) }), details: [] };
   }
   const reason = run.reason ?? "answer";
   const ok = reason === "answer";
@@ -313,14 +326,14 @@ function answerEvent(run: TraceRun, now: number, locale: Locale): Event {
     at: run.endedAt,
     rank: 9,
     glyph: ok ? GLYPH.ok : reason === "aborted" || reason === "superseded" ? GLYPH.warn : GLYPH.fail,
-    color: ok ? C.lime : reason === "aborted" || reason === "superseded" ? C.amber : C.rose,
+    color: ok ? C.brand : reason === "aborted" || reason === "superseded" ? C.amber : C.rose,
     bold: true,
     head: text("trail.answer", locale, { state: text(`flow.answer.${reason}` as LocaleKey, locale, { duration: since(run.startedAt, run.endedAt, locale) }) }),
     details: run.answer ? [{ text: quote(run.answer), color: C.ink }] : [],
   };
 }
 
-/** One request's lines: its title, then each event as a node on the line with its time. */
+/** One request's lines: its title, then each event with its time and glyph, what wraps indented under its words. */
 function draw(title: Line, events: readonly Event[], width: number, locale: Locale): TrailSegment[][] {
   const times = events.map((event) => formatClock(event.at, locale));
   const timeWidth = Math.max(0, ...times.map(displayWidth));
@@ -331,7 +344,7 @@ function draw(title: Line, events: readonly Event[], width: number, locale: Loca
   const pad = (value: string) => value + " ".repeat(Math.max(0, timeWidth - displayWidth(value)));
   const lines: TrailSegment[][] = wrap(title.text, width, HEAD_LINES).map((line) => [{ text: line, color: title.color, bold: true }]);
   events.forEach((event, index) => {
-    const bar = event.branch ? { text: BRANCH, color: C.amber } : { text: GLYPH.spine, color: C.rule };
+    const bar = event.branch ? { text: BRANCH, color: C.amber } : { text: " ", color: C.rule };
     const blank = timed ? [{ text: " ".repeat(lead), color: C.dim }] : [];
     const tag = event.agent ? text("trail.agent.tag", locale, { agent: event.agent }) : "";
     wrap(`${tag}${event.head}`, room, HEAD_LINES).forEach((line, i) => {
@@ -361,13 +374,14 @@ export function trailLines(input: TrailInput): TrailSegment[][] {
   for (const message of messages) {
     const entering = message.state === "waiting";
     sections.push(draw(
-      { text: text(entering ? "trail.entering" : "trail.refused", locale), color: entering ? C.lime : C.rose },
+      { text: text(entering ? "trail.entering" : "trail.refused", locale), color: entering ? C.brand : C.rose },
       [...messageEvents(message, undefined, locale), ...adviceEvents(message.advice, message.at, locale)].sort((a, b) => a.at - b.at || a.rank - b.rank),
       width,
       locale,
     ));
   }
   const runs = [...trace.runs].reverse().slice(0, RUNS_SHOWN);
+  const numberOf = (runId: string) => trace.runs.find((run) => run.id === runId)?.n;
   for (const run of runs) {
     const running = run.endedAt === undefined;
     const title = text(running ? "trail.run.running" : "trail.run", locale, {
@@ -375,7 +389,7 @@ export function trailLines(input: TrailInput): TrailSegment[][] {
       time: formatClock(run.startedAt, locale),
       duration: since(run.startedAt, run.endedAt ?? now, locale),
     });
-    sections.push(draw({ text: `${running ? GLYPH.run : GLYPH.on} ${title}`, color: running ? C.lime : C.ink }, runEvents(run, now, locale), width, locale));
+    sections.push(draw({ text: `${running ? GLYPH.run : GLYPH.on} ${title}`, color: running ? C.brand : C.ink }, runEvents(run, now, locale, numberOf), width, locale));
   }
   if (!sections.length) return wrap(text("trail.empty", locale), width, 4).map((line) => [{ text: line, color: C.dim }]);
   const out: TrailSegment[][] = [];

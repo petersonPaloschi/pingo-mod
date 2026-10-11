@@ -76,6 +76,8 @@ test("while Claude works, Pingo says what it is doing, in a balloon, and stops w
   let drawn = await band($);
   expect(await drawn.speech("pingo")).toContain("Thinking");
   expect(drawn.inBalloon("Pingo")).toBe(true);
+  // Pingo's body is the terminal's own color; its name on the speech line takes the theme's text color, never black
+  expect((await drawn.ui.find({ type: "Text", text: /Pingo:$/ }))?.props.color).toBe("text");
   await drawn.ui.unmount();
 
   await $.tool.call({ tool: "Read", file_path: "/work/hooks/register.tsx" } as never);

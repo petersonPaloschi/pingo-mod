@@ -1,11 +1,12 @@
 // The Deck pet: pingo's mascot walking the Deck lane, with the Deck's scene around it (the desk, the alert
 // badge, confetti, z's and dust). The scene logic is pure and the same on every surface. The desktop lane is
-// SVG and moves by CSS only; the terminal gets braille frames that are a pure function of (act, time, facing),
-// laid out along a lane as wide as the band, so the host can repaint them in place without drawing anything else.
-import { brailleBit, brailleChar, DEPTH, hex } from "../dots.ts";
-import type { BrailleCell } from "../dots.ts";
-import { bayer, MOODS, pingoSvg, type Mood } from "../mascots/pingo.ts";
-import { DECK_DESIGN, PET_PALETTE } from "../theme.ts";
+// SVG and moves by CSS only; the terminal gets pixel-art frames (half blocks, two pixels to a cell) that are a pure
+// function of (act, time, facing), laid out along a lane as wide as the band, so the host can repaint them in place
+// without drawing anything else.
+import { hex } from "../dots.ts";
+import { MOODS, pingoSvg, type Mood } from "../mascots/pingo.ts";
+import { DETAIL, mirror, pixelGrid, put, renderPixels, stamp, type PixelCell, type PixelGrid } from "../mascots/pixel.ts";
+import { DECK_DESIGN, HUE, PET_PALETTE, TERMINAL_DEFAULT } from "../theme.ts";
 
 export const PET_ACTS = ["idle", "walk", "run", "jump", "console", "read", "sleep", "celebrate", "alert"] as const;
 export type PetAct = (typeof PET_ACTS)[number];
@@ -34,14 +35,8 @@ const SPEED = DECK_DESIGN.pet.speed; // lane fractions per second
 const PET_W = DECK_DESIGN.pet.body.width;
 const PET_H = DECK_DESIGN.pet.body.height;
 const PET_VIEW = DECK_DESIGN.pet.body.viewBox;
-/** The pet's cells in a terminal: 12 columns by 4 rows, so a 24 by 16 dot grid. */
-export const PET_BRAILLE = DECK_DESIGN.pet.braille;
-/** The terminal's dot grid, and its scale: dots per pet unit across (the 48 units span 24 dots). */
-export const PET_RASTER = {
-  scale: (PET_BRAILLE.columns * 2) / PET_W,
-  width: PET_BRAILLE.columns * 2,
-  height: PET_BRAILLE.rows * 4,
-};
+/** The pet's cells in a terminal: 12 columns by 4 rows of half blocks, a grid of 12 by 8 pixels. (The name is the old braille one, kept for its importers.) */
+export const PET_BRAILLE = DECK_DESIGN.pet.sprite;
 
 // ---------- mood mapping: Deck moods and pet acts onto pingo's moods ----------
 
@@ -280,182 +275,50 @@ function buildLaneSvg(pet: Pet, now: number, W: number, H: number, scale: number
   );
 }
 
-// ---------- terminal: pingo's braille sphere, with the scene painted into the same dot grid ----------
+// ---------- terminal: Pingo in pixel art, with the scene drawn into the same grid ----------
 
-/** The dot row under the body at rest, where the shadow lies: the last row of the grid. */
-const FLOOR = PET_RASTER.height - 1;
+/** The sprite in pixels: two to a cell across and two rows to a cell down, 12 by 8. */
+const PIXELS_W = PET_BRAILLE.columns;
+const PIXELS_H = PET_BRAILLE.rows * 2;
+/** The row the body's top rests on: the two above it are the room for a hat and for a hop. */
+const TOP = 2;
+/** The row under the body at rest, where the floor's shadow lies. */
+const FLOOR = PIXELS_H - 1;
+/** The row the eyes start on: one under the body's top, so a hat's brim never touches them. */
+const EYE_ROW = TOP + 1;
 
-/** A braille grid: per cell, the dot bits, the color, and the rank of the dot that set that color. */
-interface Grid {
-  bits: number[];
-  color: number[];
-  rank: number[];
-}
+/** Pingo's body: the terminal's own color on top ("#"), a shade for the underside ("d"). */
+const TERMINAL_BODY = ["...######...", ".##########.", ".##########.", ".##########.", "..dddddddd.."];
+const BODY_INK = { "#": PET_PALETTE.body, d: HUE.neutral };
 
-interface Dot {
-  x: number;
-  y: number;
-  color: number;
-}
-
-function blankGrid(): Grid {
-  const cells = PET_BRAILLE.columns * PET_BRAILLE.rows;
-  return {
-    bits: new Array<number>(cells).fill(0),
-    color: new Array<number>(cells).fill(DEPTH[0]),
-    rank: new Array<number>(cells).fill(-Infinity),
-  };
-}
-
-const inGrid = (x: number, y: number) => x >= 0 && y >= 0 && x < PET_RASTER.width && y < PET_RASTER.height;
-const cellOf = (x: number, y: number) => (y >> 2) * PET_BRAILLE.columns + (x >> 1);
-
-/** Lights a dot. Its cell takes the dot's color if the rank is at least the cell's own; later dots win ties. */
-function light(grid: Grid, x: number, y: number, color: number, rank: number) {
-  if (!inGrid(x, y)) return;
-  const cell = cellOf(x, y);
-  grid.bits[cell]! |= brailleBit(x, y);
-  if (rank >= grid.rank[cell]!) {
-    grid.rank[cell] = rank;
-    grid.color[cell] = color;
-  }
-}
-
-/** Cuts a dot out of the grid, so the badge's background shows through it. */
-function unlight(grid: Grid, x: number, y: number) {
-  if (inGrid(x, y)) grid.bits[cellOf(x, y)]! &= ~brailleBit(x, y);
-}
-
-/** A solid rectangle of dots, [x0, x1) by [y0, y1). Props rank above everything; the floor below the body. */
-function fill(grid: Grid, x0: number, y0: number, x1: number, y1: number, color: number, rank = Infinity) {
-  for (let y = y0; y < y1; y++) for (let x = x0; x < x1; x++) light(grid, x, y, color, rank);
-}
-
-/** A prop's dot: it takes its cell over the body and the floor. */
-const paint = (grid: Grid, x: number, y: number, color: number) => light(grid, x, y, color, Infinity);
-
-/** A disc of dots around (cx, cy), taking in each dot whose center lies within r. */
-function disc(grid: Grid, cx: number, cy: number, r: number, color: number) {
-  for (let y = Math.floor(cy - r); y <= Math.floor(cy + r); y++)
-    for (let x = Math.floor(cx - r); x <= Math.floor(cx + r); x++)
-      if (Math.hypot(x + 0.5 - cx, y + 0.5 - cy) <= r) paint(grid, x, y, color);
-}
-
-function toCells(grid: Grid): BrailleCell[][] {
-  return Array.from({ length: PET_BRAILLE.rows }, (_, r) =>
-    Array.from({ length: PET_BRAILLE.columns }, (_, c): BrailleCell => {
-      const cell = r * PET_BRAILLE.columns + c;
-      return [brailleChar(grid.bits[cell]!), grid.color[cell]!];
-    }),
-  );
-}
+/** A css "#rrggbb" of the palette as the number a pixel takes. */
+const rgb = (color: string) => Number.parseInt(color.slice(1), 16);
 
 /** Where a repeating motion stands, from 0 up to 1, `offset` seconds into its period. */
 const cycle = (t: number, period: number, offset = 0) => ((t + offset) % period) / period;
 
 /**
- * How far the body sits from its rest, in dots (negative is up). The sphere fills the four-row box, so the
- * room above it is one dot: walking and running bob it, jumping hops it, and console and read sink it onto the desk.
+ * How far the body sits from its rest, in pixels (negative is up). Resting bobs a pixel now and then, walking and
+ * running bob it faster, jumping and celebrating hop it up to the two rows of headroom; the desk acts keep it down.
  */
 function liftOf(act: PetAct, t: number): number {
   const wave = (period: number) => Math.abs(Math.sin((t / period) * Math.PI * 2));
+  if (act === "idle") return cycle(t, 3.2) < 0.3 ? -1 : 0;
+  if (act === "sleep") return cycle(t, 4) < 0.4 ? -1 : 0;
   if (act === "walk") return -Math.round(wave(0.6));
   if (act === "run") return -Math.round(wave(0.28));
   if (act === "jump" || act === "celebrate") {
     const p = cycle(t, 1);
-    return p < 0.12 || p >= 0.8 ? 0 : -Math.round(Math.sin(((p - 0.12) / 0.68) * Math.PI));
+    return p < 0.12 || p >= 0.8 ? 0 : -Math.round(2 * Math.sin(((p - 0.12) / 0.68) * Math.PI));
   }
-  return act === "console" || act === "read" ? 1 : 0;
+  return 0;
 }
-
-/** The desk: a dark laptop whose screen lights on a 0.4 s glow. */
-function laptop(grid: Grid, t: number) {
-  fill(grid, 4, 10, 20, 16, PROP.dark);
-  fill(grid, 6, 11, 14, 14, cycle(t, 0.4) < 0.5 ? PROP.screen : PROP.dark);
-  paint(grid, 16, 12, PROP.red);
-  paint(grid, 17, 14, PROP.blue);
-}
-
-/** The desk: an open book, a blue cover with two pages. */
-function book(grid: Grid) {
-  fill(grid, 3, 10, 21, 16, PROP.blue);
-  fill(grid, 4, 11, 11, 15, PROP.paper);
-  fill(grid, 12, 11, 20, 15, PROP.page);
-}
-
-/** A "z" n dots square: a bar along the top, a diagonal, a bar along the foot. */
-function zGlyph(grid: Grid, x: number, y: number, n: number, color: number) {
-  for (let k = 0; k < n; k++) {
-    paint(grid, x + k, y, color);
-    paint(grid, x + k, y + n - 1, color);
-    paint(grid, x + n - 1 - k, y + k, color);
-  }
-}
-
-/** Two z's drifting up from the sleeper and fading, each on its own 2 s cycle; shown while half opaque. */
-function zs(grid: Grid, t: number) {
-  for (const [offset, n, x0, y0] of [
-    [0, 4, 17, 5],
-    [0.9, 3, 19, 7],
-  ] as const) {
-    const q = cycle(t, 2, offset);
-    const alpha = q < 0.2 ? q * 5 : 1 - q;
-    if (alpha >= 0.5) zGlyph(grid, x0 + Math.round(2 * q), Math.round(y0 - 8 * q), n, PROP.gray);
-  }
-}
-
-/** The alert badge: an amber disc with a "!" cut out of it, jittering as the desktop badge shakes. */
-function badge(grid: Grid, t: number) {
-  const shake = Math.sin(t * 40) > 0 ? 1 : 0;
-  disc(grid, 20 + shake, 2.5, 2.1, PROP.amber);
-  for (const y of [0, 1, 2, 4]) for (const x of [19, 20]) unlight(grid, x + shake, y);
-}
-
-/** Confetti: four 2x2 bits falling past the sphere, each on its own 1 s cycle, gone by the end. */
-function confetti(grid: Grid, t: number) {
-  CONFETTI.forEach((color, i) => {
-    const q = cycle(t, 1, i * 0.22);
-    const x = 2 + i * 5;
-    const y = Math.floor(-1 + q * 9);
-    if (q < 0.85) fill(grid, x, y, x + 2, y + 2, color);
-  });
-}
-
-/** Dust kicked up behind a runner: two gray discs that swell and fade on a 0.5 s cycle. */
-function dust(grid: Grid, t: number) {
-  for (const [offset, x, y] of [
-    [0, 3, 11],
-    [0.25, 1.5, 9],
-  ] as const) {
-    const q = cycle(t, 0.5, offset);
-    if (q < 0.8) disc(grid, x - 2 * q, y, 0.8 + q, PROP.dark);
-  }
-}
-
-/** The scene's props for an act, painted over the body in the order the desktop layers them. */
-function props(grid: Grid, act: PetAct, t: number) {
-  if (act === "console") laptop(grid, t);
-  if (act === "read") book(grid);
-  if (act === "sleep") zs(grid, t);
-  if (act === "alert") badge(grid, t);
-  if (act === "celebrate") confetti(grid, t);
-  if (act === "run") dust(grid, t);
-}
-
-// ---------- the sphere itself, drawn for this grid ----------
-// Pingo's own scene (hundreds of projected points) turns to static at 24x16 dots: the pattern changes with every
-// frame and the eyes, a fraction of a dot across, are lost. The pet's sphere is drawn for the grid instead, the same
-// sphere of dots: halftone shading under a fixed light, an edge of dots to hold the outline, and eyes a few dots
-// wide. It does not turn, so a still pet is a still picture; only breath, blink and bob move it.
-
-/** The sphere on the grid: its centre across, the row its foot rests on, and its radius, in dots. One dot is left above it for the bob. */
-const SPHERE = { cx: PET_RASTER.width / 2, foot: 14.7, r: 6.7 };
 
 type Pixels = readonly (readonly [number, number])[];
-/** The eight dots around a three by three eye, in order; a spinner lights four in a row. */
+/** The eight pixels around a three by three eye, in order; a spinner lights three in a row. */
 const RING: Pixels = [[0, 0], [1, 0], [2, 0], [2, 1], [2, 2], [1, 2], [0, 2], [0, 1]];
 
-/** An eye's dots, from its top left corner. Three dots across and down; the pill is two across. */
+/** An eye's pixels, from its top left corner. Three across and down; the pill is two across. */
 export function eyePixels(eyes: (typeof MOODS)[Mood]["eyes"], t: number, side: 1 | -1): Pixels {
   switch (eyes) {
     case "line":
@@ -471,134 +334,143 @@ export function eyePixels(eyes: (typeof MOODS)[Mood]["eyes"], t: number, side: 1
       return (t * 0.9) % 4.2 < 0.14 ? [[0, 1], [1, 1]] : [[0, 0], [1, 0], [0, 1], [1, 1], [0, 2], [1, 2]];
     case "spinner": {
       const start = (((Math.floor(t * 6) * side) % 8) + 8) % 8;
-      return [0, 1, 2, 3].map((i) => RING[(start + i) % 8]!);
+      return [0, 1, 2].map((i) => RING[(start + i) % 8]!);
     }
   }
 }
 
-/** The body and the eyes of the pet for `act` at `t`, lifted by the act's bob. */
-function sphere(grid: Grid, act: PetAct, t: number) {
+/** The eyes of the pet for `act` at `t`, in the mood's color and shape, `lift` up and `shake` aside. */
+function drawEyes(grid: PixelGrid, act: PetAct, t: number, lift: number, shake: number) {
   const mood = petMoodFor(act);
-  const lift = liftOf(act, t);
-  // sleepers are a shade dimmer; an alert pet shakes a dot to the side
-  const dim = mood === "baseline" ? 1 : 0;
-  const shake = mood === "failing" && Math.floor(t * 10) % 2 === 1 ? 1 : 0;
-  // a breath: the top of the sphere sinks by up to half a dot and rises again, the foot staying on the floor
-  const squash = 0.5 * (0.5 - 0.5 * Math.cos((t / (act === "sleep" ? 3 : 2.4)) * Math.PI * 2));
-  const ry = SPHERE.r - squash;
-  const cy = SPHERE.foot - ry;
-  for (let y = 0; y < PET_RASTER.height; y++) {
-    for (let x = 0; x < PET_RASTER.width; x++) {
-      const u = (x + 0.5 - SPHERE.cx) / SPHERE.r;
-      const v = (y + 0.5 - cy) / ry;
-      const d2 = u * u + v * v;
-      if (d2 > 1) continue;
-      const nz = Math.sqrt(1 - d2);
-      const edge = (1 - Math.sqrt(d2)) * SPHERE.r < 0.95;
-      // lit from above and to the left: dense where it faces the light, sparse on the far side
-      const lit = Math.max(0, -0.45 * u - 0.55 * v + 0.7 * nz);
-      if (!edge && 0.3 + 0.7 * lit <= bayer(x, y)) continue;
-      const depth = Math.min(DEPTH.length - 1, Math.max(0, Math.floor(((nz + 1) / 2) * DEPTH.length) - dim));
-      light(grid, x + shake, y + lift, DEPTH[depth]!, depth);
-    }
-  }
-  const eyes = MOODS[mood].eyes;
+  const { eyes, color } = MOODS[mood];
   const look = mood === "passthrough" ? 1 : 0;
-  const dots: Dot[] = [];
   for (const side of [-1, 1] as const) {
-    const x0 = (eyes === "pill" ? 9 : 8) + (side === 1 ? (eyes === "pill" ? 4 : 5) : 0) + look + shake;
-    for (const [dx, dy] of eyePixels(eyes, t, side)) dots.push({ x: x0 + dx, y: 5 + dy + lift, color: MOODS[mood].color });
+    const x0 = (side === -1 ? (eyes === "pill" ? 3 : 2) : 7) + look + shake;
+    for (const [dx, dy] of eyePixels(eyes, t, side)) put(grid, x0 + dx, EYE_ROW + dy + lift, color | DETAIL);
   }
-  // a cell holds one color: the body dots in the cells an eye lands in go, so the eye keeps its shape and its own color
-  for (const dot of dots) {
-    if (!inGrid(dot.x, dot.y)) continue;
-    const cell = cellOf(dot.x, dot.y);
-    grid.bits[cell] = 0;
-    grid.rank[cell] = -Infinity;
-  }
-  for (const dot of dots) paint(grid, dot.x, dot.y, dot.color);
 }
 
-// Braille dots pair up across a cell's two columns; mirroring a cell swaps each pair.
-const DOT_PAIRS = [0, 1, 2, 3].map((y): [number, number] => [brailleBit(0, y), brailleBit(1, y)]);
-
-function mirrorChar(char: string): string {
-  const bits = char === " " ? 0 : char.codePointAt(0)! - 0x2800;
-  let out = 0;
-  for (const [left, right] of DOT_PAIRS) {
-    if (bits & left) out |= right;
-    if (bits & right) out |= left;
-  }
-  return brailleChar(out);
+/** Sunglasses over the face, under the eyes, which still show through them in the mood's color. */
+function drawShades(grid: PixelGrid, lift: number, shake: number) {
+  const lens = rgb(PET_PALETTE.accents.glasses);
+  const edge = rgb(PET_PALETTE.accents.glassesEdge);
+  stamp(grid, shake, EYE_ROW + lift, [".eLLLLLLLLe.", "..LLL..LLL..", "...L....L..."], { L: lens, e: edge });
 }
 
-/**
- * The pet as a braille grid for `act` at `tMs`, facing `dir`. Time is quantized to a tenth of a second,
- * so two redraws inside the same tenth produce the same cells.
- */
-function terminalAccessories(grid: Grid, hat: string, shades: boolean) {
-  const color = hat === "tophat" ? 0x858c99 : HAT_COLORS[hat] ? Number.parseInt(HAT_COLORS[hat]!.slice(1), 16) : 0;
-  if (color) {
-    if (hat === "tophat") {
-      fill(grid, 9, 0, 15, 3, color); fill(grid, 6, 3, 18, 4, color);
-    } else if (hat === "party" || hat === "wizard") {
-      fill(grid, 7, 3, 18, 4, color); fill(grid, 9, 2, 16, 3, color);
-      fill(grid, 10, 1, 15, 2, color); fill(grid, 11, 0, 14, 1, color); paint(grid, 12, 0, hat === "party" ? 0xffd23f : color);
-      if (hat === "wizard") paint(grid, 13, 1, 0xffd23f);
-    } else if (hat === "crown") {
-      fill(grid, 7, 3, 18, 4, color); fill(grid, 8, 1, 17, 3, color);
-      paint(grid, 8, 0, color); paint(grid, 12, 0, color); paint(grid, 16, 0, color);
-      paint(grid, 9, 2, 0xe03c3c); paint(grid, 12, 1, 0xe03c3c); paint(grid, 15, 2, 0xe03c3c);
-    } else if (hat === "cowboy") {
-      fill(grid, 5, 3, 19, 4, color); fill(grid, 8, 2, 16, 3, color); fill(grid, 9, 1, 15, 2, color); fill(grid, 10, 0, 14, 1, color);
-      fill(grid, 9, 2, 15, 3, 0xc48743);
-    } else if (hat === "propeller") {
-      fill(grid, 8, 3, 16, 4, color); fill(grid, 9, 1, 15, 3, color); fill(grid, 10, 0, 14, 1, color);
-      fill(grid, 6, 0, 19, 1, 0xe03c3c); paint(grid, 12, 0, 0xffd23f);
-    } else if (hat === "chef") {
-      fill(grid, 8, 3, 16, 4, 0xcfcfcf); fill(grid, 9, 2, 15, 3, color);
-      fill(grid, 10, 1, 12, 2, color); fill(grid, 13, 0, 15, 2, color);
-    } else if (hat === "viking") {
-      fill(grid, 8, 3, 16, 4, color); fill(grid, 9, 1, 15, 3, color);
-      paint(grid, 7, 0, 0xf4f4f4); fill(grid, 6, 1, 8, 3, 0xf4f4f4);
-      paint(grid, 16, 0, 0xf4f4f4); fill(grid, 16, 1, 18, 3, 0xf4f4f4);
-    } else if (hat === "halo") {
-      fill(grid, 10, 0, 14, 1, color); fill(grid, 8, 1, 10, 2, color); fill(grid, 14, 1, 16, 2, color);
-      paint(grid, 7, 2, color); paint(grid, 16, 2, color); fill(grid, 8, 3, 16, 4, color);
-    } else if (hat === "santa") {
-      fill(grid, 8, 3, 18, 4, 0xf4f4f4); fill(grid, 10, 2, 16, 3, color); fill(grid, 11, 1, 17, 2, color);
-      fill(grid, 14, 0, 19, 1, color); paint(grid, 19, 0, 0xf4f4f4);
-    } else {
-      fill(grid, 8, 3, 17, 4, color); fill(grid, 10, 2, 16, 3, color); fill(grid, 13, 1, 18, 2, color);
-      fill(grid, 16, 0, 20, 1, color); paint(grid, 20, 0, 0xf4f4f4);
-    }
+// the hats keep to the top three rows: the brim is on the body's top row, so a hat never reaches the eyes. "h" is the
+// hat's own color and "t" its second tone. The propeller turns between its two rows of blades.
+const HAT_MAPS: Readonly<Record<string, readonly string[]>> = {
+  tophat: ["....hhhh....", "....tttt....", ".hhhhhhhhhh."],
+  party: [".....tt.....", "....hhhh....", "..hhthhthh.."],
+  crown: ["..h..hh..h..", "..hhhhhhhh..", "..hthhhhth.."],
+  wizard: [".....hh.....", "....htth....", ".hhhhhhhhhh."],
+  cowboy: ["....hhhh....", "h..tttttt..h", ".hhhhhhhhhh."],
+  propeller: ["..tttttttt..", "....hhhh....", "..hhhhhhhh.."],
+  chef: ["...hh..hh...", "..hhhhhhhh..", "..tttttttt.."],
+  viking: ["t..........t", ".t.hhhhhh.t.", "..hhhhhhhh.."],
+  halo: ["...hhhhhh...", "..t......t..", "............"],
+  santa: ["......hhhtt.", "....hhhhh...", "..tttttttt.."],
+  nightcap: ["....hhh.....", "...hhhhhhtt.", "..tttttttt.t"],
+};
+const PROPELLER_SPIN = "...tt..tt...";
+
+/** Whether `hat` is one Pingo can wear. */
+const wears = (hat: string) => Object.hasOwn(HAT_MAPS, hat);
+
+function drawHat(grid: PixelGrid, hat: string, t: number, lift: number, shake: number) {
+  const rows = [...HAT_MAPS[hat]!];
+  if (hat === "propeller" && Math.floor(t * 5) % 2 === 1) rows[0] = PROPELLER_SPIN;
+  const hats: Readonly<Record<string, string>> = PET_PALETTE.hats;
+  const trims: Readonly<Record<string, string>> = PET_PALETTE.hatTrim;
+  stamp(grid, shake, lift, rows, { h: rgb(hats[hat]!), t: rgb(trims[hat]!) });
+}
+
+// ---------- the props of the scene ----------
+
+/** The desk: a dark laptop in front of the body, its screen flickering between two glows (a detail: a hole without color). */
+function laptop(grid: PixelGrid, t: number) {
+  const dark = PROP.dark;
+  stamp(grid, 1, 7, ["##########"], { "#": dark });
+  put(grid, 2, 6, dark);
+  put(grid, 9, 6, dark);
+  const tick = Math.floor(t * 5);
+  for (let x = 3; x <= 8; x++) put(grid, x, 6, ((x + tick) % 3 === 0 ? PROP.glow : PROP.screen) | DETAIL);
+}
+
+/** The desk: an open book, a blue cover under two pages. */
+function book(grid: PixelGrid) {
+  stamp(grid, 1, 7, ["BBBBBBBBBB"], { B: PROP.blue });
+  stamp(grid, 2, 6, ["ppppPPPP"], { p: PROP.paper, P: PROP.page });
+}
+
+/** Two z's rising from the sleeper, one after the other, each on its own 2.4 s cycle. */
+function zs(grid: PixelGrid, t: number) {
+  for (const offset of [0, 1.2]) {
+    const q = cycle(t, 2.4, offset);
+    if (q < 0.9) put(grid, 10 + Math.round(q), TOP - Math.round(q * 2), HUE.info);
   }
-  if (shades) {
-    fill(grid, 6, 5, 11, 7, 0x17171d);
-    fill(grid, 13, 5, 18, 7, 0x17171d);
-    fill(grid, 10, 5, 14, 6, 0xffe66d);
-    paint(grid, 8, 5, 0xffffff);
-    paint(grid, 15, 5, 0xffffff);
-  }
+}
+
+/** The alert badge: a small amber diamond with a "!" cut in it, shaking. */
+function badge(grid: PixelGrid, t: number) {
+  const shake = Math.floor(t * 10) % 2;
+  stamp(grid, 8 + shake, 0, [".A.", "AmA", ".A."], { A: PROP.amber, m: PROP.mark | DETAIL });
+}
+
+/** Confetti: five pixels falling past the body, each on its own 1.2 s cycle, gone by the end. */
+function confetti(grid: PixelGrid, t: number) {
+  CONFETTI.forEach((color, i) => {
+    const q = cycle(t, 1.2, i * 0.23);
+    if (q < 0.85) put(grid, 1 + i * 2.5, Math.floor(q * 9) - 1, color);
+  });
+}
+
+/** Dust kicked up behind a runner (the left, for a pet facing right): puffs that rise and fade on a 0.4 s cycle. */
+function dust(grid: PixelGrid, t: number) {
+  const q = cycle(t, 0.4);
+  if (q < 0.66) put(grid, 0, FLOOR - 1, PROP.gray);
+  if (q >= 0.33) put(grid, 0, FLOOR - 2, PROP.gray);
+}
+
+/** The scene's props for an act, drawn over the body. */
+function props(grid: PixelGrid, act: PetAct, t: number) {
+  if (act === "console") laptop(grid, t);
+  if (act === "read") book(grid);
+  if (act === "sleep") zs(grid, t);
+  if (act === "alert") badge(grid, t);
+  if (act === "celebrate") confetti(grid, t);
+  if (act === "run") dust(grid, t);
 }
 
 const PET_FRAME_CACHE_LIMIT = 24;
-const petFrames = new Map<string, BrailleCell[][]>();
+const petFrames = new Map<string, PixelCell[][]>();
 
-export function petFrame(act: PetAct, tMs: number, dir: 1 | -1, hat = "none", shades = false): BrailleCell[][] {
+/**
+ * The pet as pixel cells for `act` at `tMs`, facing `dir`. Time is quantized to a tenth of a second, so two redraws
+ * inside the same tenth produce the same cells. The floor's shadow, the body, the sunglasses, the eyes, the hat
+ * and then the props are drawn in that order; facing left is the whole grid turned round.
+ */
+export function petFrame(act: PetAct, tMs: number, dir: 1 | -1, hat = "none", shades = false): PixelCell[][] {
   const tick = Math.floor(tMs / 100);
   const key = `${act}|${tick}|${dir}|${hat}|${shades ? 1 : 0}`;
   const kept = petFrames.get(key);
   if (kept !== undefined) return kept;
   const t = tick / 10;
-  const grid = blankGrid();
-  const half = act === "jump" ? 5 : 7;
-  fill(grid, 12 - half, FLOOR, 12 + half, FLOOR + 1, PROP.dark, -1);
-  sphere(grid, act, t);
+  const grid = pixelGrid(PIXELS_W, PIXELS_H);
+  const worn = wears(hat);
+  // a hat takes the room above the body, so a hatted pet bobs down instead of up (a crouch, the shade over the
+  // floor's shadow), and only a hop may rise: one row, the hat's top row going off the grid
+  const rise = liftOf(act, t);
+  const lift = !worn ? rise : act === "jump" || act === "celebrate" ? Math.max(-1, rise) : -rise;
+  const shake = petMoodFor(act) === "failing" && tick % 2 === 1 ? 1 : 0;
+  const half = act === "jump" ? 2 : 3;
+  stamp(grid, PIXELS_W / 2 - half, FLOOR, ["#".repeat(half * 2)], { "#": PET_PALETTE.floor });
+  stamp(grid, shake, TOP + lift, TERMINAL_BODY, BODY_INK);
+  if (shades) drawShades(grid, lift, shake);
+  drawEyes(grid, act, t, lift, shake);
+  if (worn) drawHat(grid, hat, t, lift, shake);
   props(grid, act, t);
-  terminalAccessories(grid, hat, shades);
-  const frame = toCells(grid);
-  const result = dir > 0 ? frame : frame.map((row) => row.map(([char, color]): BrailleCell => [mirrorChar(char), color]).reverse());
+  const result = renderPixels(dir > 0 ? grid : mirror(grid));
   if (petFrames.size >= PET_FRAME_CACHE_LIMIT) petFrames.delete(petFrames.keys().next().value!);
   petFrames.set(key, result);
   return result;
@@ -609,13 +481,13 @@ export function petFrame(act: PetAct, tMs: number, dir: 1 | -1, hat = "none", sh
 /** How many cells wide the lane is for a band `cols` wide: the body less a margin, and never narrower than the sprite. */
 export const petLaneColumns = (cols: number): number => Math.max(PET_BRAILLE.columns, Math.min(DECK_DESIGN.pet.lane.maximumColumns, cols - DECK_DESIGN.pet.lane.sidePadding));
 
-const BLANK: BrailleCell = [" ", DEPTH[0]];
+const BLANK: PixelCell = [" ", TERMINAL_DEFAULT];
 
 /**
  * The whole lane at `now`, `columns` cells wide: the sprite for the pet's scene, where the pet has walked to.
  * The Raster that shows it keeps one size, so the walk is a change of cells, which the host repaints in place.
  */
-export function petLaneCells(pet: Pet, now: number, columns: number): BrailleCell[][] {
+export function petLaneCells(pet: Pet, now: number, columns: number): PixelCell[][] {
   const sprite = petFrame(pet.act, Math.max(0, now - pet.start), pet.dir, pet.hat, pet.shades);
   const room = Math.max(0, columns - PET_BRAILLE.columns);
   const left = Math.round(petX(pet, now) * room);

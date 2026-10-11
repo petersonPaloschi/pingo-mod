@@ -226,7 +226,7 @@ test("/deck clear removes the rows and says so", LOCALE, async ($, on) => {
   // the bars go; the context and the limits are meters, not bars, and stay
   const out = (await $.command.run(deck("status"))).text;
   expect(out).not.toMatch(/Tasks/);
-  expect(out).toMatch(/● Context/);
+  expect(out).toMatch(/◆ Context/);
 });
 
 test("/deck expand, collapse and the bare toggle reply and save the band's state", LOCALE, async ($, on) => {

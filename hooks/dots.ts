@@ -1,9 +1,9 @@
 // The dotted visual system: one palette, braille cells, and shared dot meters.
 // Everything is a dot: the mascot, the meters, the timeline. The body is ink; color only says state.
-import { css, DOT_DEPTH, DOT_PALETTE } from "./theme.ts";
+import { css, DOT_DEPTH, DOT_PALETTE, TERMINAL_DEFAULT } from "./theme.ts";
 
 /** Draws in the terminal's own default color (a Raster cell's "no color"). */
-export const DEFAULT_COLOR = 0x01000000;
+export const DEFAULT_COLOR = TERMINAL_DEFAULT;
 
 /**
  * The palette as numbers, for Raster cells: the mid-tone hues of hooks/theme.ts, so the mascot, the meters and

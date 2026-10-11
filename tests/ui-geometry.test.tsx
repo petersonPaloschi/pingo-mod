@@ -12,7 +12,7 @@ import { renderPane, type Actions, type Els, type View } from "../hooks/ui.tsx";
 import { en } from "../hooks/strings/en.ts";
 
 const widths = [40, 60, 80, 100, 120, 160] as const;
-const tabs = ["overview", "live", "models", "agents", "logs", "features", "configuration", "deck", "ai"] as const;
+const tabs = ["overview", "live", "models", "agents", "logs", "features", "configuration", "deck", "ai", "comandante"] as const;
 const features = Object.fromEntries(Object.keys(DEFAULT_FEATURES).map((id) => [id, true])) as typeof DEFAULT_FEATURES;
 const preferences = {
   assumptionScope: "all",
@@ -27,6 +27,8 @@ const preferences = {
   monitorEveryMs: 5000,
   trackerSummary: false,
   clashMinutes: 30,
+  // one source off: the Comandante tab draws "All" unticked and both kinds of switch
+  comandanteSources: { farol: true, semente: true, vigia: true, clareza: true, codeQuality: false },
 } as const;
 const prefixes = [...new Set(Object.keys(en).map((key) => key.split(".")[0]!))];
 const rawLocaleKey = new RegExp(`(?<![\\w/.-])(?:${prefixes.join("|")})\\.[A-Za-z]\\w*(?:\\.\\w+)*`);
@@ -262,13 +264,13 @@ test("the Deck's feature switches fit whole at every width on both surfaces, and
         expect([...pressed].sort()).toEqual(ids);
         // each switch shows its state glyph and its whole name, and nothing else draws a raw string key
         const labels = elements(tree).filter((node) => node.type === "Button").map((node) => String(node.props?.label ?? ""));
-        for (const sw of band.features) expect(labels).toContain(`${sw.on ? "●" : "○"} ${sw.name}`);
+        for (const sw of band.features) expect(labels).toContain(`${sw.on ? "▣" : "□"} ${sw.name}`);
         expect(textOf(tree).join("\n")).not.toMatch(rawLocaleKey);
         if (surface === "terminal") {
           // the terminal packs whole lines itself, counted against its row budget: no line may need the host to wrap it
           const switchLines = elements(tree).filter((node) => {
             const kids = node.type === "Box" ? childrenOf(node).filter(Boolean) as Element[] : [];
-            return kids.length > 0 && kids.every((kid) => kid.type === "Button" && /^[●○] /.test(String(kid.props?.label)));
+            return kids.length > 0 && kids.every((kid) => kid.type === "Button" && /^[▣□] /.test(String(kid.props?.label)));
           });
           expect(switchLines.length).toBeGreaterThan(0);
           for (const line of switchLines) expect(naturalWidth(line) + Number(line.props?.paddingLeft ?? 0)).toBeLessThanOrEqual(width);

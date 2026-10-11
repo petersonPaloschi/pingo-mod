@@ -2,7 +2,7 @@
 // Vigia message, a Clareza plan, a call the Code Quality agent would otherwise be refused), how its answer becomes a
 // decision with a short reason, the records of the log every session of the project shares, and the filters of its tab.
 // register.tsx holds every `$` call: the Jev call, the log files in the project's Vigia folder and the hooks.
-import type { ComandanteDecision, ComandanteFilter, ComandanteRecord, ComandanteSource } from "../../types";
+import type { ComandanteDecision, ComandanteFilter, ComandanteRecord, ComandanteSource, ComandanteSources } from "../../types";
 import type { Json, Questions, SystemOneResult } from "./types.ts";
 import { vigiaFlat } from "./vigia.ts";
 
@@ -17,7 +17,18 @@ export const COMANDANTE_FOLDER = "comandante";
 /** Every session and every decision: the tab's filters before any is picked. */
 export const COMANDANTE_ALL = "all";
 export const COMANDANTE_DECISIONS: readonly ComandanteDecision[] = ["approved", "rejected", "questioned"];
+/** Every assistant that alerts the Comandante, in the order its tab lists their switches. */
 export const COMANDANTE_SOURCES: readonly ComandanteSource[] = ["farol", "semente", "vigia", "clareza", "codeQuality"];
+
+/** Every source switched on, or every one off: the tab's "All" button. */
+export const comandanteSourcesAll = (on: boolean): ComandanteSources =>
+  Object.fromEntries(COMANDANTE_SOURCES.map((source) => [source, on])) as ComandanteSources;
+
+/** The sources the Comandante judges, as kept: only a source stored as `false` is off; anything else, or nothing, is on. */
+export function normalizeComandanteSources(value: unknown): ComandanteSources {
+  const stored = value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+  return Object.fromEntries(COMANDANTE_SOURCES.map((source) => [source, stored[source] !== false])) as ComandanteSources;
+}
 
 /**
  * Each verdict Jev may give: the decision it stands for, and what it means, as Jev reads it (the option's criteria).
@@ -35,8 +46,11 @@ export const COMANDANTE_VERDICTS = {
 } as const satisfies Record<string, { decision: ComandanteDecision; criteria: string }>;
 export type ComandanteReason = keyof typeof COMANDANTE_VERDICTS;
 
-/** What the Comandante judges: where it came from, its words, and what came with them (a context, a sender). */
-export type ComandanteAlert = { source: ComandanteSource; text: string; context?: string };
+/**
+ * What the Comandante judges: where it came from, its words, and what came with them (a context, a sender).
+ * `nudge` marks a saved Semente idea about to be offered to the person, not one being saved.
+ */
+export type ComandanteAlert = { source: ComandanteSource; text: string; context?: string; nudge?: boolean };
 /** Jev's verdict, read: the decision, the reason it stands on, and Jev's confidence in it. */
 export type ComandanteVerdict = { decision: ComandanteDecision; reason: ComandanteReason; confidence: number };
 
@@ -47,6 +61,7 @@ const KIND: Record<ComandanteSource, string> = {
   clareza: "request to make the agent rewrite its last answer, because a reviewer found it may confuse the user (`alert` lists what may confuse)",
   codeQuality: "tool call the unattended Code Quality agent wants to make beyond the few it may run on its own",
 };
+const NUDGE_KIND = "idea saved earlier that matches the work just done, about to be offered to the user to pick up now (approve only if it is worth the user's attention now)";
 
 /** The project a root names, as Sentinela shows it: its last folder. */
 export const comandanteProject = (root: string) => root.split(/[\\/]/).filter(Boolean).pop() ?? root;
@@ -57,9 +72,10 @@ export const comandanteProject = (root: string) => root.split(/[\\/]/).filter(Bo
  */
 export function comandanteRequest(alert: ComandanteAlert, request: string, known: readonly string[]): { state: { [key: string]: Json }; questions: Questions } {
   const criteria: Record<string, Json> = Object.fromEntries(Object.entries(COMANDANTE_VERDICTS).map(([id, verdict]) => [id, verdict.criteria]));
+  const kind = alert.nudge ? NUDGE_KIND : KIND[alert.source];
   return {
     state: {
-      kind: KIND[alert.source],
+      kind,
       alert: vigiaFlat(alert.text, 600),
       context: vigiaFlat(alert.context ?? "", 400),
       request: vigiaFlat(request, 600),
@@ -68,7 +84,7 @@ export function comandanteRequest(alert: ComandanteAlert, request: string, known
     questions: {
       [COMANDANTE_QUESTION]: {
         type: "choice",
-        instructions: `Judge this ${KIND[alert.source]} (\`alert\`, with \`context\`), given the user's latest request (\`request\`). Approve what holds, reject what should not stand, and question what the agent must clarify first.`,
+        instructions: `Judge this ${kind} (\`alert\`, with \`context\`), given the user's latest request (\`request\`). Approve what holds, reject what should not stand, and question what the agent must clarify first.`,
         criteria,
       },
     },
@@ -105,6 +121,7 @@ export function comandanteRecords(raw: unknown): ComandanteRecord[] {
       decision: one.decision as ComandanteDecision,
       reason: one.reason,
       confidence: typeof one.confidence === "number" && Number.isFinite(one.confidence) ? one.confidence : 0,
+      ...(typeof one.releasedAt === "number" && Number.isFinite(one.releasedAt) ? { releasedAt: one.releasedAt } : {}),
     }];
   });
 }
