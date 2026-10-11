@@ -34,7 +34,8 @@ import {
 } from "./rows.ts";
 import { AGENT_STYLE, BODY, DECK_DESIGN, DIM, MUTED, PILL_INK, STYLE, TEXT, TRACK, runs, textWidth, trunc } from "./theme.ts";
 import { terminalBar } from "./styles-terminal.ts";
-import { GLYPH, TERMINAL_DEFAULT, UI_DESIGN } from "../theme.ts";
+import { displayWidth } from "../layout.ts";
+import { GLYPH, PAINT, TERMINAL_DEFAULT, UI_DESIGN } from "../theme.ts";
 
 const BRANCH = GLYPH.branch;
 
@@ -109,8 +110,18 @@ export function renderDeck(els: ElementTable, band: DeckBand, surface: Surface) 
   const desktop = surface === "desktop" && "Svg" in els;
   const expanded = band.expanded && (band.rows.length > 0 || band.pane === true);
   const extrasStr = band.extras.join("  ·  ");
-  const toggle = (
-    <Button key="deck-toggle" label={text(band.expanded ? "deck.toggle.expanded" : "deck.toggle.collapsed", band.locale)} plain dimColor hotkey="0" onPress={band.toggle} />
+  const toggleLabel = text(band.expanded ? "deck.toggle.expanded" : "deck.toggle.collapsed", band.locale);
+  const toggleButton = (
+    <Button key="deck-toggle" label={toggleLabel} plain hotkey="0" onPress={band.toggle}>
+      {pillFace(els, "deck-toggle", toggleLabel)}
+    </Button>
+  );
+  // in the terminal the pill and its key keep their own width, so the parts beside them share only what is left
+  const toggleColumns = pillColumns(toggleLabel) + UI_DESIGN.layout.hotkeyColumns;
+  const toggle = desktop ? toggleButton : (
+    <Box key="deck-toggle-cell" width={toggleColumns} flexShrink={0}>
+      {toggleButton}
+    </Box>
   );
   const extrasEl = (
     <Box flexShrink={0}>
@@ -132,12 +143,24 @@ export function renderDeck(els: ElementTable, band: DeckBand, surface: Surface) 
   }
   const count = band.rows.length;
   const countText = "· " + (count === 1 ? text("deck.rows.one", band.locale, { count }) : text("deck.rows.many", band.locale, { count }));
-  // the band's head: the toggle and the row count, the clock and weather at the far end
+  // the band's head: the toggle and the row count, the clock and weather at the far end. In the terminal a rule fills
+  // the gap between them, so the head also parts the lane above from the rows below without a line of its own
+  const headerGap = desktop ? UI_DESIGN.space.xs : UI_DESIGN.space.sm;
+  const ruleColumns = band.cols - toggleColumns - columnsOf(countText) - columnsOf(extrasStr) - 3 * headerGap - 1;
+  const filler = inlinePet ? (
+    inlinePetEl(els, band, extrasStr.length)
+  ) : !desktop && ruleColumns >= DECK_DESIGN.band.header.minimumRuleColumns ? (
+    <Box flexGrow={1} overflow="hidden">
+      <Text color={TRACK}>{GLYPH.rule.repeat(ruleColumns)}</Text>
+    </Box>
+  ) : (
+    <Box flexGrow={1} />
+  );
   const header = (
-    <Box flexDirection="row" columnGap={UI_DESIGN.space.xs} alignItems="center">
+    <Box flexDirection="row" columnGap={headerGap} alignItems="center">
       {toggle}
-      <Text color={DIM}>{countText}</Text>
-      {inlinePet ? inlinePetEl(els, band, extrasStr.length) : <Box flexGrow={1} />}
+      <Text color={DIM} wrap="truncate-end">{countText}</Text>
+      {filler}
       {extrasEl}
     </Box>
   );
@@ -163,7 +186,7 @@ export function renderDeck(els: ElementTable, band: DeckBand, surface: Surface) 
 function featureSwitches(els: ElementTable, band: DeckBand, desktop: boolean, hasLane: boolean): { node: RenderNode | null; lines: number } {
   const { Box, Button, Text } = els;
   if (!band.features.length) return { node: null, lines: 0 };
-  const { indent, columnGap, desktopColumnGap, desktopRowGap, minimumRows } = DECK_DESIGN.band.features;
+  const { indent, columnGap, desktopColumnGap, desktopRowGap, minimumRows, spacerRows } = DECK_DESIGN.band.features;
   const legend = `${GLYPH.check} ${text("ui.configuration.enabledValue", band.locale)}  ${GLYPH.off} ${text("ui.configuration.disabledValue", band.locale)}`;
   const title = (
     <Box key="deck-features-title" flexDirection="row" columnGap={columnGap} paddingLeft={indent}>
@@ -171,9 +194,16 @@ function featureSwitches(els: ElementTable, band: DeckBand, desktop: boolean, ha
       <Text color={MUTED} wrap="truncate">{legend}</Text>
     </Box>
   );
-  const button = (sw: FeatureSwitch, label: string) => (
-    <Button key={"deck-feature-" + sw.id} label={label} plain dimColor={!sw.on} onPress={() => band.feature(sw.id, !sw.on)} />
-  );
+  // an on switch's ▣ takes the success color, so on and off part at a glance; an off one stays dim, as on the dashboard
+  const button = (sw: FeatureSwitch, label: string) => {
+    const [glyph = "", ...name] = [...label];
+    return (
+      <Button key={"deck-feature-" + sw.id} label={label} plain dimColor={!sw.on} onPress={() => band.feature(sw.id, !sw.on)}>
+        <Text color={sw.on ? PAINT.ok : MUTED} bold={sw.on}>{glyph}</Text>
+        <Text>{name.join("")}</Text>
+      </Button>
+    );
+  };
   if (desktop) {
     return {
       node: (
@@ -188,8 +218,10 @@ function featureSwitches(els: ElementTable, band: DeckBand, desktop: boolean, ha
     };
   }
   const packed = featureLines(band.features, band.cols);
+  // a blank row parts the switches (settings) from the rows (what is going on), when at least one row fits under it
   const room = (band.maxRows ?? DEFAULT_MAX_ROWS) - 1 - laneLines(band, hasLane);
-  if (!band.pane && room - 1 - packed.length < Math.min(minimumRows, band.rows.length)) return { node: null, lines: 0 };
+  const spacer = band.rows.length && room - 1 - packed.length - spacerRows >= 1 ? spacerRows : 0;
+  if (!band.pane && room - 1 - packed.length - spacer < Math.min(minimumRows, band.rows.length)) return { node: null, lines: 0 };
   return {
     node: (
       <Box key="deck-features" flexDirection="column">
@@ -199,9 +231,12 @@ function featureSwitches(els: ElementTable, band: DeckBand, desktop: boolean, ha
             {line.map(({ sw, label }) => button(sw, label))}
           </Box>
         ))}
+        {Array.from({ length: spacer }, (_, i) => (
+          <Text key={"deck-features-space-" + i}> </Text>
+        ))}
       </Box>
     ),
-    lines: 1 + packed.length,
+    lines: 1 + packed.length + spacer,
   };
 }
 
@@ -445,10 +480,10 @@ function agentLine(els: ElementTable, band: DeckBand, ag: Agent, frame: number, 
   );
 }
 
-// the ✕ that dismisses a row
+// the ✕ that dismisses a row, at full strength: a control dimmed at rest is one nobody sees
 function closeButton(els: ElementTable, band: DeckBand, row: DeckRow) {
   const { Button } = els;
-  return <Button key={"x-" + row.id} label="✕" plain dimColor onPress={() => band.dismiss(row)} />;
+  return <Button key={"x-" + row.id} label="✕" plain onPress={() => band.dismiss(row)} />;
 }
 
 // a row's name for a screen reader: a route's models and effort, or a bar's title, count and share
@@ -468,42 +503,72 @@ function laneLines(band: DeckBand, hasLane: boolean): number {
   return hasLane ? LANE_ROWS + (band.speech?.length ? 1 : 0) : 0;
 }
 
-// what the features on the lane say, on one line under it: the one speaking first, its words pressed to open its pane
-// with the whole of it and the choices, then the others' names, each pressed to open its own. The line never wraps
-// out of its budget: the others' names take what the words leave beyond their minimum, those that do not fit are
-// counted as "+N", and the words are cut to what is left.
+// what the features on the lane say, on one line under it: the one speaking first, its words and an "open" pill,
+// pressed to open its pane with the whole of it and the choices, then the others' names, underlined in their colors,
+// each pressed to open its own. The line never wraps out of its budget: the others' names take what the words leave
+// beyond their minimum, those that do not fit are counted as "+N", and the words are cut to what is left.
 function speechLine(els: ElementTable, band: DeckBand) {
   const { Box, Button, Text } = els;
   const [lead, ...rest] = band.speech ?? [];
   if (!lead) return null;
-  const columns = (s: string) => [...s].length;
+  const gap = UI_DESIGN.space.sm;
   const head = `${GLYPH.speech} ${lead.name}:`;
-  const open = ` ${GLYPH.leader} ${text("deck.speech.open", band.locale)}`;
+  const openLabel = text("deck.speech.open", band.locale);
   const minimum = DECK_DESIGN.band.speech.minimumTextColumns;
-  const moreWidth = (count: number) => (count ? columns(`+${count}`) + 1 : 0);
-  const budget = band.cols - columns(head) - columns(open) - minimum - 2;
+  // the name and the gap after it, then inside the lead's button a space before the pill, and one column to spare
+  const fixed = columnsOf(head) + gap + 1 + pillColumns(openLabel) + 1;
+  const moreWidth = (count: number) => (count ? columnsOf(`+${count}`) + gap : 0);
+  const budget = band.cols - fixed - minimum;
   const named: Speech[] = [];
   let used = 0;
   for (const one of rest) {
-    const width = columns(one.name) + 1;
+    const width = columnsOf(one.name) + gap;
     if (used + width + moreWidth(rest.length - named.length - 1) > budget) break;
     named.push(one);
     used += width;
   }
   const more = rest.length - named.length;
-  const room = Math.max(minimum, band.cols - columns(head) - columns(open) - used - moreWidth(more) - 2);
+  // on a band too narrow for the minimum beside a long name, the words take what is left rather than wrap the line
+  const room = Math.max(1, band.cols - fixed - used - moreWidth(more));
+  const words = trunc(lead.text, room);
   return (
-    <Box key="deck-speech" flexDirection="row" columnGap={UI_DESIGN.space.xs} overflow="hidden">
+    <Box key="deck-speech" flexDirection="row" columnGap={gap} overflow="hidden">
       <Box flexShrink={0}>
         <Text color={inkOf(lead.color)} bold>{head}</Text>
       </Box>
-      <Button key={"deck-speech-" + lead.id} label={trunc(lead.text, room) + open} plain onPress={lead.open} />
+      <Button key={"deck-speech-" + lead.id} label={`${words} ${GLYPH.leader} ${openLabel}`} plain onPress={lead.open}>
+        <Text color={TEXT}>{words + " "}</Text>
+        {pillFace(els, "deck-speech-open", openLabel)}
+      </Button>
       {named.map((one) => (
-        <Button key={"deck-speech-" + one.id} label={one.name} plain dimColor onPress={one.open} />
+        <Button key={"deck-speech-" + one.id} label={one.name} plain onPress={one.open}>
+          <Text color={inkOf(one.color)} underline>{one.name}</Text>
+        </Button>
       ))}
       {more ? <Text color={MUTED}>{`+${more}`}</Text> : null}
     </Box>
   );
+}
+
+/** Columns a text takes in the terminal, wide glyphs counted twice. */
+const columnsOf = (s: string) => displayWidth(s);
+
+/** Columns a pill button takes: its label, the spaces inside and the half blocks closing it. */
+const pillColumns = (label: string) => columnsOf(label) + DECK_DESIGN.band.pill.columns;
+
+/**
+ * A pill button's face: the label bold on the brand's ground, in the ink made for that ground (4.7:1 or more), between
+ * two half blocks of the ground. The ground holds 3:1 on a dark and a light terminal; on a colorless one the half blocks
+ * still close the label like brackets, so the pill reads as a button with or without color.
+ */
+function pillFace(els: ElementTable, key: string, label: string): RenderNode[] {
+  const { Text } = els;
+  const ground = STYLE.run.fill;
+  return [
+    <Text key={key + "-start"} color={ground}>{GLYPH.pillStart}</Text>,
+    <Text key={key + "-label"} bold color={PILL_INK} backgroundColor={ground}>{` ${label} `}</Text>,
+    <Text key={key + "-end"} color={ground}>{GLYPH.pillEnd}</Text>,
+  ];
 }
 
 // the pet's lane, with its cast and their names on top: a drawn strip on the desktop; in the terminal, one Raster as

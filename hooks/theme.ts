@@ -369,8 +369,28 @@ export const DECK_DESIGN = {
     titleMaxChars: 22,
     titleMaxPixels: 160,
     defaultMaxRows: 14,
+    /**
+     * The lines the features write above the prompt (Farol, Clareza, Semente, Lapida, Sentinela, Vigia), however long
+     * or many their messages: together they take at most `maxRows` terminal rows, the "+N" line naming the ones left
+     * out included. Each message is cut to its line with "…" and is whole in its feature's pane, which pressing it
+     * opens. The Deck band beneath them gets the rows the engine allows less these and the Jev band's, so the whole
+     * stack above the prompt fits the engine's `maxRows`; only a band too short even for the pet's lane, the header
+     * and the two rows the Deck always keeps still scrolls.
+     */
+    messages: {
+      maxRows: 3,
+      /** Columns a message's words keep before its other parts (another term, another name) give way to a "+N". */
+      minimumTextColumns: 12,
+    },
     /** The line under the pet lane where a feature mascot speaks: its words keep at least this many columns. */
     speech: { minimumTextColumns: 12 },
+    /** The header line doubles as the rule between the lane and the rows: a ─ fills it, never shorter than this. */
+    header: { minimumRuleColumns: 3 },
+    /**
+     * The band's main buttons (its toggle, "open" on the speech line) are pills: the label on the brand's ground
+     * between two half blocks of it. `columns` is what the half blocks and the spaces inside add to the label.
+     */
+    pill: { columns: 4 },
     defaultPanelColumns: 100,
     headerPetHeight: 28,
     headerPetScale: 0.7,
@@ -406,11 +426,14 @@ export const DECK_DESIGN = {
       desktopRowGap: 0,
       /** Data rows a terminal band keeps below the switches; with less room the switches wait for the Deck pane. */
       minimumRows: 2,
+      /** Blank terminal rows between the switches and the rows under them, counted in the band's budget. */
+      spacerRows: 1,
     },
     collapsed: {
       gap: { desktop: 4, terminal: 3 },
       desktop: { reservePixels: 140, extraPixelsPerChar: 7.5, titlePixelsPerChar: 8.5, itemPaddingPixels: 76 },
-      terminal: { reserveColumns: 10, extraColumnsPerChar: 1, itemPaddingColumns: 10 },
+      /** `reserveColumns` holds the toggle's pill and its key ahead of the chips. */
+      terminal: { reserveColumns: 14, extraColumnsPerChar: 1, itemPaddingColumns: 10 },
     },
   },
   ring: {
@@ -580,6 +603,8 @@ export const UI_DESIGN = {
     /** Columns between cards side by side. */
     gutter: 1,
     minCardWidth: 10,
+    /** Columns the host adds after a plain button for its key: a space and the key in angle quotes. */
+    hotkeyColumns: 4,
     /** The narrowest card a row of cards keeps: two fit beside the rail in an 80-column pane, three at 130. */
     gridMinWidth: 28,
     gridMaxColumns: 3,
@@ -722,6 +747,9 @@ export const GLYPH = {
   slash: "/",
   /** What a mascot on the Deck lane says, on the line under it. */
   speech: "»",
+  /** The two ends of a pill button: half blocks of its ground, so without color they still close it like brackets. */
+  pillStart: "▐",
+  pillEnd: "▌",
 } as const;
 
 /** The Deck's row marks, shared by its model status and renderers: the state of each row. */

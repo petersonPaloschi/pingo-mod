@@ -558,10 +558,11 @@ test("a band too short for its rows and the switches leaves the switches to the 
   deckWorld(on, new Map([["deck", { open: true }]]));
   await $.session.start(SESSION);
   await $.tool.call({ tool: "TodoWrite", todos: TODOS } as never);
-  const roomy = await $.ui.mount({ ...BAND, surface: TERMINAL, props: { ...BAND.props, bodyColumns: 40 } });
+  // the features' lines and the Jev band above the Deck count against the engine's rows too: 30 leave it room
+  const roomy = await $.ui.mount({ ...BAND, surface: TERMINAL, props: { ...BAND.props, bodyColumns: 40, maxRows: 30 } });
   expect(await roomy.find({ key: "deck-feature-clareza" })).toBeDefined();
   await roomy.unmount();
-  // 9 lines: the pet's 4, the header, and 4 left, too few for the title, the switch lines and two rows
+  // 9 lines: the lines above the Deck take 6, too few left for the pet, the header, the switches and two rows
   const short = await $.ui.mount({ ...BAND, surface: TERMINAL, props: { ...BAND.props, bodyColumns: 40, maxRows: 9 } });
   expect(await short.find({ key: "deck-feature-clareza" })).toBeUndefined();
   // the rows keep the room: the context row's title is still drawn

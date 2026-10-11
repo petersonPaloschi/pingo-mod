@@ -90,7 +90,8 @@ function widthOf(node: Element | string): number {
   const props = node.props ?? {};
   if (typeof props.width === "number") return props.width;
   if (node.type === "Text") return Math.max(...textOf(node).split("\n").map(displayWidth));
-  if (node.type === "Button") return displayWidth(String(props.label ?? textOf(node))) + (props.plain ? (props.hotkey ? 3 : 0) : 4);
+  // a bracketed button with a key may have the key drawn after it (" ‹e›"): counted, as an estimate rather errs long
+  if (node.type === "Button") return displayWidth(String(props.label ?? textOf(node))) + (props.plain ? (props.hotkey ? 3 : 0) : 4 + (props.hotkey ? 4 : 0));
   if (node.type === "Select") {
     const options = props.options as { value: string; label: string }[] | undefined;
     const selected = options?.find((option) => option.value === props.value) ?? options?.[0];

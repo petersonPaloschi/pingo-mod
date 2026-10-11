@@ -92,7 +92,9 @@ function inline(n: unknown): string {
 
 function buttonText(e: El): string {
   const p = e.props ?? {};
-  const label = typeof p.label === "string" ? p.label : kids(e).map(inline).join("");
+  // children are drawn in the label's place, as the terminal draws them; the label then only names the control
+  const children = kids(e);
+  const label = children.length ? children.map(inline).join("") : typeof p.label === "string" ? p.label : "";
   const hk = p.hotkey ? ` ‹${p.hotkey}›` : "";
   return p.plain ? `${label}${hk}` : `[ ${label} ]${hk}`;
 }

@@ -87,6 +87,36 @@ test("screens: band", LOCALE, async ($, on) => {
   }
 });
 
+const LONG = "a resposta cita o loader, o canal e o roteador sem dizer o que cada um faz, e o leitor iniciante se perde no meio ".repeat(3);
+const NOTES = Array.from({ length: 8 }, (_, i) => `- mudança ${i + 1}: ${LONG.slice(0, 60)}`).join("\n");
+
+// What the features and agents say above the prompt: one short message, then a long one, then many at once.
+test("screens: messages", LOCALE, async ($, on) => {
+  const { clock } = deckWorld(on);
+  on("model.fork", async () => ({ value: { isAnswered: true, text: `Corrija o loader.\n<<<CHANGES>>>\n${NOTES}`, usage: { input_tokens: 40, output_tokens: 12 } } }) as never);
+  on("prompt.read", async () => ({ value: { text: "corrija o loader", cursor: 0 } }) as never);
+  on("prompt.fill", async () => ({ isFilled: true }) as never);
+  await $.session.start(SESSION);
+  await $.tool.call({ tool: "TodoWrite", todos: TODOS } as never);
+  await $.command.run({ command: "deck", ...ASK, args: "expand" });
+  const capture = async (name: string) => {
+    for (const cols of BAND_WIDTHS) {
+      const ui = await $.ui.mount(band(cols));
+      await clock.advance(2000);
+      screen(`messages ${name} ${cols}`, shot(await ui.drawn(), cols, MASK));
+      await ui.unmount();
+    }
+  };
+  await $.tool.call({ tool: "mcp__jev__farol_assumption", tool_use_id: "toolu-farol-1", assumption: "A configuração fica em src/config.ts" } as never);
+  await capture("short");
+  await $.command.run({ command: "lapida", args: "corrija o loader", origin: { kind: "composer" }, presentation: { isFullscreen: true, columns: 160 } } as never);
+  await $.tool.call({ tool: "mcp__jev__farol_assumption", tool_use_id: "toolu-farol-2", assumption: LONG } as never);
+  await capture("long");
+  for (const name of ["Explore o módulo de autenticação", "Mapeie as rotas", LONG]) await $.agent.spawn(spawn(name) as never).catch(() => undefined);
+  await $.command.run({ command: "deck", ...ASK, args: "pet off" });
+  await capture("many");
+});
+
 const REQUEST = "Refatore a arquitetura do fluxo de orquestração em hooks/orchestrate.ts e hooks/core/objective.ts, e investigue a causa raiz do teste flaky que ainda falha.";
 const DONE = { input_tokens: 1200, output_tokens: 80, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 };
 

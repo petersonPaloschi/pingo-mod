@@ -4,7 +4,7 @@
 // Every function that reaches `$` is declared here at the top level, so `claude plugin validate`
 // can follow each call; the other files are pure.
 import { atom, read, update } from "claude-code";
-import type { ElementTable, EngineInterface, PromptComposeInput, PromptSubmitInput, Register, RenderChildren, RenderSurface, SessionReceiveInput, Timer } from "claude-code";
+import type { ElementTable, EngineInterface, PromptComposeInput, PromptSubmitInput, Register, RenderNode, RenderSurface, SessionReceiveInput, Timer } from "claude-code";
 
 import type { AdvisorInfo, AgentRun, FeatureFlags, FeaturePreferences, FarolAssumption, FarolRule, ClarezaGrade, ClarezaProposal, SementeIdea, LapidaPhase, PrismaPicker, PrismaQuestion, PrismaOption, SentinelaSession, VigiaMail, VigiaSession, VigiaTask, FeedEntry, PaneScroll, QualityCycle, FeedKind, FeedSpeaker, FeedTone, JevTab, LiveNow, RouteEvent, SetupDraft, TraceState } from "../types";
 import { keyFor, keyOwner, providerBasis, resolveSettings, storedApplies, type ModOptions, type Settings, type StoredSettings } from "./config.ts";
@@ -53,7 +53,8 @@ import {
   traceOf,
   type ConsultWhere,
 } from "./trace.ts";
-import { featureHead, lineTab, renderAbove, renderAgentPane, renderPane, sheetCard, type Actions, type ComandantePanel, type DeckPanel, type QualityPanel, type View } from "./ui.tsx";
+import { featureHead, lineTab, renderAbove, renderAgentPane, renderBand, renderPane, sheetCard, stackAbove, type AboveBlock, type Actions, type ComandantePanel, type DeckPanel, type QualityPanel, type View } from "./ui.tsx";
+import { displayWidth, rowsOf } from "./layout.ts";
 import { flowSummary } from "./flow.ts";
 import * as orch from "./orchestrate.ts";
 import { MODEL_LABEL } from "./core/orchestration.ts";
@@ -112,7 +113,7 @@ import { FOLD_FADE, FOLD_STEP, TRACK_H, toTrackRow, type DrawCaches } from "./de
 import { DESKTOP_STYLES, DESKTOP_STYLE_NAMES, desktopTrack } from "./deck/styles-desktop.ts";
 import { TERMINAL_STYLES, TERMINAL_STYLE_NAMES, terminalBar } from "./deck/styles-terminal.ts";
 import { applyDeckCommand, deckUsage, deckWords, openReply } from "./deck/wire.ts";
-import { DIM, runs } from "./deck/theme.ts";
+import { DIM, runs, trunc } from "./deck/theme.ts";
 import { DECK_DESIGN, GLYPH, meter, PAINT, PRISMA_GALLERY_CSS, UI_DESIGN, type DeckStyleName } from "./theme.ts";
 
 const PANE = "jev";
@@ -2242,20 +2243,44 @@ function renderElements($: EngineInterface, event: unknown): ElementTable {
   return $.ui.resolve(event as never) as ElementTable;
 }
 
-async function farolAbove($: EngineInterface, e: { props: { hasSurvey?: boolean } }, below: RenderChildren): Promise<RenderChildren> {
-  if (e.props.hasSurvey || !(await featureEnabled($, "farol"))) return below;
+/**
+ * Which feature keeps its rows above the prompt first when they run short (`stackAbove`): the ones asking the person to
+ * decide, then the other sessions, then the tool lines, whose state is also on the lane or in the dashboard.
+ */
+const ABOVE_RANK: readonly SpeakerId[] = ["clareza", "semente", "farol", "vigia", "lapida", "sentinela"];
+
+/** A feature's lines above the prompt, as `stackAbove` holds them to their rows; pressing its name opens its pane. */
+function aboveBlock($: EngineInterface, id: SpeakerId, lines: RenderNode[]): AboveBlock {
+  return { id, name: SPEAKER_NAMES[id], color: castColor(id), rank: ABOVE_RANK.indexOf(id), lines, open: () => void openFeaturePane($, id) };
+}
+
+/** Columns a non-plain button takes: its label inside "[ " and " ]". */
+const bracketColumns = (label: string) => displayWidth(label) + 4;
+
+async function farolAbove($: EngineInterface, e: { props: { hasSurvey?: boolean } }): Promise<AboveBlock | null> {
+  if (e.props.hasSurvey || !(await featureEnabled($, "farol"))) return null;
   const items = await read($, farolItems);
   const rules = await read($, farolRules);
-  if (!items.length && !rules.length) return below;
+  if (!items.length && !rules.length) return null;
   // assumptions to review are said by Farol's mascot on the Deck lane, when it is on screen
-  if (items.some((item) => item.verdict === "open") && await castShown($)) return below;
-  const { Box, Button } = renderElements($, e);
+  if (items.some((item) => item.verdict === "open") && await castShown($)) return null;
+  const els = renderElements($, e);
+  const { Box, Button, Text } = els;
   const locale = (await getSettings($)).locale;
   const open = items.filter((item) => item.verdict === "open").length;
   const label = open
     ? text(open === 1 ? "deck.speech.farol.one" : "deck.speech.farol.many", locale, { count: formatNumber(open, locale) })
     : text(rules.length === 1 ? "feature.farol.rules.one" : "feature.farol.rules.many", locale, { count: rules.length });
-  return <Box flexDirection="column"><Box flexDirection="row" columnGap={UI_DESIGN.space.xs}>{lineTab(renderElements($, e), castColor("farol"))}<Button key="farol-open" label={`${label} · Farol`} plain onPress={() => void $.ui.open({ id: "farol", title: "Farol", focus: true })} /></Box>{below}</Box>;
+  const name = `${label} · Farol`;
+  // a pressable line reads as one: underlined, at full strength
+  return aboveBlock($, "farol", [
+    <Box key="farol-line" flexDirection="row" columnGap={UI_DESIGN.space.xs} overflow="hidden">
+      {lineTab(els, castColor("farol"))}
+      <Button key="farol-open" label={name} plain onPress={() => void $.ui.open({ id: "farol", title: "Farol", focus: true })}>
+        <Text underline wrap="truncate-end">{name}</Text>
+      </Button>
+    </Box>,
+  ]);
 }
 
 async function clarezaStart($: EngineInterface) {
@@ -2301,21 +2326,63 @@ async function clarezaTurnCompleted($: EngineInterface, e: { agentId?: string; r
   else await update($, clarezaStatus, () => text("feature.clareza.turn.finished", locale, { ask: clarityLastAsk.replace(/\s+/g, " ").trim().slice(0, 60) }));
 }
 
-async function clarezaAbove($: EngineInterface, e: { props: { hasSurvey?: boolean } }, below: RenderChildren): Promise<RenderChildren> {
-  if (e.props.hasSurvey || !(await featureEnabled($, "clareza"))) return below;
+async function clarezaAbove($: EngineInterface, e: { props: { hasSurvey?: boolean } }, cols: number): Promise<AboveBlock | null> {
+  if (e.props.hasSurvey || !(await featureEnabled($, "clareza"))) return null;
   const grade = await read($, clarezaGrade);
   const line = await read($, clarezaStatus);
-  if (!line && !grade) return below;
-  const { Box, Button, Text } = renderElements($, e);
+  if (!line && !grade) return null;
+  const els = renderElements($, e);
+  const { Box, Button, Text } = els;
   const plan = await read($, clarezaProposal);
   const locale = (await getSettings($)).locale;
-  // with a plan waiting and no mascot to say so, the problems open Clareza's pane, where it is sent or rejected
-  const verdict = grade && (plan && !(await castShown($))
-    ? <Button key="clareza-open" label={`✗ ${grade.problems.join("; ")} ${GLYPH.leader} ${text("feature.clareza.seePlan", locale)}`} plain onPress={() => void openFeaturePane($, "clareza")} />
-    : <Text color={grade.pass ? PAINT.ok : PAINT.fail}>{grade.pass ? `${GLYPH.ok} Clareza` : `✗ ${grade.problems.join("; ")}`}{grade.fixing ? ` · ${text("feature.clareza.rewriting", locale)}` : ""}</Text>);
-  const top = <Box flexDirection="row" columnGap={1}>{lineTab(renderElements($, e), castColor("clareza"))}<Text dimColor wrap="truncate-end">{line}</Text>{verdict}</Box>;
-  const offered = grade?.offered.length ? <Box flexDirection="row" flexWrap="wrap" columnGap={1}><Text dimColor>{text("feature.clareza.know", locale)}</Text>{grade.offered.map((term) => <Button key={`clareza-${term}`} label={term} dimColor onPress={() => void knowClarezaTerm($, term)} />)}</Box> : null;
-  return <Box flexDirection="column">{top}{offered}{below}</Box>;
+  const gap = UI_DESIGN.space.xs;
+  const problems = grade ? grade.problems.join("; ") : "";
+  let verdict: RenderNode | null = null;
+  if (grade && plan && !(await castShown($))) {
+    // with a plan waiting and no mascot to say so, the problems open Clareza's pane, where it is sent or rejected and
+    // read whole; here they are cut to the line, the status before them giving way first
+    const tail = ` ${GLYPH.leader} ${text("feature.clareza.seePlan", locale)}`;
+    const room = Math.max(DECK_DESIGN.band.messages.minimumTextColumns, cols - displayWidth(GLYPH.tab) - 2 * gap - displayWidth("✗ ") - displayWidth(tail) - 1);
+    const label = `✗ ${trunc(problems, room)}${tail}`;
+    verdict = (
+      <Box flexShrink={0}>
+        <Button key="clareza-open" label={label} plain onPress={() => void openFeaturePane($, "clareza")}>
+          <Text underline>{label}</Text>
+        </Button>
+      </Box>
+    );
+  } else if (grade) {
+    verdict = <Text color={grade.pass ? PAINT.ok : PAINT.fail} wrap="truncate-end">{grade.pass ? `${GLYPH.ok} Clareza` : `✗ ${problems}`}{grade.fixing ? ` · ${text("feature.clareza.rewriting", locale)}` : ""}</Text>;
+  }
+  const lines: RenderNode[] = [
+    <Box key="clareza-line" flexDirection="row" columnGap={gap} overflow="hidden">
+      {lineTab(els, castColor("clareza"))}
+      <Text dimColor wrap="truncate-end">{line}</Text>
+      {verdict}
+    </Box>,
+  ];
+  if (grade?.offered.length) {
+    // the terms to mark as known, on one line: those that do not fit are counted, and come up as the others are pressed
+    const know = text("feature.clareza.know", locale);
+    let room = cols - displayWidth(know);
+    const fit: string[] = [];
+    for (const term of grade.offered) {
+      const after = grade.offered.length - fit.length - 1;
+      const width = gap + bracketColumns(term);
+      if (width + (after ? gap + displayWidth(`+${after}`) : 0) > room) break;
+      fit.push(term);
+      room -= width;
+    }
+    const more = grade.offered.length - fit.length;
+    lines.push(
+      <Box key="clareza-offered" flexDirection="row" columnGap={gap} overflow="hidden">
+        <Text dimColor wrap="truncate-end">{know}</Text>
+        {fit.map((term) => <Button key={`clareza-${term}`} label={term} onPress={() => void knowClarezaTerm($, term)} />)}
+        {more ? <Text dimColor wrap="truncate-end">{`+${more}`}</Text> : null}
+      </Box>,
+    );
+  }
+  return aboveBlock($, "clareza", lines);
 }
 
 /** Stops offering these ideas for the recent work; they stay on the shelf. */
@@ -2387,17 +2454,40 @@ async function judgeSementeNudges($: EngineInterface, fits: readonly SementeIdea
   }
   await update($, sementeNudges, () => offered);
 }
-async function sementeAbove($: EngineInterface, e: { props: { hasSurvey?: boolean; isWorking?: boolean } }, below: RenderChildren): Promise<RenderChildren> {
-  if (e.props.hasSurvey || e.props.isWorking || !(await featureEnabled($, "semente")) || !(await readFeaturePreferences($)).ideaNudges) return below;
+async function sementeAbove($: EngineInterface, e: { surface?: string; props: { hasSurvey?: boolean; isWorking?: boolean } }, cols: number): Promise<AboveBlock | null> {
+  if (e.props.hasSurvey || e.props.isWorking || !(await featureEnabled($, "semente")) || !(await readFeaturePreferences($)).ideaNudges) return null;
   const ids = await read($, sementeNudges);
   const found = (await read($, sementeIdeas)).filter((idea) => ids.includes(idea.id));
   // matching ideas are said by Semente's mascot on the Deck lane, when it is on screen
-  if (!found.length || await castShown($)) return below;
-  const { Box, Button, Text } = renderElements($, e);
+  if (!found.length || await castShown($)) return null;
+  const els = renderElements($, e);
+  const { Box, Button, Text } = els;
   const locale = (await getSettings($)).locale;
-  const label = text(found.length === 1 ? "feature.semente.fits.one" : "feature.semente.fits.many", locale, { count: found.length });
-  // the idea text is cut to the line here; pressing the label opens Semente's pane with every idea whole
-  return <Box flexDirection="column"><Box columnGap={UI_DESIGN.space.xs}>{lineTab(renderElements($, e), castColor("semente"))}<Button key="semente-open" label={`${label}:`} plain onPress={() => void openFeaturePane($, "semente")} /><Text dimColor wrap="truncate-end"> {found.map((idea) => sementeNudgeRulings.get(idea.id)?.decision === "questioned" ? `${GLYPH.ask} ${idea.text}` : idea.text).join(" · ")} </Text><Button key="send" label={text("feature.semente.send", locale)} variant="primary" onPress={() => void sendSemente($, found)} /><Button key="dismiss" label={text("feature.semente.dismiss", locale)} role="dismiss" onPress={() => void dismissSemente($, found)} /></Box>{below}</Box>;
+  const label = `${text(found.length === 1 ? "feature.semente.fits.one" : "feature.semente.fits.many", locale, { count: found.length })}:`;
+  const send = text("feature.semente.send", locale);
+  const dismiss = text("feature.semente.dismiss", locale);
+  const gap = UI_DESIGN.space.xs;
+  // the idea text is cut to the line here; pressing the label opens Semente's pane with every idea whole. In the
+  // terminal the buttons keep their whole width after it; on a band too narrow for the label and a few words beside
+  // them, they move whole to a row of their own. The desktop lays the row out itself, as before.
+  const room = cols - gap - bracketColumns(send) - gap - bracketColumns(dismiss);
+  const lead = room >= displayWidth(GLYPH.tab) + 2 * gap + displayWidth(label) + DECK_DESIGN.band.messages.minimumTextColumns ? room : cols;
+  const ideas = found.map((idea) => sementeNudgeRulings.get(idea.id)?.decision === "questioned" ? `${GLYPH.ask} ${idea.text}` : idea.text).join(" · ");
+  return aboveBlock($, "semente", [
+    <Box key="semente-line" flexDirection="row" flexWrap="wrap" columnGap={gap}>
+      <Box {...(e.surface === "terminal" ? { width: lead } : {})} flexDirection="row" columnGap={gap} overflow="hidden">
+        {lineTab(els, castColor("semente"))}
+        <Box flexShrink={0}>
+          <Button key="semente-open" label={label} plain onPress={() => void openFeaturePane($, "semente")}>
+            <Text underline>{label}</Text>
+          </Button>
+        </Box>
+        <Text dimColor wrap="truncate-end">{ideas}</Text>
+      </Box>
+      <Button key="send" label={send} variant="primary" onPress={() => void sendSemente($, found)} />
+      <Button key="dismiss" label={dismiss} role="dismiss" onPress={() => void dismissSemente($, found)} />
+    </Box>,
+  ]);
 }
 
 async function lapidaStart($: EngineInterface) {
@@ -2408,9 +2498,10 @@ async function lapidaPromptSubmit($: EngineInterface, e: Pick<PromptSubmitInput,
   const own = e.origin.kind === "composer" || e.origin.kind === "bridge" || (e.origin.kind === "plugin" && e.origin.name === "jev");
   if (own) await recordLapidaSend($, e.text).catch(() => {});
 }
-async function lapidaAbove($: EngineInterface, e: { props: { hasSurvey?: boolean; bodyColumns?: number } }, below: RenderChildren): Promise<RenderChildren> {
-  if (e.props.hasSurvey || !(await featureEnabled($, "lapida"))) return below;
-  const { Box, Button, Text } = renderElements($, e);
+async function lapidaAbove($: EngineInterface, e: { props: { hasSurvey?: boolean } }, cols: number): Promise<AboveBlock | null> {
+  if (e.props.hasSurvey || !(await featureEnabled($, "lapida"))) return null;
+  const els = renderElements($, e);
+  const { Box, Button, Text } = els;
   const locale = (await getSettings($)).locale;
   const phase = await read($, lapidaPhase);
   const enhancing = phase === "enhancing";
@@ -2424,9 +2515,19 @@ async function lapidaAbove($: EngineInterface, e: { props: { hasSurvey?: boolean
   };
   const label = phase === "enhancing" ? "Lapida…" : phase === "ready" ? text("feature.lapida.ready", locale) : phase === "error" ? await read($, lapidaNote) : "Lapida";
   const notes = phase === "ready" ? await read($, lapidaChanges) : [];
-  const width = Math.max(UI_DESIGN.layout.minCardWidth, (e.props.bodyColumns || UI_DESIGN.layout.viewport.defaultColumns) - UI_DESIGN.space.sm);
-  // The node and label, then each button, move whole to the next line on a narrow band instead of being squeezed.
-  return <Box flexDirection="column"><Box flexDirection="row" flexWrap="wrap" columnGap={UI_DESIGN.space.xs}><Box flexDirection="row" columnGap={UI_DESIGN.space.xs}>{lineTab(renderElements($, e), castColor("lapida"))}<Text dimColor wrap="truncate-end">{label}</Text></Box>{!enhancing && <Box flexShrink={0}><Button key="lapida-enhance" label={text("feature.lapida.enhance", locale)} hotkey="e" onPress={enhanceDraft} /></Box>}{!enhancing && <Box flexShrink={0}><Button key="lapida-send" label={text("feature.lapida.send", locale)} hotkey="s" onPress={send} /></Box>}</Box>{notes.map((line) => <Text key={line} dimColor wrap="truncate-end">{`+ ${line}`.slice(0, width)}</Text>)}{below}</Box>;
+  // The node and label, then each button, move whole to the next line on a narrow band instead of being squeezed. The
+  // notes on what the rewrite changed share one row after it, cut with "…": the rewrite itself is in the prompt box.
+  return aboveBlock($, "lapida", [
+    <Box key="lapida-line" flexDirection="row" flexWrap="wrap" columnGap={UI_DESIGN.space.xs}>
+      <Box flexDirection="row" columnGap={UI_DESIGN.space.xs} overflow="hidden">
+        {lineTab(els, castColor("lapida"))}
+        <Text dimColor wrap="truncate-end">{label}</Text>
+      </Box>
+      {!enhancing && <Box flexShrink={0}><Button key="lapida-enhance" label={text("feature.lapida.enhance", locale)} hotkey="e" onPress={enhanceDraft} /></Box>}
+      {!enhancing && <Box flexShrink={0}><Button key="lapida-send" label={text("feature.lapida.send", locale)} hotkey="s" onPress={send} /></Box>}
+    </Box>,
+    ...(notes.length ? [<Text key="lapida-notes" dimColor wrap="truncate-end">{trunc(notes.map((line) => `+ ${line}`).join(` ${GLYPH.leader} `), Math.max(UI_DESIGN.layout.minCardWidth, cols))}</Text>] : []),
+  ]);
 }
 
 type PrismaQuestionInput = { question: string; header: string; multiSelect?: boolean; options?: { label: string; description?: string; preview?: string }[] };
@@ -2604,14 +2705,25 @@ async function jumpSentinela($: EngineInterface, row: SentinelaSession, surface:
   const locale = (await getSettings($)).locale;
   $.ui.toast(text(copied.isCopied ? "feature.sentinela.jump.copied" : "feature.sentinela.jump.run", locale, { command }), { timeoutMs: 8000 });
 }
-async function sentinelaAbove($: EngineInterface, e: { props: { hasSurvey?: boolean } }, below: RenderChildren): Promise<RenderChildren> {
-  if (e.props.hasSurvey || !(await featureEnabled($, "sentinela"))) return below;
+async function sentinelaAbove($: EngineInterface, e: { props: { hasSurvey?: boolean } }): Promise<AboveBlock | null> {
+  if (e.props.hasSurvey || !(await featureEnabled($, "sentinela"))) return null;
   const list = await read($, sentinelaSessions);
   const count = (status: SentinelaSession["status"]) => list.filter((row) => row.status === status).length;
-  const { Box, Button, Text } = renderElements($, e);
+  const els = renderElements($, e);
+  const { Box, Button, Text } = els;
   const locale = (await getSettings($)).locale;
   // Each part moves whole to the next line on a narrow band: the button is never split from its node or cut.
-  return <Box flexDirection="column"><Box flexDirection="row" flexWrap="wrap" columnGap={UI_DESIGN.space.sm}><Box flexDirection="row" flexShrink={0} columnGap={UI_DESIGN.space.xs}>{lineTab(renderElements($, e), castColor("sentinela"))}<Button key="sessions" label={text("feature.sentinela.sessions", locale)} onPress={() => void toggleSentinela($)} /></Box><Box flexShrink={0}><Text color={PAINT.fail}>{GLYPH.ask} {text("feature.sentinela.band.waiting", locale, { count: count("waiting") })}</Text></Box><Box flexShrink={0}><Text color={PAINT.warn}>{GLYPH.on} {text("feature.sentinela.band.working", locale, { count: count("working") })}</Text></Box><Box flexShrink={0}><Text color={PAINT.ok}>{GLYPH.ok} {text("feature.sentinela.band.done", locale, { count: count("done") })}</Text></Box></Box>{below}</Box>;
+  return aboveBlock($, "sentinela", [
+    <Box key="sentinela-line" flexDirection="row" flexWrap="wrap" columnGap={UI_DESIGN.space.sm}>
+      <Box flexDirection="row" flexShrink={0} columnGap={UI_DESIGN.space.xs}>
+        {lineTab(els, castColor("sentinela"))}
+        <Button key="sessions" label={text("feature.sentinela.sessions", locale)} onPress={() => void toggleSentinela($)} />
+      </Box>
+      <Box flexShrink={0}><Text color={PAINT.fail}>{GLYPH.ask} {text("feature.sentinela.band.waiting", locale, { count: count("waiting") })}</Text></Box>
+      <Box flexShrink={0}><Text color={PAINT.warn}>{GLYPH.on} {text("feature.sentinela.band.working", locale, { count: count("working") })}</Text></Box>
+      <Box flexShrink={0}><Text color={PAINT.ok}>{GLYPH.ok} {text("feature.sentinela.band.done", locale, { count: count("done") })}</Text></Box>
+    </Box>,
+  ]);
 }
 
 async function ensureVigia($: EngineInterface) {
@@ -2828,19 +2940,52 @@ async function vigiaSessionEnd($: EngineInterface) {
   vigiaReads.clear();
   vigiaHolds.clear();
 }
-async function vigiaAbove($: EngineInterface, e: { props: { hasSurvey?: boolean } }, below: RenderChildren): Promise<RenderChildren> {
-  if (e.props.hasSurvey || !(await featureEnabled($, "vigia"))) return below;
+async function vigiaAbove($: EngineInterface, e: { props: { hasSurvey?: boolean } }): Promise<AboveBlock | null> {
+  if (e.props.hasSurvey || !(await featureEnabled($, "vigia"))) return null;
   const list = await read($, vigiaSessions);
   const now = await $.clock.now();
   const others = list.filter((record) => record.id !== vigiaMe?.id && vigiaAlive(record, now));
-  if (!others.length) return below;
+  if (!others.length) return null;
   const conflicts = await vigiaClashes($, now);
-  const { Box, Button, Text } = renderElements($, e);
+  const els = renderElements($, e);
+  const { Box, Button, Text } = els;
   const locale = (await getSettings($)).locale;
   const collapsed = await read($, vigiaCollapsed);
-  const toggle = <Button key="vigia-toggle" label={text(collapsed ? "feature.vigia.show" : "feature.vigia.hide", locale)} plain dimColor onPress={async () => { const value = !await read($, vigiaCollapsed); await update($, vigiaCollapsed, () => value); await $.store.set("vigia:collapsed", value); }} />;
-  if (collapsed) return <Box flexDirection="column"><Box gap={1}>{lineTab(renderElements($, e), castColor("vigia"))}<Text dimColor>{text(others.length === 1 ? "feature.vigia.others.one" : "feature.vigia.others.many", locale, { count: others.length })} ·</Text>{conflicts.length > 0 && <Text color={PAINT.fail}>! {text(conflicts.length === 1 ? "feature.vigia.clashes.one" : "feature.vigia.clashes.many", locale, { count: conflicts.length })} ·</Text>}{toggle}</Box>{below}</Box>;
-  return <Box flexDirection="column"><Box flexDirection="column"><Box gap={1}>{lineTab(renderElements($, e), castColor("vigia"))}<Text dimColor>{text("feature.vigia.title", locale)}</Text>{toggle}</Box>{conflicts.slice(0, 2).map((conflict) => <Text key={`${conflict.other.id}-${conflict.file}`} color={PAINT.fail} wrap="truncate">  ! {text("feature.vigia.clash", locale)}: {conflict.file} · {vigiaName(conflict.other)} · {formatAge(now - conflict.at, locale)}</Text>)}{others.slice(0, 3).map((record) => <Box key={record.id} flexDirection="column" paddingLeft={2}><Text wrap="truncate"><Text color={record.isBusy ? PAINT.warn : PAINT.ok}>{record.isBusy ? `${GLYPH.run} ` : `${GLYPH.ask} `}</Text><Text bold>{vigiaName(record)}</Text><Text dimColor> · {text(record.isBusy ? "feature.vigia.working" : "feature.vigia.waiting", locale)}</Text></Text>{(vigiaDoing(record) ?? record.lastPrompt) && <Text wrap="truncate">{GLYPH.branch} {vigiaDoing(record) ?? record.lastPrompt}{vigiaNext(record) ? ` → ${vigiaNext(record)}` : ""}</Text>}</Box>)}</Box>{below}</Box>;
+  const label = text(collapsed ? "feature.vigia.show" : "feature.vigia.hide", locale);
+  // the toggle keeps its width at the end of the line, underlined so it reads as one; the words before it give way
+  const toggle = (
+    <Box flexShrink={0}>
+      <Button key="vigia-toggle" label={label} plain onPress={async () => { const value = !await read($, vigiaCollapsed); await update($, vigiaCollapsed, () => value); await $.store.set("vigia:collapsed", value); }}>
+        <Text underline>{label}</Text>
+      </Button>
+    </Box>
+  );
+  if (collapsed) {
+    return aboveBlock($, "vigia", [
+      <Box key="vigia-line" gap={1} overflow="hidden">
+        {lineTab(els, castColor("vigia"))}
+        <Text dimColor wrap="truncate-end">{text(others.length === 1 ? "feature.vigia.others.one" : "feature.vigia.others.many", locale, { count: others.length })} ·</Text>
+        {conflicts.length > 0 && <Text color={PAINT.fail} wrap="truncate-end">! {text(conflicts.length === 1 ? "feature.vigia.clashes.one" : "feature.vigia.clashes.many", locale, { count: conflicts.length })} ·</Text>}
+        {toggle}
+      </Box>,
+    ]);
+  }
+  // open: the clashes, then each session at work and what it is doing, one row each, as many as `stackAbove` allows
+  return aboveBlock($, "vigia", [
+    <Box key="vigia-line" gap={1} overflow="hidden">
+      {lineTab(els, castColor("vigia"))}
+      <Text dimColor wrap="truncate-end">{text("feature.vigia.title", locale)}</Text>
+      {toggle}
+    </Box>,
+    ...conflicts.slice(0, 2).map((conflict) => <Text key={`${conflict.other.id}-${conflict.file}`} color={PAINT.fail} wrap="truncate">  ! {text("feature.vigia.clash", locale)}: {conflict.file} · {vigiaName(conflict.other)} · {formatAge(now - conflict.at, locale)}</Text>),
+    ...others.slice(0, 3).flatMap((record) => {
+      const doing = vigiaDoing(record) ?? record.lastPrompt;
+      return [
+        <Box key={record.id} paddingLeft={2}><Text wrap="truncate"><Text color={record.isBusy ? PAINT.warn : PAINT.ok}>{record.isBusy ? `${GLYPH.run} ` : `${GLYPH.ask} `}</Text><Text bold>{vigiaName(record)}</Text><Text dimColor> · {text(record.isBusy ? "feature.vigia.working" : "feature.vigia.waiting", locale)}</Text></Text></Box>,
+        ...(doing ? [<Box key={`${record.id}-doing`} paddingLeft={2}><Text wrap="truncate">{GLYPH.branch} {doing}{vigiaNext(record) ? ` → ${vigiaNext(record)}` : ""}</Text></Box>] : []),
+      ];
+    }),
+  ]);
 }
 
 // Code Quality: after a turn in which Claude changed code, an agent of Pingo's own reviews the pending changes against
@@ -4947,16 +5092,23 @@ export const register: Register = (on, given) => {
     const { Box } = els;
     const cols = e.props.bodyColumns ?? UI_DESIGN.layout.viewport.defaultColumns;
     const surface = deckSurface(e.surface);
-    const band = await deckBandOf($, cols, surface, e.props.maxRows);
+    const locale = (await getSettings($)).locale;
+    // the features' lines first, top to bottom, held together to DECK_DESIGN.band.messages.maxRows rows however long
+    // or many their messages; then the Jev band; the Deck band takes what the engine's rows leave after both, so the
+    // whole stack shows instead of scrolling when a message arrives
+    const blocks = [await vigiaAbove($, e), await sentinelaAbove($, e), await lapidaAbove($, e, cols), await sementeAbove($, e, cols), await clarezaAbove($, e, cols), await farolAbove($, e)];
+    const notes = stackAbove(els, blocks.filter((block): block is AboveBlock => block !== null), cols, locale);
+    const jev = await view($, cols, 2, e.surface);
+    const jevBand = renderBand(els, jev);
+    const used = rowsOf(notes, cols) + rowsOf(jevBand, cols);
+    const band = await deckBandOf($, cols, surface, e.props.maxRows === undefined ? undefined : Math.max(0, e.props.maxRows - used));
     noteLane($, e.requestId, band, surface);
-    let below: RenderChildren = renderAbove(els, await view($, cols, 2, e.surface), band, surface);
-    below = await farolAbove($, e, below);
-    below = await clarezaAbove($, e, below);
-    below = await sementeAbove($, e, below);
-    below = await lapidaAbove($, e, below);
-    below = await sentinelaAbove($, e, below);
-    below = await vigiaAbove($, e, below);
-    return <Box flexDirection="column">{below}</Box>;
+    return (
+      <Box flexDirection="column">
+        {notes}
+        {renderAbove(els, jev, band, surface, jevBand)}
+      </Box>
+    );
   });
 
   on("session.compact", async ($, e, next) => {
