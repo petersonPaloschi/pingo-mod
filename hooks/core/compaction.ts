@@ -216,12 +216,10 @@ export interface ContextJevAsker {
   ask(state: ContextJevState, questions: ContextJevQuestions): Promise<ContextJevResponse>;
 }
 
-export function contextNoulAnswer(answers: Record<string, ContextJevAnswer>, name: string): number {
+/** A `noul` answer's value, or undefined when it is missing or not a finite number. */
+export function contextNoulAnswer(answers: Record<string, ContextJevAnswer>, name: string): number | undefined {
   const answer = answers[name];
-  if (!answer || !("noul" in answer) || typeof answer.noul !== "number" || !Number.isFinite(answer.noul)) {
-    throw new Error(`Invalid context answer for ${name}`);
-  }
-  return answer.noul;
+  return answer && "noul" in answer && typeof answer.noul === "number" && Number.isFinite(answer.noul) ? answer.noul : undefined;
 }
 
 export const CONTEXT_STATE_DESCRIPTION =
@@ -229,6 +227,8 @@ export const CONTEXT_STATE_DESCRIPTION =
 
 /** Successive caps on the serialised tool input included per call. */
 const CONTEXT_INPUT_CHARS = [1000, 200, 60] as const;
+/** Cap on each input value in a call's one-line form, before the line itself is cut. */
+const CONTEXT_CALL_VALUE_CHARS = 200;
 const CONTEXT_TEXT_HEAD = 400;
 const CONTEXT_TEXT_TAIL = 150;
 
@@ -326,7 +326,10 @@ function contextResultNote(call: ContextToolCall): string {
 function compactContextCall(call: ContextToolCall): string {
   const input = Object.entries(call.input)
     .map(([key, value]) => {
-      const text = typeof value === 'string' ? value : contextInputText({ [key]: value }, 200);
+      // cut before the whitespace pass: a file's whole content would be scanned for a one-line summary
+      const text = typeof value === 'string'
+        ? value.slice(0, CONTEXT_CALL_VALUE_CHARS)
+        : contextInputText({ [key]: value }, CONTEXT_CALL_VALUE_CHARS);
       return `${key}=${text.replace(/\s+/g, ' ')}`;
     })
     .join(' ');
@@ -634,15 +637,40 @@ async function askContextBatch(
 ): Promise<Map<string, ContextCallAnswer>> {
   const questions: ContextJevQuestions = Object.assign({}, ...batch.map(contextQuestionsFor));
   const { answers } = await asker.ask(state, questions);
+  // An answer missing or malformed keeps what it was about, as a call left unanswered is kept: one bad answer
+  // costs that call its compaction, not the whole run.
   return new Map(
     batch.map((call) => [
       call.id,
       {
-        keepCall: contextNoulAnswer(answers, `call_${call.id}`),
-        keepResult: contextNoulAnswer(answers, `result_${call.id}`),
+        keepCall: contextNoulAnswer(answers, `call_${call.id}`) ?? 1,
+        keepResult: contextNoulAnswer(answers, `result_${call.id}`) ?? 1,
       },
     ]),
   );
+}
+
+/** Requests to Jev in flight at once while compacting: each carries the whole fitted state. */
+const CONTEXT_PARALLEL_REQUESTS = 4;
+
+/** Runs `work` on every item, at most `limit` at a time, results in the items' order; the first failure stops it. */
+async function inTurns<T, R>(items: readonly T[], limit: number, work: (item: T) => Promise<R>): Promise<R[]> {
+  const results: R[] = new Array(items.length);
+  let next = 0;
+  let failed = false;
+  const lane = async (): Promise<void> => {
+    while (!failed && next < items.length) {
+      const index = next++;
+      try {
+        results[index] = await work(items[index]!);
+      } catch (error) {
+        failed = true;
+        throw error;
+      }
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, lane));
+  return results;
 }
 
 function truncatedContextResultText(text: string, isError: boolean, headChars: number): string {
@@ -764,8 +792,9 @@ function contextCount(decisions: readonly ContextCallDecision[], reason: Context
  * Compacts a transcript by asking Jev, for every tool call outside the pinned
  * first and newest messages, whether the call and whether its result must
  * stay. The whole history (results omitted, fitted into `maxStateTokens`) is
- * sent as state with every batch of questions. Throws when Jev fails or the
- * history cannot be fitted; the caller decides whether to fall back.
+ * sent as state with every batch of questions, a few batches at a time. A
+ * missing or malformed answer keeps its call. Throws when a Jev request fails
+ * or the history cannot be fitted; the caller decides whether to fall back.
  */
 export async function compactContext(
   messages: readonly ContextMessage[],
@@ -785,9 +814,7 @@ export async function compactContext(
     const state = fitContextState(messages, calls, resolved);
     fitted = state;
     batches = batchContextCalls(candidates, state.tokens, resolved);
-    const answered = await Promise.all(
-      batches.map((batch) => askContextBatch(asker, state.state, batch)),
-    );
+    const answered = await inTurns(batches, CONTEXT_PARALLEL_REQUESTS, (batch) => askContextBatch(asker, state.state, batch));
     for (const map of answered) for (const [id, answer] of map) answers.set(id, answer);
   }
 

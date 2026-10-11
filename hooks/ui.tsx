@@ -2,7 +2,7 @@
 // on one line, then the open screen as nodes down a vertical line, one under the other, with dot meters for shares.
 import type { ElementTable, RenderChildren } from "claude-code";
 
-import type { AgentRun, AgentState, FeatureFlags, FeatureId, FeaturePreferences, FeedEntry, FeedTone, JevTab, LiveNow, RouteEvent, SetupDraft, TraceState, TraceStep } from "../types";
+import type { AgentRun, AgentState, FeatureFlags, FeatureId, FeaturePreferences, FeedEntry, FeedTone, JevTab, LiveNow, QualityCycle, QualityItem, RouteEvent, SetupDraft, TraceState, TraceStep } from "../types";
 import { features, modelName } from "./feed.ts";
 import { PROVIDER_IDS, PROVIDERS } from "./core/jev.ts";
 import {
@@ -28,7 +28,7 @@ import { trailLines } from "./trail.ts";
 import { runTiming, traceConsults } from "./trace.ts";
 import { formatAge, formatClock, formatCompact, formatDecimal, formatDuration, formatNumber, localeFor, reasonTitle, text, type Locale, type LocaleKey, type LocaleOption } from "./i18n.ts";
 import { displayWidth, rowsOf } from "./layout.ts";
-import { css, dotMeter, GLYPH, HUE, PAINT, UI_DESIGN, UI_INK as INK } from "./theme.ts";
+import { css, dotMeter, FEATURE_MASCOT_PALETTE, GLYPH, HUE, PAINT, UI_DESIGN, UI_INK as INK } from "./theme.ts";
 import { MOODS, type Mood } from "./mascots/pingo.ts";
 import { AGENT_MASCOTS, isMascot } from "./mascots/agents.ts";
 import { renderDeck, type DeckBand, type Surface } from "./deck/band.tsx";
@@ -37,11 +37,13 @@ import { DESKTOP_STYLE_NAMES, DESKTOP_STYLES } from "./deck/styles-desktop.ts";
 import { CLAUDE_MODELS, defaultPolicy, MODEL_LABEL, PROFILE_EFFORTS, ROLES, type OrchestrationPolicy, type Profile, type Role, type WorkMode } from "./core/orchestration.ts";
 import { EFFORT_TEXT_VALUES, MODEL_TEXT_VALUES } from "./core/contracts.ts";
 import { TERMINAL_STYLE_NAMES, TERMINAL_STYLES } from "./deck/styles-terminal.ts";
+import { COMANDANTE_ALL, COMANDANTE_DECISIONS, comandanteCounts, comandanteSessions, filterComandante } from "./core/comandante.ts";
+import type { ComandanteDecision, ComandanteFilter, ComandanteRecord } from "../types";
 
 /** The pane needs Select and Input, which the terminal and the desktop app draw. */
 export type Els = ElementTable<"terminal" | "desktop">;
 
-/** The eleven screens, in the order the rail lists them, with their keys (1 to 9, then 0 and o). */
+/** The thirteen screens, in the order the rail lists them, with their keys (1 to 9, then 0, o, q and d). */
 export const TABS: readonly (readonly (readonly [JevTab, string, string])[])[] = [
   [
     ["overview", "ui.tab.overview", "1"],
@@ -57,6 +59,8 @@ export const TABS: readonly (readonly (readonly [JevTab, string, string])[])[] =
     ["ai", "ui.tab.ai", "9"],
     ["flow", "ui.tab.flow", "0"],
     ["orchestration", "ui.tab.orchestration", "o"],
+    ["quality", "ui.tab.quality", "q"],
+    ["comandante", "ui.tab.comandante", "d"],
   ],
 ];
 
@@ -64,7 +68,7 @@ export const TABS: readonly (readonly (readonly [JevTab, string, string])[])[] =
  * The features that change which model runs, how it runs or what is sent to it: the AI screen's, not Features'.
  * The rest (Pingo Vivo, Sentinela) only show state or looks.
  */
-const AI_FEATURES: ReadonlySet<FeatureId> = new Set(["agents", "clareza", "lapida", "farol", "prisma", "semente", "vigia", "contexto"]);
+const AI_FEATURES: ReadonlySet<FeatureId> = new Set(["agents", "clareza", "lapida", "farol", "prisma", "semente", "vigia", "contexto", "codeQuality", "comandante"]);
 /** Keys the AI screen's own buttons hold (routing, test, remove key): a feature sharing one is toggled without it. */
 const AI_KEYS: ReadonlySet<string> = new Set(["r", "v", "f"]);
 
@@ -133,6 +137,29 @@ export interface View {
   deck: DeckPanel | null;
   /** The orchestration policy and what it is doing; made only on the AI tab. */
   orchestration?: OrchestrationView;
+  /** Code Quality's cycles and what it is doing; made only on its own tab. */
+  quality?: QualityPanel;
+  /** The Comandante's log of every session of the project and its filters; made only on its own tab. */
+  comandante?: ComandantePanel;
+}
+
+/** What the Comandante tab shows: the decisions of every session, newest first, the filters, and who this session is. */
+export interface ComandantePanel {
+  log: readonly ComandanteRecord[];
+  filter: ComandanteFilter;
+  /** This session's id, so its own decisions read "this session". */
+  me: string;
+  /** Waiting for Jev's verdict now. */
+  busy: boolean;
+}
+
+/** What the Quality tab shows: whether a cycle runs now, the files changed since the last one began, the cycles. */
+export interface QualityPanel {
+  running: boolean;
+  /** Edited since the last cycle began: the next one reviews them first. */
+  queued: readonly string[];
+  /** Newest first. */
+  cycles: readonly QualityCycle[];
 }
 
 /** Requested, applied and observed are kept apart: what the runtime did not report stays unknown. */
@@ -191,6 +218,10 @@ export interface Actions {
   /** The orchestration command field: each change, then Enter. */
   orchestrationType: (value: string) => void;
   orchestrationSubmit: (line: string) => void;
+  /** Starts a Code Quality cycle now, over everything pending. */
+  qualityRun: () => void;
+  /** Changes the Comandante tab's filters: a session's id or "all", a decision or "all". */
+  comandanteFilter: (change: Partial<ComandanteFilter>) => void;
 }
 
 const fit = (text: string, width: number) => (text.length > width ? text.slice(0, Math.max(0, width - 1)) + "…" : text.padEnd(width));
@@ -1925,6 +1956,131 @@ export function renderPane(els: Els, view: View, act: Actions) {
   ]);
 }
 
+/** Code Quality: its switch and what it is doing, then each cycle with what it fixed and what it left as it was. */
+function qualityView(els: Els, view: View, act: Actions) {
+  const { Box, Text, Button } = els;
+  const { locale } = view;
+  const on = view.features.codeQuality;
+  const { running, queued, cycles } = view.quality ?? { running: false, queued: [], cycles: [] };
+  const name = text("feature.codeQuality.name", locale);
+  const status = !on ? "feature.codeQuality.off" : running ? "feature.codeQuality.running" : "feature.codeQuality.idle";
+  const item = (glyph: string, color: string, one: QualityItem) => (
+    <Text wrap="wrap"><Text bold color={color}>{`${glyph} `}</Text>{one.where ? <Text bold>{`${one.where} `}</Text> : null}{one.text}</Text>
+  );
+  const cycleNode = (cycle: QualityCycle) => {
+    const title = text("feature.codeQuality.cycle", locale, { n: formatNumber(cycle.n, locale), time: formatClock(cycle.startedAt, locale) });
+    if (cycle.state === "running") {
+      const files = cycle.files.length ? text("feature.codeQuality.queued", locale, { files: cycle.files.join(", ") }) : undefined;
+      return card(els, title, <Text color={INK.dim} wrap="wrap">{text("feature.codeQuality.running", locale)}</Text>, { width: view.width, rule: INK.brand, glyph: GLYPH.run, ...(files ? { note: files } : {}) });
+    }
+    const counts = text("feature.codeQuality.counts", locale, { fixed: formatNumber(cycle.fixed.length, locale), skipped: formatNumber(cycle.skipped.length, locale) });
+    return card(els, title, [
+      cycle.summary ? <Text wrap="wrap">{cycle.summary}</Text> : null,
+      cycle.state === "failed" && !cycle.summary ? <Text color={INK.fail} wrap="wrap">{text("feature.codeQuality.noReport", locale)}</Text> : null,
+      cycle.reviewed.length ? <Text color={INK.faint} wrap="wrap">{text("feature.codeQuality.reviewed", locale, { files: cycle.reviewed.join(", ") })}</Text> : null,
+      ...cycle.fixed.map((one) => item(GLYPH.ok, INK.route, one)),
+      ...cycle.skipped.map((one) => item(GLYPH.off, INK.dim, one)),
+    ], { width: view.width, note: counts, alert: cycle.state === "failed" });
+  };
+  return (
+    <Box flexDirection="column" rowGap={UI_DESIGN.space.xs} width={view.width}>
+      {card(els, name, [
+        <Text color={INK.dim} wrap="wrap">{text(status, locale)}</Text>,
+        on && queued.length ? <Text color={INK.faint} wrap="wrap">{text("feature.codeQuality.queued", locale, { files: queued.join(", ") })}</Text> : null,
+        <Box flexDirection="row" flexWrap="wrap" columnGap={UI_DESIGN.space.sm}>
+          {toggleButton(els, "feature-codeQuality", on, name, () => act.feature("codeQuality", !on), "k")}
+          {on && !running ? <Button key="quality-run" label={text("feature.codeQuality.runNow", locale)} onPress={() => act.qualityRun()} /> : null}
+        </Box>,
+      ], { width: view.width, rule: hex(FEATURE_MASCOT_PALETTE.codeQuality) })}
+      {section(els, text("feature.codeQuality.cycles", locale))}
+      {cycles.length ? trail(els, cycles.map(cycleNode)) : emptyLine(els, text("feature.codeQuality.none", locale))}
+    </Box>
+  );
+}
+
+/** Each decision's glyph and color, so it reads without color too. */
+const DECISION_MARK: Record<ComandanteDecision, [glyph: string, color: string]> = {
+  approved: [GLYPH.ok, INK.route],
+  rejected: [GLYPH.fail, INK.fail],
+  questioned: [GLYPH.ask, INK.pass],
+};
+
+/**
+ * The Comandante: its switch and what it is doing, the filters by session and by decision, then each decision of
+ * every session of the project as a node of the trail, newest first: what was judged, why, and where it came from.
+ */
+function comandanteView(els: Els, view: View, act: Actions) {
+  const { Box, Text, Select } = els;
+  const { locale } = view;
+  const on = view.features.comandante;
+  const panel = view.comandante ?? { log: [], filter: { session: COMANDANTE_ALL, decision: COMANDANTE_ALL }, me: "", busy: false };
+  const name = text("feature.comandante.name", locale);
+  const status = !on ? "feature.comandante.off" : panel.busy ? "feature.comandante.busy" : "feature.comandante.idle";
+  const sessions = comandanteSessions(panel.log);
+  const sessionName = (id: string, label: string) => (id === panel.me ? text("feature.comandante.this", locale) : `${oneLine(label, 30)} · ${id.slice(0, 8)}`);
+  const kept = filterComandante(panel.log, panel.filter);
+  const shown = kept.slice(0, view.width >= 70 ? 30 : 15);
+  const counts = comandanteCounts(kept);
+  const lineWidth = Math.max(20, view.width - 6);
+  const node = (record: ComandanteRecord) => {
+    const [glyph, color] = DECISION_MARK[record.decision];
+    const title = `${text(`feature.comandante.decision.${record.decision}`, locale)} · ${text(`feature.${record.source}.name`, locale)}`;
+    const origin = [
+      clock(record.at, locale),
+      sessionName(record.session, record.sessionName),
+      record.project,
+      record.agent ? text("feature.comandante.by", locale, { agent: record.agent }) : "",
+    ].filter(Boolean).join(" · ");
+    return card(els, title, [
+      <Text wrap="wrap">{oneLine(record.summary, lineWidth * 3)}</Text>,
+      <Text color={INK.dim} wrap="wrap">{`${text(`feature.comandante.reason.${record.reason}` as LocaleKey, locale)} · ${text("feature.comandante.confidence", locale, { value: pct(record.confidence, 1, locale) })}`}</Text>,
+      <Text color={INK.faint} wrap="truncate">{oneLine(origin, lineWidth)}</Text>,
+    ], { width: view.width, rule: color, glyph, color });
+  };
+  return (
+    <Box flexDirection="column" rowGap={UI_DESIGN.space.xs} width={view.width}>
+      {card(els, name, [
+        <Text color={INK.dim} wrap="wrap">{text(status, locale)}</Text>,
+        <Box flexDirection="row" flexWrap="wrap" columnGap={UI_DESIGN.space.sm}>
+          {toggleButton(els, "feature-comandante", on, name, () => act.feature("comandante", !on), "m")}
+        </Box>,
+      ], { width: view.width, rule: hex(FEATURE_MASCOT_PALETTE.comandante) })}
+      {section(els, text("feature.comandante.log", locale))}
+      <Box flexDirection="row" flexWrap="wrap" columnGap={UI_DESIGN.space.sm}>
+        <Select
+          key="comandante-session"
+          label={text("feature.comandante.filter.session", locale)}
+          value={panel.filter.session}
+          options={[
+            { value: COMANDANTE_ALL, label: text("feature.comandante.filter.allSessions", locale) },
+            ...sessions.map((one) => ({ value: one.id, label: `${sessionName(one.id, one.name)}${one.project ? ` · ${one.project}` : ""}` })),
+          ]}
+          onSelect={(value) => act.comandanteFilter({ session: String(value) })}
+        />
+        <Select
+          key="comandante-decision"
+          label={text("feature.comandante.filter.decision", locale)}
+          value={panel.filter.decision}
+          options={[
+            { value: COMANDANTE_ALL, label: text("feature.comandante.filter.allDecisions", locale) },
+            ...COMANDANTE_DECISIONS.map((decision) => ({ value: decision, label: text(`feature.comandante.decision.${decision}`, locale) })),
+          ]}
+          onSelect={(value) => act.comandanteFilter({ decision: value as ComandanteFilter["decision"] })}
+        />
+      </Box>
+      {kept.length ? (
+        <Text color={INK.faint} wrap="wrap">
+          {[
+            text("feature.comandante.counts", locale, { approved: formatNumber(counts.approved, locale), rejected: formatNumber(counts.rejected, locale), questioned: formatNumber(counts.questioned, locale) }),
+            shown.length < kept.length ? text("feature.comandante.shown", locale, { shown: formatNumber(shown.length, locale), total: formatNumber(kept.length, locale) }) : "",
+          ].filter(Boolean).join(" ")}
+        </Text>
+      ) : null}
+      {shown.length ? trail(els, shown.map(node)) : emptyLine(els, text(panel.log.length ? "feature.comandante.noMatch" : "feature.comandante.empty", locale))}
+    </Box>
+  );
+}
+
 /** What the active tab draws under the header. */
 function tabBody(els: Els, view: View, act: Actions) {
   return view.tab === "live"
@@ -1945,6 +2101,10 @@ function tabBody(els: Els, view: View, act: Actions) {
                 ? flowView(els, view)
               : view.tab === "orchestration"
                 ? orchestrationView(els, view, act)
+              : view.tab === "quality"
+                ? qualityView(els, view, act)
+              : view.tab === "comandante"
+                ? comandanteView(els, view, act)
                 : view.tab === "deck"
                   ? deckView(els, view, act)
                   : overview(els, view, act);

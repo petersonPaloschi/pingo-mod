@@ -4,16 +4,22 @@
 // Every function that reaches `$` is declared here at the top level, so `claude plugin validate`
 // can follow each call; the other files are pure.
 import { atom, read, update } from "claude-code";
-import type { ElementTable, EngineInterface, PromptComposeInput, PromptSubmitInput, Register, RenderChildren, RenderSurface, Timer } from "claude-code";
+import type { ElementTable, EngineInterface, PromptComposeInput, PromptSubmitInput, Register, RenderChildren, RenderSurface, SessionReceiveInput, Timer } from "claude-code";
 
-import type { AdvisorInfo, AgentRun, FeatureFlags, FeaturePreferences, FarolAssumption, FarolRule, ClarezaGrade, ClarezaProposal, SementeIdea, LapidaPhase, PrismaPicker, PrismaQuestion, PrismaOption, SentinelaSession, VigiaSession, VigiaTask, FeedEntry, PaneScroll, FeedKind, FeedSpeaker, FeedTone, JevTab, LiveNow, RouteEvent, SetupDraft, TraceState } from "../types";
+import type { AdvisorInfo, AgentRun, FeatureFlags, FeaturePreferences, FarolAssumption, FarolRule, ClarezaGrade, ClarezaProposal, SementeIdea, LapidaPhase, PrismaPicker, PrismaQuestion, PrismaOption, SentinelaSession, VigiaMail, VigiaSession, VigiaTask, FeedEntry, PaneScroll, QualityCycle, FeedKind, FeedSpeaker, FeedTone, JevTab, LiveNow, RouteEvent, SetupDraft, TraceState } from "../types";
 import { keyFor, keyOwner, providerBasis, resolveSettings, storedApplies, type ModOptions, type Settings, type StoredSettings } from "./config.ts";
 import { channelFile, channelReader, FOLLOW_SCRIPT } from "./core/channel.ts";
 import { compactContextSession, contextReductionRatio, resolveContextConfig, type ContextJevAsker, type ContextJevResponse, type ContextResult, type ContextSessionMessage, type ResolvedContextConfig } from "./core/compaction.ts";
 import { createAskJev, isProvider, observeAskJev, PROVIDERS, redact, resolveModel, validateKey, type AskJev, type JevEvent, type JevSent, type ProviderId, type Transport } from "./core/jev.ts";
 import type { ModelContext } from "./core/types.ts";
 import { CLAUDE_MODEL } from "./core/contracts.ts";
-import { featureGate, sizeRequest, totalInput, type FeatureContext } from "./core/runtime.ts";
+import { errorMessage } from "./core/reasons.ts";
+import { QUALITY_SYSTEM } from "./core/prompts.ts";
+import { parseQualityReport, QUALITY_AGENT, QUALITY_HISTORY, QUALITY_MAX_TURNS, qualityAsks, qualityCall, qualityRequest, qualityVerdict } from "./core/quality.ts";
+import { featureGate, sizeRequest, totalInput, usageFacts, type FeatureContext } from "./core/runtime.ts";
+import { COMANDANTE_FOLDER, COMANDANTE_KEEP, comandanteProject, comandanteRecords, comandanteRequest, comandanteVerdict, mergeComandante, normalizeComandanteFilter, type ComandanteAlert, type ComandanteVerdict } from "./core/comandante.ts";
+import type { ComandanteRecord, ComandanteRuling } from "../types";
+import { readVigiaLetter, vigiaAlive, vigiaCommand, vigiaDigest, vigiaDoing, vigiaFlat, vigiaHold, vigiaHoldReason, vigiaInboxNote, vigiaLabel, vigiaName, vigiaNext, vigiaProject, vigiaRelative, vigiaShared, vigiaTargets, VIGIA_MAIL_KEEP, VIGIA_MAX_HOLDS, writeVigiaLetter, type VigiaLetter } from "./core/vigia.ts";
 import {
   DEFAULT_FEATURES,
   planAgent,
@@ -44,11 +50,11 @@ import {
   traceOf,
   type ConsultWhere,
 } from "./trace.ts";
-import { renderAbove, renderAgentPane, renderPane, type Actions, type DeckPanel, type View } from "./ui.tsx";
+import { renderAbove, renderAgentPane, renderPane, type Actions, type ComandantePanel, type DeckPanel, type QualityPanel, type View } from "./ui.tsx";
 import { flowSummary } from "./flow.ts";
 import * as orch from "./orchestrate.ts";
 import { MODEL_LABEL } from "./core/orchestration.ts";
-import { formatCompact, formatDecimal, formatDuration, formatNumber, formatPercent, localeFor, text, type Locale, type LocaleKey, type LocaleOption } from "./i18n.ts";
+import { formatAge, formatCompact, formatDecimal, formatDuration, formatNumber, formatPercent, localeFor, text, type Locale, type LocaleKey, type LocaleOption } from "./i18n.ts";
 import { renderDeck, FRAME_MS, type DeckBand, type Speech, type Surface } from "./deck/band.tsx";
 import { DEFAULT_SETTINGS, parseSettings, serializeSettings, type DeckSettings } from "./deck/settings.ts";
 import {
@@ -151,6 +157,12 @@ const sentinelaProblem = atom({ plugin: "jev", key: "sentinelaProblem" } as cons
 const sentinelaReplyTo = atom({ plugin: "jev", key: "sentinelaReplyTo" } as const, "");
 const vigiaSessions = atom({ plugin: "jev", key: "vigiaSessions" } as const, [] as VigiaSession[]);
 const vigiaCollapsed = atom({ plugin: "jev", key: "vigiaCollapsed" } as const, false);
+/** Code Quality's cycles in this session, newest first. */
+const qualityCycles = atom({ plugin: "jev", key: "qualityCycles" } as const, [] as QualityCycle[]);
+const vigiaMail = atom({ plugin: "jev", key: "vigiaMail" } as const, [] as VigiaMail[]);
+const comandanteLog = atom({ plugin: "jev", key: "comandanteLog" } as const, [] as ComandanteRecord[]);
+const comandanteFilter = atom({ plugin: "jev", key: "comandanteFilter" } as const, normalizeComandanteFilter(undefined));
+const comandanteBusy = atom({ plugin: "jev", key: "comandanteBusy" } as const, false);
 const feed = atom({ plugin: "jev", key: "feed" } as const, [] as FeedEntry[]);
 const live = atom({ plugin: "jev", key: "now" } as const, {} as LiveNow);
 const agents = atom({ plugin: "jev", key: "agents" } as const, [] as AgentRun[]);
@@ -233,6 +245,13 @@ let castSpeakers: CastSpeaker[] = [];
 let castLead: string | undefined;
 /** When each feature now on the lane joined it, so it hops once on arrival; a feature that leaves is forgotten. */
 const speakerSince = new Map<SpeakerId, number>();
+/**
+ * The switches the Deck's clock reads every 150 ms, so its tick reads no atom: each writer of the atom keeps its
+ * copy, and the first tick after a load reads the atom once. A draw still reads the atoms, which redraw it.
+ */
+let tickDeckSettings: DeckSettings | undefined;
+let tickFeatures: FeatureFlags | undefined;
+let tickPreferences: FeaturePreferences | undefined;
 let sessionPetHat = "tophat";
 let petHatOverride: string | undefined;
 let petHatOverrideUntil = 0;
@@ -243,8 +262,24 @@ const sementeDismissed = new Set<string>();
 let sentinelaDir = "";
 let sentinelaMe = "";
 let sentinelaRefreshedAt = 0;
+/** The last process check: which PIDs it was asked about (sorted, joined), when, and which of them ran. */
+let sentinelaPidCheck: { key: string; at: number; alive: Set<number> } | undefined;
 let vigiaMe: VigiaSession | undefined;
 let vigiaDir = "";
+/** Every record in this project's folder, sessions that never ran a prompt included: whom `/vigia msg` can reach. */
+let vigiaPeers: VigiaSession[] = [];
+/** What arrived from other sessions and the model has not read yet: it rides on the next tool result or prompt. */
+let vigiaPending: VigiaMail[] = [];
+/** The digest of the other sessions the model last read, so an unchanged one is not sent again. */
+let vigiaLastDigest = "";
+/** When the model last read each file (project-relative), and how often each unseen edit held one of its edits. */
+const vigiaReads = new Map<string, number>();
+const vigiaHolds = new Map<string, number>();
+let vigiaMailSeq = 0;
+/** This session's own Comandante records as its file holds them, read once per session id; and the last refresh. */
+let comandanteMine: { session: string; records: ComandanteRecord[] } | undefined;
+let comandanteRefreshedAt = 0;
+let comandanteSeq = 0;
 /** The band's clock (every 150 ms), its frame count, the fold in progress and its timer, and the demo's timer. */
 let deckLoop: Timer | undefined;
 let deckPetLoop: Timer | undefined;
@@ -311,7 +346,8 @@ async function processEnv($: EngineInterface): Promise<Record<string, string>> {
 }
 
 async function storedSettings($: EngineInterface, env: Record<string, string>): Promise<StoredSettings> {
-  // Older versions kept the key under a bare "apiKey"; it moves to the credentials entry.
+  // Older versions kept the key as plain text under a bare "apiKey": that copy is removed, never read or moved.
+  // Only a key accepted in Setup since then (the credentials entry) comes back after a restart.
   const legacyKey = await $.store.get(LEGACY_STORE_KEY);
   if (typeof legacyKey === "string") await $.store.delete(LEGACY_STORE_KEY);
   if (!sessionKey && !options.api_key?.trim()) {
@@ -941,17 +977,19 @@ async function speakersOf($: EngineInterface, now: number, locale: Locale, s: De
   const busy: SpeakerId[] = [];
   const counted = (key: string, count: number, values: Record<string, string> = {}) =>
     text(`${key}.${count === 1 ? "one" : "many"}` as LocaleKey, locale, { count: formatNumber(count, locale), ...values });
-  if (await featureEnabled($, "clareza")) {
+  // one read of the switches serves every feature below
+  const flags = await read($, features);
+  if (flags.clareza) {
     const plan = await read($, clarezaProposal);
     if (plan) said.push({ id: "clareza", text: text("deck.speech.clareza", locale, { problems: plan.problems.join("; ") }) });
     else if (await read($, clarezaReviewing)) busy.push("clareza");
   }
-  if (await featureEnabled($, "sentinela")) {
+  if (flags.sentinela) {
     const waiting = (await read($, sentinelaSessions)).filter((row) => row.status === "waiting").length;
     if (waiting) said.push({ id: "sentinela", text: counted("deck.speech.sentinela", waiting) });
   }
   let others = 0;
-  if (await featureEnabled($, "vigia")) {
+  if (flags.vigia) {
     others = (await read($, vigiaSessions)).filter((record) => record.id !== vigiaMe?.id && vigiaAlive(record, now)).length;
     const clash = others ? (await vigiaClashes($, now))[0] : undefined;
     if (clash) {
@@ -959,22 +997,23 @@ async function speakersOf($: EngineInterface, now: number, locale: Locale, s: De
       others = 0;
     }
   }
-  if (await featureEnabled($, "prisma") && await read($, prismaPending)) said.push({ id: "prisma", text: text("deck.speech.prisma", locale) });
-  if (await featureEnabled($, "semente") && (await readFeaturePreferences($)).ideaNudges) {
+  if (flags.prisma && await read($, prismaPending)) said.push({ id: "prisma", text: text("deck.speech.prisma", locale) });
+  if (flags.semente && (await readFeaturePreferences($)).ideaNudges) {
     const ids = await read($, sementeNudges);
     const found = (await read($, sementeIdeas)).filter((idea) => ids.includes(idea.id));
     if (found.length) said.push({ id: "semente", text: counted("deck.speech.semente", found.length, { idea: found[0]!.text }) });
   }
-  if (await featureEnabled($, "farol")) {
+  if (flags.farol) {
     const open = (await read($, farolItems)).filter((item) => item.verdict === "open").length;
     if (open) said.push({ id: "farol", text: counted("deck.speech.farol", open) });
     else if (await read($, farolBusy)) busy.push("farol");
   }
+  if (flags.codeQuality && (await read($, qualityCycles))[0]?.state === "running") busy.push("codeQuality");
   if (others) said.push({ id: "vigia", text: counted("deck.speech.vigia.others", others) });
-  if (await featureEnabled($, "lapida") && await read($, lapidaPhase) === "enhancing") busy.push("lapida");
-  if (await featureEnabled($, "contexto") && await read($, contextoBusy)) busy.push("contexto");
+  if (flags.lapida && await read($, lapidaPhase) === "enhancing") busy.push("lapida");
+  if (flags.contexto && await read($, contextoBusy)) busy.push("contexto");
+  if (flags.comandante && await read($, comandanteBusy)) busy.push("comandante");
   // the rest of the features switched on stand by on the lane, quiet, like Jev between calls
-  const flags = await read($, features);
   const standing = SPEAKER_IDS.filter((id) => flags[id] && !said.some((one) => one.id === id) && !busy.includes(id));
   const present = new Set<SpeakerId>([...said.map((one) => one.id), ...busy, ...standing]);
   for (const id of present) if (!speakerSince.has(id)) speakerSince.set(id, now);
@@ -1007,15 +1046,25 @@ async function speakersOf($: EngineInterface, now: number, locale: Locale, s: De
   };
 }
 
-async function styledPet($: EngineInterface, now: number): Promise<Pet> {
+/** The pet dressed by the preferences: a draw reads them from their atom, the clock passes its own copy. */
+async function styledPet($: EngineInterface, now: number, given?: FeaturePreferences): Promise<Pet> {
   const pet = petOf(now);
-  const preferences = await readFeaturePreferences($);
+  const preferences = given ?? await readFeaturePreferences($);
   if (petHatOverride && now >= petHatOverrideUntil) petHatOverride = undefined;
   pet.hat = petHatOverride ?? (preferences.petHat === "random" ? sessionPetHat : preferences.petHat);
   pet.shades = preferences.petShades;
   // Pingo speaks for Claude's own turn, as the last band draw found it: the clock reads no atom for it
   pet.speaks = castLead === "pingo";
   return pet;
+}
+
+/** A new pet for a new session: a fresh walk, the session's own random hat, and no hat a command put on. */
+async function resetPet($: EngineInterface, now: number): Promise<void> {
+  deckPet = createPet(now);
+  sessionPetHat = randomPetHat();
+  petHatOverride = undefined;
+  petHatOverrideUntil = 0;
+  await styledPet($, now);
 }
 
 /** A field of a saved record, when the record is an object. */
@@ -1030,6 +1079,16 @@ function redrawDeck($: EngineInterface): void {
 async function saveDeckSettings($: EngineInterface, next: DeckSettings): Promise<void> {
   await $.store.set(STORE_DECK, serializeSettings(next));
   await update($, deckSettings, () => next);
+  tickDeckSettings = next;
+}
+
+/** What the Deck's clock reads each tick, from the copies its writers keep; read from the atoms once after a load. */
+async function tickSwitches($: EngineInterface): Promise<{ cfg: DeckSettings; flags: FeatureFlags; preferences: FeaturePreferences }> {
+  // each copy is checked again after its read: a writer that ran meanwhile has the newer value
+  if (!tickDeckSettings) { const value = await read($, deckSettings); tickDeckSettings ??= value; }
+  if (!tickFeatures) { const value = await read($, features); tickFeatures ??= value; }
+  if (!tickPreferences) { const value = await readFeaturePreferences($); tickPreferences ??= value; }
+  return { cfg: tickDeckSettings, flags: tickFeatures, preferences: tickPreferences };
 }
 
 /** Saves what this session has spent: the day and month totals, and this session's count among the recent sessions. */
@@ -1212,15 +1271,16 @@ async function syncAgents($: EngineInterface, now: number, locale: Locale): Prom
 async function tickDeck($: EngineInterface): Promise<void> {
   deckFrame++;
   const config = await getSettings($);
-  const cfg = await read($, deckSettings);
+  // the switches come from the writers' copies: no atom is read on the tick
+  const { cfg, flags, preferences } = await tickSwitches($);
   const now = await $.clock.now();
   const s = deckOf(now);
   const rows = collectRows(s, cfg.show, now, config.locale);
   const cues = react(s, rows, now);
   if (cfg.sound) for (const name of cues.sounds) playDeckSound($, name);
   if (cfg.auto && cues.wantOpen) await setDeckOpen($, true);
-  const petOn = cfg.show.pet && await featureEnabled($, "pingoVivo");
-  const pet = petOn ? await styledPet($, now) : undefined;
+  const petOn = cfg.show.pet && flags.pingoVivo;
+  const pet = petOn ? await styledPet($, now, preferences) : undefined;
   const moved = pet ? stepPet(pet, petMood(s, rows, now), now) : false;
   // a subagent joining or leaving, or Jev being asked, changes the cast: on the desktop that is a new picture too
   const castWas = castKey(deckCast);
@@ -1395,8 +1455,7 @@ const randomPetHat = () => {
 
 async function runPingoCommand($: EngineInterface, args: string): Promise<{ text?: string }> {
   const locale = (await getSettings($)).locale;
-  const pt = locale === "pt";
-  if (!(await featureEnabled($, "pingoVivo"))) return { text: pt ? "Pingo Vivo está desligado na Configuração." : "Pingo Vivo is disabled in Configuration." };
+  if (!(await featureEnabled($, "pingoVivo"))) return { text: text("feature.pingoVivo.off", locale) };
   const [verb = "", ...rest] = args.trim().toLowerCase().split(/\s+/);
   const arg = rest.join(" ");
   const now = await $.clock.now();
@@ -1410,34 +1469,34 @@ async function runPingoCommand($: EngineInterface, args: string): Promise<{ text
         : !arg
           ? PET_HATS[(PET_HATS.indexOf(current as typeof PET_HATS[number]) + 1) % PET_HATS.length]!
           : "";
-    if (!next) return { text: `${pt ? "Chapéus" : "Hats"}: ${PET_HATS.join(", ")}` };
+    if (!next) return { text: text("feature.pingoVivo.hats", locale, { hats: PET_HATS.join(", ") }) };
     await setFeaturePreference($, "petHat", arg === "random" ? "random" : next);
     petHatOverride = next;
     petHatOverrideUntil = Number.POSITIVE_INFINITY;
     await styledPet($, now);
     redrawDeck($);
-    return { text: pt ? `O Pingo está usando ${next}.` : `Pingo is wearing ${next}.` };
+    return { text: text("feature.pingoVivo.wearing", locale, { hat: next }) };
   }
-  if (verb === "hats") return { text: `${pt ? "Chapéus" : "Hats"}: ${PET_HATS.join(", ")}. ${pt ? "Em uso" : "Wearing"}: ${pet.hat}.` };
+  if (verb === "hats") return { text: text("feature.pingoVivo.hatsWearing", locale, { hats: PET_HATS.join(", "), hat: String(pet.hat) }) };
   if (verb === "shades" || verb === "oculos") {
     const enabled = !(await readFeaturePreferences($)).petShades;
     await setFeaturePreference($, "petShades", enabled);
     await styledPet($, now);
     redrawDeck($);
-    return { text: enabled ? (pt ? "Óculos escuros ligados." : "Sunglasses on.") : (pt ? "Óculos escuros desligados." : "Sunglasses off.") };
+    return { text: text(enabled ? "feature.pingoVivo.shades.on" : "feature.pingoVivo.shades.off", locale) };
   }
   if (verb === "hide" || verb === "show" || verb === "esconder" || verb === "mostrar") {
     const hide = verb === "hide" || verb === "esconder";
     const cfg = await read($, deckSettings);
     await saveDeckSettings($, { ...cfg, show: { ...cfg.show, pet: !hide } });
     redrawDeck($);
-    return { text: hide ? (pt ? "O mascote foi escondido. Use /pingo show para exibi-lo." : "Pingo is hidden. Use /pingo show to bring it back.") : (pt ? "O mascote voltou." : "Pingo is back.") };
+    return { text: text(hide ? "feature.pingoVivo.hidden" : "feature.pingoVivo.shown", locale) };
   }
   if (verb === "pet" || verb === "carinho") {
     pet.mood = "calm";
     stepPet(pet, "celebrate", now);
     redrawDeck($);
-    return { text: pt ? "Você fez carinho no Pingo. ♥" : "You petted Pingo. ♥" };
+    return { text: text("feature.pingoVivo.petted", locale) };
   }
   if (verb === "party" || verb === "festa") {
     pet.mood = "calm";
@@ -1445,7 +1504,7 @@ async function runPingoCommand($: EngineInterface, args: string): Promise<{ text
     petHatOverride = "party";
     petHatOverrideUntil = now + 3200;
     redrawDeck($);
-    return { text: pt ? "O Pingo está comemorando!" : "Pingo is celebrating!" };
+    return { text: text("feature.pingoVivo.party", locale) };
   }
   if (verb === "dance" || verb === "dancar") {
     pet.act = "jump";
@@ -1453,9 +1512,10 @@ async function runPingoCommand($: EngineInterface, args: string): Promise<{ text
     pet.dur = 5000;
     pet.id++;
     redrawDeck($);
-    return { text: pt ? "O Pingo está dançando." : "Pingo is dancing." };
+    return { text: text("feature.pingoVivo.dance", locale) };
   }
-  return { text: `${pt ? "Pingo está usando" : "Pingo is wearing"} ${pet.hat}${pet.shades ? ` ${pt ? "e óculos" : "and sunglasses"}` : ""}. /pingo hat [name|random] · hats · pet · dance · party · shades · hide · show` };
+  const look = pet.shades ? text("feature.pingoVivo.withShades", locale, { hat: String(pet.hat) }) : String(pet.hat);
+  return { text: text("feature.pingoVivo.status", locale, { look }) };
 }
 
 /** The settings and the language a reply was given under: the Deck tab shows it only while they stay as they were. */
@@ -1651,11 +1711,23 @@ async function restoreStoredState($: EngineInterface): Promise<void> {
   const storedFeatures = await $.store.get(STORE_FEATURES);
   const cleaned = normalizeFeatures(storedFeatures ?? await read($, features));
   await update($, features, () => cleaned);
+  tickFeatures = cleaned;
   if (storedFeatures !== undefined) await $.store.set(STORE_FEATURES, cleaned);
   await restoreFeaturePreferences($);
 }
 
 // --- Settings, features, setup ---
+
+/** One step of the session's start: a failure goes to the live log, and the steps after it still run. */
+async function startStep($: EngineInterface, name: string, step: () => Promise<unknown>): Promise<void> {
+  try {
+    await step();
+  } catch (error) {
+    const reason = short(errorMessage(error), 160);
+    const locale = (await getSettings($).catch(() => undefined))?.locale ?? localeFor();
+    await log($, "mod", "feature", "bad", text("feed.feature.startFailed", locale, { name, reason })).catch(() => undefined);
+  }
+}
 
 async function setRouting($: EngineInterface, enabled: boolean): Promise<void> {
   const locale = (await getSettings($)).locale;
@@ -1667,6 +1739,7 @@ async function setRouting($: EngineInterface, enabled: boolean): Promise<void> {
 async function setFeature($: EngineInterface, id: FeatureId, enabled: boolean): Promise<void> {
   const locale = (await getSettings($)).locale;
   const flags = await update($, features, (current) => normalizeFeatures({ ...current, [id]: enabled }));
+  tickFeatures = flags;
   await $.store.set(STORE_FEATURES, flags);
   const name = featureList(locale).find((feature) => feature.id === id)?.name ?? id;
   await log($, "you", "feature", enabled ? "good" : "muted", text("feed.feature.state", locale, { name, state: text(enabled ? "feed.feature.enabled" : "feed.feature.disabled", locale) }));
@@ -1703,6 +1776,7 @@ async function restoreFeaturePreferences($: EngineInterface): Promise<FeaturePre
   const stored = await $.store.get("featurePreferences");
   const normalized = normalizeFeaturePreferences(stored);
   await update($, featurePreferences, () => normalized);
+  tickPreferences = normalized;
   if (stored !== undefined) await $.store.set("featurePreferences", normalized);
   return normalized;
 }
@@ -1715,6 +1789,7 @@ async function setFeaturePreference<K extends keyof FeaturePreferences>(
   const next = normalizeFeaturePreferences({ ...await readFeaturePreferences($), [key]: value });
   await $.store.set("featurePreferences", next);
   await update($, featurePreferences, () => next);
+  tickPreferences = next;
   return next;
 }
 
@@ -1758,16 +1833,16 @@ function contextPercent(ratio: number): string {
   return `${Math.round(ratio * 100)}%`;
 }
 
-function contextDecisionLog(result: ContextResult): string {
+/** One entry per decided call (pinned ones left out), for the live log. */
+function contextDecisionLog(result: ContextResult): string[] {
   return result.decisions
     .filter((decision) => decision.reason !== "pinned")
-    .map((decision) => `${decision.id}:${decision.tool}:${decision.action}/call=${decision.keepCall.toFixed(2)}/result=${decision.keepResult.toFixed(2)}`)
-    .join(" ");
+    .map((decision) => `${decision.id}:${decision.tool}:${decision.action}/call=${decision.keepCall.toFixed(2)}/result=${decision.keepResult.toFixed(2)}`);
 }
 
 function contextDecisionLogLines(result: ContextResult, locale: Settings["locale"], maxChars = 4096): string[] {
   const label = text("feature.contexto.decisions", locale);
-  const entries = contextDecisionLog(result).split(" ").filter(Boolean);
+  const entries = contextDecisionLog(result);
   if (entries.length === 0) return [`${label}: ${text("feature.contexto.noDecisions", locale)}`];
   const chunks: string[] = [];
   let current = "";
@@ -1804,18 +1879,24 @@ async function notifyContext($: EngineInterface, message: string, tone: "good" |
   $.ui.toast(message, { timeoutMs: 15_000 });
 }
 
+/**
+ * After a turn, compacts the session once its context passes the threshold. The flag is taken before the first
+ * wait: subagents that end together start one compaction between them, not one each.
+ */
 async function compactContextAfterTurn($: EngineInterface, config: ResolvedContextConfig): Promise<void> {
   if (contextCompacting) return;
+  contextCompacting = true;
   try {
     if (!(await featureEnabled($, "contexto"))) return;
     const { context } = await $.session.usage();
     if ((context.percent ?? 0) < config.compactAtPercent) return;
-    contextCompacting = true;
     await $.session.compact();
   } catch (error) {
-    const locale = (await getSettings($)).locale;
     const reason = short(error instanceof Error ? error.message : String(error), 160);
-    await notifyContext($, text("feature.contexto.autoSkipped", locale, { reason }), "warn");
+    // the turn has ended: a note that cannot be written is dropped, never thrown into turn.complete
+    await getSettings($)
+      .then(({ locale }) => notifyContext($, text("feature.contexto.autoSkipped", locale, { reason }), "warn"))
+      .catch(() => undefined);
   } finally {
     contextCompacting = false;
   }
@@ -1838,14 +1919,15 @@ async function syncFarol($: EngineInterface) {
   await update($, farolRules, () => list);
 }
 async function farolFeedback($: EngineInterface) {
-  const pt = (await getSettings($)).locale === "pt";
+  const locale = (await getSettings($)).locale;
   let message = "";
   await update($, farolItems, (list) => {
     const due = list.filter((item) => item.verdict !== "open" && !item.sent);
     if (!due.length) return list;
-    message = pt
-      ? `[Farol] A pessoa revisou suas suposições:\n${due.map((item) => item.verdict === "right" ? `- #${item.id} ${item.text}: correta.` : `- #${item.id} ${item.text}: incorreta.${item.note ? ` Correção: ${item.note}` : " Reavalie-a."}`).join("\n")}\nAjuste o trabalho que dependia delas.`
-      : `[Farol] The user reviewed your assumptions:\n${due.map((item) => item.verdict === "right" ? `- #${item.id} ${item.text}: correct.` : `- #${item.id} ${item.text}: incorrect.${item.note ? ` Correction: ${item.note}` : " Reconsider it."}`).join("\n")}\nAdjust work that depended on them.`;
+    const verdict = (item: FarolAssumption) => item.verdict === "right"
+      ? text("feature.farol.feedback.right", locale, { id: item.id, text: item.text })
+      : `${text("feature.farol.feedback.wrong", locale, { id: item.id, text: item.text })} ${item.note ? text("feature.farol.feedback.correction", locale, { note: item.note }) : text("feature.farol.feedback.reconsider", locale)}`;
+    message = `${text("feature.farol.feedback.title", locale)}\n${due.map(verdict).join("\n")}\n${text("feature.farol.feedback.adjust", locale)}`;
     return list.map((item) => item.verdict === "open" ? item : { ...item, sent: true });
   });
   return message;
@@ -1860,6 +1942,11 @@ async function farolAfterStop<T extends { block?: unknown }>($: EngineInterface,
   const due = (await read($, farolItems)).some((item) => item.verdict === "wrong" && !item.sent);
   const feedback = due ? await farolFeedback($) : "";
   return feedback ? { ...result, block: feedback } : result;
+}
+/** The Comandante's ruling on an assumption it did not approve, as the Farol pane shows it: its decision, reason and question. */
+function farolRuling(ruling: ComandanteRuling, locale: Locale): string {
+  const line = text("feature.farol.comandante", locale, { decision: text(`feature.comandante.decision.${ruling.decision}`, locale), reason: text(`feature.comandante.reason.${ruling.reason}` as LocaleKey, locale) });
+  return ruling.decision === "questioned" ? `${line} ${text(`feature.comandante.question.${ruling.reason}` as LocaleKey, locale)}` : line;
 }
 async function farolJudge($: EngineInterface, id: number, verdict: FarolAssumption["verdict"], note?: string) {
   let assumption = "";
@@ -1914,7 +2001,7 @@ async function registerOrchestration($: EngineInterface) {
 
 async function registerFarol($: EngineInterface) {
   await $.tool.register({ name: "farol_assumption", description: "Record an assumption the user may want to review or correct.", inputSchema: { type: "object", properties: { assumption: { type: "string" }, context: { type: "string" } }, required: ["assumption"] }, isDeferred: false });
-  await $.command.register({ name: "farol", description: "Review assumptions and project corrections" });
+  await $.command.register({ name: "farol", description: text("feature.farol.command", (await getSettings($)).locale) });
   await syncFarol($);
 }
 
@@ -1936,20 +2023,20 @@ async function addClarezaTerms($: EngineInterface, values: string[]) {
 }
 async function runClarezaCommand($: EngineInterface, args: string) {
   const [verb = "", ...rest] = args.trim().split(/\s+/);
-  const pt = (await getSettings($)).locale === "pt";
+  const locale = (await getSettings($)).locale;
   if (verb === "know") {
     const values = rest.join(" ").split(",");
-    if (!rest.length) return { text: (await readClarezaTerms($)).join(", ") || (pt ? "Nenhum termo marcado como conhecido." : "No known terms saved.") };
+    if (!rest.length) return { text: (await readClarezaTerms($)).join(", ") || text("feature.clareza.terms.none", locale) };
     const added = await addClarezaTerms($, values);
-    return { text: added.length ? `${pt ? "Termos adicionados" : "Added terms"}: ${added.join(", ")}` : (pt ? "Esses termos já estavam salvos." : "Those terms were already saved.") };
+    return { text: added.length ? text("feature.clareza.terms.added", locale, { terms: added.join(", ") }) : text("feature.clareza.terms.already", locale) };
   }
-  if (verb === "forget") { await $.store.set("clareza:terms", []); await update($, clarezaToldTerms, () => 0); return { text: pt ? "A lista de termos conhecidos foi apagada." : "Known terms cleared." }; }
+  if (verb === "forget") { await $.store.set("clareza:terms", []); await update($, clarezaToldTerms, () => 0); return { text: text("feature.clareza.terms.cleared", locale) }; }
   if (verb === "simple" || verb === "technical") {
     await setFeaturePreference($, "plainLevel", verb === "simple" ? "beginner" : "expert");
-    return { text: pt ? `Estilo da Clareza: ${verb === "simple" ? "linguagem simples" : "linguagem técnica"}.` : `Clareza style: ${verb}.` };
+    return { text: text(verb === "simple" ? "feature.clareza.style.simple" : "feature.clareza.style.technical", locale) };
   }
   const prefs = await readFeaturePreferences($);
-  return { text: `Clareza: ${prefs.plainLevel}; ${(await readClarezaTerms($)).length} ${pt ? "termos conhecidos" : "known terms"}.` };
+  return { text: text("feature.clareza.status", locale, { level: prefs.plainLevel, count: (await readClarezaTerms($)).length }) };
 }
 function clarezaStyle(level: "beginner" | "expert", pt: boolean) {
   if (pt) return `${level === "beginner" ? "# Clareza\nEscreva para alguém sem experiência técnica: use palavras comuns e frases curtas; explique termos técnicos na primeira menção; dê a resposta antes do motivo." : "# Clareza\nO leitor é técnico. Use termos técnicos comuns, com frases diretas e sem introduções vazias."}
@@ -1979,7 +2066,7 @@ async function reviewClareza($: EngineInterface, ask: string, answer: string, wa
     await update($, clarezaReviewing, () => false);
   }
   const review = result.isAnswered ? parseClarezaReview(result.text) : null;
-  if (!review) { await update($, clarezaStatus, () => "Answer review unavailable"); return; }
+  if (!review) { const locale = (await getSettings($)).locale; await update($, clarezaStatus, () => text("feature.clareza.review.unavailable", locale)); return; }
   await update($, clarezaStatus, () => review.status);
   const offered = prefs.plainLevel === "beginner" ? review.explained.filter((term) => !known.includes(term)).slice(0, 6) : [];
   // An unclear answer gets a plan, not a rewrite: the person reads it on Clareza's pane and sends or rejects it.
@@ -1987,8 +2074,13 @@ async function reviewClareza($: EngineInterface, ask: string, answer: string, wa
   await update($, clarezaGrade, () => ({ pass: review.pass, problems: review.problems, offered, fixing: false }));
   if (proposing) {
     const prompt = `[Clareza] Your last answer may confuse the user: ${review.problems.join("; ") || "it was not clear enough"}. Rewrite it as one complete final answer, fixing only that while still answering the request. Do not use tools.`;
+    // with the Comandante on, Jev judges the plan before the person sees it: rejected is dropped (its notice says so),
+    // the others are shown with the ruling
+    // the alert's text is the summary the Comandante tab shows the person: its fallback comes from the locale
+    const ruling = await comandanteReview($, { source: "clareza", text: review.problems.join("; ") || text("feature.clareza.unclear", (await getSettings($)).locale), context: prompt });
+    if (ruling?.decision === "rejected") return;
     const at = await $.clock.now();
-    await update($, clarezaProposal, () => ({ problems: review.problems, prompt, at }));
+    await update($, clarezaProposal, () => ({ problems: review.problems, prompt, at, ...(ruling ? { comandante: { decision: ruling.decision, reason: ruling.reason } } : {}) }));
   }
 }
 /** The person knows `term`: Clareza stops explaining it and stops offering it. */
@@ -2032,8 +2124,8 @@ async function sendSemente($: EngineInterface, picked: SementeIdea[]) {
   await update($, sementeNudges, (list) => list.filter((id) => !ids.has(id)));
   const prompt = picked.length === 1 ? picked[0]!.text : `Ideas to pick up:\n${picked.map((idea) => `- ${idea.text}`).join("\n")}`;
   void $.prompt.submit({ text: prompt, asUser: true });
-  const pt = (await getSettings($)).locale === "pt";
-  $.ui.toast(picked.length === 1 ? (pt ? "Ideia enviada ao Claude" : "Idea queued for Claude") : (pt ? `${picked.length} ideias enviadas ao Claude` : `${picked.length} ideas queued for Claude`));
+  const locale = (await getSettings($)).locale;
+  $.ui.toast(text(picked.length === 1 ? "feature.semente.sent.one" : "feature.semente.sent.many", locale, { count: picked.length }));
 }
 
 type LapidaTaste = { edited: boolean; delta: number; rewrite?: string; sent?: string };
@@ -2076,8 +2168,7 @@ const LAPIDA_FORK_TIMEOUT_MS = 120_000;
 async function enhanceLapida($: EngineInterface, draft: string) {
   draft = draft.trim();
   const locale = (await getSettings($)).locale;
-  const pt = locale === "pt";
-  if (!draft) { await update($, lapidaPhase, () => "error"); await update($, lapidaNote, () => pt ? "Digite um rascunho primeiro." : "Type a prompt draft first."); return; }
+  if (!draft) { await update($, lapidaPhase, () => "error"); await update($, lapidaNote, () => text("feature.lapida.noDraft", locale)); return; }
   if (!(await featureEnabled($, "lapida"))) return;
   await update($, lapidaPhase, () => "enhancing");
   await update($, lapidaNote, () => "");
@@ -2086,23 +2177,21 @@ async function enhanceLapida($: EngineInterface, draft: string) {
     const prefs = await readFeaturePreferences($);
     const taste = prefs.promptLearning ? lapidaTasteHint(await loadLapidaTaste($)) : "";
     const marker = "<<<CHANGES>>>";
-    const instructions = pt
-      ? `Reescreva o rascunho de um desenvolvedor em um pedido claro e específico para o Claude Code. Preserve a intenção, use arquivos e convenções do projeto, declare objetivo, escopo, limites e conclusão, e pergunte se houver ambiguidade real. Independentemente do idioma do rascunho, escreva o prompt final inteiro em português brasileiro. Retorne apenas o prompt, uma linha contendo ${marker}, e 1 a 3 tópicos curtos em português sobre o que acrescentou.`
-      : `Rewrite a developer's rough draft into a clear, specific prompt for Claude Code. Preserve intent, use relevant project files and conventions, state goal, scope, constraints, and done criteria, and ask if something is genuinely ambiguous. Regardless of the draft's language, write the final prompt entirely in English. Return only the rewrite, a line containing ${marker}, and 1-3 short bullets in English on what you added.`;
+    const instructions = text("feature.lapida.instructions", locale, { marker });
     const prompt = `${instructions}${taste ? `\n\n${taste}` : ""}\n\n<rough_prompt>\n${draft}\n</rough_prompt>`;
     let result = await callModel($, "lapida", undefined, () => $.model.fork({ prompt }), { timeoutMs: LAPIDA_FORK_TIMEOUT_MS, locale });
     if (!result.isAnswered && result.reason === "nothing-to-fork") result = await completeModel($, "lapida", { model: await $.session.model(), system: await lapidaProjectContext($), prompt, maxTokens: 2048, timeoutMs: 60000 });
     const reply = result.isAnswered ? splitLapidaReply(result.text) : { text: "", notes: [] as string[] };
-    if (!result.isAnswered || !reply.text) { await update($, lapidaPhase, () => "error"); await update($, lapidaNote, () => `Lapida failed: ${result.isAnswered ? "empty reply" : result.reason}`); return; }
+    if (!result.isAnswered || !reply.text) { await update($, lapidaPhase, () => "error"); await update($, lapidaNote, () => text("feature.lapida.failed", locale, { why: result.isAnswered ? text("feature.lapida.emptyReply", locale) : result.reason })); return; }
     const filled = await $.prompt.fill({ text: reply.text, mode: "replace" });
-    if (!filled.isFilled) { await update($, lapidaPhase, () => "error"); await update($, lapidaNote, () => `Prompt box refused the text (${filled.refusal ?? "unknown"})`); return; }
+    if (!filled.isFilled) { await update($, lapidaPhase, () => "error"); await update($, lapidaNote, () => text("feature.lapida.refused", locale, { reason: filled.refusal ?? text("feature.lapida.unknown", locale) })); return; }
     await update($, lapidaEnhanced, () => reply.text);
     await update($, lapidaChanges, () => reply.notes);
     await update($, lapidaPhase, () => "ready");
   } catch (error) {
     const why = error instanceof Error ? error.message : String(error);
     await update($, lapidaPhase, () => "error");
-    await update($, lapidaNote, () => `Lapida failed: ${why}`);
+    await update($, lapidaNote, () => text("feature.lapida.failed", locale, { why }));
   }
 }
 async function recordLapidaSend($: EngineInterface, text: string) {
@@ -2122,12 +2211,10 @@ async function recordLapidaSend($: EngineInterface, text: string) {
 async function farolCompose($: EngineInterface, e: PromptComposeEvent, result: Awaited<ReturnType<EngineInterface["prompt"]["compose"]>>) {
   if (!(await featureEnabled($, "farol"))) return result;
   const prefs = await readFeaturePreferences($);
-  const pt = (await getSettings($)).locale === "pt";
-  const guide = pt
-    ? prefs.assumptionScope === "all" ? "# Farol\nQuando fizer uma suposição não declarada pela pessoa ou confirmada pelo código, registre uma frase curta com mcp__jev__farol_assumption e continue. A pessoa pode confirmar ou corrigir pelo painel Farol." : "# Farol\nRegistre somente suposições que mudem de forma relevante a implementação ou o resultado. Ignore padrões rotineiros e fatos resolvidos pelo código. Use mcp__jev__farol_assumption e continue."
-    : prefs.assumptionScope === "all" ? "# Farol\nWhen you make an assumption not stated by the user or settled by the code, call mcp__jev__farol_assumption with one short sentence and keep working. The user can confirm or correct it in the Farol panel." : "# Farol\nLog only assumptions that materially affect implementation or could change the result. Skip routine defaults and facts settled by the code. Call mcp__jev__farol_assumption and keep working.";
+  const locale = (await getSettings($)).locale;
+  const guide = text(prefs.assumptionScope === "all" ? "feature.farol.guidance.all" : "feature.farol.guidance.material", locale);
   const rules = await read($, farolRules);
-  const learned = rules.length ? `${pt ? "# Regras do projeto aprendidas com correções\nSiga estas correções e evite repetir as suposições originais." : "# Project rules learned from corrected assumptions\nFollow these corrections and avoid repeating the original assumptions."}\n${rules.map((rule) => `- ${rule.correction} (${pt ? "não" : "not"}: "${rule.assumption}")`).join("\n")}` : "";
+  const learned = rules.length ? `${text("feature.farol.rules.prompt", locale)}\n${rules.map((rule) => `- ${rule.correction} (${text("feature.farol.rule.not", locale)}: "${rule.assumption}")`).join("\n")}` : "";
   return { sections: [...result.sections, { id: "jev:farol:guidance", text: guide, scope: "session" as const }, ...(learned ? [{ id: "jev:farol:rules", text: learned, scope: "session" as const }] : [])] };
 }
 
@@ -2146,14 +2233,16 @@ async function farolAbove($: EngineInterface, e: { props: { hasSurvey?: boolean 
   // assumptions to review are said by Farol's mascot on the Deck lane, when it is on screen
   if (items.some((item) => item.verdict === "open") && await castShown($)) return below;
   const { Box, Button } = renderElements($, e);
-  const pt = (await getSettings($)).locale === "pt";
+  const locale = (await getSettings($)).locale;
   const open = items.filter((item) => item.verdict === "open").length;
-  const label = open ? pt ? `${open} suposiç${open === 1 ? "ão" : "ões"} para revisar` : `${open} assumption${open === 1 ? "" : "s"} to review` : pt ? `${rules.length} regra${rules.length === 1 ? "" : "s"} do projeto` : `${rules.length} project rule${rules.length === 1 ? "" : "s"}`;
+  const label = open
+    ? text(open === 1 ? "deck.speech.farol.one" : "deck.speech.farol.many", locale, { count: formatNumber(open, locale) })
+    : text(rules.length === 1 ? "feature.farol.rules.one" : "feature.farol.rules.many", locale, { count: rules.length });
   return <Box flexDirection="column"><Button key="farol-open" label={`${GLYPH.on} ${label} · Farol`} plain onPress={() => void $.ui.open({ id: "farol", title: "Farol", focus: true })} />{below}</Box>;
 }
 
 async function clarezaStart($: EngineInterface) {
-  await $.command.register({ name: "clareza", description: "Set reply style or manage terms you already know", argumentHint: "[simple|technical|know <term>|forget]" });
+  await $.command.register({ name: "clareza", description: text("feature.clareza.command", (await getSettings($)).locale), argumentHint: "[simple|technical|know <term>|forget]" });
 }
 async function clarezaCompose($: EngineInterface, result: Awaited<ReturnType<EngineInterface["prompt"]["compose"]>>) {
   if (!(await featureEnabled($, "clareza"))) return result;
@@ -2180,18 +2269,19 @@ async function clarezaTurnStarted($: EngineInterface, e: { text: string }) {
     await update($, clarezaGrade, () => null);
     await update($, clarezaProposal, () => null);
   }
-  await update($, clarezaStatus, () => `Working: ${clarityLastAsk.replace(/\s+/g, " ").trim().slice(0, 70)}`);
+  const locale = (await getSettings($)).locale;
+  await update($, clarezaStatus, () => text("feature.clareza.turn.working", locale, { ask: clarityLastAsk.replace(/\s+/g, " ").trim().slice(0, 70) }));
 }
 async function clarezaTurnCompleted($: EngineInterface, e: { agentId?: string; reason: string; durationMs: number; answer: string }) {
   if (e.agentId || e.reason !== "answer" || !(await featureEnabled($, "clareza"))) return;
   const prefs = await readFeaturePreferences($);
+  const locale = (await getSettings($)).locale;
   if (e.durationMs > 30000 && prefs.plainSound) {
-    const locale = (await getSettings($)).locale;
-    $.ui.toast(locale === "pt" ? "Pingo terminou e precisa de você" : "Pingo finished and needs you");
+    $.ui.toast(text("feature.clareza.needsYou", locale));
     void $.audio.play({ asset: "sounds/done.aiff" }).catch(() => {});
   }
-  if (prefs.plainReview) void reviewClareza($, clarityLastAsk, e.answer, await read($, clarezaRewrite)).catch(() => update($, clarezaStatus, () => "Answer review failed"));
-  else await update($, clarezaStatus, () => `Finished: ${clarityLastAsk.replace(/\s+/g, " ").trim().slice(0, 60)}`);
+  if (prefs.plainReview) void reviewClareza($, clarityLastAsk, e.answer, await read($, clarezaRewrite)).catch(() => update($, clarezaStatus, () => text("feature.clareza.review.failed", locale)));
+  else await update($, clarezaStatus, () => text("feature.clareza.turn.finished", locale, { ask: clarityLastAsk.replace(/\s+/g, " ").trim().slice(0, 60) }));
 }
 
 async function clarezaAbove($: EngineInterface, e: { props: { hasSurvey?: boolean } }, below: RenderChildren): Promise<RenderChildren> {
@@ -2201,13 +2291,13 @@ async function clarezaAbove($: EngineInterface, e: { props: { hasSurvey?: boolea
   if (!line && !grade) return below;
   const { Box, Button, Text } = renderElements($, e);
   const plan = await read($, clarezaProposal);
-  const pt = (await getSettings($)).locale === "pt";
+  const locale = (await getSettings($)).locale;
   // with a plan waiting and no mascot to say so, the problems open Clareza's pane, where it is sent or rejected
   const verdict = grade && (plan && !(await castShown($))
-    ? <Button key="clareza-open" label={`✗ ${grade.problems.join("; ")} ${GLYPH.leader} ${pt ? "ver plano" : "see plan"}`} plain onPress={() => void openFeaturePane($, "clareza")} />
-    : <Text color={grade.pass ? "success" : "error"}>{grade.pass ? `${GLYPH.ok} Clareza` : `✗ ${grade.problems.join("; ")}`}{grade.fixing ? " · rewriting" : ""}</Text>);
+    ? <Button key="clareza-open" label={`✗ ${grade.problems.join("; ")} ${GLYPH.leader} ${text("feature.clareza.seePlan", locale)}`} plain onPress={() => void openFeaturePane($, "clareza")} />
+    : <Text color={grade.pass ? "success" : "error"}>{grade.pass ? `${GLYPH.ok} Clareza` : `✗ ${grade.problems.join("; ")}`}{grade.fixing ? ` · ${text("feature.clareza.rewriting", locale)}` : ""}</Text>);
   const top = <Box flexDirection="row" columnGap={1}><Text dimColor wrap="truncate-end">{GLYPH.on} {line}</Text>{verdict}</Box>;
-  const offered = grade?.offered.length ? <Box flexDirection="row" flexWrap="wrap" columnGap={1}><Text dimColor>{pt ? "Eu sei:" : "I know this:"}</Text>{grade.offered.map((term) => <Button key={`clareza-${term}`} label={term} dimColor onPress={() => void knowClarezaTerm($, term)} />)}</Box> : null;
+  const offered = grade?.offered.length ? <Box flexDirection="row" flexWrap="wrap" columnGap={1}><Text dimColor>{text("feature.clareza.know", locale)}</Text>{grade.offered.map((term) => <Button key={`clareza-${term}`} label={term} dimColor onPress={() => void knowClarezaTerm($, term)} />)}</Box> : null;
   return <Box flexDirection="column">{top}{offered}{below}</Box>;
 }
 
@@ -2218,16 +2308,20 @@ async function dismissSemente($: EngineInterface, picked: SementeIdea[]) {
   await update($, sementeNudges, (list) => list.filter((id) => !ids.has(id)));
 }
 async function sementeStart($: EngineInterface) {
-  await $.command.register({ name: "semente", description: "Save a side idea for later; with no text, open the idea shelf", argumentHint: "[idea]" });
+  await $.command.register({ name: "semente", description: text("feature.semente.command", (await getSettings($)).locale), argumentHint: "[idea]" });
   await $.tool.register({ name: "semente_shelve", description: "Save a side idea or out-of-scope improvement for the user to review later.", inputSchema: { type: "object", properties: { text: { type: "string", description: "One-line idea" } }, required: ["text"] }, isDeferred: false });
+  await reloadSementeIdeas($);
+}
+/** The idea shelf of the project open now; the topics and ideas this session noted before are forgotten. */
+async function reloadSementeIdeas($: EngineInterface) {
   const stored = await $.store.get(await sementeKey($));
   await update($, sementeIdeas, () => Array.isArray(stored) ? stored as SementeIdea[] : []);
+  sementeTopics.clear();
+  sementeShelvedThisTurn = new Set();
 }
 async function sementeCompose($: EngineInterface, e: PromptComposeEvent, result: Awaited<ReturnType<EngineInterface["prompt"]["compose"]>>) {
   if (!(await featureEnabled($, "semente")) || !e.tools.includes("mcp__jev__semente_shelve")) return result;
-  const guidance = (await getSettings($)).locale === "pt"
-    ? "# Semente\nQuando notar uma melhoria paralela ou fora do escopo, não a execute agora. Guarde-a com mcp__jev__semente_shelve e continue a tarefa atual."
-    : "# Semente\nWhen you notice an out-of-scope tangent or improvement, do not act on it now. Save it with mcp__jev__semente_shelve and continue the current task.";
+  const guidance = text("feature.semente.guidance", (await getSettings($)).locale);
   return { sections: [...result.sections, { id: "jev:semente:guidance", text: guidance, scope: "session" as const }] };
 }
 async function sementeTurnStarted($: EngineInterface, e: { text: string }) {
@@ -2253,14 +2347,14 @@ async function sementeAbove($: EngineInterface, e: { props: { hasSurvey?: boolea
   // matching ideas are said by Semente's mascot on the Deck lane, when it is on screen
   if (!found.length || await castShown($)) return below;
   const { Box, Button, Text } = renderElements($, e);
-  const pt = (await getSettings($)).locale === "pt";
-  const label = pt ? `${found.length} ${found.length === 1 ? "ideia salva combina" : "ideias salvas combinam"} com o trabalho recente` : found.length === 1 ? "1 saved idea fits recent work" : `${found.length} saved ideas fit recent work`;
+  const locale = (await getSettings($)).locale;
+  const label = text(found.length === 1 ? "feature.semente.fits.one" : "feature.semente.fits.many", locale, { count: found.length });
   // the idea text is cut to the line here; pressing the label opens Semente's pane with every idea whole
-  return <Box flexDirection="column"><Box><Text color={PAINT.brand}>{GLYPH.on} </Text><Button key="semente-open" label={`${label}:`} plain onPress={() => void openFeaturePane($, "semente")} /><Text dimColor wrap="truncate-end"> {found.map((idea) => idea.text).join(" · ")} </Text><Button key="send" label={pt ? "Enviar" : "Send"} variant="primary" onPress={() => void sendSemente($, found)} /><Button key="dismiss" label={pt ? "Dispensar" : "Dismiss"} role="dismiss" onPress={() => void dismissSemente($, found)} /></Box>{below}</Box>;
+  return <Box flexDirection="column"><Box><Text color={PAINT.brand}>{GLYPH.on} </Text><Button key="semente-open" label={`${label}:`} plain onPress={() => void openFeaturePane($, "semente")} /><Text dimColor wrap="truncate-end"> {found.map((idea) => idea.text).join(" · ")} </Text><Button key="send" label={text("feature.semente.send", locale)} variant="primary" onPress={() => void sendSemente($, found)} /><Button key="dismiss" label={text("feature.semente.dismiss", locale)} role="dismiss" onPress={() => void dismissSemente($, found)} /></Box>{below}</Box>;
 }
 
 async function lapidaStart($: EngineInterface) {
-  await $.command.register({ name: "lapida", description: "Improve a draft prompt using the project context", argumentHint: "<draft>" });
+  await $.command.register({ name: "lapida", description: text("feature.lapida.command", (await getSettings($)).locale), argumentHint: "<draft>" });
 }
 async function lapidaPromptSubmit($: EngineInterface, e: Pick<PromptSubmitInput, "text" | "origin">) {
   if (!(await featureEnabled($, "lapida"))) return;
@@ -2270,7 +2364,7 @@ async function lapidaPromptSubmit($: EngineInterface, e: Pick<PromptSubmitInput,
 async function lapidaAbove($: EngineInterface, e: { props: { hasSurvey?: boolean; bodyColumns?: number } }, below: RenderChildren): Promise<RenderChildren> {
   if (e.props.hasSurvey || !(await featureEnabled($, "lapida"))) return below;
   const { Box, Button, Text } = renderElements($, e);
-  const pt = (await getSettings($)).locale === "pt";
+  const locale = (await getSettings($)).locale;
   const phase = await read($, lapidaPhase);
   const enhancing = phase === "enhancing";
   const enhanceDraft = async () => enhanceLapida($, (await $.prompt.read()).text);
@@ -2281,11 +2375,11 @@ async function lapidaAbove($: EngineInterface, e: { props: { hasSurvey?: boolean
     await recordLapidaSend($, prompt).catch(() => {});
     await $.prompt.submit({ text: prompt, asUser: true });
   };
-  const label = phase === "enhancing" ? "Lapida…" : phase === "ready" ? (pt ? "Lapida · revise o rascunho" : "Lapida · review the rewrite") : phase === "error" ? await read($, lapidaNote) : "Lapida";
+  const label = phase === "enhancing" ? "Lapida…" : phase === "ready" ? text("feature.lapida.ready", locale) : phase === "error" ? await read($, lapidaNote) : "Lapida";
   const notes = phase === "ready" ? await read($, lapidaChanges) : [];
   const width = Math.max(UI_DESIGN.layout.minCardWidth, (e.props.bodyColumns || UI_DESIGN.layout.viewport.defaultColumns) - UI_DESIGN.space.sm);
   // The node and label, then each button, move whole to the next line on a narrow band instead of being squeezed.
-  return <Box flexDirection="column"><Box flexDirection="row" flexWrap="wrap" columnGap={UI_DESIGN.space.xs}><Box flexDirection="row" columnGap={UI_DESIGN.space.xs}><Text color={PAINT.brand}>{GLYPH.on}</Text><Text dimColor wrap="truncate-end">{label}</Text></Box>{!enhancing && <Box flexShrink={0}><Button key="lapida-enhance" label={pt ? "Lapidar (e)" : "Enhance (e)"} hotkey="e" onPress={enhanceDraft} /></Box>}{!enhancing && <Box flexShrink={0}><Button key="lapida-send" label={pt ? "Enviar (s)" : "Send (s)"} hotkey="s" onPress={send} /></Box>}</Box>{notes.map((line) => <Text key={line} dimColor wrap="truncate-end">{`+ ${line}`.slice(0, width)}</Text>)}{below}</Box>;
+  return <Box flexDirection="column"><Box flexDirection="row" flexWrap="wrap" columnGap={UI_DESIGN.space.xs}><Box flexDirection="row" columnGap={UI_DESIGN.space.xs}><Text color={PAINT.brand}>{GLYPH.on}</Text><Text dimColor wrap="truncate-end">{label}</Text></Box>{!enhancing && <Box flexShrink={0}><Button key="lapida-enhance" label={text("feature.lapida.enhance", locale)} hotkey="e" onPress={enhanceDraft} /></Box>}{!enhancing && <Box flexShrink={0}><Button key="lapida-send" label={text("feature.lapida.send", locale)} hotkey="s" onPress={send} /></Box>}</Box>{notes.map((line) => <Text key={line} dimColor wrap="truncate-end">{`+ ${line}`.slice(0, width)}</Text>)}{below}</Box>;
 }
 
 type PrismaQuestionInput = { question: string; header: string; multiSelect?: boolean; options?: { label: string; description?: string; preview?: string }[] };
@@ -2314,15 +2408,15 @@ function prismaToggleMix(picker: PrismaPicker, qi: number): PrismaPicker {
   return { ...picker, mix, picks };
 }
 const prismaEscape = (value: string) => value.replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[char]!);
-function prismaGallery(questions: PrismaQuestion[], token: string, pt = false) {
+function prismaGallery(questions: PrismaQuestion[], token: string, locale: Locale = "en") {
   let n = 0;
-  const sections = questions.map((question, qi) => `<section><h2>${prismaEscape(question.header)}</h2><p>${prismaEscape(question.question)}</p><div class="grid">${question.options.map((option, oi) => `<button class="card" data-q="${qi}" data-label="${prismaEscape(option.label)}"><img src="/${qi}-${oi}.svg" alt=""/><span><kbd>${++n}</kbd> ${prismaEscape(option.label)}${option.description ? `<small>${prismaEscape(option.description)}</small>` : ""}</span></button>`).join("")}</div>${!question.multiSelect && question.options.length > 1 ? `<button class="mix" data-q="${qi}">${pt ? "Misturar duas" : "Mix two"}</button>` : ""}<input class="other" data-q="${qi}" placeholder="${pt ? "Descreva sua opção e pressione Enter" : "Or describe your own, then Enter"}"/></section>`).join("");
+  const sections = questions.map((question, qi) => `<section><h2>${prismaEscape(question.header)}</h2><p>${prismaEscape(question.question)}</p><div class="grid">${question.options.map((option, oi) => `<button class="card" data-q="${qi}" data-label="${prismaEscape(option.label)}"><img src="/${qi}-${oi}.svg" alt=""/><span><kbd>${++n}</kbd> ${prismaEscape(option.label)}${option.description ? `<small>${prismaEscape(option.description)}</small>` : ""}</span></button>`).join("")}</div>${!question.multiSelect && question.options.length > 1 ? `<button class="mix" data-q="${qi}">${text("feature.prisma.gallery.mix", locale)}</button>` : ""}<input class="other" data-q="${qi}" placeholder="${text("feature.prisma.gallery.other", locale)}"/></section>`).join("");
   const less = String.fromCharCode(92) + "u003c";
   const meta = JSON.stringify(questions.map((question) => ({ question: question.question, multi: question.multiSelect }))).replace(/</g, less);
   const quote = String.fromCharCode(34);
   const mix = JSON.stringify([`Mix of ${quote}`, `${quote} and ${quote}`, `${quote}: blend both directions into one design`]).replace(/</g, less);
   const needsSubmit = questions.length > 1 || questions.some((question) => question.multiSelect);
-  return `<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>Prisma · ${pt ? "escolhas de design" : "design choices"}</title><style>${PRISMA_GALLERY_CSS}</style>${sections}<button id="submit"${needsSubmit ? " disabled" : " hidden"}>${pt ? "Enviar ao Claude" : "Send to Claude"}</button><script>const qs=${meta},picks=qs.map(()=>[]),others=qs.map(()=>null),mixing=qs.map(()=>false),auto=${!needsSubmit},M=${mix};const done=()=>qs.every((_,i)=>others[i]||(mixing[i]?picks[i].length===2:picks[i].length));const answer=i=>others[i]??(mixing[i]&&picks[i].length===2?M[0]+picks[i][0]+M[1]+picks[i][1]+M[2]:picks[i].join(', '));const send=()=>fetch('/answer?t=${token}',{method:'POST',body:JSON.stringify(Object.fromEntries(qs.map((q,i)=>[q.question,answer(i)])))}).then(r=>{if(!r.ok)throw 0;document.body.innerHTML='<h1>${pt ? "Enviado ao Claude " + GLYPH.ok : "Sent to Claude " + GLYPH.ok}</h1>'}).catch(()=>alert('${pt ? "O seletor não está mais aguardando." : "This picker is no longer waiting."}'));const sync=()=>{document.querySelectorAll('.card').forEach(c=>c.classList.toggle('on',picks[c.dataset.q].includes(c.dataset.label)));document.querySelectorAll('.mix').forEach(b=>{b.classList.toggle('on',mixing[b.dataset.q]);b.textContent=mixing[b.dataset.q]?'${pt ? "Misturando: escolha duas" : "Mixing: pick two"}':'${pt ? "Misturar duas" : "Mix two"}'});const s=document.getElementById('submit');s.hidden=auto&&!mixing.some(Boolean);s.disabled=!done()};document.querySelectorAll('.card').forEach(c=>c.onclick=()=>{const i=+c.dataset.q,l=c.dataset.label,has=picks[i].includes(l);others[i]=null;picks[i]=mixing[i]?(has?picks[i].filter(x=>x!==l):[...picks[i],l].slice(-2)):qs[i].multi?(has?picks[i].filter(x=>x!==l):[...picks[i],l]):[l];sync();if(auto&&!mixing[i])send()});document.querySelectorAll('.mix').forEach(b=>b.onclick=()=>{const i=+b.dataset.q;mixing[i]=!mixing[i];if(!mixing[i])picks[i]=picks[i].slice(0,1);sync()});document.querySelectorAll('.other').forEach(o=>o.onkeydown=e=>{if(e.key!=='Enter'||!o.value.trim())return;const i=+o.dataset.q;others[i]=o.value.trim();picks[i]=[];sync();if(auto)send()});document.getElementById('submit')?.addEventListener('click',send);const cards=[...document.querySelectorAll('.card')];document.onkeydown=e=>{if(e.target.tagName!=='INPUT'&&/^[1-9]$/.test(e.key))cards[e.key-1]?.click()};</script>`;
+  return `<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>Prisma · ${text("feature.prisma.gallery.title", locale)}</title><style>${PRISMA_GALLERY_CSS}</style>${sections}<button id="submit"${needsSubmit ? " disabled" : " hidden"}>${text("feature.prisma.gallery.submit", locale)}</button><script>const qs=${meta},picks=qs.map(()=>[]),others=qs.map(()=>null),mixing=qs.map(()=>false),auto=${!needsSubmit},M=${mix};const done=()=>qs.every((_,i)=>others[i]||(mixing[i]?picks[i].length===2:picks[i].length));const answer=i=>others[i]??(mixing[i]&&picks[i].length===2?M[0]+picks[i][0]+M[1]+picks[i][1]+M[2]:picks[i].join(', '));const send=()=>fetch('/answer?t=${token}',{method:'POST',body:JSON.stringify(Object.fromEntries(qs.map((q,i)=>[q.question,answer(i)])))}).then(r=>{if(!r.ok)throw 0;document.body.innerHTML='<h1>${text("feature.prisma.gallery.sent", locale)} ${GLYPH.ok}</h1>'}).catch(()=>alert('${text("feature.prisma.gallery.closed", locale)}'));const sync=()=>{document.querySelectorAll('.card').forEach(c=>c.classList.toggle('on',picks[c.dataset.q].includes(c.dataset.label)));document.querySelectorAll('.mix').forEach(b=>{b.classList.toggle('on',mixing[b.dataset.q]);b.textContent=mixing[b.dataset.q]?'${text("feature.prisma.gallery.mixing", locale)}':'${text("feature.prisma.gallery.mix", locale)}'});const s=document.getElementById('submit');s.hidden=auto&&!mixing.some(Boolean);s.disabled=!done()};document.querySelectorAll('.card').forEach(c=>c.onclick=()=>{const i=+c.dataset.q,l=c.dataset.label,has=picks[i].includes(l);others[i]=null;picks[i]=mixing[i]?(has?picks[i].filter(x=>x!==l):[...picks[i],l].slice(-2)):qs[i].multi?(has?picks[i].filter(x=>x!==l):[...picks[i],l]):[l];sync();if(auto&&!mixing[i])send()});document.querySelectorAll('.mix').forEach(b=>b.onclick=()=>{const i=+b.dataset.q;mixing[i]=!mixing[i];if(!mixing[i])picks[i]=picks[i].slice(0,1);sync()});document.querySelectorAll('.other').forEach(o=>o.onkeydown=e=>{if(e.key!=='Enter'||!o.value.trim())return;const i=+o.dataset.q;others[i]=o.value.trim();picks[i]=[];sync();if(auto)send()});document.getElementById('submit')?.addEventListener('click',send);const cards=[...document.querySelectorAll('.card')];document.onkeydown=e=>{if(e.target.tagName!=='INPUT'&&/^[1-9]$/.test(e.key))cards[e.key-1]?.click()};</script>`;
 }
 const PRISMA_SERVE_PY = `import http.server,json,os,sys,threading,time,webbrowser
 d,token,auto=sys.argv[1],sys.argv[2],sys.argv[3]=='1'
@@ -2347,8 +2441,8 @@ async function readPrismaDecisions($: EngineInterface): Promise<{ question: stri
   const stored = await $.store.get(await prismaDecisionKey($));
   return Array.isArray(stored) ? stored as { question: string; choice: string; description?: string; at: number }[] : [];
 }
-function prismaDecisionPrompt(list: { question: string; choice: string; description?: string }[], pt = false) {
-  return list.length ? `${pt ? "# Decisões de design já tomadas neste projeto\nSiga estas escolhas em futuros trabalhos visuais; não pergunte novamente, a menos que a pessoa queira revisá-las." : "# Prisma decisions already made in this project\nFollow these choices in future design work; do not ask again unless the user revisits them."}\n${list.map((item) => `- ${item.question} → ${item.choice}${item.description ? ` (${item.description})` : ""}`).join("\n")}` : "";
+function prismaDecisionPrompt(list: { question: string; choice: string; description?: string }[], locale: Locale = "en") {
+  return list.length ? `${text("feature.prisma.decisions.prompt", locale)}\n${list.map((item) => `- ${item.question} → ${item.choice}${item.description ? ` (${item.description})` : ""}`).join("\n")}` : "";
 }
 async function rememberPrisma($: EngineInterface, questions: PrismaQuestion[], answers: Record<string, string>) {
   const at = await $.clock.now();
@@ -2365,9 +2459,9 @@ async function rememberPrisma($: EngineInterface, questions: PrismaQuestion[], a
 }
 async function prismaCompose($: EngineInterface, e: PromptComposeEvent, result: Awaited<ReturnType<EngineInterface["prompt"]["compose"]>>) {
   if (!(await featureEnabled($, "prisma"))) return result;
-  const pt = (await getSettings($)).locale === "pt";
-  const saved = prismaDecisionPrompt(await readPrismaDecisions($), pt);
-  const guide = e.tools.includes("AskUserQuestion") ? pt ? "# Prisma\nPara escolhas visuais de design, use AskUserQuestion e inclua uma prévia SVG independente e distinta para cada opção. Desenhe o layout, a paleta, a tipografia e um texto de exemplo. Limite cada prévia a 8 KB e não use recursos externos." : "# Prisma\nFor visual design choices, use AskUserQuestion and include a distinct, self-contained SVG preview for each option. Draw actual layout, palette, type and sample copy. Keep each under 8 KB and do not use external resources." : "";
+  const locale = (await getSettings($)).locale;
+  const saved = prismaDecisionPrompt(await readPrismaDecisions($), locale);
+  const guide = e.tools.includes("AskUserQuestion") ? text("feature.prisma.guidance", locale) : "";
   return { sections: [...result.sections, ...(guide ? [{ id: "jev:prisma:guidance", text: guide, scope: "session" as const }] : []), ...(saved ? [{ id: "jev:prisma:decisions", text: saved, scope: "session" as const }] : [])] };
 }
 
@@ -2378,14 +2472,26 @@ async function sentinelaPids($: EngineInterface, rows: SentinelaSession[]) {
   const pids = rows.map((row) => row.pid);
   if (!pids.length) return new Set<number>();
   if (await $.env.get("OS") === "Windows_NT") {
-    // tasklist, not a PowerShell per refresh: this runs every few seconds in every session, and PowerShell costs
-    // about six times the memory and twice the CPU. Its PID column is plain digits in any locale.
+    // tasklist, not a PowerShell per check: this runs in every session, and PowerShell costs about six times the
+    // memory and twice the CPU. Its PID column is plain digits in any locale.
     const result = await $.process.run(["tasklist", "/FO", "CSV", "/NH"]).catch(() => null);
     const running = new Set((result?.stdout ?? "").split(/\r?\n/).map((line) => Number(/^"[^"]*","(\d+)"/.exec(line)?.[1])).filter(Number.isFinite));
     return running.size ? new Set(pids.filter((pid) => running.has(pid))) : new Set(pids);
   }
   const result = await $.process.run(["ps", "-o", "pid=", "-p", pids.join(",")]).catch(() => null);
   return new Set(result ? result.stdout.split(/\s+/).map(Number).filter(Number.isFinite) : pids);
+}
+// The process check is the costly part of a refresh, which runs every 2 s: it is asked again only when the session
+// files name other PIDs, or 30 s after the last check. A session that crashed with its file left behind so stays
+// listed until the next check.
+const SENTINELA_PID_RECHECK_MS = 30_000;
+async function sentinelaAlive($: EngineInterface, rows: SentinelaSession[]) {
+  const key = rows.map((row) => row.pid).sort((a, b) => a - b).join(",");
+  const now = await $.clock.now();
+  if (sentinelaPidCheck?.key === key && now - sentinelaPidCheck.at < SENTINELA_PID_RECHECK_MS) return sentinelaPidCheck.alive;
+  const alive = await sentinelaPids($, rows);
+  sentinelaPidCheck = { key, at: now, alive };
+  return alive;
 }
 async function refreshSentinela($: EngineInterface) {
   if (!(await featureEnabled($, "sentinela")) || !sentinelaDir) return;
@@ -2401,7 +2507,7 @@ async function refreshSentinela($: EngineInterface) {
       rows.push({ pid: raw.pid, id: raw.sessionId, name: raw.nameSource === "derived" ? "" : String(raw.name ?? ""), cwd, project: cwd.split(/[\\/]/).filter(Boolean).pop() ?? cwd, status: raw.status === "waiting" ? "waiting" : raw.status === "busy" ? "working" : "done", waitingFor: String(raw.waitingFor ?? ""), since: Number(raw.statusUpdatedAt ?? raw.updatedAt ?? 0) });
     } catch (error) { errors.push(`read ${entry.name}: ${String(error)}`); }
   }
-  const alive = await sentinelaPids($, rows);
+  const alive = await sentinelaAlive($, rows);
   const next = rows.filter((row) => alive.has(row.pid)).sort((a, b) => sentinelaOrder[a.status] - sentinelaOrder[b.status] || b.since - a.since);
   const current = await read($, sentinelaSessions);
   if (JSON.stringify(current) !== JSON.stringify(next)) {
@@ -2416,7 +2522,7 @@ async function registerSentinela($: EngineInterface) {
   const home = await $.env.get("HOME") ?? await $.env.get("USERPROFILE") ?? "";
   sentinelaDir = `${home.replace(/[\\/]$/, "")}/.claude/sessions`;
   sentinelaMe = await $.session.id();
-  await $.command.register({ name: "sentinela", description: "Show sessions across all projects" });
+  await $.command.register({ name: "sentinela", description: text("feature.sentinela.command", (await getSettings($)).locale) });
   $.clock.every(2000, async () => {
     if (!(await featureEnabled($, "sentinela"))) return;
     const preferences = await readFeaturePreferences($);
@@ -2441,13 +2547,15 @@ async function sendSentinelaReply($: EngineInterface, value: string) {
   const row = (await read($, sentinelaSessions)).find((item) => item.id === id);
   const name = row ? sentinelaLabel(row) : id;
   const delivered = await $.session.send({ to: { sessionId: id }, text: value.trim() });
-  $.ui.toast(delivered.isDelivered ? `Sent to ${name}.` : `Not sent to ${name}: ${delivered.reason}`);
+  const locale = (await getSettings($)).locale;
+  $.ui.toast(delivered.isDelivered ? text("feature.sentinela.reply.sent", locale, { name }) : text("feature.sentinela.reply.notSent", locale, { name, reason: delivered.reason }));
 }
 async function jumpSentinela($: EngineInterface, row: SentinelaSession, surface: RenderSurface) {
   const windows = await $.env.get("OS") === "Windows_NT";
   const command = windows ? `Set-Location -LiteralPath '${row.cwd.replace(/'/g, "''")}'; claude --resume ${row.id}` : `${row.cwd ? `cd '${row.cwd.replace(/'/g, "'\\''")}' && ` : ""}claude --resume ${row.id}`;
   const copied = await $.ui.copy({ text: command, surface });
-  $.ui.toast(copied.isCopied ? `Copied: ${command}` : `Run: ${command}`, { timeoutMs: 8000 });
+  const locale = (await getSettings($)).locale;
+  $.ui.toast(text(copied.isCopied ? "feature.sentinela.jump.copied" : "feature.sentinela.jump.run", locale, { command }), { timeoutMs: 8000 });
 }
 async function sentinelaAbove($: EngineInterface, e: { props: { hasSurvey?: boolean } }, below: RenderChildren): Promise<RenderChildren> {
   if (e.props.hasSurvey || !(await featureEnabled($, "sentinela"))) return below;
@@ -2456,22 +2564,15 @@ async function sentinelaAbove($: EngineInterface, e: { props: { hasSurvey?: bool
   const { Box, Button, Text } = renderElements($, e);
   const locale = (await getSettings($)).locale;
   // Each part moves whole to the next line on a narrow band: the button is never split from its node or cut.
-  return <Box flexDirection="column"><Box flexDirection="row" flexWrap="wrap" columnGap={UI_DESIGN.space.sm}><Box flexDirection="row" flexShrink={0} columnGap={UI_DESIGN.space.xs}><Text color={PAINT.brand}>{GLYPH.on}</Text><Button key="sessions" label={locale === "pt" ? "Sessões" : "Sessions"} onPress={() => void toggleSentinela($)} /></Box><Box flexShrink={0}><Text color="error">{GLYPH.ask} {count("waiting")} {locale === "pt" ? "aguardando" : "waiting"}</Text></Box><Box flexShrink={0}><Text color="warning">{GLYPH.on} {count("working")} {locale === "pt" ? "trabalhando" : "working"}</Text></Box><Box flexShrink={0}><Text color="success">{GLYPH.ok} {count("done")} {locale === "pt" ? "concluídas" : "done"}</Text></Box></Box>{below}</Box>;
+  return <Box flexDirection="column"><Box flexDirection="row" flexWrap="wrap" columnGap={UI_DESIGN.space.sm}><Box flexDirection="row" flexShrink={0} columnGap={UI_DESIGN.space.xs}><Text color={PAINT.brand}>{GLYPH.on}</Text><Button key="sessions" label={text("feature.sentinela.sessions", locale)} onPress={() => void toggleSentinela($)} /></Box><Box flexShrink={0}><Text color="error">{GLYPH.ask} {text("feature.sentinela.band.waiting", locale, { count: count("waiting") })}</Text></Box><Box flexShrink={0}><Text color="warning">{GLYPH.on} {text("feature.sentinela.band.working", locale, { count: count("working") })}</Text></Box><Box flexShrink={0}><Text color="success">{GLYPH.ok} {text("feature.sentinela.band.done", locale, { count: count("done") })}</Text></Box></Box>{below}</Box>;
 }
 
-const vigiaFlat = (value: string, max: number) => { const text = value.replace(/\s+/g, " ").trim(); return text.length > max ? `${text.slice(0, max - 1)}…` : text; };
-const vigiaAlive = (record: VigiaSession, now: number) => record.endedAt === undefined && now - record.beatAt < 60000;
-const vigiaAgo = (ms: number) => { const minutes = Math.round(ms / 60000); return minutes < 1 ? "now" : minutes < 60 ? `${minutes}m` : minutes < 1440 ? `${Math.round(minutes / 60)}h` : `${Math.round(minutes / 1440)}d`; };
-const vigiaName = (record: VigiaSession) => record.title ?? (record.lastPrompt ? vigiaFlat(record.lastPrompt, 40) : record.id.slice(0, 8));
-const vigiaDoing = (record: VigiaSession) => record.tasks.find((task) => task.status === "in_progress")?.text ?? record.doing;
-const vigiaNext = (record: VigiaSession) => record.tasks.find((task) => task.status === "pending")?.text ?? record.next;
-const vigiaShared = (a: VigiaSession, b: VigiaSession) => (a.files ?? []).filter((file) => (b.files ?? []).includes(file));
 async function ensureVigia($: EngineInterface) {
   const id = await $.session.id();
   const root = await $.session.root();
   if (vigiaMe?.id === id && vigiaMe.root === root) return vigiaMe;
   const home = await $.env.get("HOME") ?? await $.env.get("USERPROFILE") ?? "";
-  vigiaDir = `${home.replace(/[\\/]$/, "")}/.claude/jev-vigia/${root.replace(/[^a-zA-Z0-9]/g, "-")}`;
+  vigiaDir = `${home.replace(/[\\/]$/, "")}/.claude/jev-vigia/${vigiaProject(root)}`;
   const file = `${vigiaDir}/${id}.json`;
   const now = await $.clock.now();
   const old = await $.fs.exists(file) ? JSON.parse(await $.fs.read(file)) as VigiaSession : undefined;
@@ -2482,14 +2583,16 @@ async function refreshVigia($: EngineInterface) {
   if (!(await featureEnabled($, "vigia"))) return;
   const own = await ensureVigia($);
   const now = await $.clock.now();
-  const found: VigiaSession[] = [];
+  const all: VigiaSession[] = [];
   if (await $.fs.exists(vigiaDir)) for (const entry of await $.fs.list(vigiaDir)) {
     if (entry.kind !== "file" || !entry.name.endsWith(".json") || now - entry.mtimeMs > 7 * 24 * 3600000) continue;
     try {
-      const row = JSON.parse(await $.fs.read(`${vigiaDir}/${entry.name}`)) as VigiaSession;
-      if (row.id === own.id || row.lastPrompt) found.push(row);
+      all.push(JSON.parse(await $.fs.read(`${vigiaDir}/${entry.name}`)) as VigiaSession);
     } catch { /* another session may still be writing its record */ }
   }
+  vigiaPeers = all;
+  // The list shows sessions that ran a prompt; one that only opened has nothing to show yet.
+  const found = all.filter((row) => row.id === own.id || row.lastPrompt);
   found.sort((a, b) => (a.id === own.id ? 0 : vigiaAlive(a, now) ? 1 : 2) - (b.id === own.id ? 0 : vigiaAlive(b, now) ? 1 : 2) || b.beatAt - a.beatAt);
   await update($, vigiaSessions, () => found);
 }
@@ -2509,25 +2612,112 @@ async function vigiaClashes($: EngineInterface, now: number): Promise<VigiaClash
     .filter(([file, at]) => now - at < window && now - (own.edits?.[file] ?? 0) < window)
     .map(([file, at]) => ({ file, other, at }))).sort((a, b) => b.at - a.at);
 }
+/**
+ * Before an edit of the main conversation: why it waits, while another live session's edit of the file is
+ * newer than this session's last read or edit of it; else nothing, and the edit is this session's now.
+ */
 async function trackVigiaFile($: EngineInterface, path: string): Promise<string | undefined> {
   const own = await ensureVigia($);
-  const root = own.root.replace(/\\/g, "/").replace(/\/$/, "");
-  const candidate = path.replace(/\\/g, "/");
-  const relative = candidate.toLowerCase().startsWith(`${root.toLowerCase()}/`) ? candidate.slice(root.length + 1) : candidate;
+  const relative = vigiaRelative(own.root, path);
   await refreshVigia($);
   const now = await $.clock.now();
   const window = (await readFeaturePreferences($)).clashMinutes * 60000;
-  const prior = own.edits?.[relative] ?? 0;
-  const other = (await read($, vigiaSessions)).find((row) => row.id !== own.id && vigiaAlive(row, now) && (row.edits?.[relative] ?? 0) > Math.max(prior, now - window));
+  const hold = vigiaHold(vigiaPeers, own.id, now, relative, Math.max(own.edits?.[relative] ?? 0, vigiaReads.get(relative) ?? 0), window);
+  const key = hold ? `${hold.other.id}|${relative}|${hold.at}` : "";
+  const held = vigiaHolds.get(key) ?? 0;
+  // A model that never reads the file again is let through after a few holds rather than stuck.
+  if (hold && held < VIGIA_MAX_HOLDS) {
+    vigiaHolds.set(key, held + 1);
+    const locale = (await getSettings($)).locale;
+    $.ui.toast(text("feature.vigia.held", locale, { file: relative, session: vigiaName(hold.other), when: formatAge(now - hold.at, locale) }), { timeoutMs: 8000 });
+    // The other session hears of it once per edit of its own, however often this one waits.
+    if (!held) void sendVigiaLetter($, hold.other.id, { kind: "clash", file: relative, at: hold.at }).catch(() => undefined);
+    return vigiaHoldReason(hold, relative, now);
+  }
   await saveVigia($, (record) => {
     record.edits = Object.fromEntries(Object.entries({ ...record.edits, [relative]: now }).filter(([, at]) => now - Number(at) < window));
     if (!record.files?.includes(relative)) record.files = [relative, ...(record.files ?? [])].slice(0, 12);
   });
-  if (!other) return;
-  const when = vigiaAgo(now - (other.edits?.[relative] ?? now));
-  const task = vigiaDoing(other) ?? other.lastPrompt;
-  $.ui.toast(`⚠ ${relative} was edited ${when} by "${vigiaName(other)}"${task ? ` (${vigiaFlat(task, 60)})` : ""}`, { timeoutMs: 8000 });
-  return `Vigia: another live session ("${vigiaName(other)}"${task ? `, working on: ${vigiaFlat(task, 120)}` : ""}) edited ${relative} ${when}. Re-read it before editing and preserve its changes.`;
+}
+/** A Read of the main conversation: the model has seen the file as it is now, other sessions' edits included. */
+async function vigiaFileRead($: EngineInterface, path: string) {
+  if (!(await featureEnabled($, "vigia"))) return;
+  const own = await ensureVigia($);
+  vigiaReads.set(vigiaRelative(own.root, path), await $.clock.now());
+}
+type VigiaNote = { kind: "message"; text: string } | { kind: "clash"; file: string; at: number };
+/** One letter to one session of this project, through the engine's own delivery: a session that is not running gets none. */
+async function sendVigiaLetter($: EngineInterface, to: string, note: VigiaNote) {
+  const own = await ensureVigia($);
+  const base = { project: vigiaProject(own.root), from: own.id, name: vigiaName(own) };
+  const letter: VigiaLetter = note.kind === "message" ? { ...base, kind: "message", text: note.text } : { ...base, kind: "clash", file: note.file, at: note.at };
+  return await $.session.send({ to: { sessionId: to }, text: writeVigiaLetter(letter) });
+}
+/** `/vigia msg <session|all> <text>`: the reply says whom it reached and whom it did not. */
+async function vigiaMessage($: EngineInterface, target: string, message: string): Promise<string> {
+  const locale = (await getSettings($)).locale;
+  if (!(await featureEnabled($, "vigia"))) return text("feature.vigia.off", locale);
+  await refreshVigia($);
+  const own = await ensureVigia($);
+  const now = await $.clock.now();
+  const pick = vigiaTargets(vigiaPeers, own.id, now, target);
+  if ("error" in pick) {
+    if (pick.error === "none") return text("feature.vigia.msg.none", locale);
+    return text(pick.error === "ambiguous" ? "feature.vigia.msg.ambiguous" : "feature.vigia.msg.noMatch", locale, { target, sessions: pick.options.slice(0, 6).map(vigiaLabel).join(", ") });
+  }
+  const sent = await Promise.all(pick.sessions.map(async (peer) => ({
+    peer,
+    result: await sendVigiaLetter($, peer.id, { kind: "message", text: message }).catch((error: unknown) => ({ isDelivered: false as const, reason: String(error) })),
+  })));
+  const out: VigiaMail[] = sent.map(({ peer, result }) => ({ id: `vigia-${++vigiaMailSeq}`, at: now, way: "out", peer: vigiaName(peer), peerId: peer.id, kind: "message", text: message, isDelivered: result.isDelivered }));
+  await update($, vigiaMail, (mail) => [...out, ...mail].slice(0, VIGIA_MAIL_KEEP));
+  const reached = sent.filter(({ result }) => result.isDelivered).map(({ peer }) => vigiaLabel(peer));
+  return [
+    ...(reached.length ? [text("feature.vigia.msg.sent", locale, { sessions: reached.join(", ") })] : []),
+    ...sent.filter(({ result }) => !result.isDelivered).map(({ peer, result }) => text("feature.vigia.msg.failed", locale, { session: vigiaLabel(peer), reason: result.reason ?? "" })),
+  ].join("\n");
+}
+/**
+ * A delivery to the main conversation: Vigia takes its own letters (a Sentinela reply or a peer's own
+ * message passes on), shows each one now and keeps it for the model's next tool result or prompt.
+ * The reason it was taken, or undefined to pass it on.
+ */
+async function vigiaReceive($: EngineInterface, e: SessionReceiveInput): Promise<string | undefined> {
+  if (e.agentId !== undefined || e.origin.kind !== "peer" || !("plugin" in e.origin) || e.origin.plugin !== "jev") return;
+  const letter = readVigiaLetter(e.text);
+  if (!letter) return;
+  if (!(await featureEnabled($, "vigia"))) return "Vigia is off";
+  const own = await ensureVigia($);
+  // Same project means the sender's record sits in this project's folder: a session elsewhere has none here.
+  let peer = vigiaPeers.find((row) => row.id === letter.from);
+  if (!peer) {
+    await refreshVigia($);
+    peer = vigiaPeers.find((row) => row.id === letter.from);
+  }
+  if (!peer || peer.id === own.id) return "Vigia: not a session of this project";
+  const now = await $.clock.now();
+  const received: VigiaMail = { id: `vigia-${++vigiaMailSeq}`, at: now, way: "in", peer: vigiaName(peer), peerId: peer.id, kind: letter.kind, text: letter.kind === "message" ? letter.text : "", ...(letter.kind === "clash" ? { file: letter.file } : {}) };
+  // With the Comandante on, a message is judged first: rejected is held from Claude, questioned reaches it with the
+  // question shown here. A clash notice is Vigia's own and goes through.
+  const ruling = letter.kind === "message" ? await comandanteReview($, { source: "vigia", text: letter.text, context: `Sent by the session "${received.peer}".` }) : undefined;
+  const item: VigiaMail = ruling ? { ...received, comandante: { decision: ruling.decision, reason: ruling.reason } } : received;
+  if (ruling?.decision !== "rejected") vigiaPending = [...vigiaPending, item].slice(-VIGIA_MAIL_KEEP);
+  await update($, vigiaMail, (mail) => [item, ...mail].slice(0, VIGIA_MAIL_KEEP));
+  const locale = (await getSettings($)).locale;
+  const said = letter.kind === "message"
+    ? text("feature.vigia.msg.received", locale, { session: item.peer, text: vigiaFlat(letter.text, 160) })
+    : text("feature.vigia.msg.clash", locale, { session: item.peer, file: letter.file, when: formatAge(now - letter.at, locale) });
+  const shown = ruling && ruling.decision !== "approved" ? `${said}\n${ruling.message}` : said;
+  $.ui.toast(shown, { timeoutMs: 10000 });
+  await log($, "mod", "feature", letter.kind === "clash" || ruling?.decision === "rejected" ? "warn" : "info", shown);
+  return "Vigia";
+}
+/** What arrived since the model last read, as one note; emptied once it rides along. */
+async function vigiaTakeInbox($: EngineInterface): Promise<string | undefined> {
+  if (!vigiaPending.length) return;
+  const note = vigiaInboxNote(vigiaPending, await $.clock.now());
+  vigiaPending = [];
+  return note;
 }
 async function summarizeVigia($: EngineInterface, answer: string) {
   if (!(await readFeaturePreferences($)).trackerSummary || !(await featureEnabled($, "vigia"))) return;
@@ -2538,8 +2728,15 @@ async function summarizeVigia($: EngineInterface, answer: string) {
   const pick = (label: string) => result.text.match(new RegExp(`^\\s*${label}:\\s*(.+)$`, "mi"))?.[1]?.trim();
   await saveVigia($, (record) => { record.title = pick("TITLE") ?? record.title; record.done = pick("DONE") ?? record.done; record.doing = pick("DOING") ?? record.doing; record.next = pick("NEXT") ?? record.next; });
 }
-async function vigiaPromptSubmit($: EngineInterface, e: Pick<PromptSubmitInput, "text">) {
-  if (await featureEnabled($, "vigia")) await saveVigia($, (record) => { record.lastPrompt = vigiaFlat(e.text, 300); record.isBusy = true; record.turns = (record.turns ?? 0) + 1; });
+/** Records the prompt; answers the notes it carries to the model: what other sessions sent, and their work when it changed. */
+async function vigiaPromptSubmit($: EngineInterface, e: Pick<PromptSubmitInput, "text">): Promise<string[]> {
+  if (!(await featureEnabled($, "vigia"))) return [];
+  await saveVigia($, (record) => { record.lastPrompt = vigiaFlat(e.text, 300); record.isBusy = true; record.turns = (record.turns ?? 0) + 1; });
+  const own = await ensureVigia($);
+  const digest = vigiaDigest(await read($, vigiaSessions), own.id, await $.clock.now());
+  const changed = digest && digest !== vigiaLastDigest ? digest : undefined;
+  vigiaLastDigest = digest;
+  return [await vigiaTakeInbox($), changed].filter((note): note is string => Boolean(note));
 }
 async function vigiaTrackFile($: EngineInterface, path: string) { return await featureEnabled($, "vigia") ? trackVigiaFile($, path) : undefined; }
 async function vigiaTurnCompleted($: EngineInterface, e: { agentId?: string; answer?: string }) {
@@ -2548,7 +2745,7 @@ async function vigiaTurnCompleted($: EngineInterface, e: { agentId?: string; ans
   if (e.answer) void summarizeVigia($, e.answer).catch(() => {});
 }
 async function registerVigia($: EngineInterface) {
-  await $.command.register({ name: "vigia", description: "Show other sessions working in this project" });
+  await $.command.register({ name: "vigia", description: text("feature.vigia.command", (await getSettings($)).locale), argumentHint: "[msg <session|all> <text>]" });
   $.clock.every(15000, async () => { if (await featureEnabled($, "vigia")) await saveVigia($); });
   if (await featureEnabled($, "vigia")) {
     await saveVigia($);
@@ -2561,6 +2758,12 @@ async function vigiaSessionEnd($: EngineInterface) {
   const now = await $.clock.now();
   if (await featureEnabled($, "vigia")) await saveVigia($, (record) => { record.endedAt = now; record.isBusy = false; });
   vigiaMe = undefined;
+  // Nothing of the talk outlives the session: letters live in the engine's delivery, the rest here.
+  vigiaPeers = [];
+  vigiaPending = [];
+  vigiaLastDigest = "";
+  vigiaReads.clear();
+  vigiaHolds.clear();
 }
 async function vigiaAbove($: EngineInterface, e: { props: { hasSurvey?: boolean } }, below: RenderChildren): Promise<RenderChildren> {
   if (e.props.hasSurvey || !(await featureEnabled($, "vigia"))) return below;
@@ -2570,11 +2773,291 @@ async function vigiaAbove($: EngineInterface, e: { props: { hasSurvey?: boolean 
   if (!others.length) return below;
   const conflicts = await vigiaClashes($, now);
   const { Box, Button, Text } = renderElements($, e);
-  const pt = (await getSettings($)).locale === "pt";
+  const locale = (await getSettings($)).locale;
   const collapsed = await read($, vigiaCollapsed);
-  const toggle = <Button key="vigia-toggle" label={collapsed ? (pt ? "exibir" : "show") : (pt ? "ocultar" : "hide")} plain dimColor onPress={async () => { const value = !await read($, vigiaCollapsed); await update($, vigiaCollapsed, () => value); await $.store.set("vigia:collapsed", value); }} />;
-  if (collapsed) return <Box flexDirection="column"><Box gap={1}><Text color={PAINT.brand}>{GLYPH.on}</Text><Text dimColor>{others.length} {pt ? "outras sessões neste projeto" : `other session${others.length === 1 ? "" : "s"} here`} ·</Text>{conflicts.length > 0 && <Text color="error">! {conflicts.length} {pt ? "conflitos" : `file clash${conflicts.length === 1 ? "" : "es"}`} ·</Text>}{toggle}</Box>{below}</Box>;
-  return <Box flexDirection="column"><Box flexDirection="column"><Box gap={1}><Text color={PAINT.brand}>{GLYPH.on}</Text><Text dimColor>{pt ? "Também trabalhando neste projeto · /vigia" : "Also working in this project · /vigia"}</Text>{toggle}</Box>{conflicts.slice(0, 2).map((conflict) => <Text key={`${conflict.other.id}-${conflict.file}`} color="error" wrap="truncate">  ! {pt ? "Conflito" : "Clash"}: {conflict.file} · {vigiaName(conflict.other)} · {vigiaAgo(now - conflict.at)}</Text>)}{others.slice(0, 3).map((record) => <Box key={record.id} flexDirection="column" paddingLeft={2}><Text wrap="truncate"><Text color={record.isBusy ? "warning" : "success"}>{record.isBusy ? `${GLYPH.on} ` : "◐ "}</Text><Text bold>{vigiaName(record)}</Text><Text dimColor> · {record.isBusy ? (pt ? "trabalhando" : "working") : (pt ? "aguardando" : "waiting")}</Text></Text>{(vigiaDoing(record) ?? record.lastPrompt) && <Text wrap="truncate">{GLYPH.branch} {vigiaDoing(record) ?? record.lastPrompt}{vigiaNext(record) ? ` → ${vigiaNext(record)}` : ""}</Text>}</Box>)}</Box>{below}</Box>;
+  const toggle = <Button key="vigia-toggle" label={text(collapsed ? "feature.vigia.show" : "feature.vigia.hide", locale)} plain dimColor onPress={async () => { const value = !await read($, vigiaCollapsed); await update($, vigiaCollapsed, () => value); await $.store.set("vigia:collapsed", value); }} />;
+  if (collapsed) return <Box flexDirection="column"><Box gap={1}><Text color={PAINT.brand}>{GLYPH.on}</Text><Text dimColor>{text(others.length === 1 ? "feature.vigia.others.one" : "feature.vigia.others.many", locale, { count: others.length })} ·</Text>{conflicts.length > 0 && <Text color="error">! {text(conflicts.length === 1 ? "feature.vigia.clashes.one" : "feature.vigia.clashes.many", locale, { count: conflicts.length })} ·</Text>}{toggle}</Box>{below}</Box>;
+  return <Box flexDirection="column"><Box flexDirection="column"><Box gap={1}><Text color={PAINT.brand}>{GLYPH.on}</Text><Text dimColor>{text("feature.vigia.title", locale)}</Text>{toggle}</Box>{conflicts.slice(0, 2).map((conflict) => <Text key={`${conflict.other.id}-${conflict.file}`} color="error" wrap="truncate">  ! {text("feature.vigia.clash", locale)}: {conflict.file} · {vigiaName(conflict.other)} · {formatAge(now - conflict.at, locale)}</Text>)}{others.slice(0, 3).map((record) => <Box key={record.id} flexDirection="column" paddingLeft={2}><Text wrap="truncate"><Text color={record.isBusy ? "warning" : "success"}>{record.isBusy ? `${GLYPH.on} ` : "◐ "}</Text><Text bold>{vigiaName(record)}</Text><Text dimColor> · {text(record.isBusy ? "feature.vigia.working" : "feature.vigia.waiting", locale)}</Text></Text>{(vigiaDoing(record) ?? record.lastPrompt) && <Text wrap="truncate">{GLYPH.branch} {vigiaDoing(record) ?? record.lastPrompt}{vigiaNext(record) ? ` → ${vigiaNext(record)}` : ""}</Text>}</Box>)}</Box>{below}</Box>;
+}
+
+// Code Quality: after a turn in which Claude changed code, an agent of Pingo's own reviews the pending changes against
+// the project's patterns and fixes what it can. One cycle runs at a time; edits made meanwhile start the next one.
+const QUALITY_TYPE = `jev:${QUALITY_AGENT}`;
+/** Files Claude or its subagents changed since the last cycle began: the next one reviews them first. */
+const qualityEdited = new Set<string>();
+/** The running cycle's agent, once its spawn answered with an id. */
+let qualityAgentId: string | undefined;
+let qualityRegistered = false;
+
+/**
+ * Defines the agent type, hidden from the model (agent.offer): only Pingo starts it. Answers why the host refused it,
+ * if it did; a refused type is defined again at the next cycle.
+ */
+async function qualityStart($: EngineInterface): Promise<string | undefined> {
+  if (qualityRegistered) return undefined;
+  return await $.agent.register({
+    name: QUALITY_AGENT,
+    description: "Pingo's Code Quality: reviews and fixes the pending changes after Claude edits code.",
+    prompt: QUALITY_SYSTEM,
+    model: CLAUDE_MODEL.SONNET.name,
+    maxTurns: QUALITY_MAX_TURNS,
+    background: true,
+    // it runs unattended: no question to the person, no new files, no agents of its own
+    disallowedTools: ["AskUserQuestion", "Agent", "Write", "NotebookEdit"],
+  }).then(() => { qualityRegistered = true; return undefined; }, errorMessage);
+}
+
+/** Starts one cycle unless one is running: over the files changed since the last one, or all that is pending. */
+async function startQuality($: EngineInterface): Promise<void> {
+  if (!(await featureEnabled($, "codeQuality"))) return;
+  const locale = (await getSettings($)).locale;
+  const root = await $.session.root();
+  const files = [...qualityEdited].map((path) => vigiaRelative(root, path));
+  const startedAt = await $.clock.now();
+  // a cycle whose agent is gone without a word (stopped, reloaded) would hold the feature forever: it ends as failed
+  if ((await read($, qualityCycles))[0]?.state === "running" && !(await qualityAlive($))) {
+    qualityAgentId = undefined;
+    await update($, qualityCycles, (list) => list.map((cycle) => (cycle.state === "running" ? { ...cycle, state: "failed" as const, endedAt: startedAt } : cycle)));
+  }
+  let started: QualityCycle | undefined;
+  await update($, qualityCycles, (list) => {
+    if (list[0]?.state === "running") return list;
+    started = { n: (list[0]?.n ?? 0) + 1, startedAt, files, state: "running", reviewed: [], fixed: [], skipped: [] };
+    return [started, ...list].slice(0, QUALITY_HISTORY);
+  });
+  if (!started) return;
+  qualityEdited.clear();
+  const refused = await qualityStart($);
+  const spawned = refused === undefined
+    ? await $.agent.spawn({ subagentType: QUALITY_TYPE, prompt: qualityRequest(files, locale), description: text("feature.codeQuality.name", locale) }).catch((error: unknown) => ({ deny: errorMessage(error) }))
+    : { deny: refused };
+  if (spawned.deny !== undefined) {
+    await update($, qualityCycles, (list) => list.map((cycle) => (cycle.state === "running" ? { ...cycle, state: "failed" as const, endedAt: startedAt } : cycle)));
+    await log($, "mod", "feature", "bad", text("feature.codeQuality.notStarted", locale, { reason: short(spawned.deny, 160) }));
+    return;
+  }
+  qualityAgentId = spawned.agentId;
+  await log($, "mod", "feature", "info", files.length ? text("feature.codeQuality.started", locale, { files: files.join(", ") }) : text("feature.codeQuality.startedAll", locale));
+}
+
+/** Claude's own turn ended: when it changed code, a cycle starts, or the running one's end starts it. */
+async function qualityTurnCompleted($: EngineInterface, e: { agentId?: string; isAborted?: boolean }): Promise<void> {
+  if (e.agentId === undefined && !e.isAborted && qualityEdited.size) await startQuality($);
+}
+
+/** Whether a loop is the cycle agent's: by the id its spawn answered, else by the type the session's agent list gives it. */
+async function isQualityAgent($: EngineInterface, id: string): Promise<boolean> {
+  return id === qualityAgentId || (await $.agent.list().catch(() => [])).some((agent) => agent.id === id && agent.type === QUALITY_TYPE);
+}
+
+/** Whether the cycle agent is still at work, as the session's agent list says; when the list cannot be read, it is. */
+async function qualityAlive($: EngineInterface): Promise<boolean> {
+  const list = await $.agent.list().catch(() => undefined);
+  return !list || list.some((agent) => (agent.id === qualityAgentId || agent.type === QUALITY_TYPE) && (agent.status === "running" || agent.status === "pending"));
+}
+
+/** Whether a call runs in the cycle agent's loop: looked up only while a cycle runs, so other subagents cost nothing. */
+async function inQualityLoop($: EngineInterface, id: string): Promise<boolean> {
+  return (await read($, qualityCycles))[0]?.state === "running" && isQualityAgent($, id);
+}
+
+/** A subagent's turn ended: when it was the running cycle's agent, its report goes on the tab. */
+async function qualityAgentEnded($: EngineInterface, e: { agentId?: string; answer?: string; isAborted?: boolean; reason?: string }): Promise<void> {
+  const id = e.agentId;
+  if (!id || (await read($, qualityCycles))[0]?.state !== "running" || !(await isQualityAgent($, id))) return;
+  qualityAgentId = undefined;
+  const locale = (await getSettings($)).locale;
+  const report = parseQualityReport(e.answer ?? "");
+  const summary = report.summary ?? (e.answer?.trim() ? short(e.answer, 300) : undefined);
+  const endedAt = await $.clock.now();
+  const state = agentEnding(e).ok ? "done" : "failed";
+  let ended: QualityCycle | undefined;
+  await update($, qualityCycles, (list) => list.map((cycle) => (cycle.state === "running" ? (ended = { ...cycle, ...report, ...(summary ? { summary } : {}), endedAt, state }) : cycle)));
+  if (ended) await log($, "mod", "feature", state === "done" ? "good" : "bad", text("feature.codeQuality.done", locale, { fixed: formatNumber(ended.fixed.length, locale), skipped: formatNumber(ended.skipped.length, locale) }));
+  if (qualityEdited.size) await startQuality($);
+}
+
+/** The Quality tab's data: its cycles, and the files waiting for the next one. */
+async function qualityPanel($: EngineInterface): Promise<QualityPanel> {
+  const cycles = await read($, qualityCycles);
+  const root = await $.session.root();
+  return { running: cycles[0]?.state === "running", queued: [...qualityEdited].map((path) => vigiaRelative(root, path)), cycles };
+}
+
+// --- Comandante ---
+
+/** Verdicts still waiting for Jev: the busy flag stays up until the last one is back. */
+let comandanteAsking = 0;
+
+/** This session's record in Vigia's terms (its id, name and root), and the folder each session's decisions share. */
+async function comandanteDir($: EngineInterface): Promise<{ own: VigiaSession; dir: string }> {
+  const own = await ensureVigia($);
+  return { own, dir: `${vigiaDir}/${COMANDANTE_FOLDER}` };
+}
+
+/** This session's own decisions, as its file holds them: read once per session id, then kept here. */
+async function comandanteOwn($: EngineInterface, own: VigiaSession, dir: string): Promise<ComandanteRecord[]> {
+  if (comandanteMine?.session === own.id) return comandanteMine.records;
+  const file = `${dir}/${own.id}.json`;
+  const records = await $.fs.exists(file) ? comandanteRecords(JSON.parse(await $.fs.read(file))) : [];
+  comandanteMine = { session: own.id, records };
+  return records;
+}
+
+/** Every session's decisions, read again from their files: the tab's log. A file still being written waits for the next read. */
+async function refreshComandante($: EngineInterface) {
+  if (!(await featureEnabled($, "comandante"))) return;
+  comandanteRefreshedAt = await $.clock.now();
+  const { own, dir } = await comandanteDir($);
+  const lists: ComandanteRecord[][] = [await comandanteOwn($, own, dir).catch(() => [])];
+  if (await $.fs.exists(dir)) for (const entry of await $.fs.list(dir)) {
+    if (entry.kind !== "file" || !entry.name.endsWith(".json") || entry.name === `${own.id}.json`) continue;
+    try { lists.push(comandanteRecords(JSON.parse(await $.fs.read(`${dir}/${entry.name}`)))); } catch { /* another session may still be writing its file */ }
+  }
+  const next = mergeComandante(lists);
+  if (JSON.stringify(next) !== JSON.stringify(await read($, comandanteLog))) await update($, comandanteLog, () => next);
+}
+
+/**
+ * What the Comandante tells whoever raised the alert (the agent; for a Vigia message or a Clareza plan, the person):
+ * approved rides after the tool's own answer, the others replace it.
+ */
+function comandanteMessage(source: ComandanteAlert["source"], ruling: ComandanteRuling, locale: Locale): string {
+  const reason = text(`feature.comandante.reason.${ruling.reason}` as LocaleKey, locale);
+  if (ruling.decision === "approved") return text("feature.comandante.tool.approved", locale, { reason });
+  if (ruling.decision === "rejected") return text(`feature.comandante.tool.rejected.${source}` as LocaleKey, locale, { reason });
+  return text(`feature.comandante.tool.questioned.${source}` as LocaleKey, locale, { reason, question: text(`feature.comandante.question.${ruling.reason}` as LocaleKey, locale) });
+}
+
+/** The line the live log and the toast show for one decision. */
+function comandanteNotice(source: ComandanteAlert["source"], ruling: ComandanteVerdict, said: string, locale: Locale): string {
+  return text("feature.comandante.notice", locale, {
+    decision: text(`feature.comandante.decision.${ruling.decision}`, locale),
+    source: SPEAKER_NAMES[source],
+    summary: vigiaFlat(said, 120),
+    reason: text(`feature.comandante.reason.${ruling.reason}` as LocaleKey, locale),
+  });
+}
+
+/** One decision into the tab's log, the live log and this session's file; a file that cannot be written is said, never thrown. */
+async function recordComandante($: EngineInterface, alert: ComandanteAlert, ruling: ComandanteVerdict, agentId?: string) {
+  const { own, dir } = await comandanteDir($);
+  const at = await $.clock.now();
+  const agent = agentId ? agentRuns.get(agentId)?.type ?? "agent" : undefined;
+  const record: ComandanteRecord = {
+    id: `${own.id}-${at}-${++comandanteSeq}`,
+    at,
+    session: own.id,
+    sessionName: vigiaName(own),
+    project: comandanteProject(own.root),
+    source: alert.source,
+    ...(agent ? { agent } : {}),
+    summary: vigiaFlat(alert.text, 300),
+    decision: ruling.decision,
+    reason: ruling.reason,
+    confidence: ruling.confidence,
+  };
+  const records = [...await comandanteOwn($, own, dir).catch(() => []), record].slice(-COMANDANTE_KEEP);
+  comandanteMine = { session: own.id, records };
+  await update($, comandanteLog, (list) => mergeComandante([[record], list]));
+  const locale = (await getSettings($)).locale;
+  const notice = comandanteNotice(alert.source, ruling, alert.text, locale);
+  await log($, "mod", "feature", ruling.decision === "approved" ? "good" : ruling.decision === "rejected" ? "bad" : "warn", notice);
+  // a Vigia message's caller says what became of it (held or delivered) in a notice of its own
+  if (ruling.decision !== "approved" && alert.source !== "vigia") $.ui.toast(notice, { timeoutMs: 8000 });
+  try {
+    await $.fs.write(`${dir}/${own.id}.json`, JSON.stringify(records));
+  } catch (error) {
+    await log($, "mod", "feature", "warn", text("feature.comandante.saveFailed", locale, { reason: short(errorMessage(error), 160) }));
+  }
+}
+
+/**
+ * The Comandante's verdict on one alert, decided in the session where it arose: Jev picks a verdict from what the
+ * user asked last and the items of its kind already recorded, and the decision is kept in this session's file of the
+ * project's shared folder, which every session's tab reads. Undefined when the Comandante is off or could not judge
+ * (no key, Jev failed, no usable verdict): the caller then does exactly what it does without the Comandante.
+ * `judging` names a Farol assumption already recorded that is judged now, so it is not taken for its own repeat.
+ */
+async function comandanteReview($: EngineInterface, alert: ComandanteAlert, agentId?: string, judging?: number): Promise<(ComandanteVerdict & { message: string }) | undefined> {
+  if (!(await featureEnabled($, "comandante"))) return;
+  const config = await getSettings($);
+  const locale = config.locale;
+  comandanteAsking++;
+  await update($, comandanteBusy, () => true);
+  try {
+    if (!config.apiKey) throw new Error(text("feature.comandante.noKey", locale));
+    const known = alert.source === "semente"
+      ? (await read($, sementeIdeas)).map((idea) => idea.text)
+      : alert.source === "farol"
+        ? [...(await read($, farolRules)).map((rule) => `${rule.correction} (not: ${rule.assumption})`), ...(await read($, farolItems)).filter((item) => item.id !== judging).map((item) => item.text)]
+        : [];
+    const request = (await readTrace($)).runs.findLast((run) => run.text)?.text ?? "";
+    const ask = tracedAskJev($, config, { origin: "comandante", trigger: alert.source, ...(agentId ? { agentId } : {}) });
+    const ruling = comandanteVerdict(await ask({ model: config.jevModel, ...comandanteRequest(alert, request, known) }));
+    if (!ruling) throw new Error(text("feature.comandante.noVerdict", locale));
+    await recordComandante($, alert, ruling, agentId);
+    return { ...ruling, message: comandanteMessage(alert.source, ruling, locale) };
+  } catch (error) {
+    await log($, "mod", "feature", "warn", text("feature.comandante.skipped", locale, { reason: short(errorMessage(error), 160) })).catch(() => undefined);
+    return;
+  } finally {
+    comandanteAsking = Math.max(0, comandanteAsking - 1);
+    if (!comandanteAsking) await update($, comandanteBusy, () => false);
+  }
+}
+
+/** `/comandante` opens its tab; the session's own decisions and the others' are read once at the start. */
+async function registerComandante($: EngineInterface) {
+  await $.command.register({ name: "comandante", description: text("feature.comandante.command", (await getSettings($)).locale) });
+  await refreshComandante($);
+}
+
+/**
+ * While the Jev pane is on screen with the Comandante tab open, the other sessions' decisions are read again at the
+ * monitor's interval. The pane's own one-second clock calls it: the Comandante adds no clock of its own.
+ */
+async function comandanteTick($: EngineInterface, now: number) {
+  // the switches and preferences come from the copies the clock keeps: switched off, it reads nothing more
+  const { flags, preferences } = await tickSwitches($);
+  if (!flags.comandante || now - comandanteRefreshedAt < preferences.monitorEveryMs || (await read($, tab)) !== "comandante") return;
+  await refreshComandante($);
+}
+
+/** Farol assumptions the backlog already put to Jev in this run: one Jev could not judge is not asked again at every beat. */
+const farolBacklogTried = new Set<number>();
+let farolBacklogAt = 0;
+let farolBacklogBusy = false;
+
+/**
+ * A Farol assumption still open that the Comandante never judged (raised while it was off, or when Jev could not
+ * answer) is judged once, the oldest first and one at a time: approved is marked right and told to Claude with its
+ * next step, as the person's ✓ is; rejected or questioned stays open for the person, with the ruling beside it.
+ * The pane's one-second clock calls it at the monitor's interval; switched off, it reads nothing.
+ */
+async function farolBacklogTick($: EngineInterface, now: number) {
+  const { flags, preferences } = await tickSwitches($);
+  if (!flags.comandante || !flags.farol || farolBacklogBusy || now - farolBacklogAt < preferences.monitorEveryMs) return;
+  farolBacklogAt = now;
+  const item = (await read($, farolItems)).find((one) => one.verdict === "open" && !one.comandante && !farolBacklogTried.has(one.id));
+  if (!item) return;
+  farolBacklogBusy = true;
+  farolBacklogTried.add(item.id);
+  try {
+    const ruling = await comandanteReview($, { source: "farol", text: item.text, ...(item.context ? { context: item.context } : {}) }, undefined, item.id);
+    if (!ruling) return;
+    const comandante: ComandanteRuling = { decision: ruling.decision, reason: ruling.reason };
+    // the person may have judged it meanwhile: their verdict stands
+    await update($, farolItems, (list) => list.map((one) => one.id !== item.id || one.verdict !== "open" ? one
+      : ruling.decision === "approved" ? { ...one, comandante, verdict: "right" as const, sent: false } : { ...one, comandante }));
+  } finally {
+    farolBacklogBusy = false;
+  }
+}
+
+/** The Comandante tab's data: every session's decisions, the filters, and which session this is. */
+async function comandantePanel($: EngineInterface): Promise<ComandantePanel> {
+  return { log: await read($, comandanteLog), filter: await read($, comandanteFilter), me: await $.session.id(), busy: await read($, comandanteBusy) };
 }
 
 export function normalizeTab(value: unknown): JevTab {
@@ -2590,6 +3073,8 @@ export function normalizeTab(value: unknown): JevTab {
     case "ai":
     case "flow":
     case "orchestration":
+    case "quality":
+    case "comandante":
       return value;
     case "reasons":
     case "baseline":
@@ -2617,6 +3102,11 @@ async function openFeaturePane($: EngineInterface, id: SpeakerId): Promise<void>
   }
   if (id === "vigia") await refreshVigia($);
   if (id === "contexto" || id === "lapida") return openPane($, "features");
+  if (id === "codeQuality") return openPane($, "quality");
+  if (id === "comandante") {
+    await refreshComandante($);
+    return openPane($, "comandante");
+  }
   await $.ui.open({ id, title: name, focus: true, closeOnEscape: true, ...(id === "prisma" ? { holdToasts: true } : {}) });
 }
 
@@ -2846,7 +3336,7 @@ async function submitKey($: EngineInterface, provider: string): Promise<void> {
     () => true,
     () => false,
   );
-  const refused = (await saveKey($, key)) && !kept ? "could not write the key" : undefined;
+  const refused = (await saveKey($, key)) && !kept ? text("ui.setup.keyNotWritten", locale) : undefined;
   // Saved together or not at all: the provider without its key would get the old key next session.
   if (refused) {
     await restoreProvider($, providerBefore, storedBefore);
@@ -2868,7 +3358,11 @@ function actions($: EngineInterface, requestId = PANE): Actions {
   const resetScroll = () => $.ui.scroll({ in: requestId, to: "start" }).catch(() => undefined);
   return {
     layout: () => undefined,
-    tab: async (which) => { await update($, tab, () => which); await resetScroll(); },
+    tab: async (which) => {
+      await update($, tab, () => which);
+      await resetScroll();
+      if (which === "comandante") await refreshComandante($).catch(() => undefined);
+    },
     range: (ms) => void update($, range, () => ms),
     routing: (enabled) => void setRouting($, enabled),
     feature: (id, enabled) => void setFeature($, id, enabled),
@@ -2908,6 +3402,8 @@ function actions($: EngineInterface, requestId = PANE): Actions {
       orchestrationDraft = "";
       void runOrchestration($, line);
     },
+    qualityRun: () => void startQuality($),
+    comandanteFilter: (change) => void update($, comandanteFilter, (filter) => normalizeComandanteFilter({ ...filter, ...change })),
     deck: (args) => void runDeckFromTab($, args),
     deckStyle: (surface, name) => void setDeckStyleFromTab($, surface, name),
     deckType: (value) => {
@@ -2959,7 +3455,24 @@ async function view($: EngineInterface, width: number, rows: number, surface: st
     key: { source: config.keySource, tail: config.apiKey ? config.apiKey.slice(-4) : "", provider: config.provider },
     deck: null,
     ...(normalized === "orchestration" ? { orchestration: await orchestrationView($) } : {}),
+    ...(normalized === "quality" ? { quality: await qualityPanel($) } : {}),
+    ...(normalized === "comandante" ? { comandante: await comandantePanel($) } : {}),
   };
+}
+
+/**
+ * How a subagent's turn ended, read once, so its Deck row, its log line, its record and its review all agree: only
+ * an answer that was not aborted is a success; an error, a refusal or any other end is not.
+ */
+function agentEnding(e: { isAborted?: boolean; reason?: string }): {
+  ok: boolean;
+  deck: "done" | "stopped" | "failed";
+  run: AgentRun["state"];
+  feed: "done" | "aborted" | "error" | "refused";
+} {
+  if (e.isAborted) return { ok: false, deck: "stopped", run: "aborted", feed: "aborted" };
+  if (e.reason === "answer") return { ok: true, deck: "done", run: "done", feed: "done" };
+  return { ok: false, deck: "failed", run: "error", feed: e.reason === "refusal" ? "refused" : "error" };
 }
 
 /** Who acts in a loop, for the log: Claude on the main loop, the subagent's type in one. */
@@ -2992,6 +3505,11 @@ export const register: Register = (on, given) => {
   deckLanes.clear();
   deckPetLoop?.cancel();
   deckPetLoop = undefined;
+  // a load reads the clock's switches from their atoms again
+  tickDeckSettings = undefined;
+  tickFeatures = undefined;
+  tickPreferences = undefined;
+  sentinelaPidCheck = undefined;
   blitBroken = false;
   deckShownTerminalAt = deckShownDesktopAt = paneShownAt = rowsRedrawnAt = Number.NEGATIVE_INFINITY;
   sessionKey = "";
@@ -3020,39 +3538,40 @@ export const register: Register = (on, given) => {
       argumentHint: text("deck.command.argumentHint", locale),
       immediate: true,
     });
-    await $.command.register({ name: "pingo", description: "Change Pingo's hat, react, dance, hide, or show", argumentHint: "[hat <name|random>|hats|pet|dance|party|shades|hide|show]" });
-    const config = await getSettings($);
-    await restoreStoredState($);
+    await $.command.register({ name: "pingo", description: text("feature.pingoVivo.command", locale), argumentHint: "[hat <name|random>|hats|pet|dance|party|shades|hide|show]" });
+    // Each feature starts on its own: one that fails is logged, and the ones after it still start.
+    await startStep($, "Jev", () => restoreStoredState($));
     await orch.restore(orchIo($)).catch(() => undefined);
     await registerOrchestration($).catch(() => undefined);
-    await registerFarol($);
-    await clarezaStart($);
-    await $.command.register({ name: "prisma-decisions", description: "List or clear remembered design choices", argumentHint: "[clear]" });
-    await sementeStart($);
-    await lapidaStart($);
-    await registerSentinela($);
-    await registerVigia($);
+    await startStep($, "Farol", () => registerFarol($));
+    await startStep($, "Clareza", () => clarezaStart($));
+    await startStep($, "Prisma", async () => $.command.register({ name: "prisma-decisions", description: text("feature.prisma.decisions.command", (await getSettings($)).locale), argumentHint: "[clear]" }));
+    await startStep($, "Semente", () => sementeStart($));
+    await startStep($, "Lapida", () => lapidaStart($));
+    await startStep($, "Sentinela", () => registerSentinela($));
+    await startStep($, "Vigia", () => registerVigia($));
+    await startStep($, "Comandante", () => registerComandante($));
+    await qualityStart($);
     mainModel = await $.session.model();
     await setLive($, { model: mainModel, asking: undefined });
-    const advisor = await advisorInfo($);
-    await updateTrace($, (s) => setAdvisorInfo(s, advisor));
+    await startStep($, "Flow", async () => {
+      const advisor = await advisorInfo($);
+      await updateTrace($, (s) => setAdvisorInfo(s, advisor));
+    });
     // Deck's preferences, usage history and this session's spend: the store is read once, here.
     const now = await $.clock.now();
     const savedDeck = await $.store.get(STORE_DECK).catch(() => undefined);
     const savedSpend = await $.store.get(STORE_DECK_SPEND).catch(() => undefined);
     const savedHist = await $.store.get(STORE_DECK_HIST).catch(() => undefined);
     deck = createDeckState(now, deckSessionId, new Date(now));
-    deckPet = createPet(now);
-    sessionPetHat = randomPetHat();
-    petHatOverride = undefined;
-    petHatOverrideUntil = 0;
-    await styledPet($, now);
+    await resetPet($, now);
     deck.spend = spendFrom(fieldOf(savedSpend, "spend"), new Date(now));
     deck.costSeen = costSeenFrom(savedSpend, deckSessionId);
     deck.hist = histFrom(savedHist, now);
     deck.sessionModel = mainModel ?? "";
     const deckConfig = parseSettings(savedDeck);
     await update($, deckSettings, () => deckConfig);
+    tickDeckSettings = deckConfig;
     await update($, deckExpanded, () => deckConfig.open);
     // The session's usage and the city's weather now, then the band's clock.
     await refreshUsage($);
@@ -3064,6 +3583,9 @@ export const register: Register = (on, given) => {
       if (tick - deckShownTerminalAt < ON_SCREEN_MS || tick - deckShownDesktopAt < ON_SCREEN_MS || tick - paneShownAt < ON_SCREEN_MS) {
         $.ui.invalidate("ui.render");
       }
+      if (tick - paneShownAt < ON_SCREEN_MS) await comandanteTick($, tick).catch(() => undefined);
+      // not awaited: Jev's answer may take longer than a beat, and the backlog asks one at a time
+      void farolBacklogTick($, tick).catch(() => undefined);
     });
     return next(e);
   });
@@ -3079,10 +3601,7 @@ export const register: Register = (on, given) => {
   on("classic.CwdChanged", async ($, e, next) => {
     const result = await next(e);
     await syncFarol($);
-    const savedIdeas = await $.store.get(await sementeKey($));
-    await update($, sementeIdeas, () => Array.isArray(savedIdeas) ? savedIdeas as SementeIdea[] : []);
-    sementeTopics.clear();
-    sementeShelvedThisTurn = new Set();
+    await reloadSementeIdeas($);
     await refreshSentinela($);
     if (await featureEnabled($, "vigia")) await saveVigia($);
     return result;
@@ -3099,11 +3618,8 @@ export const register: Register = (on, given) => {
       await restoreStoredState($);
       mainModel = await $.session.model();
       await syncFarol($);
-      const savedIdeas = await $.store.get(await sementeKey($));
-      await update($, sementeIdeas, () => Array.isArray(savedIdeas) ? savedIdeas as SementeIdea[] : []);
+      await reloadSementeIdeas($);
       await update($, sementeNudges, () => []);
-      sementeTopics.clear();
-      sementeShelvedThisTurn = new Set();
       clarityLastAsk = "";
       await update($, clarezaGrade, () => null);
       await update($, clarezaRewrite, () => false);
@@ -3123,11 +3639,7 @@ export const register: Register = (on, given) => {
       await refreshSentinela($);
       deckSessionId = sentinelaMe;
       sessionId = deckSessionId.slice(0, 8);
-      deckPet = createPet(now);
-      sessionPetHat = randomPetHat();
-      petHatOverride = undefined;
-      petHatOverrideUntil = 0;
-      await styledPet($, now);
+      await resetPet($, now);
       if (await featureEnabled($, "vigia")) await saveVigia($);
     }
     return next(e);
@@ -3154,7 +3666,7 @@ export const register: Register = (on, given) => {
   on("prompt.submit", async ($, e, next) => {
     const enriched = await clarezaPromptSubmit($, e);
     await lapidaPromptSubmit($, enriched);
-    await vigiaPromptSubmit($, enriched);
+    const vigiaNotes = await vigiaPromptSubmit($, enriched).catch(() => [] as string[]);
     const submittedAt = await $.clock.now();
     promptSubmitted(deckOf(submittedAt), enriched.text, submittedAt);
     let messageId = "";
@@ -3166,7 +3678,8 @@ export const register: Register = (on, given) => {
     // Once it entered (the turn it started has fired turn.start meanwhile) or was refused.
     const entered = async (result: Awaited<ReturnType<typeof next>>) => {
       const dropped = "drop" in result && typeof result.drop === "string" ? result.drop : undefined;
-      // Past `next`, nothing may throw: the guard below would submit the prompt again.
+      // Past `next`, the record is best effort: the engine keeps what `next` settled to (its guard replays it,
+      // submitting nothing again), so a failure here would only lose the record.
       await updateTrace($, (s) => promptEntered(s, messageId, dropped)).catch(() => undefined);
       return result;
     };
@@ -3178,7 +3691,8 @@ export const register: Register = (on, given) => {
         await updateTrace($, (s) => noteAdvice(s, messageId, change)).catch(() => undefined);
       },
     }, enriched).catch(() => [] as string[]);
-    return entered(await next(orchestration.length ? { ...enriched, context: [...(enriched.context ?? []), ...orchestration] } : enriched));
+    const notes = [...vigiaNotes, ...orchestration];
+    return entered(await next(notes.length ? { ...enriched, context: [...(enriched.context ?? []), ...notes] } : enriched));
   }).catch((_$, e, next) => next(e));
 
   on("turn.start", async ($, e, next) => {
@@ -3199,13 +3713,14 @@ export const register: Register = (on, given) => {
 
   on("turn.complete", async ($, e, next) => {
     const locale = (await getSettings($)).locale;
+    const ending = agentEnding(e);
     // A subagent's end starts its mandatory review (or advances its batch unit) in the background.
-    if (e.agentId) void orch.onAgentDone(orchIo($), e.agentId, e.answer, e.reason === "answer" && !e.isAborted).catch(() => undefined);
+    if (e.agentId) void orch.onAgentDone(orchIo($), e.agentId, e.answer, ending.ok).catch(() => undefined);
     // Deck first: a subagent's turn ends its row, and a main turn ends its activity line.
     const deckNow = await $.clock.now();
     const deckState = deckOf(deckNow);
     if (e.agentId && deckState.agents.has(e.agentId)) {
-      finishAgent(deckState, e.agentId, e.isAborted ? "stopped" : e.reason === "answer" ? "done" : "failed", deckNow, locale);
+      finishAgent(deckState, e.agentId, ending.deck, deckNow, locale);
       redrawDeck($);
     }
     if (!e.agentId) {
@@ -3215,29 +3730,21 @@ export const register: Register = (on, given) => {
     }
     const seconds = formatDuration(e.durationMs, locale);
     const usage = e.usage;
-    const inputComplete = typeof usage?.input_tokens === "number"
-      && typeof usage.cache_read_input_tokens === "number"
-      && typeof usage.cache_creation_input_tokens === "number";
-    const outputKnown = typeof usage?.output_tokens === "number";
-    const cache = usage ? [
-      typeof usage.cache_read_input_tokens === "number"
-        ? text("ui.models.cacheReadTokens", locale, { value: formatCompact(usage.cache_read_input_tokens, locale) })
-        : "",
-      typeof usage.cache_creation_input_tokens === "number"
-        ? text("ui.models.cacheWriteTokens", locale, { value: formatCompact(usage.cache_creation_input_tokens, locale) })
-        : "",
-    ].filter(Boolean).join(text("feed.usage.separator", locale)) : "";
+    const { counts, inputComplete, outputKnown } = usageFacts(usage);
+    const cache = [
+      counts.cacheRead !== undefined ? text("ui.models.cacheReadTokens", locale, { value: formatCompact(counts.cacheRead, locale) }) : "",
+      counts.cacheWrite !== undefined ? text("ui.models.cacheWriteTokens", locale, { value: formatCompact(counts.cacheWrite, locale) }) : "",
+    ].filter(Boolean).join(text("feed.usage.separator", locale));
     const tokens = usage && (inputComplete || outputKnown)
       ? text("feed.usage.tokens", locale, {
           input: inputComplete ? formatCompact(totalInput(usage), locale) : "–",
-          output: outputKnown ? formatCompact(usage.output_tokens, locale) : "–",
+          output: counts.output !== undefined ? formatCompact(counts.output, locale) : "–",
           cache: cache ? ` · ${cache}` : "",
         })
       : "";
     if (e.agentId) {
       const id = e.agentId;
-      const state = e.isAborted ? "aborted" : e.reason === "error" ? "error" : "done";
-      await log($, actor(id), "agent", state === "done" ? "good" : "bad", text("feed.turn.agentState", locale, { state: text(`feed.turn.state.${state}`, locale), answer: e.answer?.trim() ? text("feed.turn.answer", locale, { text: short(e.answer, 160) }) : "" }), undefined, {
+      await log($, actor(id), "agent", ending.ok ? "good" : "bad", text("feed.turn.agentState", locale, { state: text(`feed.turn.state.${ending.feed}`, locale), answer: e.answer?.trim() ? text("feed.turn.answer", locale, { text: short(e.answer, 160) }) : "" }), undefined, {
         meta: seconds,
         detail: `${tokens || text("feed.turn.noUsage", locale)}${e.reason && e.reason !== "answer" ? text("feed.turn.endedBy", locale, { reason: ["error", "refusal", "aborted"].includes(e.reason) ? text(`feed.turn.reason.${e.reason}` as LocaleKey, locale) : e.reason }) : ""}`,
       });
@@ -3247,7 +3754,7 @@ export const register: Register = (on, given) => {
         const { activity: _activity, ...rest } = one;
         return {
           ...rest,
-          state: e.isAborted ? "aborted" : e.reason === "error" ? "error" : "done",
+          state: ending.run,
           endedAt,
           ...(e.answer?.trim() ? { text: short(e.answer, 2000) } : {}),
         };
@@ -3258,6 +3765,7 @@ export const register: Register = (on, given) => {
       if (mate?.teammate) mate.awake = false;
       else agentRuns.delete(id);
       const running = [...agentRuns.values()].filter((run) => !run.teammate || run.awake).length;
+      await qualityAgentEnded($, e).catch(() => undefined);
       await setLive($, { activity: running ? text("feed.activity.agentCount", locale, { count: formatNumber(running, locale), unit: text(running === 1 ? "unit.agent" : "unit.agents", locale) }) : text("feed.activity.waiting", locale) });
       await compactContextAfterTurn($, contextConfig);
       return next(e);
@@ -3276,6 +3784,7 @@ export const register: Register = (on, given) => {
     await clarezaTurnCompleted($, e);
     await sementeTurnCompleted($, e);
     await vigiaTurnCompleted($, e);
+    await qualityTurnCompleted($, e).catch(() => undefined);
     await compactContextAfterTurn($, contextConfig);
     return next(e);
   });
@@ -3288,9 +3797,11 @@ export const register: Register = (on, given) => {
     if (!e.tool_use_id || next.origin.plugin !== "engine") return farolAfterTool($, await deckCallClose($, deckCall, next(e)));
     const locale = (await getSettings($)).locale;
     const input = e as unknown as Record<string, unknown>;
-    const filePath = typeof input.file_path === "string" ? input.file_path : typeof input.notebook_path === "string" ? input.notebook_path : undefined;
+    const filePath = editedFile(input);
     const trackedEdit = ["Edit", "Write", "NotebookEdit"].includes(e.tool) && filePath ? filePath : undefined;
-    const clashNote = !e.agentId && trackedEdit ? await vigiaTrackFile($, trackedEdit).catch(() => undefined) : undefined;
+    // Vigia holds an edit while another live session's newer edit of the file is unread here; a Read clears that.
+    const vigiaHeld = !e.agentId && trackedEdit ? await vigiaTrackFile($, trackedEdit).catch(() => undefined) : undefined;
+    if (!e.agentId && e.tool === "Read" && filePath) await vigiaFileRead($, filePath).catch(() => undefined);
     const who = actor(e.agentId);
     const summary = toolSummary(e.tool, e as unknown as Record<string, unknown>);
     const startedAt = await $.clock.now();
@@ -3309,27 +3820,36 @@ export const register: Register = (on, given) => {
     if (!e.agentId) await setLive($, { activity: text("feed.activity.running", locale, { activity: short(summary, 40) }) });
     else await updateRun($, e.agentId, (run) => ({ ...run, tools: run.tools + 1, activity: text("feed.activity.agentTool", locale, { activity: short(summary, 60) }) }));
     // The follower reads the channel every 100 ms: the command's last calls still count where it ran.
-    const result = await deckCallClose($, deckCall, next(e).finally(() => {
+    const run: ReturnType<typeof next> = vigiaHeld ? Promise.resolve({ deny: vigiaHeld }) : next(e);
+    const result = await deckCallClose($, deckCall, run.finally(() => {
       if (sift) $.clock.after(1000, () => siftRuns.delete(toolUseId));
     }));
-    if (trackedEdit) sementeFileEdited(trackedEdit, result.deny === undefined && !result.isError);
-    if (trackedEdit && result.deny === undefined && !result.isError) orch.noteEdit(e.agentId, trackedEdit);
-    // A subagent's mandatory review verdict reaches its parent with the Agent tool's result.
-    const reviewNote = e.tool === "Agent" && result.deny === undefined
-      ? await orch.agentToolNote(orchIo($), e.tool_use_id, resultText(result.result)).catch(() => undefined)
-      : undefined;
-    const contextNotes = [clashNote, reviewNote].filter((note): note is string => Boolean(note));
-    const finalResult = await farolAfterTool($, result.deny === undefined && contextNotes.length ? { ...result, context: [...(result.context ?? []), ...contextNotes] } : result);
-    // Reporting or routing may fail after a tool ran; return its result rather than run it again.
+    // Past `next`, a failure would leave the engine with `next`'s bare result (its guard replays it, running nothing
+    // again) and drop the notes below: a step that fails is left out, and the notes made before it still go.
+    let finalResult = result;
+    try {
+      if (trackedEdit) sementeFileEdited(trackedEdit, result.deny === undefined && !result.isError);
+      if (trackedEdit && result.deny === undefined && !result.isError) orch.noteEdit(e.agentId, trackedEdit);
+      if (trackedEdit && result.deny === undefined && !result.isError && (!e.agentId || (agentRuns.has(e.agentId) && !(await isQualityAgent($, e.agentId))))) qualityEdited.add(trackedEdit);
+      // A subagent's mandatory review verdict reaches its parent with the Agent tool's result.
+      const reviewNote = e.tool === "Agent" && result.deny === undefined
+        ? await orch.agentToolNote(orchIo($), e.tool_use_id, resultText(result.result)).catch(() => undefined)
+        : undefined;
+      // What other sessions of this project sent rides on the main conversation's next result, mid-turn.
+      const inboxNote = !e.agentId && result.deny === undefined ? await vigiaTakeInbox($) : undefined;
+      const contextNotes = [inboxNote, reviewNote].filter((note): note is string => Boolean(note));
+      const noted = result.deny === undefined && contextNotes.length ? { ...result, context: [...(result.context ?? []), ...contextNotes] } : result;
+      finalResult = noted;
+      finalResult = await farolAfterTool($, noted);
+    } catch {}
+    // Reporting may fail after a tool ran; the result still goes back with its notes.
     try {
       const endedAt = await $.clock.now();
       const took = formatDuration(endedAt - (toolStarts.get(e.tool_use_id) ?? 0), locale);
       toolStarts.delete(e.tool_use_id);
       const ending = result.deny !== undefined ? "denied" : result.isError ? "error" : "ok";
-      const file = editedFile(e as unknown as Record<string, unknown>);
-      // Past `next`, the record must not throw: the guard would run the call again.
       await updateTrace($, (s) =>
-        toolEnd(s, { id: toolUseId, ...(e.agentId ? { agentId: e.agentId } : {}), at: endedAt, result: ending, edit: EDIT_TOOLS.has(e.tool), ...(file ? { file } : {}) }),
+        toolEnd(s, { id: toolUseId, ...(e.agentId ? { agentId: e.agentId } : {}), at: endedAt, result: ending, edit: EDIT_TOOLS.has(e.tool), ...(filePath ? { file: filePath } : {}) }),
       ).catch(() => undefined);
       if (result.deny !== undefined) {
         await patch($, line, { text: `⊘ ${summary}`, tone: "warn", meta: text("feed.tool.deniedLabel", locale), detail: [toolDetail, text("feed.tool.denied", locale, { message: short(result.deny, 160) })].filter(Boolean).join("\n") });
@@ -3370,8 +3890,12 @@ export const register: Register = (on, given) => {
     return result;
   }).catch(($, e, next) => next(e));
 
+  on("agent.offer", { agent: QUALITY_TYPE }, () => ({ isOffered: false }));
+
   // Subagents: Jev picks the model and effort, unless Claude asked for a model itself.
   on("agent.spawn", async ($, e, next) => {
+    // Code Quality's own agent: its model is set where it is registered, and its tab follows it
+    if (e.subagentType === QUALITY_TYPE) return next(e);
     if (e.workflow) {
       // Not planned and not on the Agents tab, but still a subagent of the run.
       const result = await next(e);
@@ -3495,20 +4019,8 @@ export const register: Register = (on, given) => {
     const result = yield* next(sent);
     const answeredAt = await $.clock.now();
     const usage = result.usage;
-    const inputComplete = typeof usage?.input_tokens === "number"
-      && typeof usage.cache_read_input_tokens === "number"
-      && typeof usage.cache_creation_input_tokens === "number";
-    const outputKnown = typeof usage?.output_tokens === "number";
-    const hasUsage = Boolean(usage && (
-      typeof usage.input_tokens === "number" || outputKnown
-      || typeof usage.cache_read_input_tokens === "number" || typeof usage.cache_creation_input_tokens === "number"
-    ));
-    const traceUsage = usage && hasUsage ? {
-      ...(typeof usage.input_tokens === "number" ? { input: usage.input_tokens } : {}),
-      ...(outputKnown ? { output: usage.output_tokens } : {}),
-      ...(typeof usage.cache_read_input_tokens === "number" ? { cacheRead: usage.cache_read_input_tokens } : {}),
-      ...(typeof usage.cache_creation_input_tokens === "number" ? { cacheWrite: usage.cache_creation_input_tokens } : {}),
-    } : undefined;
+    const { counts, inputComplete, outputKnown } = usageFacts(usage);
+    const hasUsage = Object.keys(counts).length > 0;
     const tokens = usage && inputComplete && outputKnown
       ? { input: totalInput(usage), output: usage.output_tokens }
       : undefined;
@@ -3520,7 +4032,7 @@ export const register: Register = (on, given) => {
         at: answeredAt,
         ...(result.usage?.model ? { observed: result.usage.model } : {}),
         stop: result.stopReason,
-        ...(traceUsage ? { usage: traceUsage } : {}),
+        ...(hasUsage ? { usage: counts } : {}),
         ...(tokens ? { tokens } : {}),
         ...(result.serverToolUses ? { serverToolUses: result.serverToolUses.map(({ id, name, startedAt: from, endedAt: to }) => ({ id, name, startedAt: from, ...(to === undefined ? {} : { endedAt: to }) })) } : {}),
       }),
@@ -3533,10 +4045,10 @@ export const register: Register = (on, given) => {
     }
     if (executor) await orch.noteApplied(orchIo($), { model, ...(effort === undefined ? {} : { effort: String(effort) }) }, usage?.model).catch(() => undefined);
     const asked = [...new Set(result.toolUses.map((use) => use.name))];
-    const inputText = typeof usage?.input_tokens === "number" ? formatCompact(usage.input_tokens, locale) : "–";
-    const outputText = typeof usage?.output_tokens === "number" ? formatCompact(usage.output_tokens, locale) : "–";
+    const inputText = counts.input !== undefined ? formatCompact(counts.input, locale) : "–";
+    const outputText = counts.output !== undefined ? formatCompact(counts.output, locale) : "–";
     const cacheText = usage && inputComplete
-      ? text("feed.usage.cache", locale, { percent: formatPercent(usage.cache_read_input_tokens as number, totalInput(usage), locale) })
+      ? text("feed.usage.cache", locale, { percent: formatPercent(counts.cacheRead ?? 0, totalInput(usage), locale) })
       : "";
     await patch($, requestLine, {
       meta: formatDuration((await $.clock.now()) - startedAt, locale),
@@ -3562,6 +4074,8 @@ export const register: Register = (on, given) => {
         ...(run.state === "running" && result.toolUses.length === 0 ? { activity: text("feed.activity.writing", locale) } : {}),
       }));
     }
+    // The request log keeps its own names: `cached` for the cache reads.
+    const { cacheRead, ...logged } = counts;
     await record($, {
       time: new Date(startedAt).toISOString(),
       session: sessionId,
@@ -3572,16 +4086,7 @@ export const register: Register = (on, given) => {
       ...(e.agentId ? { agent: agentRuns.get(e.agentId)?.type ?? "agent" } : {}),
       ...(effort === undefined ? {} : { effort: String(effort) }),
       ...(changes.length ? { plan: changes.join(", ") } : {}),
-      ...(hasUsage && usage
-        ? {
-            usage: {
-              ...(typeof usage.input_tokens === "number" ? { input: usage.input_tokens } : {}),
-              ...(typeof usage.output_tokens === "number" ? { output: usage.output_tokens } : {}),
-              ...(typeof usage.cache_read_input_tokens === "number" ? { cached: usage.cache_read_input_tokens } : {}),
-              ...(typeof usage.cache_creation_input_tokens === "number" ? { cacheWrite: usage.cache_creation_input_tokens } : {}),
-            },
-          }
-        : {}),
+      ...(hasUsage ? { usage: { ...logged, ...(cacheRead === undefined ? {} : { cached: cacheRead }) } } : {}),
     });
     if (!e.agentId && result.toolUses.length === 0) await setLive($, { activity: undefined });
     return result;
@@ -3597,34 +4102,53 @@ export const register: Register = (on, given) => {
     if (!value) { await $.ui.open({ id: "semente", title: "Semente", focus: true, closeOnEscape: true }); return {}; }
     const id = await addSemente($, value);
     sementeShelvedThisTurn.add(id);
-    return { text: (await getSettings($)).locale === "pt" ? `Ideia guardada: ${value}` : `Saved for later: ${value}` };
+    return { text: text("feature.semente.saved", (await getSettings($)).locale, { idea: value }) };
   });
   on("command.run", { command: "lapida" }, async ($, e) => {
     await enhanceLapida($, e.args);
-    return { text: await read($, lapidaNote) || ((await getSettings($)).locale === "pt" ? "Prompt lapidado no campo. Revise e envie quando quiser." : "Enhanced prompt is in the prompt box. Review it, then send when ready.") };
+    return { text: await read($, lapidaNote) || text("feature.lapida.filled", (await getSettings($)).locale) };
   });
   on("command.run", { command: "prisma-decisions" }, async ($, e) => {
     const decisions = await readPrismaDecisions($);
-    const pt = (await getSettings($)).locale === "pt";
-    if (e.args.trim() === "clear") { await $.store.delete(await prismaDecisionKey($)); return { text: pt ? `${decisions.length} decisões Prisma removidas.` : `Cleared ${decisions.length} Prisma decisions.` }; }
-    if (e.args.trim()) return { text: "Usage: /prisma-decisions [clear]" };
-    return { text: decisions.length ? `${pt ? "Decisões Prisma" : "Prisma decisions"}:\n${decisions.map((item, i) => `${i + 1}. ${item.question} → ${item.choice}${item.description ? ` (${item.description})` : ""}`).join("\n")}` : (pt ? "Nenhuma decisão de design salva para este projeto." : "No design choices remembered for this project.") };
+    const locale = (await getSettings($)).locale;
+    if (e.args.trim() === "clear") { await $.store.delete(await prismaDecisionKey($)); return { text: text("feature.prisma.decisions.cleared", locale, { count: decisions.length }) }; }
+    if (e.args.trim()) return { text: text("feature.prisma.decisions.usage", locale) };
+    return { text: decisions.length ? `${text("feature.prisma.decisions.title", locale)}:\n${decisions.map((item, i) => `${i + 1}. ${item.question} → ${item.choice}${item.description ? ` (${item.description})` : ""}`).join("\n")}` : text("feature.prisma.decisions.none", locale) };
   });
   on("command.run", { command: "sentinela" }, async ($) => { await toggleSentinela($); return {}; });
-  on("command.run", { command: "vigia" }, async ($) => { await refreshVigia($); await $.ui.open({ id: "vigia", title: "Vigia", focus: true, closeOnEscape: true }); return {}; });
+  on("command.run", { command: "comandante" }, async ($) => { await refreshComandante($); await openPane($, "comandante"); return {}; });
+  on("command.run", { command: "vigia" }, async ($, e) => {
+    const command = vigiaCommand(e.args);
+    if (command.verb === "send") return { text: await vigiaMessage($, command.target, command.text) };
+    if (command.verb === "usage") return { text: text("feature.vigia.usage", (await getSettings($)).locale) };
+    await refreshVigia($);
+    await $.ui.open({ id: "vigia", title: "Vigia", focus: true, closeOnEscape: true });
+    return {};
+  });
+  // Vigia's letters from other sessions of this project: shown at once, read by the model with its next
+  // tool result or prompt, never a turn of their own. Any other delivery passes on untouched.
+  on("session.receive", async ($, e, next) => {
+    const consumed = await vigiaReceive($, e);
+    return consumed ? { consumed } : next(e);
+  }).catch((_$, e, next) => next(e));
 
   on("tool.call", { tool: "mcp__jev__farol_assumption" as never }, async ($, e) => {
-    const pt = (await getSettings($)).locale === "pt";
-    if (!(await featureEnabled($, "farol"))) return { deny: pt ? "Farol está desligado na Configuração do Jev." : "Farol is disabled in Jev Configuration." };
+    const locale = (await getSettings($)).locale;
+    if (!(await featureEnabled($, "farol"))) return { deny: text("feature.farol.off", locale) };
     const input = e as unknown as { assumption?: unknown; context?: unknown };
     const assumption = typeof input.assumption === "string" ? input.assumption.trim() : "";
     if (!assumption) return { deny: "assumption is required" };
     const context = typeof input.context === "string" && input.context.trim() ? input.context.trim() : undefined;
+    // With the Comandante on, Jev judges it first: rejected is denied, questioned goes back unrecorded, approved is
+    // recorded already confirmed. Off, or unable to judge, it is recorded open, as always.
+    const ruling = await comandanteReview($, { source: "farol", text: assumption, ...(context ? { context } : {}) }, (e as { agentId?: string }).agentId);
+    if (ruling?.decision === "rejected") return { deny: ruling.message };
+    if (ruling?.decision === "questioned") return { result: ruling.message };
     let id = 0;
     await update($, farolSeq, (value) => (id = value + 1));
-    const item: FarolAssumption = { id, text: assumption, ...(context ? { context } : {}), verdict: "open", sent: false };
+    const item: FarolAssumption = { id, text: assumption, ...(context ? { context } : {}), verdict: ruling ? "right" : "open", sent: Boolean(ruling), ...(ruling ? { comandante: { decision: ruling.decision, reason: ruling.reason } } : {}) };
     await update($, farolItems, (list) => [...list, item]);
-    return { result: pt ? `Farol registrou a suposição #${id}. Continue trabalhando.` : `Farol recorded assumption #${id}. Continue working.` };
+    return { result: ruling ? `${text("feature.farol.recorded", locale, { id })} ${ruling.message}` : text("feature.farol.recorded", locale, { id }) };
   }).catch(() => ({ deny: "Farol could not record that assumption." }));
 
   // The managed-batch tools are registered at session start; their names are not in the generated tool types yet.
@@ -3642,15 +4166,19 @@ export const register: Register = (on, given) => {
   }).catch((_$, e, next) => next(e));
 
   on("tool.call", { tool: "mcp__jev__semente_shelve" as never }, async ($, e) => {
-    const pt = (await getSettings($)).locale === "pt";
-    if (!(await featureEnabled($, "semente"))) return { deny: pt ? "Semente está desligada na Configuração do Jev." : "Semente is disabled in Jev Configuration." };
+    const locale = (await getSettings($)).locale;
+    if (!(await featureEnabled($, "semente"))) return { deny: text("feature.semente.off", locale) };
     const input = e as unknown as { text?: unknown };
     const value = typeof input.text === "string" ? input.text.trim() : "";
     if (!value) return { deny: "Semente needs a non-empty idea." };
+    // With the Comandante on, Jev judges it first: rejected is denied, questioned goes back unsaved, approved is shelved.
+    const ruling = await comandanteReview($, { source: "semente", text: value }, (e as { agentId?: string }).agentId);
+    if (ruling?.decision === "rejected") return { deny: ruling.message };
+    if (ruling?.decision === "questioned") return { result: ruling.message };
     const id = await addSemente($, value, "claude");
     sementeShelvedThisTurn.add(id);
-    $.ui.toast(pt ? `Claude guardou uma ideia: ${value}` : `Claude saved an idea: ${value}`);
-    return { result: pt ? `Ideia guardada para depois: ${value}` : `Saved for later: ${value}` };
+    $.ui.toast(text("feature.semente.claudeSaved", locale, { idea: value }));
+    return { result: ruling ? `${text("feature.semente.shelved", locale, { idea: value })} ${ruling.message}` : text("feature.semente.shelved", locale, { idea: value }) };
   }).catch(() => ({ deny: "Semente could not save that idea." }));
 
   on("tool.call", { tool: "AskUserQuestion" }, async ($, e, next) => {
@@ -3669,10 +4197,9 @@ export const register: Register = (on, given) => {
       })),
     })));
     const token = crypto.randomUUID();
-    const pt = (await getSettings($)).locale === "pt";
     const gallery = `${dir}/index.html`;
     const answerFile = `${dir}/answer.json`;
-    await $.fs.write(gallery, prismaGallery(questions, token, pt));
+    await $.fs.write(gallery, prismaGallery(questions, token, (await getSettings($)).locale));
     await $.fs.write(`${dir}/serve.py`, PRISMA_SERVE_PY);
     await update($, prismaPending, () => ({ id, questions, picks: questions.map(() => []), others: questions.map(() => null), mix: questions.map(() => false), gallery, answerFile }));
     if (preferences.designSurface !== "browser") await $.ui.open({ id: "prisma", title: "Prisma", focus: true, closeOnEscape: true, holdToasts: true });
@@ -3749,6 +4276,10 @@ export const register: Register = (on, given) => {
       setup: "ai",
       ai: "ai",
       ia: "ai",
+      quality: "quality",
+      qualidade: "quality",
+      comandante: "comandante",
+      commander: "comandante",
     };
     if (verb === "agents" && arg === "clear") {
       const removed = await removeRuns($, () => true);
@@ -3770,7 +4301,8 @@ export const register: Register = (on, given) => {
       return { text: text(arg === "on" ? "ui.command.routingOn" : "ui.command.routingOff", locale) };
     }
     if (verb === "feature") {
-      const feature = featureList(locale).find((one) => one.id === arg);
+      // the line arrives lowercased: "codequality" names codeQuality
+      const feature = featureList(locale).find((one) => one.id.toLowerCase() === arg);
       if (!feature || (value !== "on" && value !== "off")) {
         return { text: text("ui.command.featureUsage", locale, { features: featureList(locale).map((one) => one.id).join("|") }) };
       }
@@ -3828,23 +4360,24 @@ export const register: Register = (on, given) => {
     const ui = $.ui.resolve(e);
     const { Box, Text, Button } = ui;
     const Input = "Input" in ui ? ui.Input : undefined;
-    const pt = (await getSettings($)).locale === "pt";
-    if (!(await featureEnabled($, "farol"))) return <Text dimColor>{pt ? "Farol está desligado na Configuração do Jev." : "Farol is disabled in Jev Configuration."}</Text>;
+    const locale = (await getSettings($)).locale;
+    if (!(await featureEnabled($, "farol"))) return <Text dimColor>{text("feature.farol.off", locale)}</Text>;
     const list = await read($, farolItems);
     const rules = await read($, farolRules);
     const newest = [...list].reverse().find((item) => item.verdict === "open");
-    if (!list.length && !rules.length) return <Text dimColor>{pt ? "Nenhuma suposição registrada nesta sessão." : "No assumptions logged in this session."}</Text>;
+    if (!list.length && !rules.length) return <Text dimColor>{text("feature.farol.none", locale)}</Text>;
     return <Box flexDirection="column" gap={1}>
-      <Text bold>{list.length} {pt ? "suposições" : "assumptions"} · {rules.length} {pt ? "regras do projeto" : "project rules"}</Text>
-      {rules.map((rule, i) => <Box key={`rule-${i}`}><Text>• {rule.correction} <Text dimColor>({pt ? "não" : "not"}: {rule.assumption})</Text></Text><Button key={`delete-rule-${i}`} label={pt ? "Excluir" : "Delete"} dimColor onPress={() => void saveFarolRules($, (all) => all.filter((item) => item !== rule))} /></Box>)}
-      <Text dimColor>{pt ? "Marque a suposição aberta mais recente como certa ou errada. Uma correção vira regra do projeto." : "Mark the newest open assumption right or wrong. A correction becomes a project rule."}</Text>
+      <Text bold>{text("feature.farol.summary", locale, { assumptions: list.length, rules: rules.length })}</Text>
+      {rules.map((rule, i) => <Box key={`rule-${i}`}><Text>• {rule.correction} <Text dimColor>({text("feature.farol.rule.not", locale)}: {rule.assumption})</Text></Text><Button key={`delete-rule-${i}`} label={text("feature.farol.delete", locale)} dimColor onPress={() => void saveFarolRules($, (all) => all.filter((item) => item !== rule))} /></Box>)}
+      <Text dimColor>{text("feature.farol.hint", locale)}</Text>
       {[...list].reverse().map((item) => <Box key={`assumption-${item.id}`} flexDirection="column">
         <Text bold>{item.verdict === "right" ? GLYPH.ok : item.verdict === "wrong" ? "✗" : GLYPH.ask} #{item.id} {item.text}</Text>
         {item.context && <Text dimColor>{item.context}</Text>}{item.note && <Text>→ {item.note}</Text>}
-        <Box flexDirection="row" gap={1}><Button key={`right-${item.id}`} label={pt ? `${GLYPH.ok} Certa` : `${GLYPH.ok} Right`} hotkey={item === newest ? "y" : undefined} onPress={() => void farolJudge($, item.id, "right")} /><Button key={`wrong-${item.id}`} label={pt ? "✗ Errada" : "✗ Wrong"} hotkey={item === newest ? "n" : undefined} onPress={() => void farolJudge($, item.id, "wrong", item.note)} />{item.verdict !== "open" && <Text dimColor>{item.sent ? (pt ? "enviada ao Claude" : "sent to Claude") : (pt ? "pendente" : "pending")}</Text>}</Box>
-        {Input && item.verdict !== "right" && <Input key={`fix-${item.id}`} placeholder={pt ? "O que deveria ser?" : "What should it be instead?"} value={item.note ?? ""} onSubmit={(value) => { if (value.trim()) void farolJudge($, item.id, "wrong", value.trim()); }} />}
+        {item.comandante && item.comandante.decision !== "approved" && <Text dimColor wrap="wrap">{farolRuling(item.comandante, locale)}</Text>}
+        <Box flexDirection="row" gap={1}><Button key={`right-${item.id}`} label={`${GLYPH.ok} ${text("feature.farol.right", locale)}`} hotkey={item === newest ? "y" : undefined} onPress={() => void farolJudge($, item.id, "right")} /><Button key={`wrong-${item.id}`} label={`✗ ${text("feature.farol.wrong", locale)}`} hotkey={item === newest ? "n" : undefined} onPress={() => void farolJudge($, item.id, "wrong", item.note)} />{item.verdict !== "open" && <Text dimColor>{text(!item.sent ? "feature.farol.pending" : item.comandante?.decision === "approved" && item.verdict === "right" ? "feature.farol.byComandante" : "feature.farol.sent", locale)}</Text>}</Box>
+        {Input && item.verdict !== "right" && <Input key={`fix-${item.id}`} placeholder={text("feature.farol.fix", locale)} value={item.note ?? ""} onSubmit={(value) => { if (value.trim()) void farolJudge($, item.id, "wrong", value.trim()); }} />}
       </Box>)}
-      {list.some((item) => item.sent) && <Button key="clear-reviewed" label={pt ? "Limpar revisadas" : "Clear reviewed"} dimColor onPress={() => void update($, farolItems, (all) => all.filter((item) => item.verdict === "open" || !item.sent))} />}
+      {list.some((item) => item.sent) && <Button key="clear-reviewed" label={text("feature.farol.clear", locale)} dimColor onPress={() => void update($, farolItems, (all) => all.filter((item) => item.verdict === "open" || !item.sent))} />}
     </Box>;
   });
 
@@ -3852,29 +4385,30 @@ export const register: Register = (on, given) => {
   // would get, and the choice to send it or reject it
   on("ui.render", { component: "Pane", requestId: "clareza" }, async ($, e) => {
     const { Box, Text, Button } = $.ui.resolve(e);
-    const pt = (await getSettings($)).locale === "pt";
-    if (!(await featureEnabled($, "clareza"))) return <Text dimColor>{pt ? "Clareza está desligada na Configuração do Jev." : "Clareza is disabled in Jev Configuration."}</Text>;
+    const locale = (await getSettings($)).locale;
+    if (!(await featureEnabled($, "clareza"))) return <Text dimColor>{text("feature.clareza.off", locale)}</Text>;
     const plan = await read($, clarezaProposal);
     const grade = await read($, clarezaGrade);
     const status = await read($, clarezaStatus);
     const offered = grade?.offered ?? [];
-    const terms = offered.length ? <Box flexDirection="row" flexWrap="wrap" columnGap={1}><Text dimColor>{pt ? "Eu sei:" : "I know this:"}</Text>{offered.map((term) => <Button key={`clareza-pane-${term}`} label={term} dimColor onPress={() => void knowClarezaTerm($, term)} />)}</Box> : null;
-    if (!plan) return <Box flexDirection="column" gap={1}><Text dimColor>{pt ? "Nenhum plano da Clareza agora." : "No plan from Clareza right now."}</Text>{status && <Text dimColor>{status}</Text>}{terms}</Box>;
-    const problems = plan.problems.length ? plan.problems : [pt ? "não ficou clara o bastante" : "it was not clear enough"];
+    const terms = offered.length ? <Box flexDirection="row" flexWrap="wrap" columnGap={1}><Text dimColor>{text("feature.clareza.know", locale)}</Text>{offered.map((term) => <Button key={`clareza-pane-${term}`} label={term} dimColor onPress={() => void knowClarezaTerm($, term)} />)}</Box> : null;
+    if (!plan) return <Box flexDirection="column" gap={1}><Text dimColor>{text("feature.clareza.noPlan", locale)}</Text>{status && <Text dimColor>{status}</Text>}{terms}</Box>;
+    const problems = plan.problems.length ? plan.problems : [text("feature.clareza.unclear", locale)];
     return <Box flexDirection="column" gap={1}>
-      <Text bold>{pt ? "Plano da Clareza para a última resposta" : "Clareza's plan for the last answer"}</Text>
+      <Text bold>{text("feature.clareza.plan.title", locale)}</Text>
       <Box flexDirection="column">
-        <Text dimColor>{pt ? "O que pode confundir:" : "What may confuse:"}</Text>
+        <Text dimColor>{text("feature.clareza.plan.problems", locale)}</Text>
         {problems.map((problem, i) => <Text key={`clareza-problem-${i}`}>• {problem}</Text>)}
       </Box>
       <Box flexDirection="column">
-        <Text dimColor>{pt ? "Se você enviar, o Claude recebe este pedido:" : "If you send it, Claude gets this request:"}</Text>
+        <Text dimColor>{text("feature.clareza.plan.request", locale)}</Text>
         <Text>{plan.prompt}</Text>
       </Box>
+      {plan.comandante && <Text dimColor wrap="wrap">{comandanteMessage("clareza", plan.comandante, locale)}</Text>}
       {terms}
       <Box flexDirection="row" gap={1}>
-        <Button key="clareza-send" label={pt ? "Enviar (s)" : "Send (s)"} hotkey="s" variant="primary" onPress={() => void sendClareza($)} />
-        <Button key="clareza-reject" label={pt ? "Rejeitar (r)" : "Reject (r)"} hotkey="r" role="dismiss" onPress={() => void rejectClareza($)} />
+        <Button key="clareza-send" label={text("feature.clareza.send", locale)} hotkey="s" variant="primary" onPress={() => void sendClareza($)} />
+        <Button key="clareza-reject" label={text("feature.clareza.reject", locale)} hotkey="r" role="dismiss" onPress={() => void rejectClareza($)} />
       </Box>
     </Box>;
   });
@@ -3883,23 +4417,23 @@ export const register: Register = (on, given) => {
     const ui = $.ui.resolve(e);
     const { Box, Text, Button } = ui;
     const Input = "Input" in ui ? ui.Input : undefined;
-    const pt = (await getSettings($)).locale === "pt";
-    if (!(await featureEnabled($, "semente"))) return <Text dimColor>{pt ? "Semente está desligada na Configuração do Jev." : "Semente is disabled in Jev Configuration."}</Text>;
+    const locale = (await getSettings($)).locale;
+    if (!(await featureEnabled($, "semente"))) return <Text dimColor>{text("feature.semente.off", locale)}</Text>;
     const list = await read($, sementeIdeas);
     const nudged = await read($, sementeNudges);
     // the ideas Semente's mascot is saying fit the recent work, first and whole, each to send or dismiss
     const matching = list.filter((idea) => nudged.includes(idea.id));
     return <Box flexDirection="column">
       {matching.length > 0 && <Box key="semente-fit" flexDirection="column" marginBottom={1}>
-        <Text bold>{pt ? "Combinam com o trabalho recente" : "Fit the recent work"}</Text>
+        <Text bold>{text("feature.semente.fits.title", locale)}</Text>
         {matching.map((idea) => <Box key={`fit-${idea.id}`} flexDirection="column">
           <Text>{idea.text}</Text>
-          <Box flexDirection="row" gap={1}><Button key={`fit-send-${idea.id}`} label={pt ? "Enviar" : "Send"} variant="primary" onPress={() => void sendSemente($, [idea])} /><Button key={`fit-dismiss-${idea.id}`} label={pt ? "Dispensar" : "Dismiss"} role="dismiss" onPress={() => void dismissSemente($, [idea])} /></Box>
+          <Box flexDirection="row" gap={1}><Button key={`fit-send-${idea.id}`} label={text("feature.semente.send", locale)} variant="primary" onPress={() => void sendSemente($, [idea])} /><Button key={`fit-dismiss-${idea.id}`} label={text("feature.semente.dismiss", locale)} role="dismiss" onPress={() => void dismissSemente($, [idea])} /></Box>
         </Box>)}
       </Box>}
-      {Input && <Input key="new-idea" label="+ " placeholder={pt ? "Nova ideia…" : "New idea…"} submitLabel={pt ? "Salvar" : "Save"} onSubmit={(value) => { if (value.trim()) void addSemente($, value); }} />}
-      {!list.length && <Text dimColor>{pt ? "Prateleira vazia. Use /semente &lt;ideia&gt; para adicionar." : "Shelf empty. Use /semente &lt;idea&gt; to add one."}</Text>}
-      {list.map((idea) => <Box key={idea.id} flexDirection="row" gap={1}><Button key={`send-${idea.id}`} label={pt ? "Enviar" : "Send"} onPress={() => void sendSemente($, [idea])} /><Button key={`delete-${idea.id}`} label="×" dimColor onPress={() => void saveSemente($, (all) => all.filter((item) => item.id !== idea.id))} /><Text dimColor>{idea.source === "claude" ? "Claude" : pt ? "você" : "you"}:</Text><Text>{idea.text}</Text></Box>)}
+      {Input && <Input key="new-idea" label="+ " placeholder={text("feature.semente.new", locale)} submitLabel={text("feature.semente.save", locale)} onSubmit={(value) => { if (value.trim()) void addSemente($, value); }} />}
+      {!list.length && <Text dimColor>{text("feature.semente.empty", locale)}</Text>}
+      {list.map((idea) => <Box key={idea.id} flexDirection="row" gap={1}><Button key={`send-${idea.id}`} label={text("feature.semente.send", locale)} onPress={() => void sendSemente($, [idea])} /><Button key={`delete-${idea.id}`} label="×" dimColor onPress={() => void saveSemente($, (all) => all.filter((item) => item.id !== idea.id))} /><Text dimColor>{idea.source === "claude" ? "Claude" : text("feature.semente.you", locale)}:</Text><Text>{idea.text}</Text></Box>)}
     </Box>;
   });
 
@@ -3908,10 +4442,10 @@ export const register: Register = (on, given) => {
     const { Box, Text, Button } = ui;
     const Svg = "Svg" in ui ? ui.Svg : undefined;
     const Input = "Input" in ui ? ui.Input : undefined;
-    const pt = (await getSettings($)).locale === "pt";
-    if (!(await featureEnabled($, "prisma"))) return <Text dimColor>{pt ? "Prisma está desligado na Configuração do Jev." : "Prisma is disabled in Jev Configuration."}</Text>;
+    const locale = (await getSettings($)).locale;
+    if (!(await featureEnabled($, "prisma"))) return <Text dimColor>{text("feature.prisma.off", locale)}</Text>;
     const picker = await read($, prismaPending);
-    if (!picker) return <Text dimColor>{pt ? "Nenhum seletor de design está aberto." : "No design picker is open."}</Text>;
+    if (!picker) return <Text dimColor>{text("feature.prisma.noPicker", locale)}</Text>;
     const finish = (value: PrismaPicker) => void $.fs.write(value.answerFile, JSON.stringify(prismaAnswers(value)));
     const choose = async (qi: number, label: string) => {
       const current = await read($, prismaPending) ?? picker;
@@ -3929,23 +4463,23 @@ export const register: Register = (on, given) => {
     const prefs = await readFeaturePreferences($);
     return <Box flexDirection="column" gap={1}>
       {picker.questions.map((question, qi) => <Box key={`question-${qi}`} flexDirection="column">
-        <Text bold>{question.header}: {question.question}{question.multiSelect ? (pt ? " (escolha várias)" : " (pick any)") : prismaMixing(picker, qi) ? (pt ? " (misture duas)" : " (mix two)") : ""}</Text>
+        <Text bold>{question.header}: {question.question}{question.multiSelect ? ` ${text("feature.prisma.pickAny", locale)}` : prismaMixing(picker, qi) ? ` ${text("feature.prisma.mixTwo", locale)}` : ""}</Text>
         <Box flexDirection="row" flexWrap="wrap" gap={1}>{question.options.map((option, oi) => {
           const selected = picker.picks[qi]?.includes(option.label) ?? false;
           const hotkey = qi + oi < 9 ? String(qi + oi + 1) : undefined;
           return <Box key={`option-${qi}-${oi}`} flexDirection="column" width={e.surface === "terminal" ? 30 : undefined} borderStyle="round" borderColor={selected ? "green" : undefined} borderDimColor={!selected} paddingX={1}>
             {Svg && option.svg && <Svg source={option.svg} alt={option.label} width={300} />}
-            {!Svg && option.svg && <Text dimColor>{prefs.designSurface === "pane" ? (pt ? "A prévia SVG está disponível no navegador." : "SVG preview is available in browser mode.") : (pt ? "Abra o seletor no navegador para ver a prévia." : "Open the browser picker to see the preview.")}</Text>}
+            {!Svg && option.svg && <Text dimColor>{text(prefs.designSurface === "pane" ? "feature.prisma.preview.browserMode" : "feature.prisma.preview.openBrowser", locale)}</Text>}
             <Button key={`pick-${qi}-${oi}`} hotkey={hotkey} label={`${selected ? `${GLYPH.ok} ` : ""}${option.label}`} onPress={() => void choose(qi, option.label)} />
             {option.description && <Text dimColor>{option.description}</Text>}
           </Box>;
         })}</Box>
-        {!question.multiSelect && question.options.length > 1 && <Button key={`mix-${qi}`} hotkey={picker.questions.length === 1 ? "m" : undefined} label={prismaMixing(picker, qi) ? (pt ? "Misturar duas · ligado" : "Mix two · on") : (pt ? "Misture duas opções" : "Mix two of these")} onPress={() => void update($, prismaPending, (current) => current ? prismaToggleMix(current, qi) : current)} />}
-        {Input && <Input key={`custom-${qi}`} label={pt ? "Ou descreva sua opção" : "Or describe your own"} placeholder={pt ? "digite e pressione Enter" : "type and press Enter"} value={picker.others[qi] ?? ""} onSubmit={(value) => void chooseOther(qi, value)} />}
+        {!question.multiSelect && question.options.length > 1 && <Button key={`mix-${qi}`} hotkey={picker.questions.length === 1 ? "m" : undefined} label={text(prismaMixing(picker, qi) ? "feature.prisma.mix.on" : "feature.prisma.mix.off", locale)} onPress={() => void update($, prismaPending, (current) => current ? prismaToggleMix(current, qi) : current)} />}
+        {Input && <Input key={`custom-${qi}`} label={text("feature.prisma.other.label", locale)} placeholder={text("feature.prisma.other.placeholder", locale)} value={picker.others[qi] ?? ""} onSubmit={(value) => void chooseOther(qi, value)} />}
       </Box>)}
       <Box flexDirection="row" gap={1}>
-        {(picker.questions.length > 1 || picker.questions.some((question) => question.multiSelect) || picker.mix.some(Boolean)) && prismaComplete(picker) && <Button key="submit" hotkey="s" variant="primary" label={pt ? "Enviar" : "Submit"} onPress={() => finish(picker)} />}
-        {(prefs.designSurface !== "pane" || !Svg) && <Button key="browser" label={pt ? "Abrir no navegador" : "Open in browser"} dimColor onPress={async () => { const port = await $.fs.read(picker.gallery.replace(/index\.html$/, "port")); const url = `http://127.0.0.1:${String(port).trim()}/index.html`; const windows = await $.env.get("OS") === "Windows_NT"; const command = windows ? ["python", "-c", "import webbrowser,sys;webbrowser.open(sys.argv[1])", url] : ["python3", "-c", "import webbrowser,sys;webbrowser.open(sys.argv[1])", url]; void $.process.run(command).catch(() => {}); }} />}
+        {(picker.questions.length > 1 || picker.questions.some((question) => question.multiSelect) || picker.mix.some(Boolean)) && prismaComplete(picker) && <Button key="submit" hotkey="s" variant="primary" label={text("feature.prisma.submit", locale)} onPress={() => finish(picker)} />}
+        {(prefs.designSurface !== "pane" || !Svg) && <Button key="browser" label={text("feature.prisma.openBrowser", locale)} dimColor onPress={async () => { const port = await $.fs.read(picker.gallery.replace(/index\.html$/, "port")); const url = `http://127.0.0.1:${String(port).trim()}/index.html`; const windows = await $.env.get("OS") === "Windows_NT"; const command = windows ? ["python", "-c", "import webbrowser,sys;webbrowser.open(sys.argv[1])", url] : ["python3", "-c", "import webbrowser,sys;webbrowser.open(sys.argv[1])", url]; void $.process.run(command).catch(() => {}); }} />}
       </Box>
     </Box>;
   });
@@ -3954,41 +4488,43 @@ export const register: Register = (on, given) => {
     const ui = $.ui.resolve(e);
     const { Box, Text, Button } = ui;
     const Input = "Input" in ui ? ui.Input : undefined;
-    if (!(await featureEnabled($, "sentinela"))) return <Text dimColor>Sentinela is disabled in Jev Configuration.</Text>;
+    const locale = (await getSettings($)).locale;
+    if (!(await featureEnabled($, "sentinela"))) return <Text dimColor>{text("feature.sentinela.off", locale)}</Text>;
     const list = await read($, sentinelaSessions);
     const now = await $.clock.now();
     const target = await read($, sentinelaReplyTo);
     const replying = list.find((row) => row.id === target);
     const trouble = await read($, sentinelaProblem);
-    const pt = (await getSettings($)).locale === "pt";
     return <Box flexDirection="column">
-      <Text dimColor>{list.length} {pt ? "sessões em todos os projetos" : "sessions across projects"} · {pt ? "atualiza automaticamente" : "auto-refreshes"}</Text>
-      {trouble && <Text color="error">{trouble}</Text>}{!list.length && <Text dimColor>{pt ? "Nenhuma sessão encontrada." : "No sessions found."}</Text>}
+      <Text dimColor>{text("feature.sentinela.total", locale, { count: list.length })} · {text("feature.sentinela.autoRefresh", locale)}</Text>
+      {trouble && <Text color="error">{trouble}</Text>}{!list.length && <Text dimColor>{text("feature.sentinela.none", locale)}</Text>}
       {list.map((row) => {
         const isMe = row.id === sentinelaMe;
-        const state = row.waitingFor || (row.status === "waiting" ? (pt ? "precisa de você" : "needs you") : row.status === "working" ? (pt ? "trabalhando" : "working") : (pt ? "concluída" : "done"));
-        return <Box key={row.id} flexDirection="row" gap={1}><Box flexGrow={1} flexShrink={1}><Text wrap="truncate-end"><Text color={row.status === "waiting" ? "error" : row.status === "working" ? "warning" : "success"}>{row.status === "waiting" ? `${GLYPH.ask} ` : row.status === "working" ? `${GLYPH.on} ` : `${GLYPH.ok} `}</Text><Text bold>{sentinelaLabel(row)}</Text>{isMe && <Text dimColor>{pt ? " (esta)" : " (this)"}</Text>}<Text> · {state}</Text><Text dimColor> · {sentinelaAge(now - row.since)} · {row.project}</Text></Text></Box>
-          {Input && !isMe && row.status === "waiting" && <Button key={`reply-${row.id}`} label={pt ? "responder" : "reply"} plain onPress={async () => { await update($, sentinelaReplyTo, (value) => value === row.id ? "" : row.id); await resizeSentinela($); await $.ui.focus({ requestId: "sentinela", key: "reply-text" }).catch(() => {}); }} />}
-          {!isMe && <Button key={`jump-${row.id}`} label="jump" plain dimColor onPress={(surface) => void jumpSentinela($, row, surface.surface)} />}
+        const state = row.waitingFor || text(row.status === "waiting" ? "feature.sentinela.state.waiting" : row.status === "working" ? "feature.sentinela.state.working" : "feature.sentinela.state.done", locale);
+        return <Box key={row.id} flexDirection="row" gap={1}><Box flexGrow={1} flexShrink={1}><Text wrap="truncate-end"><Text color={row.status === "waiting" ? "error" : row.status === "working" ? "warning" : "success"}>{row.status === "waiting" ? `${GLYPH.ask} ` : row.status === "working" ? `${GLYPH.on} ` : `${GLYPH.ok} `}</Text><Text bold>{sentinelaLabel(row)}</Text>{isMe && <Text dimColor>{` ${text("feature.sentinela.this", locale)}`}</Text>}<Text> · {state}</Text><Text dimColor> · {sentinelaAge(now - row.since)} · {row.project}</Text></Text></Box>
+          {Input && !isMe && row.status === "waiting" && <Button key={`reply-${row.id}`} label={text("feature.sentinela.reply.label", locale)} plain onPress={async () => { await update($, sentinelaReplyTo, (value) => value === row.id ? "" : row.id); await resizeSentinela($); await $.ui.focus({ requestId: "sentinela", key: "reply-text" }).catch(() => {}); }} />}
+          {!isMe && <Button key={`jump-${row.id}`} label={text("feature.sentinela.jump.label", locale)} plain dimColor onPress={(surface) => void jumpSentinela($, row, surface.surface)} />}
         </Box>;
       })}
-      {Input && replying && <Input key="reply-text" label={`→ ${sentinelaLabel(replying)}`} placeholder={pt ? "uma linha; Enter envia; vazio cancela" : "one line; Enter sends; empty cancels"} submitLabel={pt ? "enviar" : "send"} autoFocus onSubmit={(value) => void sendSentinelaReply($, value)} />}
+      {Input && replying && <Input key="reply-text" label={`→ ${sentinelaLabel(replying)}`} placeholder={text("feature.sentinela.reply.placeholder", locale)} submitLabel={text("feature.sentinela.reply.send", locale)} autoFocus onSubmit={(value) => void sendSentinelaReply($, value)} />}
     </Box>;
   });
 
   on("ui.render", { component: "Pane", requestId: "vigia" }, async ($, e) => {
     const { Box, Text } = $.ui.resolve(e);
-    const pt = (await getSettings($)).locale === "pt";
-    if (!(await featureEnabled($, "vigia"))) return <Text dimColor>{pt ? "Vigia está desligado na Configuração do Jev." : "Vigia is disabled in Jev Configuration."}</Text>;
-    await refreshVigia($);
+    const locale = (await getSettings($)).locale;
+    if (!(await featureEnabled($, "vigia"))) return <Text dimColor>{text("feature.vigia.off", locale)}</Text>;
+    // a draw only reads: the list is refreshed before the pane opens and on Vigia's 15 s beat, never here
     const list = await read($, vigiaSessions);
     const now = await $.clock.now();
     const conflicts = await vigiaClashes($, now);
     const own = await ensureVigia($);
+    const mail = await read($, vigiaMail);
     const taskBar = (tasks: VigiaTask[]) => { const done = tasks.filter((task) => task.status === "completed").length; const cells = Math.min(10, tasks.length); const filled = Math.round((done / tasks.length) * cells); return `${"▰".repeat(filled)}${"▱".repeat(cells - filled)} ${done}/${tasks.length}`; };
     return <Box flexDirection="column" gap={1}>
-      {!list.length && <Text dimColor>{pt ? "Nenhuma sessão do projeto acompanhada ainda." : "No project sessions tracked yet."}</Text>}
-      {conflicts.length > 0 && <Box flexDirection="column" borderStyle="round" borderColor="red" paddingX={1}><Text bold color="red">⚠ {pt ? "Conflitos de arquivo" : "File clashes"} · {pt ? `últimos ${(await readFeaturePreferences($)).clashMinutes} min` : `last ${(await readFeaturePreferences($)).clashMinutes}m`}</Text>{conflicts.slice(0, 6).map((conflict) => <Text key={`${conflict.other.id}-${conflict.file}`} wrap="truncate">{conflict.file} · {vigiaName(conflict.other)} · {vigiaAgo(now - conflict.at)}</Text>)}</Box>}
+      {!list.length && <Text dimColor>{text("feature.vigia.none", locale)}</Text>}
+      {conflicts.length > 0 && <Box flexDirection="column" borderStyle="round" borderColor="red" paddingX={1}><Text bold color="red">⚠ {text("feature.vigia.clashes.title", locale)} · {text("feature.vigia.clashes.window", locale, { minutes: (await readFeaturePreferences($)).clashMinutes })}</Text>{conflicts.slice(0, 6).map((conflict) => <Text key={`${conflict.other.id}-${conflict.file}`} wrap="truncate">{conflict.file} · {vigiaName(conflict.other)} · {formatAge(now - conflict.at, locale)}</Text>)}</Box>}
+      {mail.length > 0 && <Box flexDirection="column" borderStyle="round" borderColor={PAINT.brand} paddingX={1}><Text bold color={PAINT.brand}>✉ {text("feature.vigia.messages", locale)}</Text>{mail.slice(0, 6).map((item) => <Text key={item.id} wrap="truncate"><Text color={item.kind === "clash" ? "error" : item.way === "in" ? PAINT.brand : PAINT.you}>{item.kind === "clash" ? "⚠" : item.way === "in" ? "←" : "→"} {item.peer}</Text>: {item.kind === "clash" ? item.file : item.text}<Text dimColor> · {formatAge(now - item.at, locale)}</Text>{item.isDelivered === false && <Text color="error"> · {text("feature.vigia.msg.undelivered", locale)}</Text>}{item.comandante?.decision === "rejected" && <Text color="error"> · {text("feature.vigia.msg.held", locale)}</Text>}{item.comandante?.decision === "questioned" && <Text dimColor> · {text("feature.vigia.msg.questioned", locale)}</Text>}</Text>)}</Box>}
       {list.slice(0, 8).map((record) => {
         const isMe = record.id === own.id;
         const current = vigiaAlive(record, now);
@@ -3996,10 +4532,10 @@ export const register: Register = (on, given) => {
         const doing = vigiaDoing(record);
         const next = vigiaNext(record);
         return <Box key={record.id} flexDirection="column" borderStyle="round" borderColor={isMe ? PAINT.you : current ? PAINT.warn : PAINT.rule} borderDimColor={!current} paddingX={1}>
-          <Box justifyContent="space-between"><Text bold wrap="truncate">{isMe ? "★ " : ""}{vigiaName(record)}</Text><Text color={current ? record.isBusy ? "warning" : "success" : "gray"}>{current ? record.isBusy ? `${GLYPH.on} ${pt ? "trabalhando" : "working"}` : `◐ ${pt ? "aguardando" : "waiting"}` : `${GLYPH.off} ${pt ? "encerrada" : "ended"} ${vigiaAgo(now - record.beatAt)}`}</Text></Box>
-          <Text dimColor>{isMe ? (pt ? "esta sessão" : "this session") : record.id.slice(0, 8)} · {record.turns ?? 0} {pt ? "turnos" : "turns"} · {vigiaAgo(now - record.startedAt)}</Text>
-          {record.done && <Text wrap="wrap"><Text color="success">{GLYPH.ok} {pt ? "Feito" : "Done"}  </Text>{record.done}</Text>}{doing && <Text wrap="wrap"><Text color="warning">{GLYPH.run} {pt ? "Fazendo" : "Doing"} </Text>{doing}</Text>}{next && <Text wrap="wrap"><Text color={PAINT.brand}>{GLYPH.route} {pt ? "Próximo" : "Next"}  </Text>{next}</Text>}
-          {record.tasks.length > 0 && <Text color="magenta">☰ {pt ? "Tarefas" : "Tasks"} {taskBar(record.tasks)}</Text>}{!!record.files?.length && <Text dimColor wrap="truncate">✎ {pt ? "Arquivos" : "Files"} {record.files.slice(0, 5).join(", ")}</Text>}{!!overlap.length && <Text color="error" wrap="truncate">⚠ {pt ? "Também alterados" : "Also edited"}: {overlap.join(", ")}</Text>}
+          <Box justifyContent="space-between"><Text bold wrap="truncate">{isMe ? "★ " : ""}{vigiaName(record)}</Text><Text color={current ? record.isBusy ? "warning" : "success" : "gray"}>{current ? record.isBusy ? `${GLYPH.on} ${text("feature.vigia.working", locale)}` : `◐ ${text("feature.vigia.waiting", locale)}` : `${GLYPH.off} ${text("feature.vigia.ended", locale)} ${formatAge(now - record.beatAt, locale)}`}</Text></Box>
+          <Text dimColor>{isMe ? text("feature.vigia.thisSession", locale) : record.id.slice(0, 8)} · {text("feature.vigia.turns", locale, { count: record.turns ?? 0 })} · {formatAge(now - record.startedAt, locale)}</Text>
+          {record.done && <Text wrap="wrap"><Text color="success">{GLYPH.ok} {text("feature.vigia.done", locale)}  </Text>{record.done}</Text>}{doing && <Text wrap="wrap"><Text color="warning">{GLYPH.run} {text("feature.vigia.doing", locale)} </Text>{doing}</Text>}{next && <Text wrap="wrap"><Text color={PAINT.brand}>{GLYPH.route} {text("feature.vigia.next", locale)}  </Text>{next}</Text>}
+          {record.tasks.length > 0 && <Text color="magenta">☰ {text("feature.vigia.tasks", locale)} {taskBar(record.tasks)}</Text>}{!!record.files?.length && <Text dimColor wrap="truncate">✎ {text("feature.vigia.files", locale)} {record.files.slice(0, 5).join(", ")}</Text>}{!!overlap.length && <Text color="error" wrap="truncate">⚠ {text("feature.vigia.alsoEdited", locale)}: {overlap.join(", ")}</Text>}
           {!current && <Text dimColor>↺ claude --resume {record.id}</Text>}
         </Box>;
       })}
@@ -4105,6 +4641,15 @@ export const register: Register = (on, given) => {
   // a permission prompt held past its delay: the bar turns to a question, and the pet alerts
   on("tool.check", async ($, e, next) => {
     const verdict = await next(e);
+    // Code Quality's own agent asks the person nothing: the cycle's own calls run, and everything else is refused
+    if (e.agentId && await inQualityLoop($, e.agentId)) {
+      const root = await $.session.root();
+      const kept = qualityVerdict(e.tool, e.input, verdict, root);
+      // With the Comandante on, a call that would ask the person and is not one of the cycle's own is judged and logged.
+      // Its ruling may explain the refusal, never lift it: text in the reviewed code could sway Jev as well.
+      const ruling = qualityAsks(e.tool, e.input, verdict, root) ? await comandanteReview($, { source: "codeQuality", text: qualityCall(e.tool, e.input) }, e.agentId) : undefined;
+      return ruling && ruling.decision !== "approved" ? { decision: "deny", reason: ruling.message } : kept;
+    }
     try {
       if (verdict && verdict.decision === "ask") {
         const now = await $.clock.now();
@@ -4178,7 +4723,7 @@ export const register: Register = (on, given) => {
     if (!(await featureEnabled($, "contexto"))) return next(e);
     const config = await getSettings($);
     try {
-      if (!config.apiKey) throw new Error("Jev provider key is not configured");
+      if (!config.apiKey) throw new Error(text("feature.contexto.noKey", config.locale));
       const input = e.messages as unknown as readonly ContextSessionMessage[];
       await update($, contextoBusy, () => true);
       let compacted: Awaited<ReturnType<typeof compactContextSession>>;

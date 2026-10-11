@@ -70,10 +70,11 @@ The six main tabs are **Overview, Live, Models, Agents, Logs, and Configuration*
 | **Flow** | Follow a request from its prompt through any advisor decision and tool activity to the result. `/jev flow` and `/jev fluxo` open this timeline. |
 | **Orchestration** | Control automatic planning, independent review, advice, managed batches, role profiles, model/effort choices, and resource limits; inspect the current objective and batch approval state or cancel an unfinished batch. |
 | **Deck** | Configure the compact status band: visible plan, agent, context, limit, routing, pet, clock, and weather details; size, style, automatic updates, sound, quiet mode, cost display, and weather location. |
+| **Quality** | Follow Code Quality's review cycles: the files each one reviewed, what it fixed (`file:line`), and what it left as it was and why; switch it off or start a review now. `/jev quality` and `/jev qualidade` open it. |
 
 ### Optional features
 
-Pingo has ten optional features. The eight AI-assisted features are grouped on the AI screen; Pingo Vivo and Sentinela are available in the Features controls. Each feature can be enabled or disabled.
+Pingo has eleven optional features. The nine AI-assisted features are grouped on the AI screen; Pingo Vivo and Sentinela are available in the Features controls. Each feature can be enabled or disabled.
 
 | Feature | Controls | What it does |
 | --- | --- | --- |
@@ -83,8 +84,9 @@ Pingo has ten optional features. The eight AI-assisted features are grouped on t
 | **Lapida** | AI | Rewrites a draft prompt using project context and learns from edits made before sending it. |
 | **Prisma** | AI | Turns design questions with SVG previews into visual choices; options can be mixed, and decisions are remembered per project. |
 | **Semente** | AI | Saves side ideas, accepts ideas from Claude, and nudges you when a saved idea matches recent work. |
-| **Vigia** | AI | Tracks sessions in the project, summarizes their work, and warns about overlapping edits that could overwrite newer changes. |
+| **Vigia** | AI | Tracks sessions in the project and summarizes their work. Sessions of the same project talk: `/vigia msg <session id\|all> <text>` sends a message the other session shows at once and its Claude reads with its next step or request; each Claude reads what the others are doing; and an edit waits until Claude reads again a file another live session just changed (that session is told). |
 | **Context** | AI | When conversation history gets long, asks Jev which older tool results can be removed or shortened while keeping recent messages intact. |
+| **Code Quality** | AI | After each turn in which Claude changes code, an agent of Pingo's reviews the pending changes (`git status`) against the project's own patterns, fixes duplication, hardcoded values, over-engineering and clear bugs in those files on its own, without asking: Pingo answers its permission requests itself, whatever the session's mode, and lets it only read, search and edit files inside the project and run `git status`/`diff`/`log`/`show`/`ls-files`/`blame` and graft's queries; anything else (commits, resets, installs, downloads, writes outside the project) is refused, so text in the code it reviews cannot lead it elsewhere. It never reverts other work; what it could not fix is listed on the Quality screen. On by default; switch it off to stop it. |
 | **Pingo Vivo** | Features | Adds an animated Pingo companion that reacts to session activity. |
 | **Sentinela** | Features | Shows sessions across projects, their status and resume command, and lets you message a session that is waiting. |
 
@@ -99,6 +101,7 @@ Task timing starts at prompt submission. Main-response and background-completion
 | `/jev`, `/jev dashboard`, `/jev overview` | Open Overview. |
 | `/jev live` | Open the live activity feed. |
 | `/jev flow`, `/jev fluxo` | Open the execution-flow timeline. |
+| `/jev quality`, `/jev qualidade` | Open Code Quality's review cycles. |
 | `/jev models` | Show observed model and effort. |
 | `/jev agents` | List workers and activity. |
 | `/jev agent [number, type, or name]` | Open a worker's live pane. |

@@ -6,7 +6,7 @@ export type Locale = "en" | "pt";
 export type LocaleOption = "auto" | Locale;
 export type LocaleKey = keyof typeof en;
 
-const TAG: Record<Locale, string> = { en: "en-US", pt: "pt-BR" };
+export const TAG: Record<Locale, string> = { en: "en-US", pt: "pt-BR" };
 
 export function localeFor(value?: string): Locale {
   const locale = value?.trim() || Intl.DateTimeFormat().resolvedOptions().locale;

@@ -12,6 +12,12 @@ test("English and Portuguese catalogs have the same keys", () => {
   expect(Object.keys(pt).sort()).toEqual(Object.keys(en).sort());
 });
 
+test("every Portuguese message fills the same {placeholders} as its English one", () => {
+  const holes = (message: string) => [...new Set([...message.matchAll(/\{(\w+)\}/g)].map((match) => match[1]))].sort();
+  const differ = (Object.keys(en) as LocaleKey[]).filter((key) => holes(en[key]).join() !== holes(pt[key]).join());
+  expect(differ).toEqual([]);
+});
+
 test("locale selection accepts explicit plugin choices and language tags", () => {
   expect(localeFor("pt-BR")).toBe("pt");
   expect(localeFor("Português")).toBe("pt");

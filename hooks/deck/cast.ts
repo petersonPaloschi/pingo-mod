@@ -28,6 +28,8 @@ export const SPEAKER_NAMES: Record<SpeakerId, string> = {
   prisma: "Prisma",
   lapida: "Lapida",
   contexto: "Contexto",
+  codeQuality: "Code Quality",
+  comandante: "Comandante",
 };
 export const isSpeaker = (kind: CastKind): kind is SpeakerId => Object.hasOwn(FEATURE_MASCOT_PALETTE, kind);
 

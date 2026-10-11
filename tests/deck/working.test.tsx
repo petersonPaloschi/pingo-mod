@@ -16,7 +16,7 @@ const BAND = {
 const SESSION = { surface: "terminal", isInteractive: true, cwd: "/work" } as const;
 const LOCALE = { options: { locale: "en" } } as const;
 const COLUMNS = petLaneColumns(110);
-const PINGO_ONLY = { ...DEFAULT_FEATURES, farol: false, clareza: false, prisma: false, semente: false, lapida: false, sentinela: false, vigia: false, contexto: false };
+const PINGO_ONLY = { ...DEFAULT_FEATURES, farol: false, clareza: false, prisma: false, semente: false, lapida: false, sentinela: false, vigia: false, contexto: false, codeQuality: false };
 const LAPIDA_ONLY = { ...PINGO_ONLY, lapida: true };
 
 /** The name row of a lane's cells: each cell's character and its ground (a balloon's color, else none). */

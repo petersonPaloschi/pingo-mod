@@ -61,6 +61,9 @@ export const FEATURE_MASCOT_PALETTE = {
   prisma: 0x2f9e9e,
   lapida: 0xc4553d,
   contexto: HUE.neutral,
+  codeQuality: 0x4560d8,
+  /** Brass: the Comandante's insignia. */
+  comandante: 0xa08a1a,
 } as const;
 
 /** Animated Deck fills: a darker moving head and a light sweep of the brand lime, never used for text. */

@@ -1,11 +1,14 @@
 // The features on the Deck lane as a session draws them: Clareza joins as a sphere of its own color when it has a
 // plan for an unclear answer, its name in a balloon and its words on the line under the lane; pressing the words opens
-// its pane, where the plan is shown whole and only sent to Claude when the person says so.
+// its pane, where the plan is shown whole and only sent to Claude when the person says so. With the Comandante on,
+// a plan it rejects is never shown, and one it questions is shown with its question.
 import { expect, test } from "claude-code/testing";
 
+import type { Answer } from "../../hooks/core/types.ts";
 import { LANE_ROWS } from "../../hooks/deck/cast.ts";
 import { petLaneColumns } from "../../hooks/deck/pet.ts";
-import { PANE_PROPS } from "../helpers.ts";
+import { text } from "../../hooks/i18n.ts";
+import { comandanteJev, comandanteStore, PANE_PROPS, pick } from "../helpers.ts";
 import { TERMINAL, deckWorld } from "./helpers.ts";
 
 declare const setTimeout: (callback: () => void, ms: number) => unknown;
@@ -118,6 +121,34 @@ test("a rejected plan is never sent, and Clareza goes quiet", LOCALE, async ($, 
   const band = await $.ui.mount({ ...BAND, surface: TERMINAL });
   expect(await band.find({ type: "Button", key: "deck-speech-clareza" } as never)).toBeUndefined();
   await band.unmount();
+});
+
+test("with the Comandante on, a plan it rejects is never shown; one it questions is shown with its question", LOCALE, async ($, on) => {
+  const table: Record<string, Answer> = { verdict: pick("reject_noise", 0.8) };
+  const jev = comandanteJev(on, table);
+  deckWorld(on, comandanteStore());
+  on("model.complete", async () => ({ value: { isAnswered: true, text: UNCLEAR, usage: { input_tokens: 10, output_tokens: 10 } } }) as never);
+  await $.session.start(SESSION);
+  const pane = async () => {
+    const ui = await $.ui.mount({ plugin: "jev", surface: TERMINAL, component: "Pane", requestId: "clareza", props: { ...PANE_PROPS, title: "Clareza" } });
+    const drawn = JSON.stringify(await ui.drawn());
+    await ui.unmount();
+    return drawn;
+  };
+  const answer = async (turnId: string) => {
+    await $.turn.start({ turnId, text: "how is Jev called?" } as never);
+    await $.turn.complete({ turnId, answer: "Through the API key.", durationMs: 5, isAborted: false, reason: "answer", usage: undefined } as never);
+  };
+
+  await answer("t1");
+  await settle(async () => jev.toasts.some((toast) => toast.startsWith("Comandante: rejected — Clareza")));
+  expect(jev.asked.find((request) => request.questions && "verdict" in request.questions)?.state).toMatchObject({ alert: "'API' is not explained" });
+  expect(await pane()).not.toContain("clareza-send");
+
+  table.verdict = pick("question_vague", 0.6);
+  await answer("t2");
+  await settle(async () => (await pane()).includes("clareza-send"));
+  expect(await pane()).toContain(text("feature.comandante.tool.questioned.clareza", "en", { reason: text("feature.comandante.reason.question_vague", "en"), question: text("feature.comandante.question.question_vague", "en") }));
 });
 
 test("every feature switched on stands on the lane, quiet until it has something; one switched off is gone", LOCALE, async ($, on) => {

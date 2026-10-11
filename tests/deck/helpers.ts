@@ -45,6 +45,8 @@ export type DeckWorldOptions = {
   city?: typeof LISBON | null;
   /** The forecast's current conditions. */
   forecast?: { temperature_2m: number; weather_code: number };
+  /** What `$.fs.write` answers; the default takes every write. */
+  fsWrite?: (...args: any[]) => unknown;
 };
 
 /**
@@ -55,7 +57,7 @@ export type DeckWorldOptions = {
  */
 export function deckWorld(on: On, saved = new Map<string, unknown>(), options: DeckWorldOptions = {}) {
   const clock = mock.clock(on, { now: NOW });
-  mockEngineServices(on);
+  mockEngineServices(on, { fsWrite: options.fsWrite });
   mock.env(on, {});
   const state = {
     sessionId: "session-1",
@@ -66,7 +68,11 @@ export function deckWorld(on: On, saved = new Map<string, unknown>(), options: D
     forecast: options.forecast ?? { temperature_2m: 21.4, weather_code: 3 },
     /** What the host answers a repaint: it takes it, refuses it (nothing mounted there), or has no such call. */
     blit: "take" as "take" | "deny" | "throw",
+    /** While set, a read of the session's usage waits for it to settle; `usageWaiting` hears each read that waits. */
+    usageHold: undefined as Promise<unknown> | undefined,
+    usageWaiting: undefined as ((waiting: number) => void) | undefined,
   };
+  let usageWaiters = 0;
   const blits: { requestId: string; key: string; columns: number | undefined; rows: number | undefined; cells: string }[] = [];
   const invalidations: string[] = [];
   const fetched: string[] = [];
@@ -101,7 +107,14 @@ export function deckWorld(on: On, saved = new Map<string, unknown>(), options: D
   });
   on("session.model", async () => ({ value: "claude-opus-5-5" }));
   on("session.id", async () => ({ value: state.sessionId }));
-  on("session.usage", async () => ({ value: state.usage }));
+  on("session.usage", async () => {
+    if (state.usageHold) {
+      state.usageWaiting?.(++usageWaiters);
+      await state.usageHold;
+      usageWaiters--;
+    }
+    return { value: state.usage };
+  });
   on("session.start", async () => ({ cwd: "/work" }));
   on("tool.list", async () => ({ value: [] }));
   on("session.messages", async () => ({ value: [] }));

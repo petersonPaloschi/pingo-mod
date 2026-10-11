@@ -25,7 +25,7 @@ export type RouteEvent = {
   jevRaw?: string[];
 };
 
-export type JevTab = "overview" | "live" | "models" | "agents" | "logs" | "configuration" | "deck" | "features" | "ai" | "flow" | "orchestration";
+export type JevTab = "overview" | "live" | "models" | "agents" | "logs" | "configuration" | "deck" | "features" | "ai" | "flow" | "orchestration" | "quality" | "comandante";
 
 /**
  * A message as the Live run view records it. Its run is tied only when the engine confirms it: the turn
@@ -100,7 +100,7 @@ export type TraceCheckpoint = {
 /** One Jev call: where it was asked from, the model asked, and the questions it carried. */
 export type TraceConsult = {
   id: string;
-  origin: "prompt" | "tool" | "agent" | "sift" | "setup" | "unit" | "context";
+  origin: "prompt" | "tool" | "agent" | "sift" | "setup" | "unit" | "context" | "comandante";
   model: string;
   /** Response model and raw provider counters, when supplied; input excludes cache. */
   observed?: string;
@@ -266,6 +266,8 @@ export type FeatureFlags = {
   sentinela: boolean;
   vigia: boolean;
   contexto: boolean;
+  codeQuality: boolean;
+  comandante: boolean;
 };
 export type FeatureId = keyof FeatureFlags;
 
@@ -285,11 +287,12 @@ export type FeaturePreferences = {
   clashMinutes: 15 | 30 | 60;
 };
 
-export type FarolAssumption = { id: number; text: string; context?: string; verdict: "open" | "right" | "wrong"; note?: string; sent: boolean };
+/** One Farol assumption; `comandante` is the Comandante's ruling on it, when it judged it. */
+export type FarolAssumption = { id: number; text: string; context?: string; verdict: "open" | "right" | "wrong"; note?: string; sent: boolean; comandante?: ComandanteRuling };
 export type FarolRule = { assumption: string; correction: string };
 export type ClarezaGrade = { pass: boolean; problems: string[]; offered: string[]; fixing: boolean };
-/** Clareza's plan for an unclear answer: what may confuse, and the rewrite request it would send once the person agrees. */
-export type ClarezaProposal = { problems: string[]; prompt: string; at: number };
+/** Clareza's plan for an unclear answer: what may confuse, the rewrite request it would send once the person agrees, and the Comandante's ruling on it. */
+export type ClarezaProposal = { problems: string[]; prompt: string; at: number; comandante?: ComandanteRuling };
 export type SementeIdea = { id: string; text: string; source: "you" | "claude" };
 export type LapidaPhase = "idle" | "enhancing" | "ready" | "error";
 export type PrismaOption = { label: string; description?: string; svg?: string; file?: string };
@@ -298,6 +301,38 @@ export type PrismaPicker = { id: string; questions: PrismaQuestion[]; picks: str
 export type SentinelaSession = { pid: number; id: string; name: string; cwd: string; project: string; status: "working" | "waiting" | "done"; waitingFor: string; since: number };
 export type VigiaTask = { id: string; text: string; status: "pending" | "in_progress" | "completed" };
 export type VigiaSession = { id: string; root: string; startedAt: number; beatAt: number; endedAt?: number; isBusy?: boolean; turns?: number; lastPrompt?: string; lastAnswer?: string; title?: string; done?: string; doing?: string; next?: string; tasks: VigiaTask[]; files?: string[]; edits?: Record<string, number> };
+/** One message or notice between two sessions of a project, as the Vigia pane lists it: `in` arrived here, `out` left from here; a message that arrived carries the Comandante's ruling, when it judged it. */
+export type VigiaMail = { id: string; at: number; way: "in" | "out"; peer: string; peerId: string; kind: "message" | "clash"; text: string; file?: string; isDelivered?: boolean; comandante?: ComandanteRuling };
+/** Where an alert the Comandante judges came from: a Farol assumption, a Semente idea, a Vigia message, a Clareza plan, a call of the Code Quality agent. */
+export type ComandanteSource = "farol" | "semente" | "vigia" | "clareza" | "codeQuality";
+/** The Comandante's decision: let it through, block it, or send a question back to whoever raised it. */
+export type ComandanteDecision = "approved" | "rejected" | "questioned";
+/** The Comandante's ruling as the item it judged keeps it: the decision and its reason, a key of COMANDANTE_VERDICTS. */
+export type ComandanteRuling = { decision: ComandanteDecision; reason: string };
+/**
+ * One decision of the Comandante, as the log every session of the project shares keeps it: when, the session
+ * (id, name and project) and the agent that raised it, what it said, the decision and its reason, a key of
+ * COMANDANTE_VERDICTS (hooks/core/comandante.ts), with Jev's confidence.
+ */
+export type ComandanteRecord = { id: string; at: number; session: string; sessionName: string; project: string; source: ComandanteSource; agent?: string; summary: string; decision: ComandanteDecision; reason: string; confidence: number };
+/** The Comandante tab's filters: a session's id or "all", a decision or "all". */
+export type ComandanteFilter = { session: string; decision: ComandanteDecision | "all" };
+/** One finding of a Code Quality cycle: where it is (`file:line`, when the agent named it) and what it says. */
+export type QualityItem = { where?: string; text: string };
+/** One review cycle of the Code Quality agent, from the edits that started it to the report it gave back. */
+export type QualityCycle = {
+  n: number;
+  startedAt: number;
+  endedAt?: number;
+  /** The files edited since the cycle before, which started this one; empty when started by hand. */
+  files: string[];
+  state: "running" | "done" | "failed";
+  reviewed: string[];
+  fixed: QualityItem[];
+  /** What the agent left as it was, and why (another session's work in the way, nowhere to fix it). */
+  skipped: QualityItem[];
+  summary?: string;
+};
 
 export type FeedKind = "turn" | "step" | "jev" | "call" | "tool" | "agent" | "message" | "feature" | "error";
 export type FeedTone = "info" | "good" | "warn" | "bad" | "muted";
@@ -410,6 +445,13 @@ declare module "claude-code" {
       sentinelaReplyTo: string;
       vigiaSessions: VigiaSession[];
       vigiaCollapsed: boolean;
+      qualityCycles: QualityCycle[];
+      vigiaMail: VigiaMail[];
+      /** The Comandante's decisions of every session of the project, newest first, as last read from their files. */
+      comandanteLog: ComandanteRecord[];
+      comandanteFilter: ComandanteFilter;
+      /** True while the Comandante waits for Jev's verdict. */
+      comandanteBusy: boolean;
       feed: FeedEntry[];
       now: LiveNow;
       agents: AgentRun[];

@@ -4,7 +4,7 @@ import type { FeatureFlags, FeatureId } from "../types";
 import type { JevAsk, JevSent } from "./core/jev.ts";
 import { EFFORT_KEY, MODEL_KEY } from "./core/plan.ts";
 import type { Answer, SystemOneResult } from "./core/types.ts";
-import { formatCompact, formatDecimal, formatNumber, localeFor, text, type Locale, type LocaleKey } from "./i18n.ts";
+import { formatCompact, formatDecimal, formatNumber, localeFor, TAG, text, type Locale, type LocaleKey } from "./i18n.ts";
 
 /** Each feature, its one-click toggle key, and a short description. */
 const FEATURE_KEYS: readonly { id: FeatureId; name: LocaleKey; hotkey: string; description: LocaleKey }[] = [
@@ -23,6 +23,8 @@ const FEATURE_KEYS: readonly { id: FeatureId; name: LocaleKey; hotkey: string; d
   { id: "sentinela", name: "feature.sentinela.name", hotkey: "s", description: "feature.sentinela.description" },
   { id: "vigia", name: "feature.vigia.name", hotkey: "v", description: "feature.vigia.description" },
   { id: "contexto", name: "feature.contexto.name", hotkey: "x", description: "feature.contexto.description" },
+  { id: "codeQuality", name: "feature.codeQuality.name", hotkey: "k", description: "feature.codeQuality.description" },
+  { id: "comandante", name: "feature.comandante.name", hotkey: "m", description: "feature.comandante.description" },
 ];
 
 export const features = (locale: Locale = localeFor()) => FEATURE_KEYS.map((feature) => ({
@@ -133,14 +135,14 @@ export interface Usage {
 
 export const featureFlagsText = (flags: FeatureFlags, locale: Locale = localeFor()) => {
   const names = features(locale).filter((feature) => flags[feature.id]).map((feature) => feature.name);
-  return names.length ? new Intl.ListFormat(locale === "pt" ? "pt-BR" : "en-US", { style: "short", type: "conjunction" }).format(names) : text("feed.none", locale);
+  return names.length ? new Intl.ListFormat(TAG[locale], { style: "short", type: "conjunction" }).format(names) : text("feed.none", locale);
 };
 
 const percent = (value: number, locale: Locale) => `${formatDecimal(value * 100, locale, 1)}%`;
 
 /** Where a Jev call was asked from: the routing point, and what set it off (a tool, a subagent type). */
 export interface JevCaller {
-  origin: "agent" | "sift" | "setup" | "prompt" | "unit" | "context";
+  origin: "agent" | "sift" | "setup" | "prompt" | "unit" | "context" | "comandante";
   trigger?: string;
 }
 
@@ -152,6 +154,7 @@ const ASKED_BY: Record<JevCaller["origin"], string> = {
   prompt: "decideObjective()",
   unit: "offeredProfiles()",
   context: "compactContextSession()",
+  comandante: "comandanteRequest()",
 };
 
 /** What each question makes Jev judge, by its name (core/questions.ts and core/plan.ts). */

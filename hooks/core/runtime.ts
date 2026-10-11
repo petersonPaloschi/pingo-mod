@@ -56,3 +56,34 @@ export function sizeRequest<T extends { model: string; effort?: Effort | number 
 export function totalInput(usage: { input_tokens: number; cache_read_input_tokens?: number | null; cache_creation_input_tokens?: number | null } | null | undefined): number {
   return usage ? usage.input_tokens + (usage.cache_read_input_tokens ?? 0) + (usage.cache_creation_input_tokens ?? 0) : 0;
 }
+
+/** The counts a reply's usage may carry, each one only when it was reported. */
+export interface UsageCounts {
+  input?: number;
+  output?: number;
+  cacheRead?: number;
+  cacheWrite?: number;
+}
+
+/**
+ * What a reply's usage reports, read in one place: each count it carries, whether the input total is whole (input,
+ * cache reads and cache writes all reported) and whether the output is known.
+ */
+export function usageFacts(usage: { input_tokens?: number | null; output_tokens?: number | null; cache_read_input_tokens?: number | null; cache_creation_input_tokens?: number | null } | null | undefined): {
+  counts: UsageCounts;
+  inputComplete: boolean;
+  outputKnown: boolean;
+} {
+  const known = (value: unknown): value is number => typeof value === "number";
+  const counts: UsageCounts = usage ? {
+    ...(known(usage.input_tokens) ? { input: usage.input_tokens } : {}),
+    ...(known(usage.output_tokens) ? { output: usage.output_tokens } : {}),
+    ...(known(usage.cache_read_input_tokens) ? { cacheRead: usage.cache_read_input_tokens } : {}),
+    ...(known(usage.cache_creation_input_tokens) ? { cacheWrite: usage.cache_creation_input_tokens } : {}),
+  } : {};
+  return {
+    counts,
+    inputComplete: known(counts.input) && known(counts.cacheRead) && known(counts.cacheWrite),
+    outputKnown: known(counts.output),
+  };
+}

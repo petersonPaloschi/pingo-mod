@@ -65,27 +65,27 @@ export interface Batch {
 
 const SAFE_ID = /^[A-Za-z0-9_.-]{1,40}$/;
 
-const text = (value: unknown, max: number) => (typeof value === "string" ? value.trim().slice(0, max) : "");
-const list = (value: unknown, max: number, each: number) => (Array.isArray(value) ? value.map((v) => text(v, each)).filter(Boolean).slice(0, max) : []);
+const clean = (value: unknown, max: number) => (typeof value === "string" ? value.trim().slice(0, max) : "");
+const list = (value: unknown, max: number, each: number) => (Array.isArray(value) ? value.map((v) => clean(v, each)).filter(Boolean).slice(0, max) : []);
 
 /** Parse and check a proposed unit plan. Errors name every problem; no partial plan is accepted. */
 export function validatePlan(input: unknown, limits: Limits): { units?: UnitPlan[]; sharedContracts: string; errors: string[] } {
   const raw = (input && typeof input === "object" ? input : {}) as Record<string, unknown>;
   const errors: string[] = [];
-  const sharedContracts = text(raw.shared_contracts, 8000);
+  const sharedContracts = clean(raw.shared_contracts, 8000);
   if (!Array.isArray(raw.units) || raw.units.length === 0) return { sharedContracts, errors: ["units_missing"] };
   if (raw.units.length > limits.units) errors.push(`too_many_units:${raw.units.length}>${limits.units}`);
   const units: UnitPlan[] = raw.units.slice(0, limits.units).map((entry, i) => {
     const u = (entry && typeof entry === "object" ? entry : {}) as Record<string, unknown>;
-    const id = text(u.id, 40) || `U${String(i + 1).padStart(2, "0")}`;
+    const id = clean(u.id, 40) || `U${String(i + 1).padStart(2, "0")}`;
     const criteria = Array.isArray(u.acceptance_criteria) ? u.acceptance_criteria.map((c, j) => {
       const item = (c && typeof c === "object" ? c : { text: c }) as Record<string, unknown>;
-      return { id: text(item.id, 40) || `${id}-C${j + 1}`, text: text(item.text ?? item.description, 1000) };
+      return { id: clean(item.id, 40) || `${id}-C${j + 1}`, text: clean(item.text ?? item.description, 1000) };
     }).filter((c) => c.text) : [];
     return {
       id,
-      description: text(u.description, 400),
-      prompt: text(u.prompt ?? u.instructions ?? u.description, 20_000),
+      description: clean(u.description, 400),
+      prompt: clean(u.prompt ?? u.instructions ?? u.description, 20_000),
       dependencies: list(u.dependencies, 30, 40),
       areas: list(u.affected_areas ?? u.areas, 40, 300),
       criteria,
@@ -168,22 +168,22 @@ export function reviewable(batch: Batch): Unit[] {
   return batch.units.filter((u) => u.state === "awaiting_review").slice(0, Math.max(0, slots));
 }
 
-const update = (batch: Batch, id: string, change: (unit: Unit) => Unit): Batch =>
+const updateUnit = (batch: Batch, id: string, change: (unit: Unit) => Unit): Batch =>
   ({ ...batch, units: batch.units.map((u) => (u.id === id ? change(u) : u)) });
 
 export function launched(batch: Batch, id: string, agentId: string): Batch {
-  return update(batch, id, (u) => ({ ...u, state: "running", agentId, launches: u.launches + 1, why: undefined }));
+  return updateUnit(batch, id, (u) => ({ ...u, state: "running", agentId, launches: u.launches + 1, why: undefined }));
 }
 
 export function launchFailed(batch: Batch, id: string, why: string): Batch {
-  return update(batch, id, (u) => ({ ...u, state: "failed", why }));
+  return updateUnit(batch, id, (u) => ({ ...u, state: "failed", why }));
 }
 
 export const unitOfAgent = (batch: Batch, agentId: string) => batch.units.find((u) => u.agentId === agentId && (u.state === "running" || u.state === "checking"));
 
 /** A worker finished: its answer and touched files become the artifact a review binds to. */
 export function workerDone(batch: Batch, id: string, answer: string, files: readonly string[], ok: boolean): Batch {
-  return update(batch, id, (u) => {
+  return updateUnit(batch, id, (u) => {
     if (!ok) return { ...u, state: "failed", why: "worker_failed", answer };
     const digest = digestOf(batch.policyRevision.toString(), u.id, u.prompt, ...u.criteria.map((c) => c.id + c.text), answer, ...[...files].sort());
     // A repair changed the artifact: an earlier approval no longer applies.
@@ -192,7 +192,7 @@ export function workerDone(batch: Batch, id: string, answer: string, files: read
 }
 
 export function reviewStarted(batch: Batch, id: string): Batch {
-  return update(batch, id, (u) => ({ ...u, state: "reviewing", reviews: u.reviews + 1 }));
+  return updateUnit(batch, id, (u) => ({ ...u, state: "reviewing", reviews: u.reviews + 1 }));
 }
 
 /**
@@ -200,7 +200,7 @@ export function reviewStarted(batch: Batch, id: string): Batch {
  * while repairs and review passes remain; everything else, or an exhausted allowance, blocks.
  */
 export function reviewDone(batch: Batch, id: string, outcome: Pick<ReviewOutcome, "verdict" | "approved" | "problems" | "reply">, reviewedDigest: string): Batch {
-  return update(batch, id, (u) => {
+  return updateUnit(batch, id, (u) => {
     if (u.digest !== reviewedDigest) return { ...u, state: "awaiting_review", why: "stale_review" };
     const findings = outcome.reply?.findings.filter((f) => f.severity === "blocking").map((f) => `${f.reference}: ${f.correction}`) ?? [];
     if (outcome.approved) return { ...u, state: "approved", verdict: "approved", approvedDigest: reviewedDigest, findings: [], why: undefined };
@@ -214,11 +214,11 @@ export function reviewDone(batch: Batch, id: string, outcome: Pick<ReviewOutcome
 }
 
 export function holdUnit(batch: Batch, id: string, why: string): Batch {
-  return update(batch, id, (u) => ({ ...u, state: "blocked", why }));
+  return updateUnit(batch, id, (u) => ({ ...u, state: "blocked", why }));
 }
 
 export function assignProfiles(batch: Batch, id: string, worker: Profile, reviewer: Profile): Batch {
-  return update(batch, id, (u) => ({ ...u, worker, reviewer }));
+  return updateUnit(batch, id, (u) => ({ ...u, worker, reviewer }));
 }
 
 /** Stop new launches; queued work is cancelled, running work finishes and is still reviewed. */

@@ -15,9 +15,26 @@ Thanks for helping improve Jev. Issues and pull requests should be written in En
    node --test tests/sift-cli.test.mjs
    ```
 
+   `claude plugin test .` starts one test process per CPU thread at once. To keep the memory peak low, `node scripts/test.ts` runs the same tests a few files at a time (see below).
+
 4. If the change touches what the mod draws, compare the screens before and after it (see below).
 5. Review the staged diff and confirm that it contains no credentials or private data.
 6. Include a concise summary and validation results in the pull request.
+
+## Tests in batches
+
+`claude plugin test .` runs each test file in its own process, as many at once as the machine has CPU threads: on a 32-thread machine that is 32 processes and about 7.5 GB of memory at the peak. `scripts/test.ts` runs the same tests in batches, one batch after another (Node 22.18+):
+
+```sh
+node scripts/test.ts                        # every test, at most 8 files per batch
+node scripts/test.ts --batch 4              # at most 4 test processes at once
+node scripts/test.ts --only "deck/|review"  # only the test files whose path matches
+node scripts/test.ts --verbose              # also print the passing tests
+```
+
+It snapshots the working tree once (untracked files included, `bench/` and `docs/` left out), so edits made during the run do not reach it. Each batch runs in its own temp copy of the mod that holds only that batch's test files. It prints one line per batch, only the failing tests of a failing batch, and the totals; it exits 1 when any test fails. `tests/sift-cli.test.mjs` still runs on its own with `node --test`.
+
+Only one run goes at a time: a second run, from another terminal or session, waits for the first through a lock file in the temp folder (`pingo-test.lock`). A lock left by a run that crashed is removed on its own. Leave `TEMP` and `TMP` as they are, or two runs will not see each other's lock.
 
 ## Screen captures
 

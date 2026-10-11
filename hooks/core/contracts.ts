@@ -14,6 +14,8 @@ export const DEFAULT_FEATURES: Features = {
   sentinela: true,
   vigia: true,
   contexto: true,
+  codeQuality: true,
+  comandante: false,
 };
 
 export const EFFORT = {

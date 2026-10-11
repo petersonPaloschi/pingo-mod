@@ -19,6 +19,9 @@ export const PANE_PROPS = {
 
 const ASK = { origin: { kind: "composer" }, presentation: { isFullscreen: true, columns: 160 } } as const;
 
+/** A path the engine hands a hook, compared the same on Windows: forward slashes, no drive letter. */
+export const plain = (path: string) => path.replace(/\\/g, "/").replace(/^[A-Za-z]:/, "");
+
 export async function status($: { command: { run: (input: never) => Promise<{ text?: string }> } }) {
   return (await $.command.run({ command: "jev", args: "status", ...ASK } as never)).text ?? "";
 }
@@ -32,11 +35,12 @@ export function successfulFetches(on: On) {
   return authorization;
 }
 
-export function mockEngineServices(on: On): void {
+/** The engine services every world answers; `fsWrite` replaces the default, which takes every write. */
+export function mockEngineServices(on: On, services: { fsWrite?: (...args: any[]) => unknown } = {}): void {
   on("session.root", async () => ({ value: "/workspace" }));
   on("tool.register", async (_$, e) => ({ value: { tool: `mcp__jev__${e.name}` } }));
   on("fs.exists", async () => ({ value: false }));
-  on("fs.write", async () => ({ value: undefined }));
+  on("fs.write", (services.fsWrite ?? (async () => ({ value: undefined }))) as never);
 }
 
 export const pick = (choice: string, confidence: number): ChoiceAnswer => ({
@@ -155,3 +159,28 @@ export async function step(
   for await (const _ of stream) void _;
   return stream.result;
 }
+
+/**
+ * The Comandante's world beneath a session: Jev answers each of its requests from `table` (live: a test may change
+ * it) while other fetches go on to the world's own, and the toasts are kept unless the world keeps them itself
+ * (`toasts: false`). Register it before the world.
+ */
+export function comandanteJev(on: On, table: Record<string, Answer>, { toasts: keep = true } = {}) {
+  const asked: SystemOneRequest[] = [];
+  const toasts: string[] = [];
+  on("http.fetch", { url: /systemone/ }, async (_$, e) => {
+    const request = JSON.parse(e.init?.body ?? "{}") as SystemOneRequest;
+    asked.push(request);
+    return { value: { status: 200, ok: true, headers: {}, text: JSON.stringify({ answers: answerJev(request, table), usage: { input_tokens: 200, output_tokens: 0 } }) } };
+  });
+  if (keep) {
+    on("ui.toast", async (_$, e) => {
+      toasts.push(e.text);
+      return { value: undefined } as never;
+    });
+  }
+  return { asked, toasts };
+}
+
+/** A world's saved store with the Comandante switched on and a Jev key, for `deckWorld`. */
+export const comandanteStore = () => new Map<string, unknown>([["features", { ...DEFAULT_FEATURES, comandante: true }], ["credentials", { apiKey: "test-key", provider: "typesafe" }]]);

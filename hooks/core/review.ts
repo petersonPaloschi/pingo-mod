@@ -91,7 +91,7 @@ const SCHEMA_NOTE = [
 
 /** The user message: stable rules first (cacheable), then this artifact's criteria and evidence. */
 export function reviewPrompt(request: ReviewRequest): { text: string; cache?: boolean }[] {
-  const evidence = request.evidence.map((item) => `<evidence id="${item.id}" kind="${item.kind}" label="${escapeAttr(item.label)}">\n${item.body}\n</evidence>`).join("\n");
+  const evidence = request.evidence.map((item) => `<evidence id="${item.id}" kind="${item.kind}" label="${escapeAttr(item.label)}">\n${escapeBody(item.body)}\n</evidence>`).join("\n");
   return [
     { text: `Prompt version: ${ORCHESTRATION_PROMPT_VERSION}.\n${SCHEMA_NOTE}${request.baseline ? `\n\nShared context:\n${request.baseline}` : ""}`, cache: true },
     {
@@ -108,6 +108,11 @@ export function reviewPrompt(request: ReviewRequest): { text: string; cache?: bo
 }
 
 const escapeAttr = (value: string) => value.replace(/["<>\n]/g, " ");
+/**
+ * A body is written by the worker under review (its answer, the files in its diff): an evidence tag inside it is
+ * shown, not read as one, so it can neither close its block nor open a forged one.
+ */
+const escapeBody = (value: string) => value.replace(/<(?=\/?evidence\b)/gi, "&lt;");
 
 function jsonBody(text: string): unknown {
   const trimmed = text.trim().replace(/^```(?:json)?\s*\n([\s\S]*)\n```$/, "$1").trim();
