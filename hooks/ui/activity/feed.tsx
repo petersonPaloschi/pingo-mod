@@ -12,6 +12,7 @@ import { AGENT_MASCOTS, isMascot } from "../../mascots/agents.ts";
 import { type Els, type View } from "../types.ts";
 import { clock, clip, moodOf, pill, card, liveLines, TONE_INK } from "../shared.tsx";
 import { mascotOf } from "./mascot.ts";
+/** Who speaks on a line of the live log: a face, a name and a color, so Jev and you never blur. */
 export function speaker(entry: Pick<FeedEntry, "who" | "name" | "tone" | "mascot">, locale: Locale = localeFor()): { face: string; name: string; color: string } {
   switch (entry.who) {
     case "you":

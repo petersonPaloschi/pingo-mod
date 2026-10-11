@@ -10,6 +10,10 @@ import { type Els, type View, type Actions } from "./types.ts";
 import { CATEGORY_DOT, clock, clockWidth, inRange, consultsInRange, INDENT, card, stack, grid, rangePicker, emptyLine, figures, outcomeBar, sparkline, ENTRIES_SHOWN, newestFirst } from "./shared.tsx";
 import { conversation } from "./activity.tsx";
 
+/**
+ * The selected range at a glance: it scopes each figure while the header keeps its own last five minutes. The screen
+ * adds status and routing context, then cards for Routing, Jev's answers, Token usage and the Timeline, arranged to fit.
+ */
 export function overview(els: Els, view: View, act: Actions) {
   const { Box, Text } = els;
   const events = inRange(view);
