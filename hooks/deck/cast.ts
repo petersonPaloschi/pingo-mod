@@ -1,14 +1,16 @@
-// The Deck's cast: Jev, the features with something to say, and every subagent at work, standing with Pingo on the
-// pet's lane. Jev is always there and changes its look while it is being asked; a feature joins while it has
-// something for the person or is at work, and is gone as soon as it has not; a subagent joins when it starts and
-// leaves shortly after it ends. Each member is a small body in its own color, the subagents shaped after their names
-// (Tetra a triangle, Gem a cut gem, Can a can, Coil a spring, Top a spinning top), Jev and the features spheres like
-// Pingo's, drawn as pixel art like him, in half blocks, with its name on a row above it; the one speaking has its name
-// in a balloon. The group stands in a fixed order, the features then Jev at Pingo's left and the subagents at his
-// right, everyone facing Pingo, and it walks wherever Pingo walks. Unlike Pingo's scenes nothing here is random: a
-// frame is a pure function of its inputs, so the host can repaint it in place and a test can check it exactly.
+// The Deck's cast: whoever is at work stands with Pingo on the pet's lane, and nobody else. Jev joins while a call of
+// his is open; a feature joins while it is at work or has something waiting on the person; a subagent joins when it
+// starts. Each says what it is doing in a balloon over its body, and when its task ends, well or not, it hops a
+// goodbye and leaves. Each member is a small body in its own color and shape: the subagents after their names (Tetra
+// a triangle, Gem a cut gem, Can a can, Coil a spring, Top a spinning top), Jev a sphere like Pingo's, each feature
+// after what it does (Farol a lighthouse, Semente a sprout, Vigia an owl...), drawn as pixel art like him, in half
+// blocks, with its name on a row above it. The group stands in a fixed order, the features then Jev at Pingo's left
+// and the subagents at his right, everyone facing Pingo, and it walks wherever Pingo walks. Unlike Pingo's scenes
+// nothing here is random: a frame is a pure function of its inputs, so the host can repaint it in place and a test
+// can check it exactly.
 import type { AgentRun } from "../../types";
 import { hex } from "../dots.ts";
+import { displayWidth } from "../layout.ts";
 import { AGENT_MASCOTS, isMascot, MASCOT_ORDER, type MascotId } from "../mascots/agents.ts";
 import { DETAIL, mirror, pixelGrid, put, renderPixels, stamp, type PixelCell } from "../mascots/pixel.ts";
 import { DECK_DESIGN, DOT_DEPTH, FEATURE_MASCOT_PALETTE, HUE, inkOn, PET_PALETTE, shadeOf, TERMINAL_DEFAULT } from "../theme.ts";
@@ -30,11 +32,15 @@ export const SPEAKER_NAMES: Record<SpeakerId, string> = {
   contexto: "Contexto",
   codeQuality: "Code Quality",
   comandante: "Comandante",
+  portao: "Portão",
+  ensaio: "Ensaio",
+  chaveiro: "Chaveiro",
+  oficina: "Oficina",
 };
 export const isSpeaker = (kind: CastKind): kind is SpeakerId => Object.hasOwn(FEATURE_MASCOT_PALETTE, kind);
 
 export type CastKind = "jev" | MascotId | SpeakerId;
-/** What a member is doing: standing by, being asked (Jev) or at work (a feature), just joined, or ended (well or not) and about to leave. */
+/** What a member is doing: idle (a feature waiting on the person, a subagent running), at work (it thinks), just joined, or ended (well or not) and about to leave. */
 export type CastState = "idle" | "asking" | "join" | "done" | "failed";
 
 export interface CastMember {
@@ -46,46 +52,76 @@ export interface CastMember {
   state: CastState;
   /** When that state began, in ms: a newcomer hops from here, a leaver from its end. */
   since: number;
-  /** The one speaking: its name is drawn in a balloon. */
+  /** On the lane for a task: its name is drawn in a balloon, with `says` after it where there is room. */
   speaking?: boolean;
+  /** What it is doing, in its own words: a subagent's description, Jev's call, a feature's task. */
+  says?: string;
 }
 
-/** A feature on the lane, as the caller found it: since when, at work or not, and whether it is the one speaking. */
+/**
+ * A feature on the lane, as the caller found it: since when (or, once it `ended`, since its end), at work or waiting
+ * on the person, and what it says. A feature with no task is not given at all.
+ */
 export interface CastSpeaker {
   id: SpeakerId;
   since: number;
   busy: boolean;
-  speaking: boolean;
+  says?: string;
+  /** Its task ended at `since`, well or not: it hops a goodbye and leaves. */
+  ended?: "done" | "failed";
 }
 
-/** A newcomer hops for this long; a subagent that ended stays this long, then leaves. */
+/** Jev on the lane: whether a call of his is open and what it is about, and when the last one ended. */
+export interface JevOnLane {
+  open: boolean;
+  says?: string;
+  ended?: { at: number; failed: boolean };
+}
+
+/** A newcomer hops for this long; a member whose task ended stays this long, then leaves. */
 export const CAST_JOIN_MS = DECK_DESIGN.cast.joinMs;
 export const CAST_LEAVE_MS = DECK_DESIGN.cast.leaveMs;
 
+/** Who leaves, and how: `ended` tells done from failed. */
+const leaver = (base: Omit<CastMember, "state" | "since">, at: number, failed: boolean): CastMember => ({ ...base, state: failed ? "failed" : "done", since: at });
+
 /**
- * The cast at `now`: Jev first, then the features in the order given (the one speaking first), then each subagent at
- * work or just ended, in the order they started. `lead` names the member speaking when it is Jev or a subagent at work
- * (a feature's own `speaking` says it for the features).
+ * The cast at `now`: Jev while a call is open, then the features in the order given, then each subagent at work, in
+ * the order they started. Each at work speaks; each whose task ended in the last `CAST_LEAVE_MS` is there to say
+ * goodbye, quiet. Nobody else is on the lane.
  */
-export function castOf(runs: readonly AgentRun[], asking: boolean, now: number, speakers: readonly CastSpeaker[] = [], lead?: string): CastMember[] {
-  const cast: CastMember[] = [{ id: "jev", kind: "jev", label: asking ? "Jev ?" : "Jev", state: asking ? "asking" : "idle", since: 0, ...(lead === "jev" ? { speaking: true } : {}) }];
+export function castOf(runs: readonly AgentRun[], jev: JevOnLane, now: number, speakers: readonly CastSpeaker[] = []): CastMember[] {
+  const cast: CastMember[] = [];
+  const said = (says: string | undefined) => (says?.trim() ? { says: says.trim() } : {});
+  const jevBase = { id: "jev", kind: "jev" as const, label: "Jev" };
+  if (jev.open) cast.push({ ...jevBase, state: "asking", since: 0, speaking: true, ...said(jev.says) });
+  else if (jev.ended && now - jev.ended.at < CAST_LEAVE_MS) cast.push(leaver(jevBase, jev.ended.at, jev.ended.failed));
   for (const one of speakers) {
+    const base = { id: `feature:${one.id}`, kind: one.id, label: SPEAKER_NAMES[one.id] };
+    if (one.ended) {
+      if (now - one.since < CAST_LEAVE_MS) cast.push(leaver(base, one.since, one.ended === "failed"));
+      continue;
+    }
     const state: CastState = one.busy ? "asking" : now - one.since < CAST_JOIN_MS ? "join" : "idle";
-    cast.push({ id: `feature:${one.id}`, kind: one.id, label: SPEAKER_NAMES[one.id], state, since: one.since, ...(one.speaking ? { speaking: true } : {}) });
+    cast.push({ ...base, state, since: one.since, speaking: true, ...said(one.says) });
   }
   for (const run of [...runs].sort((a, b) => a.n - b.n)) {
     const kind = isMascot(run.mascot) ? run.mascot : MASCOT_ORDER[(Math.max(1, run.n) - 1) % MASCOT_ORDER.length]!;
-    const label = `${AGENT_MASCOTS[kind].name}·${run.type}`;
+    const base = { id: run.id, kind, label: `${AGENT_MASCOTS[kind].name}·${run.type}` };
     if (run.state === "running") {
-      cast.push({ id: run.id, kind, label, state: now - run.startedAt < CAST_JOIN_MS ? "join" : "idle", since: run.startedAt, ...(lead === run.id ? { speaking: true } : {}) });
+      cast.push({ ...base, state: now - run.startedAt < CAST_JOIN_MS ? "join" : "idle", since: run.startedAt, speaking: true, ...said(run.description) });
     } else if (run.endedAt !== undefined && now - run.endedAt < CAST_LEAVE_MS) {
-      cast.push({ id: run.id, kind, label, state: run.state === "done" ? "done" : "failed", since: run.endedAt });
+      cast.push(leaver(base, run.endedAt, run.state !== "done"));
     }
   }
   return cast;
 }
 
-/** What a cast draws: equal keys draw the same members in the same states. */
+/**
+ * What the desktop's picture of a cast draws: equal keys draw the same members in the same states, the speakers in
+ * their balloons. What a member says is the terminal's only (the desktop's balloon holds the name), so it is left out
+ * and a changing count in Jev's words asks the desktop for no new picture.
+ */
 export const castKey = (cast: readonly CastMember[]): string => cast.map((m) => `${m.id}:${m.state}:${m.label}${m.speaking ? ":says" : ""}`).join("|");
 
 // ---------- one member, in a terminal: a grid of 8 by 8 pixels, 8 cells by 4 rows ----------
@@ -105,22 +141,52 @@ export const PINGO_INK = TERMINAL_DEFAULT;
 const PINGO_NAME_INK = DOT_DEPTH[4];
 
 interface Shape {
-  /** Eight rows of pixels, top first: the body "#", its underside "d", the floor's shadow "s". */
+  /** Eight rows of pixels, top first: the body "#", its underside and trim "d", the floor's shadow "s". */
   rows: readonly string[];
-  /** The row the tops of the eyes lie on: each eye is a box two pixels across and down, the left at column 1, the right at 5. */
+  /** The row the tops of the eyes lie on: each eye is a box two pixels across and down. */
   eyeRow: number;
+  /** The columns the eyes' boxes start at, left then right: 1 and 5 unless the body is narrower there. */
+  eyeX?: readonly [number, number];
 }
 
 /** Something in each feature's own color, by feature: `make` for every one of them. */
 const perSpeaker = <T>(make: (id: SpeakerId, i: number) => T) => Object.fromEntries(SPEAKER_IDS.map((id, i) => [id, make(id, i)])) as Record<SpeakerId, T>;
 
-/** A sphere like Pingo's, smaller: Jev's body, and every feature's. */
+/** A sphere like Pingo's, smaller: Jev's body. */
 const SPHERE: Shape = { rows: ["........", "..####..", ".######.", "########", "########", ".######.", "..dddd..", "..ssss.."], eyeRow: 3 };
 
-// Row 0 is kept free for a hop. The eyes sit where the body is eight pixels or six wide, so each has body around it.
+// Row 0 is kept free for a hop. The eyes sit where the body is wide enough to have body around each.
 const SHAPES: Record<CastKind, Shape> = {
   jev: SPHERE,
-  ...perSpeaker(() => SPHERE),
+  // each feature after what it does, so even without color no two look alike
+  // Clareza a light bulb: the glass, its neck, the screw base
+  clareza: { rows: ["........", "..####..", ".######.", ".######.", "..####..", "...dd...", "...dd...", "..ssss.."], eyeRow: 2 },
+  // Semente a sprout coming out of its seed
+  semente: { rows: ["........", "....d...", "...##...", "..####..", ".######.", ".######.", "..dddd..", "..ssss.."], eyeRow: 4 },
+  // Farol a lighthouse: the lamp, the tower, the rocks at its foot
+  farol: { rows: ["........", "..dddd..", "...##...", "..####..", "..####..", "..dddd..", ".dddddd.", "..ssss.."], eyeRow: 3, eyeX: [2, 4] },
+  // Vigia an owl, its ear tufts up
+  vigia: { rows: ["........", ".#....#.", ".######.", "########", "########", ".######.", "..dddd..", "..ssss.."], eyeRow: 3 },
+  // Sentinela a shield, square on top and pointed below
+  sentinela: { rows: ["........", "########", "########", "########", "########", ".######.", "..dddd..", "...ss..."], eyeRow: 3 },
+  // Prisma a prism on its wide base
+  prisma: { rows: ["........", "...##...", "..####..", "..####..", ".######.", "########", "dddddddd", "..ssss.."], eyeRow: 3, eyeX: [2, 4] },
+  // Lapida a cut stone with a sparkle at its corner
+  lapida: { rows: ["........", ".....d..", ".####ddd", "######d.", "########", ".######.", "..dddd..", "..ssss.."], eyeRow: 3, eyeX: [0, 3] },
+  // Contexto a page with its corner folded
+  contexto: { rows: ["........", ".####...", ".#####..", ".######.", ".######.", ".######.", ".dddddd.", "..ssss.."], eyeRow: 3 },
+  // Code Quality a clipboard, its clip on top
+  codeQuality: { rows: ["........", "..dddd..", ".#....#.", ".######.", ".######.", ".######.", ".dddddd.", "..ssss.."], eyeRow: 3 },
+  // Comandante a star standing on two legs
+  comandante: { rows: ["........", "...##...", "########", ".######.", ".######.", ".######.", ".##..##.", ".s....s."], eyeRow: 3 },
+  // Portão a gate: its lintel, two pillars and the way through between them
+  portao: { rows: ["........", "########", "########", ".##..##.", ".##..##.", ".##..##.", ".dd..dd.", ".ss..ss."], eyeRow: 2 },
+  // Ensaio a clapperboard, its striped clapper on top
+  ensaio: { rows: ["........", ".d#d#d#d", "########", "########", "########", "########", ".dddddd.", "..ssss.."], eyeRow: 3 },
+  // Chaveiro a padlock: the shackle, the body, its keyhole
+  chaveiro: { rows: ["........", "..dddd..", ".d....d.", "########", "########", "###dd###", ".######.", "..ssss.."], eyeRow: 4 },
+  // Oficina a gear, its teeth all round
+  oficina: { rows: ["........", ".#.##.#.", "########", ".######.", "########", ".#.##.#.", "..dddd..", "..ssss.."], eyeRow: 3 },
   // a triangle standing on its base
   tetra: { rows: ["........", "...##...", "..####..", "..####..", ".######.", ".######.", "dddddddd", "..ssss.."], eyeRow: 4 },
   // a cut gem: a flat table, the crown widening to the girdle, the pavilion narrowing to its point
@@ -159,7 +225,7 @@ const EYE_RING: readonly (readonly [number, number])[] = [[0, 0], [1, 0], [1, 1]
 /**
  * An eye's pixels in its two by two box, for a member facing right (facing left is the grid turned round): a pill
  * that blinks and looks ahead when idle, a lit pixel walking round the box while asked, a slash that leans in to
- * join and to leave ("/ \", happy), and the same leaning out ("\ /") for a subagent that failed.
+ * join and to leave ("/ \", happy), and the same leaning out ("\ /") for a member whose task failed.
  */
 function eyeDots(state: CastState, t: number, side: 1 | -1): readonly (readonly [number, number])[] {
   if (state === "asking") return [EYE_RING[(((Math.floor(t * 6) * side) % 4) + 4) % 4]!];
@@ -180,7 +246,7 @@ const MEMBER_FRAMES_KEPT = 64;
 
 /**
  * A member as pixel cells at `now`, facing `dir` (toward Pingo). Its look follows its state: eyes that blink when
- * idle, a spinner while Jev is asked, happy eyes to join and to leave, crosses for a subagent that failed.
+ * idle, a spinner while Jev or a feature is at work, happy eyes to join and to leave, crosses for a task that failed.
  * Time is quantized to a tenth of a second, so two redraws inside the same tenth give the same cells.
  */
 export function memberFrame(member: Pick<CastMember, "kind" | "state" | "since">, now: number, dir: 1 | -1, walking: boolean): PixelCell[][] {
@@ -194,12 +260,13 @@ export function memberFrame(member: Pick<CastMember, "kind" | "state" | "since">
   const shape = SHAPES[member.kind];
   const color = castColor(member.kind);
   const grid = pixelGrid(DOTS_W / 2, MEMBER_BRAILLE.rows * 2);
-  // a subagent that failed shakes: it jumps a pixel every other tenth
+  // a member whose task failed shakes: it jumps a pixel every other tenth
   const lift = member.state === "failed" ? (tick % 2 === 1 ? -1 : 0) : liftOf(member.state, t, ageTick / 10, walking);
   stamp(grid, 0, FLOOR, [shape.rows[FLOOR]!], { s: PET_PALETTE.floor });
   stamp(grid, 0, lift, shape.rows.slice(0, FLOOR), { "#": color, d: shadeOf(color) });
+  const [left, right] = shape.eyeX ?? [1, 5];
   for (const side of [-1, 1] as const) {
-    const x0 = side === -1 ? 1 : 5;
+    const x0 = side === -1 ? left : right;
     for (const [dx, dy] of eyeDots(member.state, t + BLINK_PHASE[member.kind], side)) put(grid, x0 + dx, shape.eyeRow + dy + lift, PET_PALETTE.eyeInk | DETAIL);
   }
   const frame = renderPixels(dir > 0 ? grid : mirror(grid));
@@ -217,14 +284,18 @@ export interface CastSlot {
   color: number;
   width: number;
   dir: 1 | -1;
-  /** The one speaking, a member or Pingo: its name is drawn in a balloon. */
+  /** A member or Pingo on the lane for a task: its name is drawn in a balloon. */
   speaking?: boolean;
+  /** What it says, after its name in the balloon where the lane has room. */
+  says?: string;
 }
 
 /** A member's slot is as wide as its name and a space, within these bounds; Pingo's is his sprite's width. */
 const LABEL_PADDING = DECK_DESIGN.cast.lane.labelPaddingColumns;
 const SLOT_MIN = MEMBER_BRAILLE.columns + DECK_DESIGN.cast.lane.memberWidthPaddingColumns;
 const SLOT_MAX = DECK_DESIGN.cast.lane.maximumLabelColumns;
+/** The widest a speaker's slot grows to show what it says after its name. */
+const BALLOON_MAX = DECK_DESIGN.cast.lane.maximumBalloonColumns;
 const slotWidth = (label: string) => Math.max(SLOT_MIN, Math.min(SLOT_MAX, [...label].length + LABEL_PADDING));
 /** The balloon's two ends around a speaker's name. */
 const BALLOON_ENDS = 2;
@@ -237,25 +308,74 @@ export function clipName(label: string, room: number): string {
   return chars.length <= room ? chars.join("") : `${chars.slice(0, Math.max(0, room - 1)).join("")}…`;
 }
 
+/** A text's characters that take one column each: accented letters kept, wide, zero-width and control ones dropped. */
+const oneColumn = (text: string): string[] => [...text.normalize("NFC").replace(/\s+/g, " ")].filter((char) => displayWidth(char) === 1);
+
+/**
+ * What a speaker's balloon reads in `room` columns: its name (cut to a slot's widest, as the desktop shows it), then
+ * what it says, cut with an ellipsis. Words only come when at least one of them shows a letter; until then, or when
+ * nothing it says takes one column, the name stands alone.
+ */
+export function balloonWords(slot: Pick<CastSlot, "label" | "says">, room: number): string {
+  const name = clipName(slot.label, Math.min(room, SLOT_MAX));
+  const words = slot.says ? oneColumn(slot.says).join("").trim() : "";
+  if (!words || room < [...name].length + 4) return name;
+  const chars = [...`${name}: ${words}`];
+  return chars.length <= room ? chars.join("") : `${chars.slice(0, Math.max(0, room - 1)).join("")}…`;
+}
+
+/** The columns a speaker's slot would take to show all it says, up to the cap: its balloon's words at their widest. */
+const balloonNeed = (slot: CastSlot) =>
+  slot.speaking && slot.says ? Math.max(slot.width, [...balloonWords(slot, BALLOON_MAX - LABEL_PADDING - BALLOON_ENDS)].length + LABEL_PADDING + BALLOON_ENDS) : slot.width;
+
+/**
+ * Widens the speakers' slots into `spare` columns, so each balloon shows what its member says after its name: an
+ * equal share each, none past what its words need. Returns the columns taken.
+ */
+function growBalloons(slots: readonly CastSlot[], spare: number): number {
+  let taken = 0;
+  let growing = slots.filter((slot) => balloonNeed(slot) > slot.width);
+  while (spare - taken > 0 && growing.length) {
+    const share = Math.max(1, Math.floor((spare - taken) / growing.length));
+    for (const slot of growing) {
+      const add = Math.max(0, Math.min(share, balloonNeed(slot) - slot.width, spare - taken));
+      slot.width += add;
+      taken += add;
+    }
+    growing = growing.filter((slot) => balloonNeed(slot) > slot.width);
+  }
+  return taken;
+}
+
 /**
  * The group laid out for a lane `columns` wide: the features, Jev, Pingo, then the subagents in the order they
- * started. Pingo is always there; Jev comes next if he fits; then, while they fit, the features speaking or at work,
- * the subagents, and the features standing by, leaving room for "+N" when some do not. The features face right and the subagents left,
- * so everyone faces Pingo. `pingoSpeaks`: Pingo is the one speaking, for Claude's own turn.
+ * started. Pingo is always there; Jev comes next if he fits; then, while they fit, the features, the subagents, and
+ * the members saying goodbye, leaving room for "+N" when some do not. The features face right and the subagents
+ * left, so everyone faces Pingo. `pingoSpeaks`: Pingo speaks for the session, saying `pingoSays`, its goal.
  */
-export function castLayout(cast: readonly CastMember[], columns: number, pingoSpeaks = false): { slots: CastSlot[]; hidden: number; width: number } {
-  const pingo: CastSlot = { label: "Pingo", color: PINGO_NAME_INK, width: Math.max(PET_BRAILLE.columns, slotWidth("Pingo") + (pingoSpeaks ? BALLOON_ENDS : 0)), dir: 1, ...(pingoSpeaks ? { speaking: true } : {}) };
+export function castLayout(cast: readonly CastMember[], columns: number, pingoSpeaks = false, pingoSays?: string): { slots: CastSlot[]; hidden: number; width: number } {
+  const pingo: CastSlot = {
+    label: "Pingo",
+    color: PINGO_NAME_INK,
+    width: Math.max(PET_BRAILLE.columns, slotWidth("Pingo") + (pingoSpeaks ? BALLOON_ENDS : 0)),
+    dir: 1,
+    ...(pingoSpeaks ? { speaking: true, ...(pingoSays ? { says: pingoSays } : {}) } : {}),
+  };
   let width = pingo.width;
+  const slotOf = (member: CastMember): CastSlot => ({
+    member,
+    label: member.label,
+    color: member.state === "failed" ? HUE.fail : castColor(member.kind),
+    width: memberWidth(member),
+    dir: isSpeaker(member.kind) || member.kind === "jev" ? 1 : -1,
+    ...(member.speaking ? { speaking: true, ...(member.says ? { says: member.says } : {}) } : {}),
+  });
   const jev = cast.find((m) => m.kind === "jev");
-  const jevSlot: CastSlot | undefined = jev && width + memberWidth(jev) <= columns
-    ? { member: jev, label: jev.label, color: castColor("jev"), width: memberWidth(jev), dir: 1, ...(jev.speaking ? { speaking: true } : {}) }
-    : undefined;
+  const jevSlot = jev && width + memberWidth(jev) <= columns ? slotOf(jev) : undefined;
   if (jevSlot) width += jevSlot.width;
-  // who gets the room first: a feature speaking or at work, then the subagents, then the features standing by (every
-  // feature switched on is on the lane, so on a narrow one the quiet ones give way before any subagent does)
+  // who gets the room first: the features, then the subagents, then whoever is only there to say goodbye
   const queue = cast.filter((m) => m.kind !== "jev");
-  // (a feature hopping in has nothing to say yet: it waits with the ones standing by)
-  const rank = (m: CastMember) => (!isSpeaker(m.kind) ? 1 : m.speaking || m.state === "asking" ? 0 : 2);
+  const rank = (m: CastMember) => (m.state === "done" || m.state === "failed" ? 2 : isSpeaker(m.kind) ? 0 : 1);
   const fitted = new Set<CastMember>();
   for (const member of [...queue].sort((a, b) => rank(a) - rank(b))) {
     const left = queue.length - fitted.size - 1;
@@ -265,7 +385,6 @@ export function castLayout(cast: readonly CastMember[], columns: number, pingoSp
     width += memberWidth(member);
   }
   // and they stand in the cast's own order: the features at Jev's left, the subagents at Pingo's right
-  const slotOf = (member: CastMember): CastSlot => ({ member, label: member.label, color: member.state === "failed" ? HUE.fail : castColor(member.kind), width: memberWidth(member), dir: isSpeaker(member.kind) ? 1 : -1, ...(member.speaking ? { speaking: true } : {}) });
   const features = queue.filter((m) => fitted.has(m) && isSpeaker(m.kind)).map(slotOf);
   const agents = queue.filter((m) => fitted.has(m) && !isSpeaker(m.kind)).map(slotOf);
   return { slots: [...features, ...(jevSlot ? [jevSlot] : []), pingo, ...agents], hidden: queue.length - fitted.size, width };
@@ -279,13 +398,16 @@ const BLANK: LaneCell = [" ", TERMINAL_DEFAULT];
 const PINGO_BALLOON = HUE.neutral;
 
 /**
- * The whole lane at `now`, `columns` cells wide and `LANE_ROWS` tall: the names on the top row (the speaker's in a
- * balloon of its color), the bodies under them, the group standing where Pingo has walked to. The Raster that shows
- * it keeps one size, so a walk, a newcomer or a leaver is only a change of cells, which the host repaints in place.
+ * The whole lane at `now`, `columns` cells wide and `LANE_ROWS` tall: the names on the top row (each speaker's in a
+ * balloon of its color, with what it is doing after it where there is room), the bodies under them, the group
+ * standing where Pingo has walked to. The Raster that shows it keeps one size, so a walk, a newcomer or a leaver is
+ * only a change of cells, which the host repaints in place.
  */
 export function castLaneCells(pet: Pet, cast: readonly CastMember[], now: number, columns: number): LaneCell[][] {
-  const { slots, hidden, width } = castLayout(cast, columns, pet.speaks === true);
-  const total = width + (hidden ? moreWidth(hidden) : 0);
+  const { slots, hidden, width } = castLayout(cast, columns, pet.speaks === true, pet.says);
+  const more = hidden ? moreWidth(hidden) : 0;
+  // the balloons take what the group leaves, so what each says shows; whatever they leave is Pingo's to walk
+  const total = width + more + growBalloons(slots, columns - width - more);
   const lane = Array.from({ length: LANE_ROWS }, () => Array.from({ length: columns }, () => BLANK));
   const put = (row: number, col: number, cell: LaneCell) => {
     if (col >= 0 && col < columns) lane[row]![col] = cell;
@@ -294,7 +416,8 @@ export function castLaneCells(pet: Pet, cast: readonly CastMember[], now: number
   let x = Math.round(petX(pet, now) * Math.max(0, columns - total));
   for (const slot of slots) {
     const speaking = slot.speaking === true;
-    const name = [...clipName(slot.label, slot.width - LABEL_PADDING - (speaking ? BALLOON_ENDS : 0))];
+    const room = slot.width - LABEL_PADDING - (speaking ? BALLOON_ENDS : 0);
+    const name = [...(speaking ? balloonWords(slot, room) : clipName(slot.label, room))];
     const ink = slot.member ? slot.color : TERMINAL_DEFAULT;
     const ground = slot.member ? slot.color : PINGO_BALLOON;
     const cells: LaneCell[] = speaking

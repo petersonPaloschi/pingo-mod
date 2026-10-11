@@ -28,7 +28,7 @@ const preferences = {
   trackerSummary: false,
   clashMinutes: 30,
   // one source off: the Comandante tab draws "All" unticked and both kinds of switch
-  comandanteSources: { farol: true, semente: true, vigia: true, clareza: true, codeQuality: false },
+  comandanteSources: { farol: true, semente: true, vigia: true, clareza: true, codeQuality: false, portao: true, ensaio: true, chaveiro: true, rumo: true },
 } as const;
 const prefixes = [...new Set(Object.keys(en).map((key) => key.split(".")[0]!))];
 const rawLocaleKey = new RegExp(`(?<![\\w/.-])(?:${prefixes.join("|")})\\.[A-Za-z]\\w*(?:\\.\\w+)*`);

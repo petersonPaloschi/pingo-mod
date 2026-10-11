@@ -511,6 +511,47 @@ export async function onAgentDone(io: Io, agentId: string, answer: string, ok: b
   if (plan) startReview(io, plan, answer);
 }
 
+/** What one finished subagent's review reads: its task, its answer, and the diff of the files it edited. */
+async function agentReviewRequest(io: Pick<Io, "run">, x: { agentId: string; type: string; description: string; prompt: string; answer: string; files: readonly string[]; revision: number }): Promise<ReviewRequest> {
+  const evidence: Evidence[] = [
+    { id: "E_task", kind: "task", label: "Delegated task", body: x.prompt },
+    // Without edits the answer is the deliverable; with edits it is the worker's own account.
+    { id: "E_answer", kind: x.files.length ? "claim" : "artifact", label: x.files.length ? "Worker summary (a claim, not proof)" : "Worker answer (the deliverable)", body: x.answer || "(empty)" },
+    ...(await diffEvidence(io, x.files)),
+  ];
+  return {
+    artifactId: `agent:${x.agentId}`,
+    digest: digestOf(x.revision.toString(), x.prompt, x.answer, ...evidence.map((item) => item.body)),
+    criteria: [{ id: "C1", text: `The delegated task (${x.description || x.type}) is completed exactly as asked, with no defect in the supplied result.` }],
+    evidence,
+  };
+}
+
+/**
+ * The independent review of a subagent Pingo starts itself (Portão's security reviewer, Ensaio), which no Agent call
+ * planned: the review a delegated subagent gets, by a reviewer profile chosen under the policy's advisor role. It runs
+ * whenever the policy's review is on, orchestration on or off. Undefined when review is off, Jev cannot be asked, or no
+ * reviewer profile was chosen: the result then stays unverified.
+ */
+export async function reviewPingoAgent(io: Io, x: { agentId: string; type: string; description: string; prompt: string; answer: string; files?: readonly string[] }): Promise<ReviewOutcome | undefined> {
+  const policy = await readPolicy(io);
+  if (!policy.review) return undefined;
+  const config = await io.settings();
+  if (await io.gate(config)) return undefined;
+  const reviewer = (await chooseProfiles(io, config, policy, [{ key: "unit_0_reviewer", unit: x.agentId, role: "advisor" }], {
+    task_brief: truncate(x.description, 400, config.locale),
+    agent_type: x.type,
+  })).unit_0_reviewer;
+  if (!reviewer) {
+    await io.log("warn", `Pingo review of ${x.type}: no reviewer profile; its result stays unverified.`);
+    return undefined;
+  }
+  const request = await agentReviewRequest(io, { ...x, files: [...(x.files ?? [])].sort(), revision: policy.revision });
+  const outcome = await runReview(io.complete, request, reviewer, policy.limits.callTimeoutMs);
+  await io.log(outcome.approved ? "good" : "warn", `Pingo review of ${x.type} by ${MODEL_LABEL[reviewer.model]} ${reviewer.effort}: ${outcome.verdict}${outcome.approved ? "" : " (unverified)"}`, outcome.problems.join(", ") || undefined);
+  return outcome;
+}
+
 /** Start a native subagent's review once, from its turn's end or, failing that, its tool result. */
 function startReview(io: Io, plan: SpawnPlan, answer: string): void {
   if (plan.review || !plan.policy.review) return;
@@ -523,18 +564,7 @@ function startReview(io: Io, plan: SpawnPlan, answer: string): void {
     }
     const files = [...(editedBy.get(agentId) ?? [])].sort();
     editedBy.delete(agentId);
-    const evidence: Evidence[] = [
-      { id: "E_task", kind: "task", label: "Delegated task", body: plan.prompt },
-      // Without edits the answer is the deliverable; with edits it is the worker's own account.
-      { id: "E_answer", kind: files.length ? "claim" : "artifact", label: files.length ? "Worker summary (a claim, not proof)" : "Worker answer (the deliverable)", body: answer || "(empty)" },
-      ...(await diffEvidence(io, files)),
-    ];
-    const request: ReviewRequest = {
-      artifactId: `agent:${agentId}`,
-      digest: digestOf(plan.policy.revision.toString(), plan.prompt, answer, ...evidence.map((item) => item.body)),
-      criteria: [{ id: "C1", text: `The delegated task (${plan.description || plan.type}) is completed exactly as asked, with no defect in the supplied result.` }],
-      evidence,
-    };
+    const request = await agentReviewRequest(io, { agentId, type: plan.type, description: plan.description, prompt: plan.prompt, answer, files, revision: plan.policy.revision });
     const outcome = await runReview(io.complete, request, plan.reviewer, plan.policy.limits.callTimeoutMs);
     await io.log(outcome.approved ? "good" : "warn", `Orchestration: review of ${plan.type} by ${MODEL_LABEL[plan.reviewer.model]} ${plan.reviewer.effort}: ${outcome.verdict}${outcome.approved ? "" : " (unverified)"}`, outcome.problems.join(", ") || undefined);
     if (plan.background) { await pushNote(io, reviewNote(plan, outcome)); spawns.delete(plan.toolUseId); }

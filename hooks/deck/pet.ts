@@ -25,8 +25,10 @@ export interface Pet {
   id: number;
   hat?: string;
   shades?: boolean;
-  /** Pingo speaks for Claude's own turn: its name is drawn in a balloon, as a speaking member's is. */
+  /** Pingo speaks for the session (Claude's turn runs, or its goal is known): its name is drawn in a balloon, as a speaking member's is. */
   speaks?: boolean;
+  /** The session's goal, summed up from the person's requests, after Pingo's name in the balloon where the lane has room. */
+  says?: string;
 }
 
 const SPEED = DECK_DESIGN.pet.speed; // lane fractions per second

@@ -1,5 +1,5 @@
-// The cast on the Deck as a session draws it: Jev beside Pingo from the start, a subagent named over its mascot while
-// it works, and gone soon after it ends.
+// The cast on the Deck as a session draws it: Pingo alone while nobody is at work, a subagent named over its mascot
+// while it works, saying what it does, and gone soon after it ends.
 import { expect, test } from "claude-code/testing";
 
 import { CAST_LEAVE_MS, LANE_ROWS } from "../../hooks/deck/cast.ts";
@@ -25,7 +25,7 @@ function nameRow(cells: unknown, columns: number): string {
   return row;
 }
 
-test("the Deck's lane names Jev beside Pingo, then each subagent while it works, and lets it go when it ends", LOCALE, async ($, on) => {
+test("the Deck's lane shows Pingo alone, then each subagent while it works, and lets it go when it ends", LOCALE, async ($, on) => {
   const { clock } = deckWorld(on, undefined, { spawn: () => ({ model: "claude-haiku-4-5", agentId: "a1" }) });
   await $.session.start(SESSION);
   const columns = petLaneColumns(110);
@@ -36,20 +36,22 @@ test("the Deck's lane names Jev beside Pingo, then each subagent while it works,
     expect(lane?.props.rows).toBe(LANE_ROWS);
     return nameRow(lane?.props.cells, columns);
   };
+  // nobody at work: Pingo alone, Jev and the features with no task included
   let row = await names();
-  expect(row.indexOf("Jev")).toBeGreaterThanOrEqual(0);
-  expect(row.indexOf("Pingo")).toBeGreaterThan(row.indexOf("Jev"));
-  expect(row).not.toContain("Tetra");
+  expect(row.trim()).toBe("Pingo");
 
   await $.agent.spawn(spawn("explore routes"));
   row = await names();
   expect(row.indexOf("Tetra·Explore")).toBeGreaterThan(row.indexOf("Pingo"));
+  // its balloon says what it was sent to do
+  expect(row).toContain("▐Tetra·Explore: explore routes▌");
 
   await $.turn.complete({ turnId: "x", agentId: "a1", answer: "ok", durationMs: 5, isAborted: false, reason: "answer", usage: undefined });
-  // it ends: a moment's hop in its place, then it is gone
-  expect(await names()).toContain("Tetra·Explore");
+  // it ends: a moment's goodbye hop in its place, its balloon gone, then it is gone
+  row = await names();
+  expect(row).toContain("Tetra·Explore");
+  expect(row).not.toContain("explore routes");
   await clock.advance(CAST_LEAVE_MS + 150);
   row = await names();
-  expect(row).not.toContain("Tetra");
-  expect(row).toContain("Jev");
+  expect(row.trim()).toBe("Pingo");
 });

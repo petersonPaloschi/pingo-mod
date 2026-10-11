@@ -7,7 +7,7 @@
 // session reads, naming the session it came from. With the switch off, Jev is not asked and the tools answer as always.
 import type { On } from "claude-code";
 import { describe, expect, mock, test } from "claude-code/testing";
-import { COMANDANTE_VERDICTS, comandanteRecords, comandanteRequest, comandanteSourcesAll, comandanteVerdict, filterComandante, mergeComandante, normalizeComandanteSources } from "../hooks/core/comandante.ts";
+import { COMANDANTE_SOURCES, COMANDANTE_VERDICTS, comandanteRecords, comandanteRequest, comandanteSourcesAll, comandanteVerdict, filterComandante, mergeComandante, normalizeComandanteSources } from "../hooks/core/comandante.ts";
 import { DEFAULT_FEATURES, type Features } from "../hooks/core/plan.ts";
 import type { Answer, SystemOneRequest } from "../hooks/core/types.ts";
 import { text } from "../hooks/i18n.ts";
@@ -143,12 +143,14 @@ describe("the Comandante's pure parts", () => {
   });
 
   test("every source is judged by default; a stored list keeps only a source switched off with false", () => {
-    const all = { farol: true, semente: true, vigia: true, clareza: true, codeQuality: true };
+    // every source the Comandante lists, the autonomous agents' included
+    const all = Object.fromEntries(COMANDANTE_SOURCES.map((source) => [source, true]));
+    expect(Object.keys(all)).toEqual(expect.arrayContaining(["farol", "semente", "vigia", "clareza", "codeQuality", "portao"]));
     expect(normalizeComandanteSources(undefined)).toEqual(all);
     for (const broken of [null, "farol", 3, true, ["farol"], {}]) expect(normalizeComandanteSources(broken)).toEqual(all);
     // only false turns one off: a word, a number or an unknown source changes nothing
     expect(normalizeComandanteSources({ farol: false, semente: "no", vigia: 0, prisma: false })).toEqual({ ...all, farol: false });
-    expect(comandanteSourcesAll(false)).toEqual({ farol: false, semente: false, vigia: false, clareza: false, codeQuality: false });
+    expect(comandanteSourcesAll(false)).toEqual(Object.fromEntries(COMANDANTE_SOURCES.map((source) => [source, false])));
     expect(comandanteSourcesAll(true)).toEqual(all);
   });
 
@@ -330,10 +332,10 @@ describe("the Comandante in a session", () => {
 
     const ui = await comandanteTab($);
     expect((await ui.find({ key: "comandante-sources-all" }))?.props.label).toBe(`${GLYPH.check} All`);
-    for (const source of ["farol", "semente", "vigia", "clareza", "codeQuality"] as const) {
+    for (const source of COMANDANTE_SOURCES) {
       expect((await ui.find({ key: `comandante-source-${source}` }))?.props.label).toBe(`${GLYPH.check} ${text(`feature.${source}.name`, "en")}`);
     }
-    expect(await ui.find({ type: "Text", text: "5 of 5 on" })).toBeDefined();
+    expect(await ui.find({ type: "Text", text: `${COMANDANTE_SOURCES.length} of ${COMANDANTE_SOURCES.length} on` })).toBeDefined();
     await ui.unmount();
   });
 
@@ -348,12 +350,12 @@ describe("the Comandante in a session", () => {
     expect(sources()).toEqual(comandanteSourcesAll(false));
     expect((await ui.find({ key: "comandante-sources-all" }))?.props.label).toBe(`${GLYPH.off} All`);
     expect((await ui.find({ key: "comandante-source-vigia" }))?.props.label).toBe(`${GLYPH.off} Vigia`);
-    expect(await ui.find({ type: "Text", text: "0 of 5 on" })).toBeDefined();
+    expect(await ui.find({ type: "Text", text: `0 of ${COMANDANTE_SOURCES.length} on` })).toBeDefined();
 
     // one back on: "All" stays unticked until every one is; pressed then, it switches every one on
     await ui.press({ key: "comandante-source-vigia" });
     await settle(() => sources()?.vigia === true);
-    expect(await ui.find({ type: "Text", text: "1 of 5 on" })).toBeDefined();
+    expect(await ui.find({ type: "Text", text: `1 of ${COMANDANTE_SOURCES.length} on` })).toBeDefined();
     expect((await ui.find({ key: "comandante-sources-all" }))?.props.label).toBe(`${GLYPH.off} All`);
     await ui.press({ key: "comandante-sources-all" });
     await settle(() => sources()?.farol === true);
@@ -460,4 +462,22 @@ describe("the Comandante in a session", () => {
     expect(await ui.find({ type: "Text", text: "approved · Semente" })).toBeUndefined();
     await ui.unmount();
   });
+});
+
+test("the request Jev weighs an alert against is what the person typed, not a prompt a plugin sent after it", LOCALE, async ($, on) => {
+  const { jev } = comandanteWorld(on, { comandante: true }, { verdict: pick("approve_fits", 0.8) });
+  on("prompt.submit", async (_$, e) => ({ text: (e as { text: string }).text }) as never);
+  on("turn.start", async (_$, e) => ({ turnId: e.turnId }));
+  await $.session.start({ cwd: "/workspace" } as never).catch(() => undefined);
+  const turn = async (turnId: string, said: string, kind: string) => {
+    await $.prompt.submit({ text: said, wait: false, origin: { kind } } as never);
+    await $.turn.start({ turnId, text: said } as never);
+  };
+  await turn("t1", "Add a config loader", "composer");
+  // Clareza's rewrite plan runs as a turn of its own: the latest turn, but not the person's request
+  await turn("t2", "[Clareza] Rewrite your last answer", "plugin");
+  await farol($, "The config is YAML");
+  const judged = jev.asked.filter((request) => request.questions !== undefined && "verdict" in request.questions);
+  expect(judged).toHaveLength(1);
+  expect(judged[0]!.state).toMatchObject({ alert: "The config is YAML", request: "Add a config loader" });
 });

@@ -4,7 +4,7 @@
 // Every function that reaches `$` is declared here at the top level, so `claude plugin validate`
 // can follow each call; the other files are pure.
 import { atom, read, update } from "claude-code";
-import type { ElementTable, EngineInterface, PromptComposeInput, PromptSubmitInput, Register, RenderNode, RenderSurface, SessionReceiveInput, Timer } from "claude-code";
+import type { ElementTable, EngineInterface, PromptComposeInput, PromptSubmitInput, Register, RenderNode, RenderSurface, SessionReceiveInput, Timer, ToolCheckResult } from "claude-code";
 
 import type { AdvisorInfo, AgentRun, FeatureFlags, FeaturePreferences, FarolAssumption, FarolRule, ClarezaGrade, ClarezaProposal, SementeIdea, LapidaPhase, PrismaPicker, PrismaQuestion, PrismaOption, SentinelaSession, VigiaMail, VigiaSession, VigiaTask, FeedEntry, PaneScroll, QualityCycle, FeedKind, FeedSpeaker, FeedTone, JevTab, LiveNow, RouteEvent, SetupDraft, TraceState } from "../types";
 import { keyFor, keyOwner, providerBasis, resolveSettings, storedApplies, type ModOptions, type Settings, type StoredSettings } from "./config.ts";
@@ -14,12 +14,21 @@ import { createAskJev, isProvider, observeAskJev, PROVIDERS, redact, resolveMode
 import type { ModelContext } from "./core/types.ts";
 import { CLAUDE_MODEL } from "./core/contracts.ts";
 import { errorMessage } from "./core/reasons.ts";
-import { QUALITY_SYSTEM } from "./core/prompts.ts";
-import { parseQualityReport, QUALITY_AGENT, QUALITY_HISTORY, QUALITY_MAX_TURNS, qualityAsks, qualityCall, qualityHelperBrief, qualityHelperRefusal, qualityRequest, qualityVerdict, type QualityRole } from "./core/quality.ts";
+import { ENSAIO_SYSTEM, LAPIDA_SYSTEM, PORTAO_SYSTEM, QUALITY_SYSTEM, RESUMO_SYSTEM } from "./core/prompts.ts";
+import { LAPIDA_AGENT, LAPIDA_MARK, LAPIDA_MAX_TURNS, LAPIDA_TIMEOUT_MS, lapidaRequest, splitLapidaReply } from "./core/lapida.ts";
+import { parseResumo, RESUMO_AGENT, RESUMO_MAX_TURNS, RESUMO_TIMEOUT_MS, resumoRequest } from "./core/resumo.ts";
+import { ENSAIO_AGENT, ENSAIO_HISTORY, ENSAIO_MAX_TURNS, ensaioDecision, ensaioRequest, ensaioRunRequest, ensaioVerdict, ensaioWaiting, parseEnsaioReport, type EnsaioFacts } from "./core/ensaio.ts";
+import { changedFiles, hasRunner, parsePortaoReport, PORTAO_AGENT, PORTAO_HISTORY, PORTAO_MAX_TURNS, PORTAO_RUNNER, PORTAO_TEST_TIMEOUT_MS, portaoDecision, portaoRequest, portaoReviewRequest, portaoWaiting, resumedChecks, shipVerb, testFailures, testsFor, testTotals, type PortaoDecision, type PortaoFacts } from "./core/portao.ts";
+import { askTimed } from "./core/request.ts";
+import type { AgentProposal, ChaveiroRule, EnsaioRun, OficinaCheck, PortaoCheck, PortaoRun, QualityItem, RumoGoal } from "../types";
+import { doctorFindings, OFICINA_COMMAND, OFICINA_CONTEXT_PERCENT, OFICINA_HISTORY, OFICINA_TIMEOUT_MS, oficinaDecision, oficinaRequest, type OficinaFacts } from "./core/oficina.ts";
+import { addAllowRule, CHAVEIRO_HISTORY, CHAVEIRO_THRESHOLD, chaveiroDecision, chaveiroRequest, permissionPattern, settingsFile, type ChaveiroPattern } from "./core/chaveiro.ts";
+import { goalCondition, RUMO_HISTORY, RUMO_MARK, rumoJudgeRequest, rumoProposal, rumoProposeRequest, rumoStatus } from "./core/rumo.ts";
+import { parseQualityReport, QUALITY_AGENT, QUALITY_HISTORY, QUALITY_MAX_TURNS, qualityAsks, qualityCall, qualityHelperBrief, qualityHelperRefusal, qualityRequest, qualityVerdict, SHELL_TOOLS, type QualityRole } from "./core/quality.ts";
 import { featureGate, sizeRequest, totalInput, usageFacts, type FeatureContext } from "./core/runtime.ts";
 import { COMANDANTE_FOLDER, COMANDANTE_KEEP, comandanteProject, comandanteRecords, comandanteRequest, comandanteVerdict, mergeComandante, normalizeComandanteFilter, normalizeComandanteSources, type ComandanteAlert, type ComandanteVerdict } from "./core/comandante.ts";
 import type { ComandanteRecord, ComandanteRuling, ComandanteSource } from "../types";
-import { readVigiaLetter, vigiaAlive, vigiaCommand, vigiaDigest, vigiaDoing, vigiaFlat, vigiaHold, vigiaHoldReason, vigiaInboxNote, vigiaLabel, vigiaName, vigiaNext, vigiaProject, vigiaRelative, vigiaShared, vigiaTargets, VIGIA_MAIL_KEEP, VIGIA_MAX_HOLDS, writeVigiaLetter, type VigiaLetter } from "./core/vigia.ts";
+import { readVigiaLetter, vigiaAlive, vigiaCommand, vigiaDigest, vigiaDoing, vigiaFlat, vigiaHold, vigiaHoldReason, vigiaInboxNote, vigiaLabel, vigiaMailDone, vigiaName, vigiaNext, vigiaProject, vigiaRelative, vigiaShared, vigiaTargets, VIGIA_MAIL_KEEP, VIGIA_MAX_HOLDS, writeVigiaLetter, type VigiaLetter } from "./core/vigia.ts";
 import {
   DEFAULT_FEATURES,
   planAgent,
@@ -38,6 +47,7 @@ import {
   consultEnd,
   consultStart,
   emptyTrace,
+  lastAsked,
   noteAdvice,
   promptEntered,
   promptRow,
@@ -53,7 +63,7 @@ import {
   traceOf,
   type ConsultWhere,
 } from "./trace.ts";
-import { featureHead, lineTab, renderAbove, renderAgentPane, renderBand, renderPane, sheetCard, stackAbove, type AboveBlock, type Actions, type ComandantePanel, type DeckPanel, type QualityPanel, type View } from "./ui.tsx";
+import { featureHead, lineTab, portaoSettled, renderAbove, renderAgentPane, renderBand, renderPane, rumoSettled, sheetCard, stackAbove, type AboveBlock, type Actions, type AutonomoId, type AutonomosPanel, type AutonomoVerb, type ComandantePanel, type DeckPanel, type QualityPanel, type View } from "./ui.tsx";
 import { displayWidth, rowsOf } from "./layout.ts";
 import { flowSummary } from "./flow.ts";
 import * as orch from "./orchestrate.ts";
@@ -107,7 +117,7 @@ import {
   type ToolCall,
 } from "./deck/model.ts";
 import { createPet, petLaneCells, petLaneColumns, PET_BRAILLE, stepPet, type Pet } from "./deck/pet.ts";
-import { castColor, castKey, castLaneCells, castOf, LANE_ROWS, PINGO_INK, SPEAKER_IDS, SPEAKER_NAMES, type CastMember, type CastSpeaker, type SpeakerId } from "./deck/cast.ts";
+import { CAST_LEAVE_MS, castColor, castKey, castLaneCells, castOf, LANE_ROWS, PINGO_INK, SPEAKER_NAMES, type CastMember, type CastSpeaker, type SpeakerId } from "./deck/cast.ts";
 import { cellsOf, hex } from "./dots.ts";
 import { FOLD_FADE, FOLD_STEP, TRACK_H, toTrackRow, type DrawCaches } from "./deck/rows.ts";
 import { DESKTOP_STYLES, DESKTOP_STYLE_NAMES, desktopTrack } from "./deck/styles-desktop.ts";
@@ -148,6 +158,8 @@ const clarezaProposal = atom({ plugin: "jev", key: "clarezaProposal" } as const,
 const clarezaReviewing = atom({ plugin: "jev", key: "clarezaReviewing" } as const, false);
 /** Contexto is cleaning up a long conversation: its mascot is at work on the Deck lane. */
 const contextoBusy = atom({ plugin: "jev", key: "contextoBusy" } as const, false);
+/** Vigia is summarizing this session for the others: its mascot is at work on the Deck lane. */
+const vigiaSummarizing = atom({ plugin: "jev", key: "vigiaSummarizing" } as const, false);
 /** Guidance the local advisor gave this session with orchestration off: capped by limits.adviceCalls, as an objective is. */
 const localAdviceUsed = atom({ plugin: "jev", key: "localAdviceUsed" } as const, 0);
 const sementeIdeas = atom({ plugin: "jev", key: "sementeIdeas" } as const, [] as SementeIdea[]);
@@ -164,6 +176,11 @@ const vigiaSessions = atom({ plugin: "jev", key: "vigiaSessions" } as const, [] 
 const vigiaCollapsed = atom({ plugin: "jev", key: "vigiaCollapsed" } as const, false);
 /** Code Quality's cycles in this session, newest first. */
 const qualityCycles = atom({ plugin: "jev", key: "qualityCycles" } as const, [] as QualityCycle[]);
+const portaoRuns = atom({ plugin: "jev", key: "portaoRuns" } as const, [] as PortaoRun[]);
+const rumoGoals = atom({ plugin: "jev", key: "rumoGoals" } as const, [] as RumoGoal[]);
+const ensaioRuns = atom({ plugin: "jev", key: "ensaioRuns" } as const, [] as EnsaioRun[]);
+const chaveiroRules = atom({ plugin: "jev", key: "chaveiroRules" } as const, [] as ChaveiroRule[]);
+const oficinaChecks = atom({ plugin: "jev", key: "oficinaChecks" } as const, [] as OficinaCheck[]);
 const vigiaMail = atom({ plugin: "jev", key: "vigiaMail" } as const, [] as VigiaMail[]);
 const comandanteLog = atom({ plugin: "jev", key: "comandanteLog" } as const, [] as ComandanteRecord[]);
 const comandanteFilter = atom({ plugin: "jev", key: "comandanteFilter" } as const, normalizeComandanteFilter(undefined));
@@ -246,10 +263,22 @@ let deckCast: CastMember[] = [];
 let castRuns: readonly AgentRun[] = [];
 /** The features on the lane as the last band draw found them: the Deck's clock draws from them without a read. */
 let castSpeakers: CastSpeaker[] = [];
-/** Who speaks on the lane as the last band draw found it: "jev", "pingo", a feature's or a run's id; none when quiet. */
-let castLead: string | undefined;
+/**
+ * Whether Pingo's name is in a balloon, and the session's goal it says there, as the last band draw found them: it
+ * speaks while Claude's turn runs or once a goal is known, and says the goal, never what Claude is doing.
+ */
+let castPingoSpeaks = false;
+let castPingoSays: string | undefined;
+/** The session's goal as Resumo last summed it up from the person's requests; empty until the first one. */
+let pingoGoal = "";
 /** When each feature now on the lane joined it, so it hops once on arrival; a feature that leaves is forgotten. */
 const speakerSince = new Map<SpeakerId, number>();
+/** Each feature whose task just ended, when and how: it hops a goodbye on the lane, then is forgotten. */
+const speakerLeft = new Map<SpeakerId, { at: number; failed: boolean }>();
+/** The features whose task failed since it began: the goodbye it hops on the lane is a failed one. */
+const featureFailed = new Set<SpeakerId>();
+/** Whose alerts the Comandante is judging now, oldest first: what its mascot says it is doing. */
+const comandanteJudging: ComandanteSource[] = [];
 /**
  * The switches the Deck's clock reads every 150 ms, so its tick reads no atom: each writer of the atom keeps its
  * copy, and the first tick after a load reads the atom once. A draw still reads the atoms, which redraw it.
@@ -605,24 +634,61 @@ async function setLive($: EngineInterface, change: Partial<LiveNow>): Promise<vo
   });
 }
 
-/** Jev requests open now, whoever asked, each by when it started: the live status says "asking" while any is. */
-const jevOpen = new Set<symbol>();
+/** One Jev call open now: where it was asked from and what set it off, when its reporter knows. */
+type JevCall = { origin?: JevCaller["origin"]; trigger?: string };
+
+/**
+ * Jev requests open now, whoever asked, each by its own token: the live status says "asking" while any is, and Jev
+ * stands on the Deck's lane saying what they are about.
+ */
+const jevOpen = new Map<symbol, JevCall>();
+/** When the last open Jev call ended, and whether it failed: Jev hops a goodbye on the lane, then leaves it. */
+let jevEnded: { at: number; failed: boolean } | undefined;
+/** Whether a call failed since Jev last joined the lane: the goodbye is a failed one, whichever call closes last. */
+let jevFailing = false;
+
+/**
+ * The calls really out to Jev now, as their reporter saw them: these stand Jev on the Deck's lane. A wrapper such as
+ * `asking` only marks the live status, since the work it wraps may never ask Jev at all.
+ */
+const jevCalls = (): JevCall[] => [...jevOpen.values()].filter((call) => call.origin !== undefined);
 
 /** One Jev request opens or closes; other open calls keep "asking" on. */
-async function jevBusy($: EngineInterface, request: symbol, open: boolean): Promise<void> {
-  if (open) jevOpen.add(request);
+async function jevBusy($: EngineInterface, request: symbol, open: boolean, call: JevCall = {}, failed = false): Promise<void> {
+  const was = jevCalls().length;
+  if (open) jevOpen.set(request, call);
   else jevOpen.delete(request);
+  const left = jevCalls().length;
+  if (!was && left) jevFailing = false;
+  if (failed) jevFailing = true;
+  if (was && !left) jevEnded = { at: await $.clock.now(), failed: jevFailing };
   await setLive($, { asking: jevOpen.size ? true : undefined });
+  // Jev joining or leaving the lane changes the line under it too, which only a draw of the band says
+  if (!was !== !left) redrawDeck($);
+}
+
+/** What Jev is doing, from the calls open now: sift's items counted, else the newest call's own errand. */
+function jevSays(locale: Locale): string {
+  const calls = [...jevOpen.values()];
+  const sift = calls.filter((call) => call.origin === "sift").length;
+  if (sift) return text(sift === 1 ? "deck.speech.jev.sift.one" : "deck.speech.jev.sift.many", locale, { count: formatNumber(sift, locale) });
+  const last = calls.findLast((call) => call.origin !== undefined);
+  if (!last?.origin) return text("deck.speech.jev", locale);
+  if (last.origin === "agent") return last.trigger ? text("deck.speech.jev.agent", locale, { trigger: short(last.trigger, 40) }) : text("deck.speech.jev.agentAny", locale);
+  return text(`deck.speech.jev.${last.origin}` as LocaleKey, locale);
 }
 
 /** Marks the live status while `work` plans with Jev. */
 async function asking<T>($: EngineInterface, work: () => Promise<T>): Promise<T> {
   const request = Symbol("asking");
   await jevBusy($, request, true);
+  let failed = true;
   try {
-    return await work();
+    const value = await work();
+    failed = false;
+    return value;
   } finally {
-    await jevBusy($, request, false);
+    await jevBusy($, request, false, {}, failed);
   }
 }
 
@@ -645,7 +711,7 @@ function jevReporter($: EngineInterface, locale: Locale, where: () => JevWhere):
       const card = jevAsked(event.sent, caller, locale);
       // Call numbers are only unique per reporter: the status keeps each call by its own token.
       const request = Symbol(event.call);
-      await jevBusy($, request, true);
+      await jevBusy($, request, true, caller);
       try {
         const line = await log($, "jev", "call", "info", card.text, undefined, { detail: card.detail, meta: text("feed.jev.asking", locale) });
         let consult = "";
@@ -656,14 +722,14 @@ function jevReporter($: EngineInterface, locale: Locale, where: () => JevWhere):
         });
         open.set(event.call, { consult, startedAt: event.at, line, sent: event.sent, caller, request });
       } catch (error) {
-        await jevBusy($, request, false);
+        await jevBusy($, request, false, {}, true);
         throw error;
       }
       return;
     }
     const call = open.get(event.call);
     open.delete(event.call);
-    if (call) await jevBusy($, call.request, false);
+    if (call) await jevBusy($, call.request, false, {}, event.phase === "fail");
     const meta = call ? `${formatNumber(Math.max(0, event.at - call.startedAt), locale)} ms` : undefined;
     if (event.phase === "fail") {
       if (call) await updateTrace($, (s) => consultEnd(s, call.consult, event.at, event.error));
@@ -702,7 +768,7 @@ function tracedAskJev($: EngineInterface, config: Settings, where: JevWhere): As
 }
 
 /** Who makes one of the mod's model calls besides Jev's: a feature, or orchestration's advice and review. */
-type ModelCaller = "lapida" | "clareza" | "vigia" | "orchestration";
+type ModelCaller = "clareza" | "vigia" | "orchestration";
 type ModelReply = Awaited<ReturnType<EngineInterface["model"]["fork"]>>;
 
 /** How long a model call may take, on the mod's clock, and the language its timeout is told in. */
@@ -961,11 +1027,13 @@ function petOf(now: number): Pet {
 }
 
 /**
- * The pet's cast at `now`, kept for the lane's repaints: Jev (asked while a request is open), the features with
- * something to say or at work, then every subagent at work or just ended.
+ * The pet's cast at `now`, kept for the lane's repaints: Jev while a call of his is open, the features at work or
+ * waiting on the person, every subagent at work, and whoever's task just ended, saying goodbye.
  */
-function castNow(now: number): CastMember[] {
-  deckCast = castOf(castRuns, jevOpen.size > 0, now, castSpeakers, castLead);
+function castNow(now: number, locale: Locale): CastMember[] {
+  const open = jevCalls().length > 0;
+  const jev = { open, ...(open ? { says: jevSays(locale) } : {}), ...(jevEnded ? { ended: jevEnded } : {}) };
+  deckCast = castOf(castRuns, jev, now, castSpeakers);
   return deckCast;
 }
 
@@ -975,36 +1043,45 @@ async function castShown($: EngineInterface): Promise<boolean> {
 }
 
 /**
- * Every feature switched on, as it stands on the lane: first the ones with something for the person, in the order
- * they get to speak (Clareza's plan, sessions waiting, a file clash, a design choice, matching ideas, assumptions to
- * review, other sessions at work), then the ones at work, then the rest, standing by. A feature switched off is not
- * there. What is said: the ones for the person, Pingo for Claude's own turn (what it is doing now, from the Deck's
- * `s`), the features at work in the same order, Jev while asked, each subagent at work. The first speaks: the `lead`.
+ * The features on the lane: each at work or with something waiting on the person, and nobody else. First the ones
+ * for the person, in the order they get to speak (Clareza's plan, sessions waiting, a file clash, a design choice,
+ * matching ideas, assumptions to review), then the ones at work. A feature switched off is not there; one whose task
+ * just ended stays a moment to hop a goodbye, a failed one if its task failed. What is said: the ones for the person,
+ * Pingo for Claude's own turn (the session's goal, never what Claude is doing now), the features at work in the same
+ * order, Jev while asked, each subagent at work. The first says its words on the line under the lane.
  */
-async function speakersOf($: EngineInterface, now: number, locale: Locale, s: DeckState): Promise<{ speakers: CastSpeaker[]; speech: Speech[]; lead?: string }> {
+async function speakersOf($: EngineInterface, now: number, locale: Locale, s: DeckState): Promise<{ speakers: CastSpeaker[]; speech: Speech[] }> {
   const said: { id: SpeakerId; text: string }[] = [];
-  const busy: SpeakerId[] = [];
+  const busy: { id: SpeakerId; text: string }[] = [];
   const counted = (key: string, count: number, values: Record<string, string> = {}) =>
     text(`${key}.${count === 1 ? "one" : "many"}` as LocaleKey, locale, { count: formatNumber(count, locale), ...values });
+  const working = (id: SpeakerId, words?: string) => busy.push({ id, text: words ?? text(`deck.speech.busy.${id}` as LocaleKey, locale) });
   // one read of the switches serves every feature below
   const flags = await read($, features);
+  // Portão holds Claude's commit or push: it speaks first while the command waits on the person
+  if (flags.portao) {
+    const run = (await read($, portaoRuns))[0];
+    if (run?.state === "checking") working("portao", text("deck.speech.busy.portao", locale, { verb: run.verb }));
+    else if (run && portaoWaiting(run) && (run.proposal?.state === "waiting" || run.proposal?.state === "blocked")) {
+      said.push({ id: "portao", text: text(run.state === "passed" ? "deck.speech.portao.passed" : "deck.speech.portao.failed", locale, { verb: run.verb, count: formatNumber(run.findings.length, locale) }) });
+    }
+  }
   if (flags.clareza) {
     const plan = await read($, clarezaProposal);
-    if (plan) said.push({ id: "clareza", text: text("deck.speech.clareza", locale, { problems: plan.problems.join("; ") }) });
-    else if (await read($, clarezaReviewing)) busy.push("clareza");
+    // a plan the Comandante already sent waits on nobody: only the pane shows it, done
+    if (plan && !plan.sent) said.push({ id: "clareza", text: text("deck.speech.clareza", locale, { problems: plan.problems.join("; ") }) });
+    else if (await read($, clarezaReviewing)) working("clareza");
   }
   if (flags.sentinela) {
     const waiting = (await read($, sentinelaSessions)).filter((row) => row.status === "waiting").length;
     if (waiting) said.push({ id: "sentinela", text: counted("deck.speech.sentinela", waiting) });
   }
-  let others = 0;
   if (flags.vigia) {
-    others = (await read($, vigiaSessions)).filter((record) => record.id !== vigiaMe?.id && vigiaAlive(record, now)).length;
+    // other sessions merely at work are Vigia's own line's to tell: on the lane, a clash for the person, or its summary
+    const others = (await read($, vigiaSessions)).some((record) => record.id !== vigiaMe?.id && vigiaAlive(record, now));
     const clash = others ? (await vigiaClashes($, now))[0] : undefined;
-    if (clash) {
-      said.push({ id: "vigia", text: text("deck.speech.vigia.clash", locale, { file: clash.file, session: vigiaName(clash.other) }) });
-      others = 0;
-    }
+    if (clash) said.push({ id: "vigia", text: text("deck.speech.vigia.clash", locale, { file: clash.file, session: vigiaName(clash.other) }) });
+    else if (await read($, vigiaSummarizing)) working("vigia");
   }
   if (flags.prisma && await read($, prismaPending)) said.push({ id: "prisma", text: text("deck.speech.prisma", locale) });
   if (flags.semente && (await readFeaturePreferences($)).ideaNudges) {
@@ -1012,46 +1089,82 @@ async function speakersOf($: EngineInterface, now: number, locale: Locale, s: De
     const found = (await read($, sementeIdeas)).filter((idea) => ids.includes(idea.id));
     if (found.length) said.push({ id: "semente", text: counted("deck.speech.semente", found.length, { idea: found[0]!.text }) });
   }
+  // Farol only gathers what Claude assumes during a turn, which is Claude's work, Pingo's to tell: Farol comes when
+  // there are assumptions to review
   if (flags.farol) {
     const open = (await read($, farolItems)).filter((item) => item.verdict === "open").length;
     if (open) said.push({ id: "farol", text: counted("deck.speech.farol", open) });
-    else if (await read($, farolBusy)) busy.push("farol");
   }
-  if (flags.codeQuality && (await read($, qualityCycles))[0]?.state === "running") busy.push("codeQuality");
-  if (others) said.push({ id: "vigia", text: counted("deck.speech.vigia.others", others) });
-  if (flags.lapida && await read($, lapidaPhase) === "enhancing") busy.push("lapida");
-  if (flags.contexto && await read($, contextoBusy)) busy.push("contexto");
-  if (flags.comandante && await read($, comandanteBusy)) busy.push("comandante");
-  // the rest of the features switched on stand by on the lane, quiet, like Jev between calls
-  const standing = SPEAKER_IDS.filter((id) => flags[id] && !said.some((one) => one.id === id) && !busy.includes(id));
-  const present = new Set<SpeakerId>([...said.map((one) => one.id), ...busy, ...standing]);
-  for (const id of present) if (!speakerSince.has(id)) speakerSince.set(id, now);
-  for (const id of [...speakerSince.keys()]) if (!present.has(id)) speakerSince.delete(id);
+  // Ensaio: a request from what it saw waits on the person; running the app, it is at work
+  if (flags.ensaio) {
+    const run = (await read($, ensaioRuns))[0];
+    if (run?.state === "running") working("ensaio");
+    else if (run && ensaioWaiting(run)) said.push({ id: "ensaio", text: text(run.proposal?.kind === "runbook" ? "deck.speech.ensaio.runbook" : "deck.speech.ensaio.fix", locale, { count: formatNumber(run.problems.length, locale) }) });
+  }
+  // Chaveiro: a permission rule waits on the person
+  if (flags.chaveiro) {
+    const rule = (await read($, chaveiroRules))[0];
+    if (rule && (rule.proposal.state === "waiting" || rule.proposal.state === "blocked")) said.push({ id: "chaveiro", text: text("deck.speech.chaveiro", locale, { rule: rule.rule }) });
+  }
+  // Oficina: at work while claude doctor runs; then a suggestion may wait on the person
+  if (flags.oficina) {
+    const check = (await read($, oficinaChecks))[0];
+    if (oficinaRunning) working("oficina");
+    else if (check?.proposal?.state === "waiting") said.push({ id: "oficina", text: text("deck.speech.oficina", locale, { count: formatNumber(check.findings.length, locale) }) });
+  }
+  const cycle = flags.codeQuality ? (await read($, qualityCycles))[0] : undefined;
+  if (cycle?.state === "running") working("codeQuality", cycle.files.length ? counted("deck.speech.busy.codeQuality.files", cycle.files.length) : undefined);
+  const lapida = flags.lapida ? await read($, lapidaPhase) : "idle";
+  if (lapida === "enhancing") working("lapida");
+  if (flags.contexto && await read($, contextoBusy)) working("contexto");
+  if (flags.comandante && await read($, comandanteBusy)) {
+    const source = comandanteJudging[0];
+    working("comandante", source ? text("deck.speech.busy.comandante.source", locale, { source: comandanteSourceName(source, locale) }) : undefined);
+  }
+  // who joins, who stays, who leaves: a newcomer forgets an old failure, a leaver hops a goodbye unless switched off
+  const present = new Set<SpeakerId>([...said, ...busy].map((one) => one.id));
+  for (const id of present) {
+    if (!speakerSince.has(id)) {
+      speakerSince.set(id, now);
+      featureFailed.delete(id);
+    }
+    speakerLeft.delete(id);
+  }
+  for (const id of [...speakerSince.keys()]) {
+    if (present.has(id)) continue;
+    speakerSince.delete(id);
+    const failed = featureFailed.delete(id) || (id === "lapida" && lapida === "error") || (id === "codeQuality" && cycle?.state === "failed");
+    if (flags[id]) speakerLeft.set(id, { at: now, failed });
+  }
+  for (const [id, left] of [...speakerLeft]) if (now - left.at >= CAST_LEAVE_MS || !flags[id]) speakerLeft.delete(id);
   const featureSpeech = (one: { id: SpeakerId; text: string }): Speech => ({ id: one.id, name: SPEAKER_NAMES[one.id], color: castColor(one.id), text: one.text, open: () => void openFeaturePane($, one.id) });
   const speech = said.map(featureSpeech);
-  // Pingo speaks for Claude's own turn right after what is for the person: Farol watches every turn, so a feature
-  // at work first would hold the balloon for the whole turn
-  if (s.turnActive) {
-    const action = s.activity && !s.activity.done ? s.activity.action : text("deck.action.thinking", locale);
-    speech.push({ id: "pingo", name: "Pingo", color: PINGO_INK, text: action, open: () => void openPane($, "live") });
-  }
+  // Jev speaks for Rumo, which has no mascot: a goal waiting on the person with the others for the person, one at
+  // work with the features at work
+  const goal = flags.rumo ? (await read($, rumoGoals))[0] : undefined;
+  const rumoSpeech = (words: string): Speech => ({ id: "rumo", name: "Jev", color: castColor("jev"), text: words, open: () => void openPane($, "autonomos") });
+  if (goal?.state === "proposed" || goal?.state === "blocked") speech.push(rumoSpeech(text("deck.speech.rumo.proposed", locale, { condition: goal.condition })));
+  // Pingo's balloon holds the session's goal, between turns too; with no goal yet, Claude's turn puts its name alone
+  // in one. Its line, right after what is for the person, says the goal while the turn runs: no row more between turns
+  castPingoSays = pingoGoal || undefined;
+  castPingoSpeaks = s.turnActive || pingoGoal !== "";
+  if (s.turnActive && pingoGoal) speech.push({ id: "pingo", name: "Pingo", color: PINGO_INK, text: pingoGoal, open: () => void openPane($, "live") });
   // then the features at work say what they are doing, in the same order, and Jev while asked
-  speech.push(...busy.map((id) => featureSpeech({ id, text: text(`deck.speech.busy.${id}` as LocaleKey, locale) })));
-  if (jevOpen.size > 0) speech.push({ id: "jev", name: "Jev", color: castColor("jev"), text: text("deck.speech.jev", locale), open: () => void openPane($, "live") });
+  speech.push(...busy.map(featureSpeech));
+  if (goal?.state === "active") speech.push(rumoSpeech(text("deck.speech.rumo.active", locale, { condition: goal.condition, used: formatNumber(goal.turnsUsed, locale), max: formatNumber(goal.turnsMax, locale) })));
+  if (jevCalls().length > 0) speech.push({ id: "jev", name: "Jev", color: castColor("jev"), text: jevSays(locale), open: () => void openPane($, "live") });
   // each subagent at work, under the name the lane gives it
-  for (const member of castOf(castRuns, false, now)) {
+  for (const member of castOf(castRuns, { open: false }, now)) {
     const run = castRuns.find((one) => one.id === member.id);
     if (run?.state === "running") speech.push({ id: run.id, name: member.label, color: castColor(member.kind), text: run.description.trim() || text("deck.speech.agent", locale), open: () => void openPane($, "agents") });
   }
-  const lead = speech[0]?.id;
   return {
     speakers: [
-      ...said.map((one): CastSpeaker => ({ id: one.id, since: speakerSince.get(one.id)!, busy: false, speaking: one.id === lead })),
-      ...busy.map((id): CastSpeaker => ({ id, since: speakerSince.get(id)!, busy: true, speaking: id === lead })),
-      ...standing.map((id): CastSpeaker => ({ id, since: speakerSince.get(id)!, busy: false, speaking: false })),
+      ...said.map((one): CastSpeaker => ({ id: one.id, since: speakerSince.get(one.id)!, busy: false, says: one.text })),
+      ...busy.map((one): CastSpeaker => ({ id: one.id, since: speakerSince.get(one.id)!, busy: true, says: one.text })),
+      ...[...speakerLeft].map(([id, left]): CastSpeaker => ({ id, since: left.at, busy: false, ended: left.failed ? "failed" : "done" })),
     ],
     speech,
-    ...(lead === undefined ? {} : { lead }),
   };
 }
 
@@ -1062,8 +1175,9 @@ async function styledPet($: EngineInterface, now: number, given?: FeaturePrefere
   if (petHatOverride && now >= petHatOverrideUntil) petHatOverride = undefined;
   pet.hat = petHatOverride ?? (preferences.petHat === "random" ? sessionPetHat : preferences.petHat);
   pet.shades = preferences.petShades;
-  // Pingo speaks for Claude's own turn, as the last band draw found it: the clock reads no atom for it
-  pet.speaks = castLead === "pingo";
+  // Pingo speaks the session's goal, as the last band draw found it: the clock reads no atom for it
+  pet.speaks = castPingoSpeaks;
+  pet.says = castPingoSays;
   return pet;
 }
 
@@ -1074,6 +1188,114 @@ async function resetPet($: EngineInterface, now: number): Promise<void> {
   petHatOverride = undefined;
   petHatOverrideUntil = 0;
   await styledPet($, now);
+}
+
+// Resumo: Pingo's balloon holds the session's goal. Each request the person sends goes to an agent of Pingo's own,
+// which sums up in one short sentence what the session is after, or keeps the goal it had. One summary runs at a time;
+// a request sent meanwhile is summed up when it ends. A failed or late summary leaves the last goal standing.
+const RESUMO_TYPE = `jev:${RESUMO_AGENT}`;
+let resumoRegistered = false;
+/** The running summary's agent, once its spawn answered with an id; `resumoRunning` while one may be at work at all. */
+let resumoAgentId: string | undefined;
+let resumoRunning = false;
+/** The newest request sent while a summary ran: the next summary is of it. */
+let resumoNext: string | undefined;
+/** Counts the summaries started, so a deadline set for one never ends a later one. */
+let resumoRuns = 0;
+let resumoDeadline: Timer | undefined;
+
+/** Defines the agent type, hidden from the model (agent.offer); answers why the host refused it, if it did. */
+async function resumoAgentStart($: EngineInterface): Promise<string | undefined> {
+  if (resumoRegistered) return undefined;
+  return await $.agent.register({
+    name: RESUMO_AGENT,
+    description: "Pingo's Resumo: sums up the session's goal from the person's requests, for Pingo's balloon on the Deck.",
+    prompt: RESUMO_SYSTEM,
+    model: CLAUDE_MODEL.SONNET.name,
+    effort: "low",
+    maxTurns: RESUMO_MAX_TURNS,
+    background: true,
+    // its request holds all it needs and its prompt calls for no tool: Lapida's read-only three, never a write or a shell
+    tools: ["Read", "Glob", "Grep"],
+  }).then(() => { resumoRegistered = true; return undefined; }, errorMessage);
+}
+
+/**
+ * The person's own request (typed, or through the bridge): the goal is summed up again while someone can read Pingo's
+ * balloon, its lane switched on and drawn a moment ago. A plugin's prompt never moves it.
+ */
+async function resumoPromptSubmitted($: EngineInterface, e: Pick<PromptSubmitInput, "text" | "origin">): Promise<void> {
+  if (e.origin.kind !== "composer" && e.origin.kind !== "bridge") return;
+  const request = e.text.trim();
+  const now = await $.clock.now();
+  if (!request || (now - deckShownTerminalAt >= ON_SCREEN_MS && now - deckShownDesktopAt >= ON_SCREEN_MS) || !(await castShown($))) return;
+  if (resumoRunning) resumoNext = request;
+  else await startResumo($, request);
+}
+
+/** Starts one summary of `request`, with the goal Pingo shows now, the request before it and Claude's last answer. */
+async function startResumo($: EngineInterface, request: string): Promise<void> {
+  resumoRunning = true;
+  resumoAgentId = undefined;
+  const run = ++resumoRuns;
+  try {
+    const locale = (await getSettings($)).locale;
+    const trace = await readTrace($);
+    const prompt = resumoRequest(request, locale, { goal: pingoGoal, earlier: lastAsked(trace), answer: trace.runs.findLast((one) => one.answer)?.answer });
+    const refused = await resumoAgentStart($);
+    const spawned = refused === undefined
+      ? await $.agent.spawn({ subagentType: RESUMO_TYPE, prompt, description: text("deck.goal.agent", locale) }).catch((error: unknown) => ({ deny: errorMessage(error) }))
+      : { deny: refused };
+    if (spawned.deny !== undefined) return await resumoEnded($, run);
+    resumoAgentId = spawned.agentId;
+    // a summary that never comes back would hold the next one: past the deadline it ends, the goal as it was
+    resumoDeadline?.cancel();
+    resumoDeadline = $.clock.after(RESUMO_TIMEOUT_MS, () => resumoEnded($, run));
+  } catch {
+    await resumoEnded($, run);
+  }
+}
+
+/** Summary `run` is over, with a new goal or not: Pingo says the goal, and a request that waited is summed up next. */
+async function resumoEnded($: EngineInterface, run: number, goal?: string): Promise<void> {
+  if (run !== resumoRuns || !resumoRunning) return;
+  resumoRunning = false;
+  resumoAgentId = undefined;
+  resumoDeadline?.cancel();
+  resumoDeadline = undefined;
+  if (goal && goal !== pingoGoal) {
+    pingoGoal = goal;
+    redrawDeck($);
+  }
+  const next = resumoNext;
+  resumoNext = undefined;
+  if (next) await startResumo($, next);
+}
+
+/** Whether a loop is the summary's agent: by the id its spawn answered, else by the type the session's agent list gives it. */
+async function isResumoAgent($: EngineInterface, id: string): Promise<boolean> {
+  if (resumoAgentId !== undefined) return id === resumoAgentId;
+  return (await $.agent.list().catch(() => [])).some((agent) => agent.id === id && agent.type === RESUMO_TYPE);
+}
+
+/** A subagent's turn ended: when it was the running summary's, a goal it wrote becomes Pingo's; "same" or none keeps it. */
+async function resumoAgentEnded($: EngineInterface, e: { agentId?: string; answer?: string; isAborted?: boolean; reason?: string }): Promise<void> {
+  const id = e.agentId;
+  if (!id || !resumoRunning || !(await isResumoAgent($, id))) return;
+  const reply = agentEnding(e).ok ? parseResumo(e.answer ?? "") : undefined;
+  await resumoEnded($, resumoRuns, reply && !reply.same ? reply.goal : undefined);
+}
+
+/** A new conversation (cleared, resumed, forked): no goal yet, and a summary still at work is dropped. */
+function resetResumo($: EngineInterface): void {
+  resumoRuns += 1;
+  resumoRunning = false;
+  resumoAgentId = undefined;
+  resumoNext = undefined;
+  resumoDeadline?.cancel();
+  resumoDeadline = undefined;
+  pingoGoal = "";
+  redrawDeck($);
 }
 
 /** A field of a saved record, when the record is an object. */
@@ -1293,7 +1515,7 @@ async function tickDeck($: EngineInterface): Promise<void> {
   const moved = pet ? stepPet(pet, petMood(s, rows, now), now) : false;
   // a subagent joining or leaving, or Jev being asked, changes the cast: on the desktop that is a new picture too
   const castWas = castKey(deckCast);
-  const recast = pet ? castKey(castNow(now)) !== castWas : false;
+  const recast = pet ? castKey(castNow(now, config.locale)) !== castWas : false;
   // What is on screen decides what moves. A band never drawn, or drawn long ago, stays still. The terminal pet is
   // repainted in place and asks for no redraw; a desktop band moves by CSS and is redrawn once per new scene or cast;
   // the terminal's rows step their frames, so they are redrawn, every other frame, or every fourth with the dashboard
@@ -1591,10 +1813,9 @@ async function deckBandOf($: EngineInterface, cols: number, surface: Surface, ma
   const flags = await read($, features);
   // a draw reads the subagent list itself, so a restored session shows its subagents before any is written
   castRuns = await read($, agents);
-  // and the features with something to say: a draw follows each of them, the clock only walks what it last found
+  // and the features at work or with something to say: a draw follows each of them, the clock only walks what it last found
   const said = await speakersOf($, now, config.locale, s);
   castSpeakers = said.speakers;
-  castLead = said.lead;
   return {
     rows,
     ...(folding && deckFold ? { shown: foldCount(rows.length, now) } : {}),
@@ -1612,7 +1833,7 @@ async function deckBandOf($: EngineInterface, cols: number, surface: Surface, ma
       cfg.show.weather ? weatherText(s.weather, cfg.city, surface === "desktop", config.locale) : "",
     ].filter(Boolean),
     pet: await styledPet($, now),
-    cast: castNow(now),
+    cast: castNow(now, config.locale),
     speech: said.speech,
     toggle: () => void toggleDeck($),
     dismiss: (row) => void dismissDeckRow($, row),
@@ -1962,6 +2183,13 @@ function rulingLine(ruling: ComandanteRuling, locale: Locale): string {
   const line = text("feature.farol.comandante", locale, { decision: text(`feature.comandante.decision.${ruling.decision}`, locale), reason: text(`feature.comandante.reason.${ruling.reason}` as LocaleKey, locale) });
   return ruling.decision === "questioned" ? `${line} ${text(`feature.comandante.question.${ruling.reason}` as LocaleKey, locale)}` : line;
 }
+/**
+ * The tag in front of an item on the Farol and Clareza panes: done, nothing waits on the person; pending, it still
+ * waits for the person or for Claude. Its glyph says it without color too.
+ */
+function stateTag(done: boolean, locale: Locale): { glyph: string; label: string; color: string } {
+  return { glyph: done ? GLYPH.ok : GLYPH.ask, label: text(done ? "feature.comandante.tag.done" : "feature.comandante.tag.pending", locale), color: done ? PAINT.ok : PAINT.warn };
+}
 async function farolJudge($: EngineInterface, id: number, verdict: FarolAssumption["verdict"], note?: string) {
   let assumption = "";
   await update($, farolItems, (list) => list.map((item) => item.id === id ? (assumption = item.text, { ...item, verdict, note, sent: false }) : item));
@@ -2073,13 +2301,18 @@ async function reviewClareza($: EngineInterface, ask: string, answer: string, wa
   const prefs = await readFeaturePreferences($);
   const known = await readClarezaTerms($);
   await update($, clarezaReviewing, () => true);
-  let result: Awaited<ReturnType<typeof completeModel>>;
+  let review: ReturnType<typeof parseClarezaReview> = null;
   try {
-    result = await completeModel($, "clareza", { model: CLAUDE_MODEL.HAIKU.name, system: CLAREZA_REVIEW_SYSTEM, prompt: `Reader level: ${prefs.plainLevel}. Known terms: ${known.join(", ") || "none"}.\nUser request:\n<request>${ask || "(none)"}</request>\nFinal answer:\n<answer>${answer}</answer>`, maxTokens: 300, timeoutMs: 15000 });
+    const result = await completeModel($, "clareza", { model: CLAUDE_MODEL.HAIKU.name, system: CLAREZA_REVIEW_SYSTEM, prompt: `Reader level: ${prefs.plainLevel}. Known terms: ${known.join(", ") || "none"}.\nUser request:\n<request>${ask || "(none)"}</request>\nFinal answer:\n<answer>${answer}</answer>`, maxTokens: 300, timeoutMs: 15000 });
+    review = result.isAnswered ? parseClarezaReview(result.text) : null;
+    // an answer it cannot read fails the review as much as no answer: its goodbye on the lane is a failed one
+    if (!review) featureFailed.add("clareza");
+  } catch (error) {
+    featureFailed.add("clareza");
+    throw error;
   } finally {
     await update($, clarezaReviewing, () => false);
   }
-  const review = result.isAnswered ? parseClarezaReview(result.text) : null;
   if (!review) { const locale = (await getSettings($)).locale; await update($, clarezaStatus, () => text("feature.clareza.review.unavailable", locale)); return; }
   await update($, clarezaStatus, () => review.status);
   const offered = prefs.plainLevel === "beginner" ? review.explained.filter((term) => !known.includes(term)).slice(0, 6) : [];
@@ -2089,30 +2322,50 @@ async function reviewClareza($: EngineInterface, ask: string, answer: string, wa
   if (proposing) {
     const prompt = `[Clareza] Your last answer may confuse the user: ${review.problems.join("; ") || "it was not clear enough"}. Rewrite it as one complete final answer, fixing only that while still answering the request. Do not use tools.`;
     // with the Comandante on, Jev judges the plan before the person sees it: rejected is dropped (its notice says so),
-    // the others are shown with the ruling
+    // approved is sent in the person's place and shown done, questioned is shown with the ruling
     // the alert's text is the summary the Comandante tab shows the person: its fallback comes from the locale
     const watched = await comandanteWatches($, "clareza");
     const ruling = watched ? await comandanteReview($, { source: "clareza", text: review.problems.join("; ") || text("feature.clareza.unclear", (await getSettings($)).locale), context: prompt }) : undefined;
     if (ruling?.decision === "rejected") return;
     const at = await $.clock.now();
     if (watched && !ruling) comandanteTried.add(`clareza:${at}`);
-    await update($, clarezaProposal, () => ({ problems: review.problems, prompt, at, ...(ruling ? { comandante: { decision: ruling.decision, reason: ruling.reason } } : {}) }));
+    const plan: ClarezaProposal = { problems: review.problems, prompt, at };
+    await update($, clarezaProposal, () => (ruling ? clarezaRuled(plan, { decision: ruling.decision, reason: ruling.reason }, deckOf(at).turnActive) : plan));
+    await sendClarezaRuled($, at);
   }
+}
+/**
+ * Clareza's plan as the Comandante's approval or question leaves it. Approved, it is marked sent: it goes to Claude in
+ * the person's place, and the pane shows it done, with no Enviar or Rejeitar. A turn at work (`busy`) means the person
+ * moved past the answer it was for, so it is not sent into that turn: it waits for the person, as a questioned one does.
+ */
+function clarezaRuled(plan: ClarezaProposal, comandante: ComandanteRuling, busy: boolean): ClarezaProposal {
+  return { ...plan, comandante, ...(comandante.decision === "approved" && !busy ? { sent: true } : {}) };
+}
+/** Sends plan `at` once the Comandante approved it; if Claude does not take it, it waits for the person instead. */
+async function sendClarezaRuled($: EngineInterface, at: number): Promise<void> {
+  const plan = await read($, clarezaProposal);
+  if (plan?.at !== at || !plan.sent) return;
+  if (!(await submitClareza($, plan.prompt))) await update($, clarezaProposal, (current) => (current?.at === at ? { ...current, sent: false } : current));
+}
+/** Clareza's rewrite request to Claude: the turn it starts is marked, so it is not reviewed into a new plan. False when Claude did not take it. */
+async function submitClareza($: EngineInterface, prompt: string): Promise<boolean> {
+  await update($, clarezaGrade, (value) => value && { ...value, fixing: true });
+  try { await $.prompt.submit({ text: prompt }); return true; }
+  catch { await update($, clarezaGrade, (value) => value && { ...value, fixing: false }); return false; }
 }
 /** The person knows `term`: Clareza stops explaining it and stops offering it. */
 async function knowClarezaTerm($: EngineInterface, term: string) {
   await addClarezaTerms($, [term]);
   await update($, clarezaGrade, (value) => value && { ...value, offered: value.offered.filter((word) => word !== term) });
 }
-/** Sends Clareza's plan to Claude: the rewrite turn it starts is marked, so it is not reviewed into a new plan. */
+/** The person's Enviar: Clareza's plan goes to Claude and leaves the pane. One the Comandante already sent is not sent again. */
 async function sendClareza($: EngineInterface) {
   const plan = await read($, clarezaProposal);
-  if (!plan) return;
+  if (!plan || plan.sent) return;
   await update($, clarezaProposal, () => null);
-  await update($, clarezaGrade, (value) => value && { ...value, fixing: true });
   try { await $.ui.close({ id: "clareza" }); } catch {}
-  try { await $.prompt.submit({ text: plan.prompt }); }
-  catch { await update($, clarezaGrade, (value) => value && { ...value, fixing: false }); }
+  await submitClareza($, plan.prompt);
 }
 async function rejectClareza($: EngineInterface) {
   await update($, clarezaProposal, () => null);
@@ -2166,50 +2419,110 @@ function lapidaTasteHint(records: LapidaTaste[]) {
   lines.push("</user_taste>");
   return lines.join("\n");
 }
-function splitLapidaReply(raw: string) {
-  const marker = "<<<CHANGES>>>";
-  const at = raw.lastIndexOf(marker);
-  if (at < 0) return { text: raw.trim(), notes: [] as string[] };
-  return { text: raw.slice(0, at).trim(), notes: raw.slice(at + marker.length).split("\n").map((line) => line.replace(/^\s*[-*•]\s*/, "").trim()).filter(Boolean).slice(0, 3).map((line) => line.length > 80 ? `${line.slice(0, 79)}…` : line) };
+// Lapida's rewrite runs in an agent of Pingo's own: the press (or /lapida) only starts it, and its answer, when it
+// comes, replaces the draft in the prompt box. One rewrite runs at a time; the band hides its buttons meanwhile.
+const LAPIDA_TYPE = `jev:${LAPIDA_AGENT}`;
+let lapidaRegistered = false;
+/** The running rewrite's agent, once its spawn answered with an id. */
+let lapidaAgentId: string | undefined;
+/** The draft the running rewrite was asked for: the box still holding it (or nothing) is what the answer may replace. */
+let lapidaDraft = "";
+/** Counts the rewrites started, so a deadline set for one never ends a later one. */
+let lapidaRuns = 0;
+let lapidaDeadline: Timer | undefined;
+
+/** Defines the agent type, hidden from the model (agent.offer); answers why the host refused it, if it did. */
+async function lapidaAgentStart($: EngineInterface): Promise<string | undefined> {
+  if (lapidaRegistered) return undefined;
+  return await $.agent.register({
+    name: LAPIDA_AGENT,
+    description: "Pingo's Lapida: rewrites the person's draft prompt before they send it.",
+    prompt: LAPIDA_SYSTEM,
+    model: CLAUDE_MODEL.SONNET.name,
+    effort: "low",
+    maxTurns: LAPIDA_MAX_TURNS,
+    background: true,
+    // it only looks up what the draft names; the rewrite is its answer, never a file
+    tools: ["Read", "Glob", "Grep"],
+  }).then(() => { lapidaRegistered = true; return undefined; }, errorMessage);
 }
-async function lapidaProjectContext($: EngineInterface) {
-  const parts: string[] = [];
-  const home = await $.env.get("HOME") ?? await $.env.get("USERPROFILE");
-  if (home) try { parts.push(`# User instructions\n${await $.fs.read(`${home}/.claude/CLAUDE.md`)}`); } catch {}
-  for (const file of await $.fs.ancestors({ names: ["CLAUDE.md", "AGENTS.md"] })) parts.push(`# ${file.dir}/${file.name}\n${file.content}`);
-  const commands = (await $.command.list()).filter((command) => command.source !== "builtin");
-  if (commands.length) parts.push(`# Installed skills and commands\n${commands.map((command) => `/${command.name}: ${command.description}`).join("\n")}`);
-  return `Project context for the rewrite:\n\n${parts.join("\n\n")}`;
+
+/** The rewrite is over without a text for the box: the band says why, and its buttons come back. */
+async function lapidaFailed($: EngineInterface, note: string) {
+  lapidaAgentId = undefined;
+  lapidaDeadline?.cancel();
+  lapidaDeadline = undefined;
+  await update($, lapidaPhase, () => "error");
+  await update($, lapidaNote, () => note);
 }
-const LAPIDA_FORK_TIMEOUT_MS = 120_000;
 
 async function enhanceLapida($: EngineInterface, draft: string) {
   draft = draft.trim();
   const locale = (await getSettings($)).locale;
   if (!draft) { await update($, lapidaPhase, () => "error"); await update($, lapidaNote, () => text("feature.lapida.noDraft", locale)); return; }
-  if (!(await featureEnabled($, "lapida"))) return;
+  if (!(await featureEnabled($, "lapida")) || (await read($, lapidaPhase)) === "enhancing") return;
   await update($, lapidaPhase, () => "enhancing");
   await update($, lapidaNote, () => "");
   await update($, lapidaChanges, () => []);
+  const run = ++lapidaRuns;
+  lapidaDraft = draft;
   try {
     const prefs = await readFeaturePreferences($);
     const taste = prefs.promptLearning ? lapidaTasteHint(await loadLapidaTaste($)) : "";
-    const marker = "<<<CHANGES>>>";
-    const instructions = text("feature.lapida.instructions", locale, { marker });
-    const prompt = `${instructions}${taste ? `\n\n${taste}` : ""}\n\n<rough_prompt>\n${draft}\n</rough_prompt>`;
-    let result = await callModel($, "lapida", undefined, () => $.model.fork({ prompt }), { timeoutMs: LAPIDA_FORK_TIMEOUT_MS, locale });
-    if (!result.isAnswered && result.reason === "nothing-to-fork") result = await completeModel($, "lapida", { model: await $.session.model(), system: await lapidaProjectContext($), prompt, maxTokens: 2048, timeoutMs: 60000 });
-    const reply = result.isAnswered ? splitLapidaReply(result.text) : { text: "", notes: [] as string[] };
-    if (!result.isAnswered || !reply.text) { await update($, lapidaPhase, () => "error"); await update($, lapidaNote, () => text("feature.lapida.failed", locale, { why: result.isAnswered ? text("feature.lapida.emptyReply", locale) : result.reason })); return; }
+    // the agent does not see the conversation: its last request and answer go with the draft, so "that file" resolves
+    const trace = await readTrace($);
+    const commands = (await $.command.list().catch(() => [])).filter((command) => command.source !== "builtin").map((command) => `/${command.name}: ${command.description}`);
+    const prompt = lapidaRequest(text("feature.lapida.instructions", locale, { marker: LAPIDA_MARK }), draft, {
+      taste, asked: lastAsked(trace), answer: trace.runs.findLast((one) => one.answer)?.answer, commands,
+    });
+    const refused = await lapidaAgentStart($);
+    const spawned = refused === undefined
+      ? await $.agent.spawn({ subagentType: LAPIDA_TYPE, prompt, description: text("feature.lapida.name", locale) }).catch((error: unknown) => ({ deny: errorMessage(error) }))
+      : { deny: refused };
+    if (spawned.deny !== undefined) { await lapidaFailed($, text("feature.lapida.failed", locale, { why: short(spawned.deny, 160) })); return; }
+    lapidaAgentId = spawned.agentId;
+    // a rewrite that never comes back would hold the band: past the deadline it ends as failed, and its answer is dropped
+    lapidaDeadline?.cancel();
+    lapidaDeadline = $.clock.after(LAPIDA_TIMEOUT_MS, async () => {
+      if (run !== lapidaRuns || (await read($, lapidaPhase)) !== "enhancing") return;
+      await lapidaFailed($, text("feature.lapida.failed", locale, { why: text("provider.timeout", locale, { ms: formatNumber(LAPIDA_TIMEOUT_MS, locale) }) }));
+    });
+  } catch (error) {
+    await lapidaFailed($, text("feature.lapida.failed", locale, { why: errorMessage(error) }));
+  }
+}
+
+/** Whether a loop is the rewrite's agent: by the id its spawn answered, else by the type the session's agent list gives it. */
+async function isLapidaAgent($: EngineInterface, id: string): Promise<boolean> {
+  if (lapidaAgentId !== undefined) return id === lapidaAgentId;
+  return (await $.agent.list().catch(() => [])).some((agent) => agent.id === id && agent.type === LAPIDA_TYPE);
+}
+
+/** A subagent's turn ended: when it was the running rewrite's, its answer goes into the prompt box. */
+async function lapidaAgentEnded($: EngineInterface, e: { agentId?: string; answer?: string; isAborted?: boolean; reason?: string }): Promise<void> {
+  const id = e.agentId;
+  if (!id || (await read($, lapidaPhase)) !== "enhancing" || !(await isLapidaAgent($, id))) return;
+  const locale = (await getSettings($)).locale;
+  const ending = agentEnding(e);
+  const reply = splitLapidaReply(e.answer ?? "");
+  if (!ending.ok || !reply.text) {
+    await lapidaFailed($, text("feature.lapida.failed", locale, { why: ending.ok ? text("feature.lapida.emptyReply", locale) : text(`feed.turn.state.${ending.feed}`, locale) }));
+    return;
+  }
+  try {
+    // what the person typed meanwhile is theirs: the rewrite replaces the draft, or an empty box, and nothing else
+    const box = (await $.prompt.read().catch(() => undefined))?.text.trim() ?? "";
+    if (box && box !== lapidaDraft) { await lapidaFailed($, text("feature.lapida.failed", locale, { why: text("feature.lapida.boxChanged", locale) })); return; }
     const filled = await $.prompt.fill({ text: reply.text, mode: "replace" });
-    if (!filled.isFilled) { await update($, lapidaPhase, () => "error"); await update($, lapidaNote, () => text("feature.lapida.refused", locale, { reason: filled.refusal ?? text("feature.lapida.unknown", locale) })); return; }
+    if (!filled.isFilled) { await lapidaFailed($, text("feature.lapida.refused", locale, { reason: filled.refusal ?? text("feature.lapida.unknown", locale) })); return; }
+    lapidaAgentId = undefined;
+    lapidaDeadline?.cancel();
+    lapidaDeadline = undefined;
     await update($, lapidaEnhanced, () => reply.text);
     await update($, lapidaChanges, () => reply.notes);
     await update($, lapidaPhase, () => "ready");
   } catch (error) {
-    const why = error instanceof Error ? error.message : String(error);
-    await update($, lapidaPhase, () => "error");
-    await update($, lapidaNote, () => text("feature.lapida.failed", locale, { why }));
+    await lapidaFailed($, text("feature.lapida.failed", locale, { why: errorMessage(error) }));
   }
 }
 async function recordLapidaSend($: EngineInterface, text: string) {
@@ -2247,7 +2560,7 @@ function renderElements($: EngineInterface, event: unknown): ElementTable {
  * Which feature keeps its rows above the prompt first when they run short (`stackAbove`): the ones asking the person to
  * decide, then the other sessions, then the tool lines, whose state is also on the lane or in the dashboard.
  */
-const ABOVE_RANK: readonly SpeakerId[] = ["clareza", "semente", "farol", "vigia", "lapida", "sentinela"];
+const ABOVE_RANK: readonly SpeakerId[] = ["portao", "clareza", "ensaio", "chaveiro", "oficina", "semente", "farol", "vigia", "lapida", "sentinela"];
 
 /** A feature's lines above the prompt, as `stackAbove` holds them to their rows; pressing its name opens its pane. */
 function aboveBlock($: EngineInterface, id: SpeakerId, lines: RenderNode[]): AboveBlock {
@@ -2256,6 +2569,103 @@ function aboveBlock($: EngineInterface, id: SpeakerId, lines: RenderNode[]): Abo
 
 /** Columns a non-plain button takes: its label inside "[ " and " ]". */
 const bracketColumns = (label: string) => displayWidth(label) + 4;
+
+/**
+ * An autonomous agent's line above the prompt: its color's tab, then its mark, what it says and its name, as one
+ * pressable line that opens the Autonomous tab, where its proposal is sent, rejected or released.
+ */
+function autonomoLine($: EngineInterface, e: { props: { hasSurvey?: boolean } }, id: SpeakerId, mark: string, said: string): AboveBlock {
+  const els = renderElements($, e);
+  const { Box, Button, Text } = els;
+  const label = `${mark} ${said} · ${SPEAKER_NAMES[id]}`;
+  return aboveBlock($, id, [
+    <Box key={`${id}-line`} flexDirection="row" columnGap={UI_DESIGN.space.xs} overflow="hidden">
+      {lineTab(els, castColor(id))}
+      <Button key={`${id}-open`} label={label} plain onPress={() => void openPane($, "autonomos")}>
+        <Text underline wrap="truncate-end">{label}</Text>
+      </Button>
+    </Box>,
+  ]);
+}
+
+/**
+ * Portão's line above the prompt, while it checks Claude's commit or push and while the run waits on the person.
+ * With its mascot on the Deck lane, the mascot says it and the line gives way.
+ */
+async function portaoAbove($: EngineInterface, e: { props: { hasSurvey?: boolean } }): Promise<AboveBlock | null> {
+  if (e.props.hasSurvey || !(await featureEnabled($, "portao"))) return null;
+  const run = (await read($, portaoRuns))[0];
+  const waiting = run !== undefined && portaoWaiting(run) && (run.proposal?.state === "waiting" || run.proposal?.state === "blocked");
+  if (!run || (run.state !== "checking" && !waiting) || await castShown($)) return null;
+  const locale = (await getSettings($)).locale;
+  const said = run.state === "checking"
+    ? text("deck.speech.busy.portao", locale, { verb: run.verb })
+    : text(run.state === "passed" ? "deck.speech.portao.passed" : "deck.speech.portao.failed", locale, { verb: run.verb, count: formatNumber(run.findings.length, locale) });
+  return autonomoLine($, e, "portao", run.state === "checking" ? GLYPH.run : run.state === "passed" ? GLYPH.ok : GLYPH.no, said);
+}
+
+/** Ensaio's line above the prompt, while it runs the app and while a request from what it saw waits on the person. */
+async function ensaioAbove($: EngineInterface, e: { props: { hasSurvey?: boolean } }): Promise<AboveBlock | null> {
+  if (e.props.hasSurvey || !(await featureEnabled($, "ensaio"))) return null;
+  const run = (await read($, ensaioRuns))[0];
+  if (!run || (run.state !== "running" && !ensaioWaiting(run)) || await castShown($)) return null;
+  const locale = (await getSettings($)).locale;
+  const said = run.state === "running"
+    ? text("deck.speech.busy.ensaio", locale)
+    : text(run.proposal?.kind === "runbook" ? "deck.speech.ensaio.runbook" : "deck.speech.ensaio.fix", locale, { count: formatNumber(run.problems.length, locale) });
+  return autonomoLine($, e, "ensaio", run.state === "running" ? GLYPH.run : GLYPH.no, said);
+}
+
+/** Chaveiro's line above the prompt, while a permission rule it proposes waits on the person. */
+async function chaveiroAbove($: EngineInterface, e: { props: { hasSurvey?: boolean } }): Promise<AboveBlock | null> {
+  if (e.props.hasSurvey || !(await featureEnabled($, "chaveiro"))) return null;
+  const rule = (await read($, chaveiroRules))[0];
+  if (!rule || !(rule.proposal.state === "waiting" || rule.proposal.state === "blocked") || await castShown($)) return null;
+  return autonomoLine($, e, "chaveiro", GLYPH.ask, text("deck.speech.chaveiro", (await getSettings($)).locale, { rule: rule.rule }));
+}
+
+/** Oficina's line above the prompt, while a suggestion to run /doctor waits on the person. */
+async function oficinaAbove($: EngineInterface, e: { props: { hasSurvey?: boolean } }): Promise<AboveBlock | null> {
+  if (e.props.hasSurvey || !(await featureEnabled($, "oficina"))) return null;
+  const check = (await read($, oficinaChecks))[0];
+  if (check?.proposal?.state !== "waiting" || await castShown($)) return null;
+  const locale = (await getSettings($)).locale;
+  return autonomoLine($, e, "oficina", GLYPH.ask, text("deck.speech.oficina", locale, { count: formatNumber(check.findings.length, locale) }));
+}
+
+/**
+ * Rumo's line above the prompt, in Jev's color since Jev speaks for it: a goal waiting on the person, or one keeping
+ * Claude going with its turns. It has no mascot to say it on the lane, so it stays with the lane on screen too.
+ * Pressing it opens the Autonomous tab, where the goal is sent, rejected or stopped.
+ */
+async function rumoAbove($: EngineInterface, e: { props: { hasSurvey?: boolean } }): Promise<AboveBlock | null> {
+  if (e.props.hasSurvey || !(await featureEnabled($, "rumo"))) return null;
+  const goal = (await read($, rumoGoals))[0];
+  if (!goal || !(goal.state === "proposed" || goal.state === "blocked" || goal.state === "active")) return null;
+  const els = renderElements($, e);
+  const { Box, Button, Text } = els;
+  const locale = (await getSettings($)).locale;
+  const said = goal.state === "active"
+    ? text("deck.speech.rumo.active", locale, { condition: goal.condition, used: formatNumber(goal.turnsUsed, locale), max: formatNumber(goal.turnsMax, locale) })
+    : text("deck.speech.rumo.proposed", locale, { condition: goal.condition });
+  const label = `${goal.state === "active" ? GLYPH.run : GLYPH.ask} Jev · ${said}`;
+  return {
+    id: "rumo",
+    name: "Jev",
+    color: castColor("jev"),
+    // right after Portão's: a goal waits on the person as a held command does
+    rank: ABOVE_RANK.indexOf("portao") + 0.5,
+    lines: [
+      <Box key="rumo-line" flexDirection="row" columnGap={UI_DESIGN.space.xs} overflow="hidden">
+        {lineTab(els, castColor("jev"))}
+        <Button key="rumo-open" label={label} plain onPress={() => void openPane($, "autonomos")}>
+          <Text underline wrap="truncate-end">{label}</Text>
+        </Button>
+      </Box>,
+    ],
+    open: () => void openPane($, "autonomos"),
+  };
+}
 
 async function farolAbove($: EngineInterface, e: { props: { hasSurvey?: boolean } }): Promise<AboveBlock | null> {
   if (e.props.hasSurvey || !(await featureEnabled($, "farol"))) return null;
@@ -2338,7 +2748,7 @@ async function clarezaAbove($: EngineInterface, e: { props: { hasSurvey?: boolea
   const gap = UI_DESIGN.space.xs;
   const problems = grade ? grade.problems.join("; ") : "";
   let verdict: RenderNode | null = null;
-  if (grade && plan && !(await castShown($))) {
+  if (grade && plan && !plan.sent && !(await castShown($))) {
     // with a plan waiting and no mascot to say so, the problems open Clareza's pane, where it is sent or rejected and
     // read whole; here they are cut to the line, the status before them giving way first
     const tail = ` ${GLYPH.leader} ${text("feature.clareza.seePlan", locale)}`;
@@ -2492,11 +2902,22 @@ async function sementeAbove($: EngineInterface, e: { surface?: string; props: { 
 
 async function lapidaStart($: EngineInterface) {
   await $.command.register({ name: "lapida", description: text("feature.lapida.command", (await getSettings($)).locale), argumentHint: "<draft>" });
+  // refused now, it is defined again at the next rewrite
+  await lapidaAgentStart($);
 }
 async function lapidaPromptSubmit($: EngineInterface, e: Pick<PromptSubmitInput, "text" | "origin">) {
   if (!(await featureEnabled($, "lapida"))) return;
-  const own = e.origin.kind === "composer" || e.origin.kind === "bridge" || (e.origin.kind === "plugin" && e.origin.name === "jev");
+  // the person's own words, or one of Pingo's sends they chose (Rumo's own prompts are not theirs)
+  const own = e.origin.kind === "composer" || e.origin.kind === "bridge" || (e.origin.kind === "plugin" && e.origin.name === "jev" && !e.text.startsWith(RUMO_MARK));
   if (own) await recordLapidaSend($, e.text).catch(() => {});
+  // a prompt of theirs sent while a rewrite runs: they moved on, and its answer must not land in the box
+  if (own && !e.text.trimStart().startsWith("/") && (await read($, lapidaPhase)) === "enhancing") {
+    lapidaRuns++;
+    lapidaAgentId = undefined;
+    lapidaDeadline?.cancel();
+    lapidaDeadline = undefined;
+    await update($, lapidaPhase, () => "idle");
+  }
 }
 async function lapidaAbove($: EngineInterface, e: { props: { hasSurvey?: boolean } }, cols: number): Promise<AboveBlock | null> {
   if (e.props.hasSurvey || !(await featureEnabled($, "lapida"))) return null;
@@ -2709,6 +3130,9 @@ async function sentinelaAbove($: EngineInterface, e: { props: { hasSurvey?: bool
   if (e.props.hasSurvey || !(await featureEnabled($, "sentinela"))) return null;
   const list = await read($, sentinelaSessions);
   const count = (status: SentinelaSession["status"]) => list.filter((row) => row.status === status).length;
+  // with the Deck's lane on screen the line steps aside when it would add nothing: all three at zero is nothing to
+  // tell, and with sessions waiting Sentinela's mascot already says how many, its words opening the same pane
+  if ((count("waiting") || (!count("working") && !count("done"))) && await castShown($)) return null;
   const els = renderElements($, e);
   const { Box, Button, Text } = els;
   const locale = (await getSettings($)).locale;
@@ -2898,7 +3322,18 @@ async function summarizeVigia($: EngineInterface, answer: string) {
   if (!(await readFeaturePreferences($)).trackerSummary || !(await featureEnabled($, "vigia"))) return;
   const own = await ensureVigia($);
   const prompt = ["Summarize where this coding session stands for a teammate.", "Reply with exactly four lines, no markdown:", "TITLE: <2-5 word name for the work>", "DONE: <what is done, under 100 chars>", "DOING: <what is in progress or waiting, under 100 chars>", "NEXT: <concrete next step, under 100 chars>", `Previous: ${own.title ?? "-"} | ${own.done ?? "-"} | ${own.doing ?? "-"} | ${own.next ?? "-"}`, `Tasks: ${own.tasks.map((task) => `[${task.status}] ${task.text}`).join("; ") || "none"}`, `Files: ${(own.files ?? []).join(", ") || "none"}`, `Latest prompt: ${own.lastPrompt ?? "-"}`, `Latest answer:\n${answer.slice(-6000)}`].join("\n");
-  const result = await completeModel($, "vigia", { model: CLAUDE_MODEL.HAIKU.name, prompt, maxTokens: 300, timeoutMs: 30000 });
+  // while the summary is written, Vigia is at work on the Deck's lane
+  await update($, vigiaSummarizing, () => true);
+  let result: Awaited<ReturnType<typeof completeModel>>;
+  try {
+    result = await completeModel($, "vigia", { model: CLAUDE_MODEL.HAIKU.name, prompt, maxTokens: 300, timeoutMs: 30000 });
+    if (!result.isAnswered) featureFailed.add("vigia");
+  } catch (error) {
+    featureFailed.add("vigia");
+    throw error;
+  } finally {
+    await update($, vigiaSummarizing, () => false);
+  }
   if (!result.isAnswered) return;
   const pick = (label: string) => result.text.match(new RegExp(`^\\s*${label}:\\s*(.+)$`, "mi"))?.[1]?.trim();
   await saveVigia($, (record) => { record.title = pick("TITLE") ?? record.title; record.done = pick("DONE") ?? record.done; record.doing = pick("DOING") ?? record.doing; record.next = pick("NEXT") ?? record.next; });
@@ -3024,7 +3459,8 @@ async function startQuality($: EngineInterface): Promise<void> {
   if (!(await featureEnabled($, "codeQuality"))) return;
   const locale = (await getSettings($)).locale;
   const root = await $.session.root();
-  const files = [...qualityEdited].map((path) => vigiaRelative(root, path));
+  // one path per file: tool inputs and Portão name the same file with different separators
+  const files = [...new Set([...qualityEdited].map((path) => vigiaRelative(root, path)))];
   const startedAt = await $.clock.now();
   // a cycle whose agent is gone without a word (stopped, reloaded) would hold the feature forever: it ends as failed
   if ((await read($, qualityCycles))[0]?.state === "running" && !(await qualityAlive($))) {
@@ -3044,8 +3480,10 @@ async function startQuality($: EngineInterface): Promise<void> {
   const agents = await $.agent.list().catch(() => undefined);
   if (agents) for (const id of qualityHelpers) if (!agents.some((agent) => agent.id === id && (agent.status === "running" || agent.status === "pending"))) qualityHelpers.delete(id);
   const refused = await qualityStart($);
+  // what the person last asked Claude for goes with the files, so the cycle does not undo a change made on purpose
+  const goal = lastAsked(await readTrace($));
   const spawned = refused === undefined
-    ? await $.agent.spawn({ subagentType: QUALITY_TYPE, prompt: qualityRequest(files, locale), description: text("feature.codeQuality.name", locale) }).catch((error: unknown) => ({ deny: errorMessage(error) }))
+    ? await $.agent.spawn({ subagentType: QUALITY_TYPE, prompt: qualityRequest(files, locale, goal), description: text("feature.codeQuality.name", locale) }).catch((error: unknown) => ({ deny: errorMessage(error) }))
     : { deny: refused };
   if (spawned.deny !== undefined) {
     await update($, qualityCycles, (list) => list.map((cycle) => (cycle.state === "running" ? { ...cycle, state: "failed" as const, endedAt: startedAt } : cycle)));
@@ -3102,7 +3540,16 @@ async function qualityAgentEnded($: EngineInterface, e: { agentId?: string; answ
   let ended: QualityCycle | undefined;
   await update($, qualityCycles, (list) => list.map((cycle) => (cycle.state === "running" ? (ended = { ...cycle, ...report, ...(summary ? { summary } : {}), endedAt, state }) : cycle)));
   if (ended) await log($, "mod", "feature", state === "done" ? "good" : "bad", text("feature.codeQuality.done", locale, { fixed: formatNumber(ended.fixed.length, locale), skipped: formatNumber(ended.skipped.length, locale) }));
-  if (qualityEdited.size) await startQuality($);
+  // a Portão run waiting on this cycle goes on with its other checks
+  if (ended) await portaoQualityEnded($, ended).catch(() => undefined);
+  // a cycle done is a change worth a look: Ensaio may run the app, apart
+  if (ended) void ensaioQualityDone($, ended).catch(() => undefined);
+  if (qualityEdited.size) {
+    await startQuality($);
+    // the next cycle refused at its start ends what waited for it too
+    const next = (await read($, qualityCycles))[0];
+    if (next && next.n !== ended?.n && next.state === "failed") await portaoQualityEnded($, next).catch(() => undefined);
+  }
 }
 
 /** The Quality tab's data: its cycles, and the files waiting for the next one. */
@@ -3110,6 +3557,1021 @@ async function qualityPanel($: EngineInterface): Promise<QualityPanel> {
   const cycles = await read($, qualityCycles);
   const root = await $.session.root();
   return { running: cycles[0]?.state === "running", queued: [...qualityEdited].map((path) => vigiaRelative(root, path)), cycles };
+}
+
+// --- Portão ---
+
+// Portão: before Claude's own `git commit` or `git push`, Jev decides whether to hold it. Held, the change set goes
+// through Code Quality (a cycle over the files no cycle reviewed), the tests it reaches (`--only`) and, when Jev asks,
+// a security review; only the person lets the command through again, with Enviar or Liberar.
+const PORTAO_TYPE = `jev:${PORTAO_AGENT}`;
+/** Edits Claude and its subagents made, Pingo's own agents' not: Portão holds once per value. Restored past the runs kept. */
+let editGeneration = 0;
+/** The edit count Portão let through: Jev saw no need to hold, or the person sent or released its run. */
+let portaoClearedAt = -1;
+/** The edit count the tests last passed at, whoever ran them. */
+let testsGreenAt = -1;
+let portaoRegistered = false;
+/** The security reviewer at work, once its spawn answered with an id; `portaoReviewing` while one may be at work at all. */
+let portaoAgentId: string | undefined;
+let portaoReviewing = false;
+/** The run whose checks are still open: its change set, and the Code Quality cycle its review waits for. */
+let portaoOpen: { n: number; facts: PortaoFacts; cycle?: number } | undefined;
+/** The gate's calls, queued: the last one's end. */
+let portaoGating: Promise<void> = Promise.resolve();
+/** How long another session's "running its tests" counts, should it never say it stopped. */
+const VIGIA_RUNNING_MS = 20 * 60_000;
+
+/** Whether another live session of the project runs its tests or its app now, as its Vigia record says. */
+async function vigiaOthersRunning($: EngineInterface, what: readonly ("tests" | "app")[]): Promise<boolean> {
+  if (!(await featureEnabled($, "vigia"))) return false;
+  await refreshVigia($).catch(() => undefined);
+  const now = await $.clock.now();
+  return vigiaPeers.some((one) => one.id !== vigiaMe?.id && vigiaAlive(one, now) && one.running !== undefined && what.includes(one.running.what) && now - one.running.at < VIGIA_RUNNING_MS);
+}
+
+/** This session runs its tests or its app now, or stopped (nothing): its Vigia record tells the other sessions. */
+async function vigiaMarkRunning($: EngineInterface, what?: "tests" | "app"): Promise<void> {
+  const at = await $.clock.now();
+  await saveVigia($, (record) => {
+    if (what) record.running = { what, at };
+    else delete record.running;
+  }).catch(() => undefined);
+}
+
+/** Changes run `n`, wherever it is in the list; answers it as changed. */
+async function updatePortao($: EngineInterface, n: number, change: (run: PortaoRun) => PortaoRun): Promise<PortaoRun | undefined> {
+  let changed: PortaoRun | undefined;
+  await update($, portaoRuns, (list) => list.map((run) => (run.n === n ? (changed = change(run)) : run)));
+  return changed;
+}
+
+const withCheck = (run: PortaoRun, kind: PortaoCheck["kind"], change: Partial<PortaoCheck>): PortaoRun =>
+  ({ ...run, checks: run.checks.map((check) => (check.kind === kind ? { ...check, ...change } : check)) });
+
+/**
+ * The runs kept from before (a reload, the session resumed): edit counts go on past theirs. The newest run still
+ * checking picks up its checks and keeps its edit count, so Claude's next try is held by it again; an older one, or
+ * any with Portão switched off meanwhile, was cut short.
+ */
+async function portaoRestore($: EngineInterface): Promise<void> {
+  const runs = await read($, portaoRuns);
+  const newest = runs[0];
+  // a run this module already works on (a second start without a reload) goes on as it is
+  const open = newest?.state === "checking" && portaoOpen?.n === newest.n;
+  const resumed = newest?.state === "checking" && !open && (await featureEnabled($, "portao")) ? newest : undefined;
+  const going = open ? newest.n : resumed?.n;
+  editGeneration = Math.max(editGeneration, (newest?.generation ?? -1) + (going === undefined ? 1 : 0));
+  if (runs.some((run) => run.state === "checking" && run.n !== going)) {
+    const locale = (await getSettings($)).locale;
+    const endedAt = await $.clock.now();
+    await update($, portaoRuns, (list) => list.map((run) => run.state !== "checking" || run.n === going ? run : {
+      ...run,
+      state: "failed" as const,
+      endedAt,
+      checks: run.checks.map((check) => (check.state === "waiting" || check.state === "running" ? { ...check, state: "skipped" as const, note: text("feature.portao.note.interrupted", locale) } : check)),
+    }));
+  }
+  if (resumed) await portaoResume($, resumed);
+}
+
+/**
+ * Picks up a run a reload cut short: its change set is read again, its checks go on from where they were (a reviewer
+ * still at work is waited for, the tests run again), and the run moves on. What Jev chose shows in its checks: Jev is
+ * not asked again.
+ */
+async function portaoResume($: EngineInterface, run: PortaoRun): Promise<void> {
+  const locale = (await getSettings($)).locale;
+  const facts = await portaoFacts($, run.verb, run.command);
+  const reviewer = run.checks.some((check) => check.kind === "security" && check.state === "running")
+    && (await $.agent.list().catch(() => [])).some((agent) => agent.type === PORTAO_TYPE && (agent.status === "running" || agent.status === "pending"));
+  // the reviewer still at work ends its check when its turn ends
+  if (reviewer) portaoReviewing = true;
+  // the tests' process went with the reload: the other sessions no longer wait for it
+  if (run.checks.some((check) => check.kind === "tests" && check.state === "running")) await vigiaMarkRunning($);
+  await updatePortao($, run.n, (one) => ({ ...one, checks: resumedChecks(one.checks, facts, reviewer, locale) }));
+  portaoOpen = { n: run.n, facts };
+  await log($, "mod", "feature", "info", text("feature.portao.resumed", locale, { verb: run.verb }));
+  void portaoAdvance($).catch(() => undefined);
+}
+
+/** What Jev needs to judge one commit or push: the change set, what reviewed it, the tests it reaches. */
+async function portaoFacts($: EngineInterface, verb: PortaoRun["verb"], command: string): Promise<PortaoFacts> {
+  const root = await $.session.root();
+  const git = async (args: readonly string[]) => {
+    try {
+      const result = await $.process.run(["git", ...args], { cwd: root, timeoutMs: 30_000 });
+      return result.exitCode === 0 ? result.stdout : "";
+    } catch {
+      return "";
+    }
+  };
+  const lines = (output: string) => output.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  const changed = new Set(changedFiles(await git(["status", "--porcelain"])));
+  // a push sends the commits ahead of the upstream: their files are part of what ships
+  if (verb === "push") for (const file of lines(await git(["diff", "--name-only", "@{u}...HEAD"]))) changed.add(file);
+  const size = (verb === "push" ? await git(["log", "--oneline", "@{u}..HEAD"]) : await git(["diff", "HEAD", "--shortstat"])).trim();
+  const tracked = lines(await git(["ls-files"]));
+  const files = [...changed];
+  const reviewed = new Set((await read($, qualityCycles)).filter((cycle) => cycle.state === "done").flatMap((cycle) => cycle.reviewed));
+  const pending = new Set([...qualityEdited].map((path) => vigiaRelative(root, path)));
+  const reach = hasRunner(tracked) ? testsFor(files, tracked) : { files: [] as string[] };
+  return {
+    verb,
+    command,
+    changed: files,
+    size,
+    unreviewed: files.filter((file) => pending.has(file) || !reviewed.has(file)),
+    quality: await featureEnabled($, "codeQuality"),
+    tests: reach.files,
+    ...(reach.only ? { only: reach.only } : {}),
+    testsGreen: testsGreenAt === editGeneration,
+    othersTesting: await vigiaOthersRunning($, ["tests"]),
+  };
+}
+
+/** Jev's decision on one command: undefined (the gate does not start) without a key, on a failed call or a doubtful answer. */
+async function portaoDecide($: EngineInterface, facts: PortaoFacts): Promise<PortaoDecision | undefined> {
+  const config = await getSettings($);
+  if (!config.apiKey) return undefined;
+  const asked = await askTimed({ model: config.jevModel, ...portaoRequest(facts) }, tracedAskJev($, config, { origin: "portao", trigger: `git ${facts.verb}` }));
+  return "failure" in asked ? undefined : portaoDecision(asked.result.answers, config.minConfidence);
+}
+
+/** What Claude reads when its command is held: checking, waiting on the person, or failed (and why). */
+function portaoHoldReason(run: PortaoRun, locale: Locale): string {
+  if (run.state === "passed") return text("feature.portao.hold.waiting", locale, { verb: run.verb });
+  if (run.state === "failed") return text("feature.portao.hold.failed", locale, { verb: run.verb, findings: run.findings.slice(0, 5).join("; ") || text("feature.portao.state.failed", locale) });
+  return text("feature.portao.hold.checking", locale, { verb: run.verb });
+}
+
+/**
+ * The gate, before Claude's own shell call runs: undefined lets it run, a reason refuses it. Only a commit or a push,
+ * with Portão on, and once per change set: a run of this set still checking or waiting holds the command again; one
+ * the person sent or released, or Jev let through, lets it run. Without a confident Jev answer the gate does not start.
+ */
+function portaoGate($: EngineInterface, tool: string, input: unknown): Promise<string | undefined> {
+  // one at a time: a commit and a push called together would otherwise both find no run and start two
+  const turn = portaoGating.then(() => portaoGateNow($, tool, input));
+  portaoGating = turn.then(() => undefined, () => undefined);
+  return turn;
+}
+
+/** The gate's turn: the calls that came before it have settled. */
+async function portaoGateNow($: EngineInterface, tool: string, input: unknown): Promise<string | undefined> {
+  const verb = shipVerb(tool, input);
+  if (!verb || !(await featureEnabled($, "portao"))) return undefined;
+  const generation = editGeneration;
+  if (portaoClearedAt === generation) return undefined;
+  const locale = (await getSettings($)).locale;
+  const last = (await read($, portaoRuns))[0];
+  if (last && last.generation === generation && last.state !== "released" && last.proposal?.state !== "rejected") return portaoHoldReason(last, locale);
+  const facts = await portaoFacts($, verb, String((input as { command?: unknown }).command ?? ""));
+  const decision = await portaoDecide($, facts).catch(() => undefined);
+  if (!decision) return undefined;
+  if (!decision.hold) {
+    portaoClearedAt = generation;
+    await log($, "mod", "feature", "info", text("feature.portao.letThrough", locale, { verb }));
+    return undefined;
+  }
+  return portaoHoldReason(await portaoStart($, facts, decision, generation), locale);
+}
+
+/** A new run: each check as Jev chose it, then the checks start on their own. */
+async function portaoStart($: EngineInterface, facts: PortaoFacts, decision: PortaoDecision, generation: number): Promise<PortaoRun> {
+  const locale = (await getSettings($)).locale;
+  const at = await $.clock.now();
+  const note = (key: LocaleKey) => text(key, locale);
+  const checks: PortaoCheck[] = [
+    !facts.quality ? { kind: "quality", state: "skipped", note: note("feature.portao.note.qualityOff") }
+      : facts.unreviewed.length ? { kind: "quality", state: "waiting" } : { kind: "quality", state: "passed", note: note("feature.portao.note.reviewed") },
+    !facts.only ? { kind: "tests", state: "skipped", note: note("feature.portao.note.noTests") }
+      : !decision.tests ? { kind: "tests", state: "skipped", note: note("feature.portao.note.testsSkipped") } : { kind: "tests", state: "waiting" },
+    decision.security ? { kind: "security", state: "waiting" } : { kind: "security", state: "skipped", note: note("feature.portao.note.securitySkipped") },
+  ];
+  let run!: PortaoRun;
+  await update($, portaoRuns, (list) => {
+    run = { n: (list[0]?.n ?? 0) + 1, at, command: facts.command.slice(0, 200), verb: facts.verb, generation, state: "checking", checks, findings: [] };
+    return [run, ...list].slice(0, PORTAO_HISTORY);
+  });
+  portaoOpen = { n: run.n, facts };
+  await log($, "mod", "feature", "info", text("feature.portao.held", locale, { verb: facts.verb }));
+  void portaoAdvance($).catch(() => undefined);
+  return run;
+}
+
+/**
+ * Moves the open run on: Code Quality first, since its fixes change what the tests and the reviewer see; then the
+ * tests and the security review together; then the run ends. Each step that ends calls it again.
+ */
+async function portaoAdvance($: EngineInterface): Promise<void> {
+  const open = portaoOpen;
+  if (!open) return;
+  const run = (await read($, portaoRuns)).find((one) => one.n === open.n);
+  if (!run || run.state !== "checking") {
+    portaoOpen = undefined;
+    return;
+  }
+  const quality = run.checks.find((check) => check.kind === "quality")!;
+  if (quality.state === "waiting") return portaoQuality($, open, run);
+  if (quality.state === "running") return;
+  for (const check of run.checks) {
+    if (check.state !== "waiting" || check.kind === "quality") continue;
+    // claimed in the update itself: a second advance over the same snapshot must not start the check again
+    let claimed = false as boolean;
+    await updatePortao($, run.n, (one) => {
+      claimed = one.checks.some((other) => other.kind === check.kind && other.state === "waiting");
+      return claimed ? withCheck(one, check.kind, { state: "running" }) : one;
+    });
+    if (!claimed) continue;
+    const work = check.kind === "tests" ? portaoTests($, open) : portaoSecurity($, open);
+    void work.catch((error) => portaoCheckEnded($, open.n, check.kind, "failed", short(errorMessage(error), 160)));
+  }
+  const now = (await read($, portaoRuns)).find((one) => one.n === open.n);
+  if (now?.checks.every((check) => check.state !== "waiting" && check.state !== "running")) await portaoFinish($, now);
+}
+
+/** One check ended: its state, a note, what it found; then the run moves on. */
+async function portaoCheckEnded($: EngineInterface, n: number, kind: PortaoCheck["kind"], state: PortaoCheck["state"], note?: string, findings: readonly string[] = []): Promise<void> {
+  await updatePortao($, n, (run) => ({ ...withCheck(run, kind, { state, ...(note ? { note } : {}) }), findings: [...run.findings, ...findings].slice(0, 20) }));
+  if (portaoOpen?.n === n) await portaoAdvance($);
+}
+
+/**
+ * Code Quality over the changed files no cycle reviewed: the "review now" path of its own tab. A cycle at work that
+ * already covers them is waited for; otherwise they wait for the next cycle, which starts now or at the running one's end.
+ */
+async function portaoQuality($: EngineInterface, open: NonNullable<typeof portaoOpen>, run: PortaoRun): Promise<void> {
+  const locale = (await getSettings($)).locale;
+  const root = (await $.session.root()).replace(/[\\/]$/, "");
+  const cycles = await read($, qualityCycles);
+  const running = cycles[0]?.state === "running" && (await qualityAlive($)) ? cycles[0] : undefined;
+  // a cycle over "everything pending" (no files named) covers them all
+  const covered = running?.files.length ? new Set(running.files) : undefined;
+  const missing = running && !covered ? [] : open.facts.unreviewed.filter((file) => !covered?.has(file));
+  for (const file of missing) qualityEdited.add(`${root}/${file}`);
+  let target: number;
+  if (running) target = missing.length ? running.n + 1 : running.n;
+  else {
+    await startQuality($);
+    const started = (await read($, qualityCycles))[0];
+    if (started?.state !== "running") return portaoCheckEnded($, run.n, "quality", "failed", text("feature.portao.note.qualityNotStarted", locale));
+    target = started.n;
+  }
+  open.cycle = target;
+  await updatePortao($, run.n, (one) => withCheck(one, "quality", { state: "running" }));
+}
+
+/** A Code Quality cycle ended: the one the open run waits for (or a later one) ends its check. */
+async function portaoQualityEnded($: EngineInterface, cycle: QualityCycle): Promise<void> {
+  const open = portaoOpen;
+  if (!open || open.cycle === undefined || cycle.n < open.cycle) return;
+  const locale = (await getSettings($)).locale;
+  const done = cycle.state === "done";
+  const note = done
+    ? text("feature.portao.note.qualityDone", locale, { fixed: formatNumber(cycle.fixed.length, locale), skipped: formatNumber(cycle.skipped.length, locale) })
+    : text("feature.portao.note.qualityFailed", locale);
+  await portaoCheckEnded($, open.n, "quality", done ? "passed" : "failed", note);
+}
+
+/** The tests the change reaches, with `--only`, never the whole suite and never while another session tests. */
+async function portaoTests($: EngineInterface, open: NonNullable<typeof portaoOpen>): Promise<void> {
+  const locale = (await getSettings($)).locale;
+  if (!open.facts.only || (await vigiaOthersRunning($, ["tests"]))) return portaoCheckEnded($, open.n, "tests", "skipped", text("feature.portao.note.othersTesting", locale));
+  const root = await $.session.root();
+  await vigiaMarkRunning($, "tests");
+  let result: Awaited<ReturnType<EngineInterface["process"]["run"]>>;
+  try {
+    result = await $.process.run(["node", PORTAO_RUNNER, "--only", open.facts.only], { cwd: root, timeoutMs: PORTAO_TEST_TIMEOUT_MS });
+  } finally {
+    await vigiaMarkRunning($);
+  }
+  const totals = testTotals(result.stdout);
+  if (result.exitCode === 0 && (totals?.fail ?? 0) === 0) {
+    const run = (await read($, portaoRuns)).find((one) => one.n === open.n);
+    if (run && run.generation === editGeneration) testsGreenAt = run.generation;
+    return portaoCheckEnded($, open.n, "tests", "passed", totals ? text("feature.portao.note.testsPassed", locale, { pass: formatNumber(totals.pass, locale) }) : undefined);
+  }
+  const note = totals ? text("feature.portao.note.testsFailed", locale, { fail: formatNumber(totals.fail, locale) }) : text("feature.portao.note.testsBroke", locale, { code: String(result.exitCode) });
+  return portaoCheckEnded($, open.n, "tests", "failed", note, testFailures(`${result.stdout}\n${result.stderr}`));
+}
+
+/** Starts the security reviewer: a read-only agent of Pingo's own, in the background, hidden from Claude. */
+async function portaoSecurity($: EngineInterface, open: NonNullable<typeof portaoOpen>): Promise<void> {
+  const locale = (await getSettings($)).locale;
+  if (!portaoRegistered) {
+    const refused = await $.agent.register({
+      name: PORTAO_AGENT,
+      description: "Pingo's Portão: reviews the pending changes for security problems before Claude's git commit or push.",
+      prompt: PORTAO_SYSTEM,
+      model: CLAUDE_MODEL.SONNET.name,
+      maxTurns: PORTAO_MAX_TURNS,
+      background: true,
+      // it only reads: no question to the person, no file written, no helper started
+      disallowedTools: ["AskUserQuestion", "Write", "Edit", "MultiEdit", "NotebookEdit", "Agent"],
+    }).then(() => { portaoRegistered = true; return undefined; }, errorMessage);
+    if (refused !== undefined) return portaoCheckEnded($, open.n, "security", "failed", text("feature.portao.note.reviewerNotStarted", locale, { reason: short(refused, 120) }));
+  }
+  // its first calls, even its end, may come before the spawn answers: it is known as at work from here
+  portaoReviewing = true;
+  const spawned = await $.agent.spawn({ subagentType: PORTAO_TYPE, prompt: portaoReviewRequest(open.facts.changed, locale), description: text("feature.portao.reviewer", locale) })
+    .catch((error: unknown) => ({ deny: errorMessage(error) }));
+  if (spawned.deny !== undefined) {
+    portaoReviewing = false;
+    return portaoCheckEnded($, open.n, "security", "failed", text("feature.portao.note.reviewerNotStarted", locale, { reason: short(spawned.deny, 120) }));
+  }
+  if (portaoReviewing) portaoAgentId = spawned.agentId;
+}
+
+/** Whether a loop is the security reviewer's: by the id its spawn answered, else by its type in the session's list. */
+async function isPortaoAgent($: EngineInterface, id: string): Promise<boolean> {
+  return id === portaoAgentId || (await $.agent.list().catch(() => [])).some((agent) => agent.id === id && agent.type === PORTAO_TYPE);
+}
+
+/** The reviewer's turn ended: its report ends the security check, and the independent review of its answer follows. */
+async function portaoAgentEnded($: EngineInterface, e: { agentId?: string; answer?: string; isAborted?: boolean; reason?: string }): Promise<void> {
+  if (!e.agentId || !portaoReviewing || !(await isPortaoAgent($, e.agentId))) return;
+  portaoAgentId = undefined;
+  portaoReviewing = false;
+  // released meanwhile, its run no longer waits for the review
+  const open = portaoOpen;
+  if (!open) return;
+  const locale = (await getSettings($)).locale;
+  const report = parsePortaoReport(e.answer ?? "");
+  if (report.summary) await updatePortao($, open.n, (run) => ({ ...run, summary: report.summary }));
+  // the independent review of its answer runs apart, as a delegated subagent's does: the engine waits on this hook
+  void orch.reviewPingoAgent(orchIo($), {
+    agentId: e.agentId,
+    type: PORTAO_TYPE,
+    description: text("feature.portao.reviewer", locale),
+    prompt: portaoReviewRequest(open.facts.changed, locale),
+    answer: e.answer ?? "",
+  }).then((review) => updatePortao($, open.n, (run) => ({ ...run, verified: review?.approved === true })), () => undefined);
+  const ok = agentEnding(e).ok && report.verdict === "pass";
+  const note = ok ? undefined : report.verdict === "fail"
+    ? text("feature.portao.note.securityFailed", locale, { count: formatNumber(report.issues.length, locale) })
+    : text("feature.portao.note.noReport", locale);
+  await portaoCheckEnded($, open.n, "security", ok ? "passed" : "failed", note, ok ? [] : report.issues.map((issue) => (issue.where ? `${issue.where} — ${issue.text}` : issue.text)));
+}
+
+/**
+ * Every check ended: the run passed or failed and waits on the person, with its proposal: redo the command, or send
+ * the failures to Claude, which the Comandante judges first.
+ */
+async function portaoFinish($: EngineInterface, run: PortaoRun): Promise<void> {
+  if (portaoOpen?.n !== run.n) return;
+  portaoOpen = undefined;
+  const locale = (await getSettings($)).locale;
+  const failed = run.checks.some((check) => check.state === "failed");
+  const endedAt = await $.clock.now();
+  const proposal: AgentProposal = {
+    text: failed
+      ? text("feature.portao.prompt.fix", locale, { command: run.command, findings: run.findings.map((line) => `- ${line}`).join("\n") || `- ${text("feature.portao.state.failed", locale)}` })
+      : text("feature.portao.prompt.resume", locale, { command: run.command }),
+    state: "waiting",
+  };
+  const ended = await updatePortao($, run.n, (one) => ({ ...one, state: failed ? "failed" : "passed", endedAt, proposal }));
+  await log($, "mod", "feature", failed ? "bad" : "good", text(failed ? "feature.portao.ended.failed" : "feature.portao.ended.passed", locale, { verb: run.verb }));
+  if (failed && ended) {
+    comandanteTried.add(`portao:${ended.n}`);
+    const ruling = await comandanteReview($, { source: "portao", text: ended.findings.join("; ") || proposal.text, context: ended.command });
+    if (ruling) await portaoRuled($, ended.n, { decision: ruling.decision, reason: ruling.reason, record: ruling.record });
+  }
+}
+
+/**
+ * The Comandante's ruling on sending a run's failures: approved, they go to Claude at once, as the person's Enviar
+ * sends them, and the tab shows the run done; otherwise it is blocked. The commit or push itself stays held.
+ */
+async function portaoRuled($: EngineInterface, n: number, comandante: ComandanteRuling): Promise<void> {
+  const ruled = await updatePortao($, n, (run) => (run.proposal?.state !== "waiting" ? run : {
+    ...run,
+    proposal: { ...run.proposal, comandante, ...(comandante.decision === "approved" ? {} : { state: "blocked" as const }) },
+  }));
+  if (comandante.decision === "approved" && ruled?.proposal?.comandante === comandante) await portaoSend($, n);
+}
+
+/** Enviar: a passed run's command goes back to Claude, let through; a failed run's failures go to Claude to fix. */
+async function portaoSend($: EngineInterface, n: number): Promise<void> {
+  const run = (await read($, portaoRuns)).find((one) => one.n === n);
+  if (!run || !portaoWaiting(run) || run.proposal?.state !== "waiting") return;
+  if (run.state === "passed") portaoClearedAt = run.generation;
+  await updatePortao($, n, (one) => ({ ...one, proposal: { ...one.proposal!, state: "sent" } }));
+  void $.prompt.submit({ text: run.proposal.text, asUser: true }).catch(() => undefined);
+  $.ui.toast(text(run.state === "passed" ? "feature.portao.sent.resume" : "feature.portao.sent.fix", (await getSettings($)).locale));
+}
+
+/** Liberar: the person lets the command through as it is, checked or not; Claude is told to run it again. */
+async function portaoRelease($: EngineInterface, n: number): Promise<void> {
+  const run = (await read($, portaoRuns)).find((one) => one.n === n);
+  if (!run || run.state === "released") return;
+  if (portaoOpen?.n === n) portaoOpen = undefined;
+  portaoClearedAt = run.generation;
+  const endedAt = await $.clock.now();
+  await updatePortao($, n, (one) => ({
+    ...one,
+    state: "released",
+    endedAt: one.endedAt ?? endedAt,
+    ...(one.proposal && one.proposal.state !== "sent" ? { proposal: { ...one.proposal, state: "rejected" as const } } : {}),
+  }));
+  void $.prompt.submit({ text: text("feature.portao.prompt.released", (await getSettings($)).locale, { command: run.command }), asUser: true }).catch(() => undefined);
+}
+
+/** Rejeitar: the proposal is dropped; the command stays held, and Claude's next try checks the change set again. */
+async function portaoReject($: EngineInterface, n: number): Promise<void> {
+  await updatePortao($, n, (run) => (run.proposal && (run.proposal.state === "waiting" || run.proposal.state === "blocked") ? { ...run, proposal: { ...run.proposal, state: "rejected" } } : run));
+}
+
+// --- Rumo ---
+
+// Rumo: when the person's request says when the work is done, Jev proposes a goal; once the person sends it, Claude
+// keeps working turn after turn until Jev judges it met, impossible or out of turns. It belongs to the orchestrator's
+// objective and has no mascot: Jev speaks for it. Its own prompts start with RUMO_MARK.
+/** Claude's last answer on the main loop, which Rumo reads when the person sends a goal after the turn ended. */
+let rumoLastAnswer = "";
+
+/** Changes goal `id`, answering it as changed. */
+async function updateRumo($: EngineInterface, id: string, change: (goal: RumoGoal) => RumoGoal): Promise<RumoGoal | undefined> {
+  let changed: RumoGoal | undefined;
+  await update($, rumoGoals, (list) => list.map((goal) => (goal.id === id ? (changed = change(goal)) : goal)));
+  return changed;
+}
+
+/**
+ * The person's own prompt: a completion condition in it, with no goal at work, makes Jev weigh a new goal; one Jev
+ * finds checkable is proposed, judged by the Comandante first. Rumo's own prompts and a plugin's never start one.
+ */
+async function rumoPromptSubmitted($: EngineInterface, e: Pick<PromptSubmitInput, "text" | "origin">): Promise<void> {
+  if ((e.origin.kind !== "composer" && e.origin.kind !== "bridge") || !(await featureEnabled($, "rumo"))) return;
+  if ((await read($, rumoGoals))[0]?.state === "active") return;
+  const condition = goalCondition(e.text);
+  const config = await getSettings($);
+  if (!condition || !config.apiKey) return;
+  const objective = (await orch.readObjective(orchIo($)).catch(() => undefined))?.id;
+  const asked = await askTimed({ model: config.jevModel, ...rumoProposeRequest(e.text, condition, objective) }, tracedAskJev($, config, { origin: "rumo", trigger: "goal" }));
+  const proposal = "failure" in asked ? undefined : rumoProposal(asked.result.answers, config.minConfidence);
+  if (!proposal) return;
+  const at = await $.clock.now();
+  const goal: RumoGoal = { id: `goal-${at}`, at, condition, request: e.text.slice(0, 600), ...(objective ? { objective } : {}), turnsMax: proposal.turns, turnsUsed: 0, state: "proposed" };
+  // a proposal the person never took up gives way to the new one
+  await update($, rumoGoals, (list) => [goal, ...list.map((one) => (one.state === "proposed" || one.state === "blocked" ? { ...one, state: "rejected" as const, endedAt: at } : one))].slice(0, RUMO_HISTORY));
+  await log($, "jev", "feature", "info", text("feature.rumo.proposed", config.locale, { condition, turns: formatNumber(proposal.turns, config.locale) }));
+  comandanteTried.add(`rumo:${goal.id}`);
+  const ruling = await comandanteReview($, { source: "rumo", text: condition, context: e.text });
+  if (ruling) await rumoRuled($, goal.id, { decision: ruling.decision, reason: ruling.reason, record: ruling.record });
+}
+
+/**
+ * The Comandante's ruling on a proposed goal: approved, it starts at once, as the person's Enviar starts it, and Parar
+ * still ends it; otherwise it is blocked.
+ */
+async function rumoRuled($: EngineInterface, id: string, comandante: ComandanteRuling): Promise<void> {
+  const ruled = await updateRumo($, id, (goal) => (goal.state !== "proposed" ? goal : { ...goal, comandante, ...(comandante.decision === "approved" ? {} : { state: "blocked" as const }) }));
+  if (comandante.decision === "approved" && ruled?.comandante === comandante) await rumoSend($, id);
+}
+
+/**
+ * Claude's own turn ended: the goal at work is judged again. An interrupted turn stops it; the judging runs apart,
+ * since the engine waits on this hook.
+ */
+async function rumoTurnCompleted($: EngineInterface, e: { agentId?: string; isAborted?: boolean; answer?: string }): Promise<void> {
+  if (e.agentId) return;
+  rumoLastAnswer = e.answer ?? "";
+  const goal = (await read($, rumoGoals))[0];
+  if (goal?.state !== "active" || !(await featureEnabled($, "rumo"))) return;
+  if (e.isAborted) {
+    const endedAt = await $.clock.now();
+    const why = text("feature.rumo.why.aborted", (await getSettings($)).locale);
+    await updateRumo($, goal.id, (one) => ({ ...one, state: "stopped", endedAt, why }));
+    return;
+  }
+  void rumoJudge($, goal.id).catch(() => undefined);
+}
+
+/**
+ * Jev reads Claude's last answer against the goal: met or impossible ends it; not yet, Claude gets one more turn while
+ * any are left. A Portão run holding Claude's commit or push makes it wait for the person instead: the goal never
+ * pushes past the gate. A doubtful or failed answer leaves it waiting for the next turn.
+ */
+async function rumoJudge($: EngineInterface, id: string): Promise<void> {
+  const config = await getSettings($);
+  const locale = config.locale;
+  const goal = (await read($, rumoGoals)).find((one) => one.id === id);
+  if (goal?.state !== "active") return;
+  const gate = (await read($, portaoRuns))[0];
+  if (gate && (gate.state === "checking" || (portaoWaiting(gate) && gate.proposal?.state === "waiting"))) {
+    await updateRumo($, id, (one) => ({ ...one, why: text("feature.rumo.why.portao", locale) }));
+    return;
+  }
+  if (!config.apiKey) return;
+  const asked = await askTimed({ model: config.jevModel, ...rumoJudgeRequest(goal, rumoLastAnswer) }, tracedAskJev($, config, { origin: "rumo", trigger: "check" }));
+  const status = "failure" in asked ? undefined : rumoStatus(asked.result.answers, config.minConfidence);
+  const endedAt = await $.clock.now();
+  // the person pressed Parar while Jev judged: the goal is over, and Claude gets no further turn from it
+  const current = (await read($, rumoGoals)).find((one) => one.id === id);
+  if (current?.state !== "active") return;
+  if (!status) {
+    await updateRumo($, id, (one) => ({ ...one, why: text("feature.rumo.why.unsure", locale) }));
+    return;
+  }
+  if (status === "met" || status === "impossible") {
+    await updateRumo($, id, (one) => ({ ...one, state: status, endedAt, why: text(`feature.rumo.why.${status}`, locale) }));
+    await log($, "jev", "feature", status === "met" ? "good" : "warn", text(`feature.rumo.ended.${status}`, locale, { condition: goal.condition }));
+    $.ui.toast(text(`feature.rumo.ended.${status}`, locale, { condition: goal.condition }));
+    return;
+  }
+  if (current.turnsUsed >= current.turnsMax) {
+    await updateRumo($, id, (one) => ({ ...one, state: "limit", endedAt, why: text("feature.rumo.why.limit", locale) }));
+    await log($, "jev", "feature", "warn", text("feature.rumo.ended.limit", locale, { condition: goal.condition }));
+    return;
+  }
+  const used = current.turnsUsed + 1;
+  await updateRumo($, id, (one) => ({ ...one, turnsUsed: used, why: text("feature.rumo.why.not_met", locale) }));
+  void $.prompt.submit({ text: text("feature.rumo.prompt.continue", locale, { mark: RUMO_MARK, condition: goal.condition, used: formatNumber(used, locale), max: formatNumber(goal.turnsMax, locale) }) }).catch(() => undefined);
+}
+
+/** Enviar: the goal starts; a turn that already ended is judged at once. */
+async function rumoSend($: EngineInterface, id: string): Promise<void> {
+  const goal = await updateRumo($, id, (one) => (one.state === "proposed" ? { ...one, state: "active" } : one));
+  if (goal?.state !== "active") return;
+  const locale = (await getSettings($)).locale;
+  $.ui.toast(text("feature.rumo.started", locale, { condition: goal.condition }));
+  if (!deckOf(await $.clock.now()).turnActive) void rumoJudge($, id).catch(() => undefined);
+}
+
+/** Rejeitar a proposed goal, or Parar one at work: either ends it, and Claude stops getting turns. */
+async function rumoEnd($: EngineInterface, id: string, verb: "reject" | "stop"): Promise<void> {
+  const endedAt = await $.clock.now();
+  await updateRumo($, id, (one) => {
+    if (verb === "reject" && (one.state === "proposed" || one.state === "blocked")) return { ...one, state: "rejected", endedAt };
+    if (verb === "stop" && one.state === "active") return { ...one, state: "stopped", endedAt };
+    return one;
+  });
+}
+
+// --- Ensaio ---
+
+// Ensaio: after a change someone using the app would see (a Code Quality cycle done, or Claude's turn with edits when
+// Code Quality is off), Jev decides whether to run the app; an agent of Pingo's own builds it, opens it, watches and
+// closes what it opened. What it finds becomes a fix request, and a project with no way to run gets a run book
+// request: either goes to Claude only with Enviar, judged by the Comandante first.
+const ENSAIO_TYPE = `jev:${ENSAIO_AGENT}`;
+let ensaioRegistered = false;
+/** The run's agent, once its spawn answered; `ensaioRunning` while one may be at work at all. */
+let ensaioAgentId: string | undefined;
+let ensaioRunning = false;
+/** True while a change is weighed (Jev asked, the run recorded and started): one at a time. */
+let ensaioConsidering = false;
+/** The run at work and the first turn its agent was given, which its independent review reads. */
+let ensaioOpen: { n: number; prompt: string } | undefined;
+
+/** Changes run `n`, answering it as changed. */
+async function updateEnsaio($: EngineInterface, n: number, change: (run: EnsaioRun) => EnsaioRun): Promise<EnsaioRun | undefined> {
+  let changed: EnsaioRun | undefined;
+  await update($, ensaioRuns, (list) => list.map((run) => (run.n === n ? (changed = change(run)) : run)));
+  return changed;
+}
+
+/** Runs kept from before a reload: one still running was cut short. */
+async function ensaioRestore($: EngineInterface): Promise<void> {
+  if (!(await read($, ensaioRuns)).some((run) => run.state === "running")) return;
+  const note = text("feature.ensaio.note.interrupted", (await getSettings($)).locale);
+  const endedAt = await $.clock.now();
+  await update($, ensaioRuns, (list) => list.map((run) => (run.state === "running" ? { ...run, state: "failed" as const, endedAt, note } : run)));
+}
+
+/** How the project says its app runs: its own commands and skills, and its package.json scripts. */
+async function ensaioFacts($: EngineInterface, files: readonly string[], review?: string): Promise<EnsaioFacts> {
+  const root = (await $.session.root()).replace(/[\\/]$/, "");
+  const commands = (await $.command.list().catch(() => [])).filter((command) => command.source !== "builtin").map((command) => `/${command.name}: ${command.description}`);
+  let scripts: string[] = [];
+  try {
+    if (await $.fs.exists(`${root}/package.json`)) scripts = Object.keys((JSON.parse(await $.fs.read(`${root}/package.json`)) as { scripts?: Record<string, unknown> }).scripts ?? {});
+  } catch { /* no readable package.json: no scripts to offer */ }
+  return { files, ...(review ? { review } : {}), commands, scripts };
+}
+
+/** A new record, numbered after the last one. */
+async function ensaioRecord($: EngineInterface, fields: Omit<EnsaioRun, "n">): Promise<EnsaioRun> {
+  let run!: EnsaioRun;
+  await update($, ensaioRuns, (list) => {
+    run = { n: (list[0]?.n ?? 0) + 1, ...fields };
+    return [run, ...list].slice(0, ENSAIO_HISTORY);
+  });
+  return run;
+}
+
+/**
+ * A change worth a look: Jev decides whether it shows and whether the project says how to run it. One run at a time,
+ * never while another session of the project runs its app or its tests; without a key or a confident answer, none.
+ */
+async function ensaioConsider($: EngineInterface, files: readonly string[], review?: string): Promise<void> {
+  // claimed before the first await: Jev's answer takes a while, and a second change must not start a second run meanwhile
+  if (!files.length || ensaioConsidering) return;
+  ensaioConsidering = true;
+  try {
+    await ensaioConsiderNow($, files, review);
+  } finally {
+    ensaioConsidering = false;
+  }
+}
+
+async function ensaioConsiderNow($: EngineInterface, files: readonly string[], review?: string): Promise<void> {
+  if (!(await featureEnabled($, "ensaio"))) return;
+  if (ensaioRunning || (await read($, ensaioRuns))[0]?.state === "running") return;
+  const config = await getSettings($);
+  if (!config.apiKey) return;
+  const locale = config.locale;
+  const facts = await ensaioFacts($, files, review);
+  const asked = await askTimed({ model: config.jevModel, ...ensaioRequest(facts) }, tracedAskJev($, config, { origin: "ensaio", trigger: files[0] }));
+  const decision = "failure" in asked ? undefined : ensaioDecision(asked.result.answers, config.minConfidence);
+  if (!decision) return;
+  if (!decision.visible) {
+    await log($, "mod", "feature", "muted", text("feature.ensaio.internal", locale));
+    return;
+  }
+  const at = await $.clock.now();
+  if (await vigiaOthersRunning($, ["tests", "app"])) {
+    await ensaioRecord($, { at, endedAt: at, files: [...files], state: "skipped", problems: [], note: text("feature.ensaio.note.othersRunning", locale) });
+    return;
+  }
+  if (!decision.runbook) {
+    const run = await ensaioRecord($, {
+      at, endedAt: at, files: [...files], state: "done", verdict: "not_run", problems: [], note: text("feature.ensaio.note.noRunbook", locale),
+      proposal: { kind: "runbook", text: text("feature.ensaio.prompt.runbook", locale, { files: files.join(", ") }), state: "waiting" },
+    });
+    await ensaioJudge($, run);
+    return;
+  }
+  const run = await ensaioRecord($, { at, files: [...files], state: "running", problems: [] });
+  await ensaioStart($, run.n, facts, locale);
+}
+
+/** Starts the run's agent: Pingo's own, in the background, hidden from Claude; the other sessions see the app running. */
+async function ensaioStart($: EngineInterface, n: number, facts: EnsaioFacts, locale: Locale): Promise<void> {
+  const failed = async (reason: string) => {
+    const endedAt = await $.clock.now();
+    await updateEnsaio($, n, (run) => ({ ...run, state: "failed", endedAt, note: text("feature.ensaio.note.notStarted", locale, { reason: short(reason, 120) }) }));
+  };
+  if (!ensaioRegistered) {
+    const refused = await $.agent.register({
+      name: ENSAIO_AGENT,
+      description: "Pingo's Ensaio: builds and runs the app after a change someone using it would see, watches it and reports.",
+      prompt: ENSAIO_SYSTEM,
+      model: CLAUDE_MODEL.SONNET.name,
+      maxTurns: ENSAIO_MAX_TURNS,
+      background: true,
+      // it runs unattended and changes nothing: no question, no file written, no helper started
+      disallowedTools: ["AskUserQuestion", "Write", "Edit", "MultiEdit", "NotebookEdit", "Agent"],
+    }).then(() => { ensaioRegistered = true; return undefined; }, errorMessage);
+    if (refused !== undefined) return failed(refused);
+  }
+  const prompt = ensaioRunRequest(facts, locale);
+  ensaioOpen = { n, prompt };
+  // its first calls, even its end, may come before the spawn answers: it is known as at work from here
+  ensaioRunning = true;
+  await vigiaMarkRunning($, "app");
+  const spawned = await $.agent.spawn({ subagentType: ENSAIO_TYPE, prompt, description: text("feature.ensaio.agent", locale) }).catch((error: unknown) => ({ deny: errorMessage(error) }));
+  if (spawned.deny !== undefined) {
+    ensaioRunning = false;
+    ensaioOpen = undefined;
+    await vigiaMarkRunning($);
+    return failed(spawned.deny);
+  }
+  if (ensaioRunning) ensaioAgentId = spawned.agentId;
+  await log($, "mod", "feature", "info", text("feature.ensaio.started", locale, { files: facts.files.join(", ") }));
+}
+
+/** Whether a loop is the run's agent: by the id its spawn answered, else by its type in the session's list. */
+async function isEnsaioAgent($: EngineInterface, id: string): Promise<boolean> {
+  return id === ensaioAgentId || (await $.agent.list().catch(() => [])).some((agent) => agent.id === id && agent.type === ENSAIO_TYPE);
+}
+
+/**
+ * The agent's turn ended: its report goes on the run, a problem it saw becomes a fix request for the person (judged by
+ * the Comandante first), and the independent review of its answer follows apart.
+ */
+async function ensaioAgentEnded($: EngineInterface, e: { agentId?: string; answer?: string; isAborted?: boolean; reason?: string }): Promise<void> {
+  if (!e.agentId || !ensaioRunning || !(await isEnsaioAgent($, e.agentId))) return;
+  ensaioRunning = false;
+  ensaioAgentId = undefined;
+  await vigiaMarkRunning($);
+  const open = ensaioOpen;
+  ensaioOpen = undefined;
+  if (!open) return;
+  const locale = (await getSettings($)).locale;
+  const report = parseEnsaioReport(e.answer ?? "");
+  const ok = agentEnding(e).ok && report.verdict !== undefined;
+  const endedAt = await $.clock.now();
+  const problems = report.problems.map((one) => (one.where ? `${one.where} — ${one.text}` : one.text));
+  const proposal = report.verdict === "broken" && (problems.length || report.fix)
+    ? { kind: "fix" as const, text: text("feature.ensaio.prompt.fix", locale, { problems: problems.map((line) => `- ${line}`).join("\n") || "-", fix: report.fix ?? "" }), state: "waiting" as const }
+    : undefined;
+  const run = await updateEnsaio($, open.n, (one) => ({
+    ...one,
+    state: ok ? "done" : "failed",
+    endedAt,
+    problems: report.problems,
+    ...(report.verdict ? { verdict: report.verdict } : {}),
+    ...(report.summary ? { summary: report.summary } : {}),
+    ...(report.ran ? { note: text("feature.ensaio.note.ran", locale, { ran: report.ran }) } : ok ? {} : { note: text("feature.ensaio.note.noReport", locale) }),
+    ...(proposal ? { proposal } : {}),
+  }));
+  await log($, "mod", "feature", report.verdict === "works" ? "good" : "warn", text(`feature.ensaio.ended.${report.verdict ?? "none"}`, locale));
+  void orch.reviewPingoAgent(orchIo($), { agentId: e.agentId, type: ENSAIO_TYPE, description: text("feature.ensaio.agent", locale), prompt: open.prompt, answer: e.answer ?? "" })
+    .then((review) => updateEnsaio($, open.n, (one) => ({ ...one, verified: review?.approved === true })), () => undefined);
+  if (run?.proposal) await ensaioJudge($, run);
+}
+
+/** The Comandante judges a run's proposal before the person sees it waiting. */
+async function ensaioJudge($: EngineInterface, run: EnsaioRun): Promise<void> {
+  if (!run.proposal) return;
+  comandanteTried.add(`ensaio:${run.n}`);
+  const ruling = await comandanteReview($, { source: "ensaio", text: run.problems.map((one) => one.text).join("; ") || run.proposal.text, context: run.files.join(", ") });
+  if (ruling) await ensaioRuled($, run.n, { decision: ruling.decision, reason: ruling.reason, record: ruling.record });
+}
+
+/**
+ * The Comandante's ruling on a run's proposal. Approved, it acts in the person's place: the request goes to Claude at
+ * once, as with their Enviar (a fix or a run book request, never a commit, a deletion or a settings change).
+ * Otherwise it is blocked.
+ */
+async function ensaioRuled($: EngineInterface, n: number, comandante: ComandanteRuling): Promise<void> {
+  const run = await updateEnsaio($, n, (one) => (one.proposal?.state !== "waiting" ? one : {
+    ...one,
+    proposal: { ...one.proposal, comandante, ...(comandante.decision === "approved" ? {} : { state: "blocked" as const }) },
+  }));
+  if (comandante.decision === "approved" && run?.proposal?.state === "waiting") await ensaioSend($, n);
+}
+
+/** A Code Quality cycle done: its files are worth a look. */
+async function ensaioQualityDone($: EngineInterface, cycle: QualityCycle): Promise<void> {
+  if (cycle.state === "done") await ensaioConsider($, cycle.files.length ? cycle.files : cycle.reviewed, cycle.summary);
+}
+
+/** Claude's own turn ended with edits while Code Quality is off: Ensaio takes them, and they are not kept for later. */
+async function ensaioTurnCompleted($: EngineInterface, e: { agentId?: string; isAborted?: boolean }): Promise<void> {
+  if (e.agentId || e.isAborted || !qualityEdited.size || (await featureEnabled($, "codeQuality")) || !(await featureEnabled($, "ensaio"))) return;
+  const root = await $.session.root();
+  const files = [...new Set([...qualityEdited].map((path) => vigiaRelative(root, path)))];
+  qualityEdited.clear();
+  void ensaioConsider($, files).catch(() => undefined);
+}
+
+/** Enviar: the run's request goes to Claude, as the person's. */
+async function ensaioSend($: EngineInterface, n: number): Promise<void> {
+  const run = (await read($, ensaioRuns)).find((one) => one.n === n);
+  if (run?.proposal?.state !== "waiting") return;
+  await updateEnsaio($, n, (one) => ({ ...one, proposal: { ...one.proposal!, state: "sent" } }));
+  void $.prompt.submit({ text: run.proposal.text, asUser: true }).catch(() => undefined);
+  $.ui.toast(text("feature.ensaio.sent", (await getSettings($)).locale));
+}
+
+/** Rejeitar: the run's request is dropped. */
+async function ensaioReject($: EngineInterface, n: number): Promise<void> {
+  await updateEnsaio($, n, (run) => (run.proposal && (run.proposal.state === "waiting" || run.proposal.state === "blocked") ? { ...run, proposal: { ...run.proposal, state: "rejected" } } : run));
+}
+
+// --- Chaveiro ---
+
+// Chaveiro: each call the person approves at a permission prompt is counted by its kind; at the third approval of one
+// kind (or the first after the auto mode refused that kind), Jev weighs a permission rule for it at the turn's end.
+// The rule is written to the settings only with Enviar, after the Comandante judged it; each kind is weighed once.
+/** The calls waiting on the person's answer at a permission prompt, by tool_use_id. */
+const chaveiroAsks = new Map<string, ChaveiroPattern>();
+/** Approvals counted this session, by kind of call, with the calls themselves as samples. */
+const chaveiroCounts = new Map<string, { pattern: ChaveiroPattern; count: number; samples: string[] }>();
+/** Kinds of call refused by the mode itself (the auto mode's classifier), not by a rule. */
+const chaveiroRefused = new Set<string>();
+/** Kinds already put to Jev this session, whatever it answered: each is weighed once. */
+const chaveiroWeighed = new Set<string>();
+
+/** A permission prompt came up for a call (`ask`), or the mode refused one without a rule: Chaveiro keeps note. */
+function chaveiroChecked(toolUseId: string | undefined, tool: string, input: unknown, verdict: ToolCheckResult): void {
+  const pattern = toolUseId ? permissionPattern(tool, input) : undefined;
+  if (!pattern || !toolUseId) return;
+  if (verdict.decision === "ask") chaveiroAsks.set(toolUseId, pattern);
+  else if (verdict.decision === "deny" && !verdict.rule && !verdict.hook) chaveiroRefused.add(pattern.key);
+}
+
+/** The call a permission prompt was for ran (the person approved it) or was refused: an approval counts toward its kind. */
+function chaveiroAnswered(toolUseId: string, ran: boolean): void {
+  const pattern = chaveiroAsks.get(toolUseId);
+  if (!pattern) return;
+  chaveiroAsks.delete(toolUseId);
+  if (!ran) return;
+  const seen = chaveiroCounts.get(pattern.key) ?? { pattern, count: 0, samples: [] };
+  chaveiroCounts.set(pattern.key, { pattern, count: seen.count + 1, samples: [...seen.samples, pattern.sample].slice(-5) });
+}
+
+/** Changes rule `id`, answering it as changed. */
+async function updateChaveiro($: EngineInterface, id: string, change: (rule: ChaveiroRule) => ChaveiroRule): Promise<ChaveiroRule | undefined> {
+  let changed: ChaveiroRule | undefined;
+  await update($, chaveiroRules, (list) => list.map((rule) => (rule.id === id ? (changed = change(rule)) : rule)));
+  return changed;
+}
+
+/**
+ * Claude's own turn ended: one kind of call approved often enough, with no rule waiting on the person, is weighed by
+ * Jev. A rule for calls that only read is proposed, judged by the Comandante first; anything else is let go.
+ */
+async function chaveiroTurnCompleted($: EngineInterface, e: { agentId?: string }): Promise<void> {
+  if (e.agentId || !(await featureEnabled($, "chaveiro"))) return;
+  const rules = await read($, chaveiroRules);
+  if (rules.some((rule) => rule.proposal.state === "waiting" || rule.proposal.state === "blocked")) return;
+  const known = new Set(rules.map((rule) => rule.id));
+  const candidate = [...chaveiroCounts.values()].find((one) => !known.has(one.pattern.key) && !chaveiroWeighed.has(one.pattern.key)
+    && (one.count >= CHAVEIRO_THRESHOLD || chaveiroRefused.has(one.pattern.key)));
+  const config = await getSettings($);
+  if (!candidate || !config.apiKey) return;
+  chaveiroWeighed.add(candidate.pattern.key);
+  const asked = await askTimed({ model: config.jevModel, ...chaveiroRequest(candidate.pattern, candidate.count, candidate.samples) }, tracedAskJev($, config, { origin: "chaveiro", trigger: candidate.pattern.key }));
+  const decision = "failure" in asked ? undefined : chaveiroDecision(asked.result.answers, config.minConfidence, candidate.pattern);
+  if (!decision) {
+    await log($, "mod", "feature", "muted", text("feature.chaveiro.passed", config.locale, { call: short(candidate.pattern.sample, 80) }));
+    return;
+  }
+  const rule: ChaveiroRule = {
+    id: candidate.pattern.key,
+    at: await $.clock.now(),
+    tool: candidate.pattern.tool,
+    sample: candidate.pattern.sample,
+    rule: decision.rule,
+    scope: decision.scope,
+    count: candidate.count,
+    proposal: { text: decision.rule, state: "waiting" },
+  };
+  await update($, chaveiroRules, (list) => [rule, ...list].slice(0, CHAVEIRO_HISTORY));
+  await log($, "jev", "feature", "info", text("feature.chaveiro.proposed", config.locale, { rule: rule.rule }));
+  comandanteTried.add(`chaveiro:${rule.id}`);
+  const ruling = await comandanteReview($, { source: "chaveiro", text: rule.rule, context: rule.sample });
+  if (ruling) await chaveiroRuled($, rule.id, { decision: ruling.decision, reason: ruling.reason, record: ruling.record });
+}
+
+/**
+ * The Comandante's ruling on a proposed rule: approved, it still waits for the person's Enviar, since writing it
+ * changes their settings, which only they do (the one proposal an approval does not carry out); otherwise it is blocked.
+ */
+async function chaveiroRuled($: EngineInterface, id: string, comandante: ComandanteRuling): Promise<void> {
+  await updateChaveiro($, id, (rule) => (rule.proposal.state !== "waiting" ? rule : {
+    ...rule,
+    proposal: { ...rule.proposal, comandante, ...(comandante.decision === "approved" ? {} : { state: "blocked" as const }) },
+  }));
+}
+
+/** The settings file a rule goes to, for this project and person. */
+async function chaveiroFile($: EngineInterface, rule: ChaveiroRule): Promise<string> {
+  const home = (await $.env.get("HOME")) ?? (await $.env.get("USERPROFILE")) ?? "";
+  return settingsFile(rule.scope, await $.session.root(), home);
+}
+
+/**
+ * Enviar: the rule is added to its settings file's `permissions.allow`, every other setting kept. A file that is not
+ * a JSON object is left alone and the rule keeps waiting: Chaveiro never overwrites settings it cannot read.
+ */
+async function chaveiroSend($: EngineInterface, id: string): Promise<void> {
+  const rule = (await read($, chaveiroRules)).find((one) => one.id === id);
+  if (rule?.proposal.state !== "waiting") return;
+  const locale = (await getSettings($)).locale;
+  const file = await chaveiroFile($, rule);
+  try {
+    const current = (await $.fs.exists(file)) ? await $.fs.read(file) : undefined;
+    await $.fs.write(file, addAllowRule(current, rule.rule));
+  } catch (error) {
+    $.ui.toast(text("feature.chaveiro.notWritten", locale, { file, reason: short(errorMessage(error), 120) }), { timeoutMs: 8000 });
+    return;
+  }
+  await updateChaveiro($, id, (one) => ({ ...one, proposal: { ...one.proposal, state: "sent" } }));
+  await log($, "mod", "feature", "good", text("feature.chaveiro.written", locale, { rule: rule.rule, file }));
+  $.ui.toast(text("feature.chaveiro.written", locale, { rule: rule.rule, file }));
+}
+
+/** Rejeitar: the rule is dropped, and that kind of call is not weighed again in this session. */
+async function chaveiroReject($: EngineInterface, id: string): Promise<void> {
+  await updateChaveiro($, id, (rule) => (rule.proposal.state === "waiting" || rule.proposal.state === "blocked" ? { ...rule, proposal: { ...rule.proposal, state: "rejected" } } : rule));
+}
+
+// --- Oficina ---
+
+// Oficina: when a session starts on a new Claude Code version, or with its context already very full, it runs
+// `claude doctor` (which only reads); when Jev finds something worth the person's time, it suggests /doctor, which
+// Enviar puts in the prompt box for them to send. Once per version; never a Comandante source.
+/** The store key of the Claude Code version the last session started on. */
+const OFICINA_VERSION_KEY = "oficina:version";
+/** The store key of the versions already checked. */
+const OFICINA_CHECKED_KEY = "oficina:checked";
+/** True while `claude doctor` runs: Oficina is at work on the lane. */
+let oficinaRunning = false;
+
+/**
+ * The session started: a version other than the last one's, or a context already past OFICINA_CONTEXT_PERCENT, makes
+ * Oficina run `claude doctor`, once per version. The first session it sees only learns the version.
+ */
+async function oficinaSessionStarted($: EngineInterface): Promise<void> {
+  // without a key Jev cannot judge the check: the version stays unseen, so a later session with one still notices it
+  if (!(await featureEnabled($, "oficina")) || !(await getSettings($)).apiKey) return;
+  const version = (await $.session.version()).version;
+  const previous = await $.store.get(OFICINA_VERSION_KEY).catch(() => undefined) as string | undefined;
+  await $.store.set(OFICINA_VERSION_KEY, version);
+  const checked = ((await $.store.get(OFICINA_CHECKED_KEY).catch(() => undefined)) as string[] | undefined) ?? [];
+  if (checked.includes(version)) return;
+  const percent = (await $.session.usage().catch(() => undefined))?.context.percent ?? undefined;
+  const reason = previous !== undefined && previous !== version ? "version" : percent !== undefined && percent >= OFICINA_CONTEXT_PERCENT ? "context" : undefined;
+  if (!reason) return;
+  await $.store.set(OFICINA_CHECKED_KEY, [...checked, version].slice(-10));
+  await oficinaCheck($, { version, ...(previous ? { previous } : {}), reason, ...(percent !== undefined ? { contextPercent: percent } : {}) });
+}
+
+/** Runs `claude doctor`, then asks Jev whether what it found is worth a suggestion; only then is a check kept. */
+async function oficinaCheck($: EngineInterface, why: Omit<OficinaFacts, "findings" | "output">): Promise<void> {
+  const config = await getSettings($);
+  if (!config.apiKey) return;
+  oficinaRunning = true;
+  redrawDeck($);
+  let output = "";
+  try {
+    const result = await $.process.run(["claude", "doctor"], { timeoutMs: OFICINA_TIMEOUT_MS });
+    output = `${result.stdout}\n${result.stderr}`.trim();
+  } catch (error) {
+    output = `claude doctor did not run: ${errorMessage(error)}`;
+  } finally {
+    oficinaRunning = false;
+    redrawDeck($);
+  }
+  const facts: OficinaFacts = { ...why, findings: doctorFindings(output), output };
+  const asked = await askTimed({ model: config.jevModel, ...oficinaRequest(facts) }, tracedAskJev($, config, { origin: "oficina", trigger: why.reason }));
+  const show = "failure" in asked ? undefined : oficinaDecision(asked.result.answers, config.minConfidence);
+  if (!show) {
+    await log($, "mod", "feature", "muted", text("feature.oficina.healthy", config.locale, { version: why.version }));
+    return;
+  }
+  const at = await $.clock.now();
+  const check: OficinaCheck = { id: `check-${at}`, at, version: why.version, reason: why.reason, findings: [...facts.findings], proposal: { text: OFICINA_COMMAND, state: "waiting" } };
+  await update($, oficinaChecks, (list) => [check, ...list].slice(0, OFICINA_HISTORY));
+  await log($, "mod", "feature", "warn", text("feature.oficina.found", config.locale, { count: formatNumber(check.findings.length, config.locale), version: why.version }));
+}
+
+/** Changes check `id`. */
+async function updateOficina($: EngineInterface, id: string, change: (check: OficinaCheck) => OficinaCheck): Promise<void> {
+  await update($, oficinaChecks, (list) => list.map((check) => (check.id === id ? change(check) : check)));
+}
+
+/** Enviar: /doctor goes into the prompt box, for the person to send; nothing runs on its own. */
+async function oficinaSend($: EngineInterface, id: string): Promise<void> {
+  const check = (await read($, oficinaChecks)).find((one) => one.id === id);
+  if (check?.proposal?.state !== "waiting") return;
+  const locale = (await getSettings($)).locale;
+  const filled = await $.prompt.fill({ text: OFICINA_COMMAND }).then((answer) => answer.isFilled !== false, () => false);
+  $.ui.toast(text(filled ? "feature.oficina.filled" : "feature.oficina.typeIt", locale, { command: OFICINA_COMMAND }));
+  await updateOficina($, id, (one) => ({ ...one, proposal: { ...one.proposal!, state: "sent" } }));
+}
+
+/** Rejeitar: the suggestion is dropped. */
+async function oficinaReject($: EngineInterface, id: string): Promise<void> {
+  await updateOficina($, id, (check) => (check.proposal?.state === "waiting" ? { ...check, proposal: { ...check.proposal, state: "rejected" } } : check));
+}
+
+/** The Autonomous tab's data: each agent's records, newest first. */
+async function autonomosPanel($: EngineInterface): Promise<AutonomosPanel> {
+  return {
+    portao: { runs: await read($, portaoRuns) },
+    rumo: { goals: await read($, rumoGoals) },
+    ensaio: { runs: await read($, ensaioRuns) },
+    chaveiro: { rules: await read($, chaveiroRules) },
+    oficina: { checks: await read($, oficinaChecks), running: oficinaRunning },
+  };
+}
+
+/** A button on the Autonomous tab, or on a line above the prompt: Enviar, Rejeitar, Liberar or Parar on one record, Limpar feitos on an agent's part. */
+async function autonomoAct($: EngineInterface, agent: AutonomoId, verb: AutonomoVerb, key: number | string): Promise<void> {
+  // Limpar feitos: what waits on nobody leaves the tab. A Portão run is only hidden: the newest one holds the gate's
+  // state and numbers the next run
+  if (verb === "clear") {
+    if (agent === "portao") await update($, portaoRuns, (runs) => runs.map((run) => (portaoSettled(run) && !run.cleared ? { ...run, cleared: true } : run)));
+    if (agent === "rumo") await update($, rumoGoals, (goals) => goals.filter((goal) => !rumoSettled(goal)));
+    return;
+  }
+  if (agent === "portao" && typeof key === "number") {
+    if (verb === "send") await portaoSend($, key);
+    else if (verb === "reject") await portaoReject($, key);
+    else if (verb === "release") await portaoRelease($, key);
+  }
+  if (agent === "rumo" && typeof key === "string") {
+    if (verb === "send") await rumoSend($, key);
+    else if (verb === "reject" || verb === "stop") await rumoEnd($, key, verb);
+  }
+  if (agent === "ensaio" && typeof key === "number") {
+    if (verb === "send") await ensaioSend($, key);
+    else if (verb === "reject") await ensaioReject($, key);
+  }
+  if (agent === "chaveiro" && typeof key === "string") {
+    if (verb === "send") await chaveiroSend($, key);
+    else if (verb === "reject") await chaveiroReject($, key);
+  }
+  if (agent === "oficina" && typeof key === "string") {
+    if (verb === "send") await oficinaSend($, key);
+    else if (verb === "reject") await oficinaReject($, key);
+  }
 }
 
 // --- Comandante ---
@@ -3185,11 +4647,14 @@ function comandanteMessage(source: ComandanteAlert["source"], ruling: Comandante
   return text(`feature.comandante.tool.questioned.${source}` as LocaleKey, locale, { reason, question: text(`feature.comandante.question.${ruling.reason}` as LocaleKey, locale) });
 }
 
+/** A source's name as the person reads it: its feature's name. */
+const comandanteSourceName = (source: ComandanteSource, locale: Locale) => text(`feature.${source}.name` as LocaleKey, locale);
+
 /** The line the live log and the toast show for one decision. */
 function comandanteNotice(source: ComandanteAlert["source"], ruling: ComandanteVerdict, said: string, locale: Locale): string {
   return text("feature.comandante.notice", locale, {
     decision: text(`feature.comandante.decision.${ruling.decision}`, locale),
-    source: SPEAKER_NAMES[source],
+    source: comandanteSourceName(source, locale),
     summary: vigiaFlat(said, 120),
     reason: text(`feature.comandante.reason.${ruling.reason}` as LocaleKey, locale),
   });
@@ -3263,6 +4728,7 @@ async function comandanteReview($: EngineInterface, alert: ComandanteAlert, agen
   const config = await getSettings($);
   const locale = config.locale;
   comandanteAsking++;
+  comandanteJudging.push(alert.source);
   await update($, comandanteBusy, () => true);
   try {
     if (!config.apiKey) throw new Error(text("feature.comandante.noKey", locale));
@@ -3271,17 +4737,21 @@ async function comandanteReview($: EngineInterface, alert: ComandanteAlert, agen
       : alert.source === "farol"
         ? [...(await read($, farolRules)).map((rule) => `${rule.correction} (not: ${rule.assumption})`), ...(await read($, farolItems)).filter((item) => item.id !== judging).map((item) => item.text)]
         : [];
-    const request = (await readTrace($)).runs.findLast((run) => run.text)?.text ?? "";
+    // what the person typed, not the last turn's text, which may be a prompt a plugin sent (Clareza's plan, Farol's feedback)
+    const request = lastAsked(await readTrace($));
     const ask = tracedAskJev($, config, { origin: "comandante", trigger: alert.source, ...(agentId ? { agentId } : {}) });
     const ruling = comandanteVerdict(await ask({ model: config.jevModel, ...comandanteRequest(alert, request, known) }));
     if (!ruling) throw new Error(text("feature.comandante.noVerdict", locale));
     const record = await recordComandante($, alert, ruling, agentId);
     return { ...ruling, message: comandanteMessage(alert.source, ruling, locale), record };
   } catch (error) {
+    featureFailed.add("comandante");
     await log($, "mod", "feature", "warn", text("feature.comandante.skipped", locale, { reason: short(errorMessage(error), 160) })).catch(() => undefined);
     return;
   } finally {
     comandanteAsking = Math.max(0, comandanteAsking - 1);
+    const judged = comandanteJudging.indexOf(alert.source);
+    if (judged >= 0) comandanteJudging.splice(judged, 1);
     if (!comandanteAsking) await update($, comandanteBusy, () => false);
   }
 }
@@ -3329,8 +4799,8 @@ type ComandanteWaiting = { key: string; alert: ComandanteAlert; judging?: number
  * A Farol assumption approved is marked right and told to Claude with its next step, as the person's ✓ is; rejected
  * or questioned, it stays open for the person with the ruling beside it. A Semente idea stays on the shelf whatever
  * the ruling, shown beside it: only the person removes a saved idea. A Clareza plan rejected is dropped, as when
- * judged on arrival; otherwise it waits for the person with the ruling. Each change leaves alone what the person
- * decided meanwhile.
+ * judged on arrival; approved, it is sent and shown done; questioned, it waits for the person with the ruling. Each
+ * change leaves alone what the person decided meanwhile.
  */
 async function comandanteNext($: EngineInterface): Promise<ComandanteWaiting | undefined> {
   const flags = await read($, features);
@@ -3363,8 +4833,46 @@ async function comandanteNext($: EngineInterface): Promise<ComandanteWaiting | u
       key: `clareza:${plan.at}`,
       alert: { source: "clareza", text: plan.problems.join("; ") || text("feature.clareza.unclear", (await getSettings($)).locale), context: plan.prompt },
       apply: async (comandante) => {
-        await update($, clarezaProposal, (current) => current?.at !== plan.at ? current : comandante.decision === "rejected" ? null : { ...current, comandante });
+        const busy = deckOf(await $.clock.now()).turnActive;
+        await update($, clarezaProposal, (current) => current?.at !== plan.at ? current : comandante.decision === "rejected" ? null : clarezaRuled(current, comandante, busy));
+        await sendClarezaRuled($, plan.at);
       },
+    };
+  }
+  // a Portão run whose failures wait to go to Claude: approved, they go at once; otherwise it is blocked
+  if (flags.portao && watched.portao) {
+    const run = (await read($, portaoRuns)).find((one) => one.state === "failed" && one.proposal?.state === "waiting" && !one.proposal.comandante && !comandanteTried.has(`portao:${one.n}`));
+    if (run) return {
+      key: `portao:${run.n}`,
+      alert: { source: "portao", text: run.findings.join("; ") || run.proposal!.text, context: run.command },
+      apply: (comandante) => portaoRuled($, run.n, comandante),
+    };
+  }
+  // a goal Rumo proposed: approved, it starts at once; otherwise it is blocked
+  if (flags.rumo && watched.rumo) {
+    const goal = (await read($, rumoGoals)).find((one) => one.state === "proposed" && !one.comandante && !comandanteTried.has(`rumo:${one.id}`));
+    if (goal) return {
+      key: `rumo:${goal.id}`,
+      alert: { source: "rumo", text: goal.condition, context: goal.request },
+      apply: (comandante) => rumoRuled($, goal.id, comandante),
+    };
+  }
+  // an Ensaio run's request (a fix, a run book): approved, it waits for the person; otherwise it is blocked
+  if (flags.ensaio && watched.ensaio) {
+    const run = (await read($, ensaioRuns)).find((one) => one.proposal?.state === "waiting" && !one.proposal.comandante && !comandanteTried.has(`ensaio:${one.n}`));
+    if (run) return {
+      key: `ensaio:${run.n}`,
+      alert: { source: "ensaio", text: run.problems.map((one) => one.text).join("; ") || run.proposal!.text, context: run.files.join(", ") },
+      apply: (comandante) => ensaioRuled($, run.n, comandante),
+    };
+  }
+  // a permission rule Chaveiro proposes: approved, it waits for the person; otherwise it is blocked
+  if (flags.chaveiro && watched.chaveiro) {
+    const rule = (await read($, chaveiroRules)).find((one) => one.proposal.state === "waiting" && !one.proposal.comandante && !comandanteTried.has(`chaveiro:${one.id}`));
+    if (rule) return {
+      key: `chaveiro:${rule.id}`,
+      alert: { source: "chaveiro", text: rule.rule, context: rule.sample },
+      apply: (comandante) => chaveiroRuled($, rule.id, comandante),
     };
   }
 }
@@ -3416,6 +4924,7 @@ export function normalizeTab(value: unknown): JevTab {
     case "orchestration":
     case "quality":
     case "comandante":
+    case "autonomos":
       return value;
     case "reasons":
     case "baseline":
@@ -3451,6 +4960,8 @@ async function openFeaturePane($: EngineInterface, id: SpeakerId): Promise<void>
     await refreshComandante($);
     return openPane($, "comandante");
   }
+  // the autonomous agents' choices (Enviar, Rejeitar, Liberar) are on their own tab
+  if (id === "portao" || id === "ensaio" || id === "chaveiro" || id === "oficina") return openPane($, "autonomos");
   await $.ui.open({ id, title: name, focus: true, closeOnEscape: true, ...(id === "prisma" ? { holdToasts: true } : {}) });
 }
 
@@ -3748,6 +5259,7 @@ function actions($: EngineInterface, requestId = PANE): Actions {
     },
     qualityRun: () => void startQuality($),
     comandanteFilter: (change) => void update($, comandanteFilter, (filter) => normalizeComandanteFilter({ ...filter, ...change })),
+    autonomo: (agent, verb, key) => void autonomoAct($, agent, verb, key).catch(() => undefined),
     deck: (args) => void runDeckFromTab($, args),
     deckStyle: (surface, name) => void setDeckStyleFromTab($, surface, name),
     deckType: (value) => {
@@ -3801,6 +5313,7 @@ async function view($: EngineInterface, width: number, rows: number, surface: st
     ...(normalized === "orchestration" ? { orchestration: await orchestrationView($) } : {}),
     ...(normalized === "quality" ? { quality: await qualityPanel($) } : {}),
     ...(normalized === "comandante" ? { comandante: await comandantePanel($) } : {}),
+    ...(normalized === "autonomos" ? { autonomos: await autonomosPanel($) } : {}),
   };
 }
 
@@ -3828,6 +5341,8 @@ function actor(agentId: string | undefined): Speaker {
 
 export const register: Register = (on, given) => {
   jevOpen.clear();
+  jevEnded = undefined;
+  jevFailing = false;
   options = given as ModOptions;
   contextCompacting = false;
   const contextConfig = resolveContextConfig({
@@ -3896,6 +5411,10 @@ export const register: Register = (on, given) => {
     await startStep($, "Vigia", () => registerVigia($));
     await startStep($, "Comandante", () => registerComandante($));
     await qualityStart($);
+    await startStep($, "Portão", () => portaoRestore($));
+    await startStep($, "Ensaio", () => ensaioRestore($));
+    // a new Claude Code version, or a context already full: Oficina's checkup runs apart, the session starts at once
+    void startStep($, "Oficina", () => oficinaSessionStarted($)).catch(() => undefined);
     mainModel = await $.session.model();
     await setLive($, { model: mainModel, asking: undefined });
     await startStep($, "Flow", async () => {
@@ -3972,6 +5491,7 @@ export const register: Register = (on, given) => {
       await update($, clarezaProposal, () => null);
       await update($, clarezaReviewing, () => false);
       await update($, contextoBusy, () => false);
+      await update($, vigiaSummarizing, () => false);
       await update($, localAdviceUsed, () => 0);
       await update($, farolBusy, () => false);
       await update($, lapidaPhase, () => "idle");
@@ -3984,6 +5504,7 @@ export const register: Register = (on, given) => {
       await refreshSentinela($);
       deckSessionId = sentinelaMe;
       sessionId = deckSessionId.slice(0, 8);
+      resetResumo($);
       await resetPet($, now);
       if (await featureEnabled($, "vigia")) await saveVigia($);
       comandanteTried.clear();
@@ -4040,6 +5561,10 @@ export const register: Register = (on, given) => {
       },
     }, enriched).catch(() => [] as string[]);
     const notes = [...vigiaNotes, ...orchestration];
+    // a completion condition in the person's request: Rumo weighs a goal for the objective just decided, apart
+    void rumoPromptSubmitted($, enriched).catch(() => undefined);
+    // the person's own words: Pingo's balloon sums up the session's goal again, apart
+    void resumoPromptSubmitted($, e).catch(() => undefined);
     return entered(await next(notes.length ? { ...enriched, context: [...(enriched.context ?? []), ...notes] } : enriched));
   }).catch((_$, e, next) => next(e));
 
@@ -4126,6 +5651,10 @@ export const register: Register = (on, given) => {
       else agentRuns.delete(id);
       const running = [...agentRuns.values()].filter((run) => !run.teammate || run.awake).length;
       await qualityAgentEnded($, e).catch(() => undefined);
+      await lapidaAgentEnded($, e).catch(() => undefined);
+      await resumoAgentEnded($, e).catch(() => undefined);
+      await portaoAgentEnded($, e).catch(() => undefined);
+      await ensaioAgentEnded($, e).catch(() => undefined);
       await setLive($, { activity: running ? text("feed.activity.agentCount", locale, { count: formatNumber(running, locale), unit: text(running === 1 ? "unit.agent" : "unit.agents", locale) }) : text("feed.activity.waiting", locale) });
       await compactContextAfterTurn($, contextConfig);
       return next(e);
@@ -4140,11 +5669,15 @@ export const register: Register = (on, given) => {
     await setLive($, { activity: undefined });
     const endedAt = await $.clock.now();
     await updateTrace($, (s) => completeTurn(s, e.turnId, endedAt, e.isAborted ? "aborted" : e.reason, undefined, e.answer));
-    await farolTurnCompleted($, e.agentId);
-    await clarezaTurnCompleted($, e);
-    await sementeTurnCompleted($, e);
-    await vigiaTurnCompleted($, e);
+    // each feature's own failure stays its own: the ones after it, and the compaction below, still run this turn
+    await farolTurnCompleted($, e.agentId).catch(() => undefined);
+    await clarezaTurnCompleted($, e).catch(() => undefined);
+    await sementeTurnCompleted($, e).catch(() => undefined);
+    await vigiaTurnCompleted($, e).catch(() => undefined);
     await qualityTurnCompleted($, e).catch(() => undefined);
+    await rumoTurnCompleted($, e).catch(() => undefined);
+    await ensaioTurnCompleted($, e).catch(() => undefined);
+    void chaveiroTurnCompleted($, e).catch(() => undefined);
     await compactContextAfterTurn($, contextConfig);
     return next(e);
   });
@@ -4162,6 +5695,11 @@ export const register: Register = (on, given) => {
     // Vigia holds an edit while another live session's newer edit of the file is unread here; a Read clears that.
     const vigiaHeld = !e.agentId && trackedEdit ? await vigiaTrackFile($, trackedEdit).catch(() => undefined) : undefined;
     if (!e.agentId && e.tool === "Read" && filePath) await vigiaFileRead($, filePath).catch(() => undefined);
+    // Portão holds Claude's own commit or push while it checks the change set, or until the person lets it through.
+    const portaoHeld = !e.agentId && !vigiaHeld ? await portaoGate($, e.tool, input).catch(() => undefined) : undefined;
+    // The project's tests: the other sessions see them running, and passing ones count as green for this change set.
+    const testRun = !vigiaHeld && !portaoHeld && SHELL_TOOLS.has(e.tool) && String(input.command ?? "").includes(PORTAO_RUNNER);
+    if (testRun) await vigiaMarkRunning($, "tests");
     const who = actor(e.agentId);
     const summary = toolSummary(e.tool, e as unknown as Record<string, unknown>);
     const startedAt = await $.clock.now();
@@ -4180,17 +5718,28 @@ export const register: Register = (on, given) => {
     if (!e.agentId) await setLive($, { activity: text("feed.activity.running", locale, { activity: short(summary, 40) }) });
     else await updateRun($, e.agentId, (run) => ({ ...run, tools: run.tools + 1, activity: text("feed.activity.agentTool", locale, { activity: short(summary, 60) }) }));
     // The follower reads the channel every 100 ms: the command's last calls still count where it ran.
-    const run: ReturnType<typeof next> = vigiaHeld ? Promise.resolve({ deny: vigiaHeld }) : next(e);
+    const held = vigiaHeld ?? portaoHeld;
+    const run: ReturnType<typeof next> = held ? Promise.resolve({ deny: held }) : next(e);
     const result = await deckCallClose($, deckCall, run.finally(() => {
       if (sift) $.clock.after(1000, () => siftRuns.delete(toolUseId));
     }));
+    if (testRun) {
+      await vigiaMarkRunning($);
+      if (result.deny === undefined && !result.isError) testsGreenAt = editGeneration;
+    }
+    // a call that came up at a permission prompt and ran: the person approved it
+    chaveiroAnswered(toolUseId, result.deny === undefined);
     // Past `next`, a failure would leave the engine with `next`'s bare result (its guard replays it, running nothing
     // again) and drop the notes below: a step that fails is left out, and the notes made before it still go.
     let finalResult = result;
     try {
       if (trackedEdit) sementeFileEdited(trackedEdit, result.deny === undefined && !result.isError);
       if (trackedEdit && result.deny === undefined && !result.isError) orch.noteEdit(e.agentId, trackedEdit);
-      if (trackedEdit && result.deny === undefined && !result.isError && (!e.agentId || (agentRuns.has(e.agentId) && !qualityHelpers.has(e.agentId) && !(await isQualityAgent($, e.agentId))))) qualityEdited.add(trackedEdit);
+      if (trackedEdit && result.deny === undefined && !result.isError && (!e.agentId || (agentRuns.has(e.agentId) && !qualityHelpers.has(e.agentId) && !(await isQualityAgent($, e.agentId))))) {
+        qualityEdited.add(trackedEdit);
+        // a new change set: Portão checks it again before it ships
+        editGeneration += 1;
+      }
       // A subagent's mandatory review verdict reaches its parent with the Agent tool's result.
       const reviewNote = e.tool === "Agent" && result.deny === undefined
         ? await orch.agentToolNote(orchIo($), e.tool_use_id, resultText(result.result)).catch(() => undefined)
@@ -4251,11 +5800,17 @@ export const register: Register = (on, given) => {
   }).catch(($, e, next) => next(e));
 
   on("agent.offer", { agent: QUALITY_TYPE }, () => ({ isOffered: false }));
+  on("agent.offer", { agent: LAPIDA_TYPE }, () => ({ isOffered: false }));
+  on("agent.offer", { agent: RESUMO_TYPE }, () => ({ isOffered: false }));
+  on("agent.offer", { agent: PORTAO_TYPE }, () => ({ isOffered: false }));
+  on("agent.offer", { agent: ENSAIO_TYPE }, () => ({ isOffered: false }));
 
   // Subagents: Jev picks the model and effort, unless Claude asked for a model itself.
   on("agent.spawn", async ($, e, next) => {
     // Code Quality's own agent: its model is set where it is registered, and its tab follows it
-    if (e.subagentType === QUALITY_TYPE) return next(e);
+    if (e.subagentType === QUALITY_TYPE || e.subagentType === PORTAO_TYPE || e.subagentType === ENSAIO_TYPE) return next(e);
+    // Lapida's rewrite agent and Resumo's: set where they are registered, their words on Lapida's line and Pingo's balloon
+    if (e.subagentType === LAPIDA_TYPE || e.subagentType === RESUMO_TYPE) return next(e);
     // A helper the cycle agent starts: refused past the cycle's limits, else run in the foreground with the cycle's
     // rules ahead of its job, on the model its type or its parent runs on (it cannot ask for a dearer one), and gated
     // as its parent is; like it, left out of planning and the Agents tab
@@ -4478,7 +6033,8 @@ export const register: Register = (on, given) => {
   });
   on("command.run", { command: "lapida" }, async ($, e) => {
     await enhanceLapida($, e.args);
-    return { text: await read($, lapidaNote) || text("feature.lapida.filled", (await getSettings($)).locale) };
+    // the rewrite comes later, into the prompt box; only a refusal to start is told now
+    return { text: (await read($, lapidaPhase)) === "error" ? await read($, lapidaNote) : text("feature.lapida.started", (await getSettings($)).locale) };
   });
   on("command.run", { command: "prisma-decisions" }, async ($, e) => {
     const decisions = await readPrismaDecisions($);
@@ -4658,6 +6214,15 @@ export const register: Register = (on, given) => {
       qualidade: "quality",
       comandante: "comandante",
       commander: "comandante",
+      autonomos: "autonomos",
+      "autônomos": "autonomos",
+      autonomous: "autonomos",
+      portao: "autonomos",
+      "portão": "autonomos",
+      rumo: "autonomos",
+      ensaio: "autonomos",
+      chaveiro: "autonomos",
+      oficina: "autonomos",
     };
     if (verb === "agents" && arg === "clear") {
       const removed = await removeRuns($, () => true);
@@ -4749,18 +6314,25 @@ export const register: Register = (on, given) => {
       {featureHead(ui, "Farol", castColor("farol"), text("feature.farol.summary", locale, { assumptions: list.length, rules: rules.length }))}
       {rules.length > 0 && sheetCard(ui, text(rules.length === 1 ? "feature.farol.rules.one" : "feature.farol.rules.many", locale, { count: rules.length }), rules.map((rule, i) => <Box key={`rule-${i}`}><Text>{GLYPH.leader} {rule.correction} <Text dimColor>({text("feature.farol.rule.not", locale)}: {rule.assumption})</Text></Text><Button key={`delete-rule-${i}`} label={text("feature.farol.delete", locale)} dimColor onPress={() => void saveFarolRules($, (all) => all.filter((item) => item !== rule))} /></Box>), { width, rule: hex(castColor("farol")) })}
       <Text dimColor>{text("feature.farol.hint", locale)}</Text>
-      {[...list].reverse().map((item) => <Box key={`assumption-${item.id}`} flexDirection="column">{sheetCard(ui, `#${item.id} ${item.text}`, [
-        item.context ? <Text dimColor wrap="wrap">{item.context}</Text> : null, item.note ? <Text wrap="wrap">{GLYPH.route} {item.note}</Text> : null,
-        item.comandante && item.comandante.decision !== "approved" ? <Text dimColor wrap="wrap">{rulingLine(item.comandante, locale)}</Text> : null,
-        <Box flexDirection="row" gap={1}><Button key={`right-${item.id}`} label={`${GLYPH.ok} ${text("feature.farol.right", locale)}`} hotkey={item === newest ? "y" : undefined} onPress={() => void farolJudge($, item.id, "right")} /><Button key={`wrong-${item.id}`} label={`✗ ${text("feature.farol.wrong", locale)}`} hotkey={item === newest ? "n" : undefined} onPress={() => void farolJudge($, item.id, "wrong", item.note)} />{item.verdict !== "open" && <Text dimColor>{text(!item.sent ? "feature.farol.pending" : item.comandante?.decision === "approved" && item.verdict === "right" ? "feature.farol.byComandante" : "feature.farol.sent", locale)}</Text>}</Box>,
-        Input && item.verdict !== "right" ? <Input key={`fix-${item.id}`} placeholder={text("feature.farol.fix", locale)} value={item.note ?? ""} onSubmit={(value) => { if (value.trim()) void farolJudge($, item.id, "wrong", value.trim()); }} /> : null,
-      ], { width, glyph: item.verdict === "right" ? GLYPH.ok : item.verdict === "wrong" ? "✗" : GLYPH.ask, rule: item.verdict === "right" ? PAINT.ok : item.verdict === "wrong" ? PAINT.fail : PAINT.warn })}</Box>)}
+      {[...list].reverse().map((item) => {
+        // approved by the Comandante, it was marked right in the person's place: no ✓ or ✗ is left to press. Each one is
+        // tagged done once Claude has it, pending until then
+        const ruled = item.comandante?.decision === "approved" && item.verdict === "right";
+        const tag = stateTag(item.sent, locale);
+        return <Box key={`assumption-${item.id}`} flexDirection="column">{sheetCard(ui, `#${item.id} ${item.text}`, [
+          item.context ? <Text dimColor wrap="wrap">{item.context}</Text> : null, item.note ? <Text wrap="wrap">{GLYPH.route} {item.note}</Text> : null,
+          item.comandante && item.comandante.decision !== "approved" ? <Text dimColor wrap="wrap">{rulingLine(item.comandante, locale)}</Text> : null,
+          <Box flexDirection="row" gap={1}>{!ruled && <Button key={`right-${item.id}`} label={`${GLYPH.ok} ${text("feature.farol.right", locale)}`} hotkey={item === newest ? "y" : undefined} onPress={() => void farolJudge($, item.id, "right")} />}{!ruled && <Button key={`wrong-${item.id}`} label={`✗ ${text("feature.farol.wrong", locale)}`} hotkey={item === newest ? "n" : undefined} onPress={() => void farolJudge($, item.id, "wrong", item.note)} />}<Text bold color={tag.color}>{tag.glyph}</Text><Text color={tag.color}>{tag.label}</Text>{(ruled || item.sent) && <Text dimColor>{text(ruled ? "feature.farol.byComandante" : "feature.farol.sent", locale)}</Text>}</Box>,
+          Input && item.verdict !== "right" ? <Input key={`fix-${item.id}`} placeholder={text("feature.farol.fix", locale)} value={item.note ?? ""} onSubmit={(value) => { if (value.trim()) void farolJudge($, item.id, "wrong", value.trim()); }} /> : null,
+        ], { width, glyph: item.verdict === "right" ? GLYPH.ok : item.verdict === "wrong" ? "✗" : GLYPH.ask, rule: item.verdict === "right" ? PAINT.ok : item.verdict === "wrong" ? PAINT.fail : PAINT.warn })}</Box>;
+      })}
       {list.some((item) => item.sent) && <Button key="clear-reviewed" label={text("feature.farol.clear", locale)} dimColor onPress={() => void update($, farolItems, (all) => all.filter((item) => item.verdict === "open" || !item.sent))} />}
     </Box>;
   });
 
   // Clareza's plan, opened from what its mascot says: what may confuse in the last answer, the exact request Claude
-  // would get, and the choice to send it or reject it
+  // would get, and the choice to send it or reject it, tagged pending; once the Comandante sent it, tagged done with
+  // only Limpar feitos left
   on("ui.render", { component: "Pane", requestId: "clareza" }, async ($, e) => {
     const { Box, Text, Button } = $.ui.resolve(e);
     const locale = (await getSettings($)).locale;
@@ -4774,16 +6346,22 @@ export const register: Register = (on, given) => {
     if (!plan) return <Box flexDirection="column" gap={1}>{featureHead(ui, "Clareza", castColor("clareza"))}<Text dimColor>{text("feature.clareza.noPlan", locale)}</Text>{status && <Text dimColor>{status}</Text>}{terms}</Box>;
     const problems = plan.problems.length ? plan.problems : [text("feature.clareza.unclear", locale)];
     const width = paneColumns(e);
+    const tag = stateTag(plan.sent === true, locale);
     return <Box flexDirection="column" gap={1}>
       {featureHead(ui, "Clareza", castColor("clareza"), text("feature.clareza.plan.title", locale))}
       {sheetCard(ui, text("feature.clareza.plan.problems", locale), problems.map((problem, i) => <Text key={`clareza-problem-${i}`} wrap="wrap">{GLYPH.leader} {problem}</Text>), { width, glyph: GLYPH.warn, rule: PAINT.warn })}
-      {sheetCard(ui, text("feature.clareza.plan.request", locale), <Text wrap="wrap">{plan.prompt}</Text>, { width, rule: hex(castColor("clareza")) })}
-      {plan.comandante && <Text dimColor wrap="wrap">{comandanteMessage("clareza", plan.comandante, locale)}</Text>}
+      {sheetCard(ui, text(plan.sent ? "feature.clareza.plan.sent" : "feature.clareza.plan.request", locale), <Text wrap="wrap">{plan.prompt}</Text>, { width, rule: hex(castColor("clareza")) })}
+      <Text wrap="wrap"><Text bold color={tag.color}>{`${tag.glyph} ${tag.label}`}</Text>{plan.comandante && <Text dimColor>{` · ${plan.sent
+        ? text("feature.comandante.done.clareza", locale, { reason: text(`feature.comandante.reason.${plan.comandante.reason}` as LocaleKey, locale) })
+        : comandanteMessage("clareza", plan.comandante, locale)}`}</Text>}</Text>
       {terms}
-      <Box flexDirection="row" gap={1}>
-        <Button key="clareza-send" label={text("feature.clareza.send", locale)} hotkey="s" variant="primary" onPress={() => void sendClareza($)} />
-        <Button key="clareza-reject" label={text("feature.clareza.reject", locale)} hotkey="r" role="dismiss" onPress={() => void rejectClareza($)} />
-      </Box>
+      {plan.sent
+        // sent by the Comandante: nothing is left to send or reject, only to clear
+        ? <Button key="clareza-clear" label={text("feature.comandante.clearDone", locale)} dimColor onPress={() => void update($, clarezaProposal, (current) => (current?.sent ? null : current))} />
+        : <Box flexDirection="row" gap={1}>
+          <Button key="clareza-send" label={text("feature.clareza.send", locale)} hotkey="s" variant="primary" onPress={() => void sendClareza($)} />
+          <Button key="clareza-reject" label={text("feature.clareza.reject", locale)} hotkey="r" role="dismiss" onPress={() => void rejectClareza($)} />
+        </Box>}
     </Box>;
   });
 
@@ -4903,7 +6481,8 @@ export const register: Register = (on, given) => {
       {featureHead(ui, "Vigia", castColor("vigia"), text("feature.vigia.title", locale))}
       {!list.length && <Text dimColor>{text("feature.vigia.none", locale)}</Text>}
       {conflicts.length > 0 && <Box flexDirection="column" borderStyle="round" borderColor={PAINT.fail} paddingX={1}><Text bold color={PAINT.fail}>⚠ {text("feature.vigia.clashes.title", locale)} · {text("feature.vigia.clashes.window", locale, { minutes: (await readFeaturePreferences($)).clashMinutes })}</Text>{conflicts.slice(0, 6).map((conflict) => <Text key={`${conflict.other.id}-${conflict.file}`} wrap="truncate">{conflict.file} · {vigiaName(conflict.other)} · {formatAge(now - conflict.at, locale)}</Text>)}</Box>}
-      {mail.length > 0 && <Box flexDirection="column" borderStyle="round" borderColor={PAINT.brand} paddingX={1}><Text bold color={PAINT.brand}>✉ {text("feature.vigia.messages", locale)}</Text>{mail.slice(0, 6).map((item) => {
+      {mail.length > 0 && <Box flexDirection="column" borderStyle="round" borderColor={PAINT.brand} paddingX={1}><Box flexDirection="row" justifyContent="space-between" gap={1}><Text bold color={PAINT.brand}>✉ {text("feature.vigia.messages", locale)}</Text>
+        {mail.some(vigiaMailDone) && <Button key="vigia-clear" label={text("feature.comandante.clearDone", locale)} dimColor onPress={() => void update($, vigiaMail, (list) => list.filter((one) => !vigiaMailDone(one)))} />}</Box>{mail.slice(0, 6).map((item) => {
         // a message the Comandante held waits here until the person releases it to Claude
         const held = item.comandante?.decision === "rejected" && !item.isReleased;
         return <Box key={item.id} flexDirection="row" gap={1}><Box flexGrow={1} flexShrink={1}><Text wrap="truncate"><Text color={item.kind === "clash" ? PAINT.fail : item.way === "in" ? PAINT.brand : PAINT.you}>{item.kind === "clash" ? "⚠" : item.way === "in" ? "←" : "→"} {item.peer}</Text>: {item.kind === "clash" ? item.file : item.text}<Text dimColor> · {formatAge(now - item.at, locale)}</Text>{item.isDelivered === false && <Text color={PAINT.fail}> · {text("feature.vigia.msg.undelivered", locale)}</Text>}{held && <Text color={PAINT.fail}> · {text("feature.vigia.msg.held", locale)}</Text>}{item.isReleased && <Text dimColor> · {text("feature.vigia.msg.released", locale)}</Text>}{item.comandante?.decision === "questioned" && <Text dimColor> · {text("feature.vigia.msg.questioned", locale)}</Text>}</Text></Box>
@@ -5025,6 +6604,10 @@ export const register: Register = (on, given) => {
   // a permission prompt held past its delay: the bar turns to a question, and the pet alerts
   on("tool.check", async ($, e, next) => {
     const verdict = await next(e);
+    // Portão's security reviewer reads under Code Quality's rule without editing, and asks the person nothing either
+    if (e.agentId && portaoReviewing && await isPortaoAgent($, e.agentId)) return qualityVerdict(e.tool, e.input, verdict, await $.session.root(), "reader");
+    // Ensaio's agent runs the app unattended: it writes nothing, changes no git, installs and tests nothing
+    if (e.agentId && ensaioRunning && await isEnsaioAgent($, e.agentId)) return ensaioVerdict(e.tool, e.input, verdict);
     // Code Quality's own agent and its helpers ask the person nothing: the cycle's own calls run, and everything else is refused
     const qualityLoop = e.agentId ? await qualityRole($, e.agentId) : undefined;
     if (e.agentId && qualityLoop) {
@@ -5035,6 +6618,8 @@ export const register: Register = (on, given) => {
       const ruling = qualityAsks(e.tool, e.input, verdict, root, qualityLoop) ? await comandanteReview($, { source: "codeQuality", text: qualityCall(e.tool, e.input) }, e.agentId) : undefined;
       return ruling && ruling.decision !== "approved" ? { decision: "deny", reason: ruling.message } : kept;
     }
+    // a permission prompt, or the mode's own refusal: Chaveiro counts what the person approves
+    if (verdict && await featureEnabled($, "chaveiro")) chaveiroChecked(e.tool_use_id, e.tool, e.input, verdict);
     try {
       if (verdict && verdict.decision === "ask") {
         const now = await $.clock.now();
@@ -5096,7 +6681,7 @@ export const register: Register = (on, given) => {
     // the features' lines first, top to bottom, held together to DECK_DESIGN.band.messages.maxRows rows however long
     // or many their messages; then the Jev band; the Deck band takes what the engine's rows leave after both, so the
     // whole stack shows instead of scrolling when a message arrives
-    const blocks = [await vigiaAbove($, e), await sentinelaAbove($, e), await lapidaAbove($, e, cols), await sementeAbove($, e, cols), await clarezaAbove($, e, cols), await farolAbove($, e)];
+    const blocks = [await portaoAbove($, e), await rumoAbove($, e), await ensaioAbove($, e), await chaveiroAbove($, e), await oficinaAbove($, e), await vigiaAbove($, e), await sentinelaAbove($, e), await lapidaAbove($, e, cols), await sementeAbove($, e, cols), await clarezaAbove($, e, cols), await farolAbove($, e)];
     const notes = stackAbove(els, blocks.filter((block): block is AboveBlock => block !== null), cols, locale);
     const jev = await view($, cols, 2, e.surface);
     const jevBand = renderBand(els, jev);
@@ -5114,6 +6699,9 @@ export const register: Register = (on, given) => {
   on("session.compact", async ($, e, next) => {
     if (!(await featureEnabled($, "contexto"))) return next(e);
     const config = await getSettings($);
+    // A precompute installs nothing and may never be used: Jev judges only a compaction that happens. Skipped, it
+    // keeps nothing either, so the compaction that comes runs through this hook whole, and Jev is asked once.
+    if (e.trigger === "precompute") return { skip: text("feature.contexto.skip.precompute", config.locale) };
     try {
       if (!config.apiKey) throw new Error(text("feature.contexto.noKey", config.locale));
       const input = e.messages as unknown as readonly ContextSessionMessage[];
@@ -5121,6 +6709,9 @@ export const register: Register = (on, given) => {
       let compacted: Awaited<ReturnType<typeof compactContextSession>>;
       try {
         compacted = await compactContextSession(input, contextAsker($, config), contextConfig);
+      } catch (error) {
+        featureFailed.add("contexto");
+        throw error;
       } finally {
         await update($, contextoBusy, () => false);
       }

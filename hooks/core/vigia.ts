@@ -13,7 +13,18 @@ export const VIGIA_MESSAGE_MAX = 2000;
 /** Messages the pane keeps, and letters waiting for the model at most. */
 export const VIGIA_MAIL_KEEP = 20;
 
+/**
+ * A message the pane's "Clear done" takes away: it reached where it went (sent and delivered, or received and read by
+ * Claude). One the Comandante held stays until the person releases it, and a send that failed stays to be seen.
+ */
+export const vigiaMailDone = (item: VigiaMail) => item.isDelivered !== false && !(item.comandante?.decision === "rejected" && !item.isReleased);
+
 export const vigiaFlat = (value: string, max: number) => { const text = value.replace(/\s+/g, " ").trim(); return text.length > max ? `${text.slice(0, max - 1)}…` : text; };
+/** The conversation's words as a tagged block for an agent's request: flattened, cut to `max`, its own closing tag defused; "" when empty. */
+export const vigiaQuoted = (value: string | undefined, tag: string, max: number) => {
+  const flat = vigiaFlat(value ?? "", max).replace(new RegExp(`</${tag}>`, "gi"), `</ ${tag}>`);
+  return flat ? `<${tag}>${flat}</${tag}>` : "";
+};
 export const vigiaAlive = (record: VigiaSession, now: number) => record.endedAt === undefined && now - record.beatAt < VIGIA_ALIVE_MS;
 export const vigiaAgo = (ms: number) => { const minutes = Math.round(ms / 60000); return minutes < 1 ? "now" : minutes < 60 ? `${minutes}m` : minutes < 1440 ? `${Math.round(minutes / 60)}h` : `${Math.round(minutes / 1440)}d`; };
 /** How long ago, as the model reads it in a note. */

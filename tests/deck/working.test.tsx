@@ -1,8 +1,10 @@
-// The lane says who is at work: Pingo speaks for Claude's own turn (what it is doing now) and sleeps once Claude has
-// been idle a while; a feature at work says so too, and goes quiet when it is done.
+// The lane says who is at work: Pingo speaks for Claude's own turn (the session's goal, tests/deck/goal.test.tsx, never
+// what Claude is doing) and sleeps once Claude has been idle a while; a feature joins while it is at work, says so, and
+// leaves after a goodbye when it is done.
 import { expect, test, type Engine } from "claude-code/testing";
 
 import { DEFAULT_FEATURES } from "../../hooks/core/plan.ts";
+import { CAST_LEAVE_MS } from "../../hooks/deck/cast.ts";
 import { petLaneColumns } from "../../hooks/deck/pet.ts";
 import { DESKTOP, TERMINAL, deckWorld } from "./helpers.ts";
 
@@ -69,20 +71,21 @@ test("with Claude idle, Pingo says nothing and falls asleep", { ...LOCALE, timeo
   await drawn.ui.unmount();
 });
 
-test("while Claude works, Pingo says what it is doing, in a balloon, and stops when the turn ends", LOCALE, async ($, on) => {
+test("while Claude works with no goal summed up yet, Pingo's name stands alone in a balloon, never what Claude is doing, until the turn ends", LOCALE, async ($, on) => {
   deckWorld(on, new Map([["features", PINGO_ONLY]]));
   await $.session.start(SESSION);
   await $.turn.start({ turnId: "t1", text: "fix the loader" } as never);
   let drawn = await band($);
-  expect(await drawn.speech("pingo")).toContain("Thinking");
   expect(drawn.inBalloon("Pingo")).toBe(true);
-  // Pingo's body is the terminal's own color; its name on the speech line takes the theme's text color, never black
-  expect((await drawn.ui.find({ type: "Text", text: /Pingo:$/ }))?.props.color).toBe("text");
+  expect(drawn.row.text).not.toContain("Thinking");
+  expect(await drawn.speech("pingo")).toBeUndefined();
   await drawn.ui.unmount();
 
   await $.tool.call({ tool: "Read", file_path: "/work/hooks/register.tsx" } as never);
   drawn = await band($);
-  expect(await drawn.speech("pingo")).toContain("Reading register.tsx");
+  expect(drawn.inBalloon("Pingo")).toBe(true);
+  expect(drawn.row.text).not.toContain("Reading");
+  expect(await drawn.speech("pingo")).toBeUndefined();
   await drawn.ui.unmount();
 
   await $.turn.complete({ turnId: "t1", answer: "Fixed.", durationMs: 5, isAborted: false, reason: "answer", usage: undefined } as never);
@@ -93,21 +96,23 @@ test("while Claude works, Pingo says what it is doing, in a balloon, and stops w
   await drawn.ui.unmount();
 });
 
-test("a feature at work stands on the lane and says so, then goes quiet when it is done", LOCALE, async ($, on) => {
-  deckWorld(on, new Map([["features", LAPIDA_ONLY]]));
-  let answer: (value: unknown) => void = () => {};
+test("idle, at work, done: a feature joins the lane while it works, says so, and leaves after a goodbye", LOCALE, async ($, on) => {
+  const world = deckWorld(on, new Map([["features", LAPIDA_ONLY]]));
   let box = "fix loader";
-  on("model.fork", () => new Promise((resolve) => (answer = resolve)) as never);
+  on("agent.register", async (_$, e) => ({ value: { agent: `jev:${e.name}` } }) as never);
   on("prompt.read", async () => ({ value: { text: box, cursor: 0 } }) as never);
   on("prompt.fill", async (_$, e) => ((box = e.text), { isFilled: true }) as never);
   on("fs.ancestors", async () => ({ value: [] }) as never);
   on("command.list", async () => ({ value: [] }) as never);
   await $.session.start(SESSION);
 
+  // idle: switched on, but with no task it is not on the lane
   const pressed = await band($);
   expect(await pressed.speech("lapida")).toBeUndefined();
-  // the press resolves when the rewrite does, so it is kept, and the looks below mount a band of their own
-  const press = pressed.ui.press({ key: "lapida-enhance" });
+  expect(pressed.row.text).not.toContain("Lapida");
+  // the press starts the rewrite agent; the looks below mount a band of their own
+  await pressed.ui.press({ key: "lapida-enhance" });
+  world.state.agents = [{ id: "a0", type: "jev:lapida", status: "running" } as never];
 
   // rewriting: Lapida on the lane, in the balloon, and its words under the lane
   await settle(async () => {
@@ -119,16 +124,23 @@ test("a feature at work stands on the lane and says so, then goes quiet when it 
   let drawn = await band($, "probe");
   expect(await drawn.speech("lapida")).toContain("rewriting the draft");
   expect(drawn.inBalloon("Lapida")).toBe(true);
+  expect(drawn.row.text).toContain("Lapida: rewriting the draft");
   await drawn.ui.unmount();
 
-  answer({ value: { isAnswered: true, text: "Fix the loader.\n<<<CHANGES>>>\n- named the file", usage: { input_tokens: 40, output_tokens: 12 } } });
-  await press;
+  await $.turn.complete({ turnId: "lapida", agentId: "a0", answer: "Fix the loader.\n<<<CHANGES>>>\n- named the file", durationMs: 10, isAborted: false, reason: "answer" } as never);
   await pressed.ui.unmount();
   drawn = await band($);
   expect(box).toBe("Fix the loader.");
+  // done: its balloon is gone at once, and it hops a goodbye in its place
   expect(await drawn.speech("lapida")).toBeUndefined();
   expect(drawn.inBalloon("Lapida")).toBe(false);
   expect(drawn.row.text).toContain("Lapida");
   expect(await drawn.ui.find({ type: "Text", text: "Lapida · review the rewrite" })).toBeDefined();
+  await drawn.ui.unmount();
+  // then it leaves the lane
+  await world.clock.advance(CAST_LEAVE_MS + 150);
+  drawn = await band($);
+  expect(drawn.row.text).not.toContain("Lapida");
+  expect(drawn.row.text.trim()).toBe("Pingo");
   await drawn.ui.unmount();
 });

@@ -2,7 +2,7 @@
 // runs. That process check is the costly part of a refresh: it runs again only when the sessions change, or every 30 s.
 import type { On } from "claude-code";
 import { expect, test } from "claude-code/testing";
-import { deckWorld } from "./deck/helpers.ts";
+import { ASK, deckWorld, TERMINAL } from "./deck/helpers.ts";
 import { plain } from "./helpers.ts";
 
 const LOCALE = { options: { locale: "en" } } as const;
@@ -79,4 +79,45 @@ test("a session that crashed, its file left behind, leaves the list at the next 
   expect(seen.shown.sort()).toEqual(["s-a", "s-b"]);
   await wait(clock, 6_000);
   expect(seen.shown).toEqual(["s-a"]);
+});
+
+/** The band above the prompt, where Sentinela's line and the Deck's lane are drawn. */
+const BAND = {
+  plugin: "jev",
+  component: "AbovePrompt",
+  requestId: "above-prompt",
+  viewport: { columns: 120, rows: 40 },
+  props: { hasSurvey: false, isWorking: false, maxRows: 20, bodyColumns: 110, scroll: { offset: 0, bodyRows: 20 }, view: {} },
+} as const;
+
+test("with sessions waiting and the Deck's lane on screen, Sentinela's line steps aside: its mascot says it", { ...LOCALE, timeoutMs: 20_000 }, async ($, on) => {
+  const waiting = (pid: number, id: string) => JSON.stringify({ pid, sessionId: id, status: "waiting", cwd: `/projects/${id}`, statusUpdatedAt: pid });
+  const files: Record<string, string> = { "a.json": waiting(101, "s-a"), "b.json": sessionFile(102, "s-b") };
+  sessions(on, files, new Set([101, 102]));
+  const { clock } = deckWorld(on);
+  await $.session.start(SESSION);
+  const look = async () => {
+    const ui = await $.ui.mount({ ...BAND, surface: TERMINAL });
+    const line = await ui.find({ type: "Box", key: "sentinela-line" } as never);
+    const said = (await ui.find({ type: "Button", key: "deck-speech-sentinela" } as never))?.props.label as string | undefined;
+    await ui.unmount();
+    return { line, said };
+  };
+  // one waits, one works: the mascot says the waiting count on the lane, so the line, which would repeat it, is gone
+  let seen = await look();
+  expect(seen.line).toBeUndefined();
+  expect(seen.said).toContain("1 session is waiting for you");
+  // nobody waits any more and one still works: the mascot leaves, and the line is back with the count only it shows
+  files["a.json"] = sessionFile(101, "s-a");
+  await wait(clock, 2_000);
+  seen = await look();
+  expect(seen.said).toBeUndefined();
+  expect(seen.line).toBeDefined();
+  // with the lane off, the line shows whatever it counts, the waiting session included
+  files["a.json"] = waiting(101, "s-a");
+  await wait(clock, 2_000);
+  await $.command.run({ command: "deck", ...ASK, args: "pet off" });
+  seen = await look();
+  expect(seen.line).toBeDefined();
+  expect(seen.said).toBeUndefined();
 });

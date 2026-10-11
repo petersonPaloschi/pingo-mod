@@ -18,7 +18,7 @@ export const COMANDANTE_FOLDER = "comandante";
 export const COMANDANTE_ALL = "all";
 export const COMANDANTE_DECISIONS: readonly ComandanteDecision[] = ["approved", "rejected", "questioned"];
 /** Every assistant that alerts the Comandante, in the order its tab lists their switches. */
-export const COMANDANTE_SOURCES: readonly ComandanteSource[] = ["farol", "semente", "vigia", "clareza", "codeQuality"];
+export const COMANDANTE_SOURCES: readonly ComandanteSource[] = ["farol", "semente", "vigia", "clareza", "codeQuality", "portao", "rumo", "ensaio", "chaveiro"];
 
 /** Every source switched on, or every one off: the tab's "All" button. */
 export const comandanteSourcesAll = (on: boolean): ComandanteSources =>
@@ -60,6 +60,10 @@ const KIND: Record<ComandanteSource, string> = {
   vigia: "message another session of this project sent",
   clareza: "request to make the agent rewrite its last answer, because a reviewer found it may confuse the user (`alert` lists what may confuse)",
   codeQuality: "tool call the unattended Code Quality agent wants to make beyond the few it may run on its own",
+  portao: "request to send the coding agent the failures Pingo's gate found before its `git commit` or `git push` (`alert` lists them, `context` is the command); approve real failures worth fixing now",
+  ensaio: "request to send the coding agent what Pingo's runner saw when it ran the app after the last change (`alert`), to fix it, or to have it write a run book for the project",
+  chaveiro: "permission rule Pingo would add to the user's Claude Code settings so a command the user approved several times stops asking (`alert` is the rule, `context` the command); reject any rule that lets a command write, delete, install, push, run arbitrary code or reach the network",
+  rumo: "goal that would keep the coding agent working, turn after turn, until a condition holds (`alert` is the condition, `context` the user's request); approve only a condition that can be checked from the agent's own work",
 };
 const NUDGE_KIND = "idea saved earlier that matches the work just done, about to be offered to the user to pick up now (approve only if it is worth the user's attention now)";
 

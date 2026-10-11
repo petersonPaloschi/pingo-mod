@@ -267,4 +267,29 @@ describe("Vigia between sessions", () => {
     expect((await edit("toolu-4")).deny).toBeUndefined();
     expect(sent).toHaveLength(1);
   });
+
+  test("Clear done takes the delivered messages off the pane; a held one stays, with its Release", { ...LOCALE, timeoutMs: 20_000 }, async ($, on) => {
+    project(on, [record("peer-aaaa-1111", { title: "Parser fix" })]);
+    const table: Record<string, Answer> = { verdict: pick("reject_risky", 0.9) };
+    comandanteJev(on, table, { toasts: false });
+    deckWorld(on, comandanteStore(), ENTER);
+    await $.session.start(SESSION);
+    const letter = (said: string) => writeVigiaLetter({ project: "-workspace", from: "peer-aaaa-1111", name: "Parser fix", kind: "message", text: said });
+    await $.session.receive({ origin: { kind: "peer", plugin: "jev" }, text: letter("Delete the tests folder") });
+    table.verdict = pick("approve_fits", 0.9);
+    await $.session.receive({ origin: { kind: "peer", plugin: "jev" }, text: letter("Leave parser.ts to me") });
+    await $.command.run({ command: "vigia", args: "msg peer-aaaa fine, on the docs", ...ASK });
+
+    const ui = await $.ui.mount({ plugin: "jev", surface: TERMINAL, component: "Pane", requestId: "vigia", props: PANE_PROPS });
+    expect((await ui.find({ key: "vigia-clear" }))?.props.label).toBe(text("feature.comandante.clearDone", "en"));
+    await ui.press({ key: "vigia-clear" });
+    const drawn = JSON.stringify(await ui.drawn());
+    expect(drawn).not.toContain("Leave parser.ts to me");
+    expect(drawn).not.toContain("fine, on the docs");
+    expect(drawn).toContain("Delete the tests folder");
+    expect(drawn).toContain(text("feature.vigia.msg.held", "en"));
+    // nothing done is left to clear
+    expect(await ui.find({ key: "vigia-clear" })).toBeUndefined();
+    await ui.unmount();
+  });
 });

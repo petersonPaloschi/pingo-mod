@@ -68,6 +68,8 @@ export function deckWorld(on: On, saved = new Map<string, unknown>(), options: D
     forecast: options.forecast ?? { temperature_2m: 21.4, weather_code: 3 },
     /** What the host answers a repaint: it takes it, refuses it (nothing mounted there), or has no such call. */
     blit: "take" as "take" | "deny" | "throw",
+    /** Repaints asked for, answered or not. */
+    blitTries: 0,
     /** While set, a read of the session's usage waits for it to settle; `usageWaiting` hears each read that waits. */
     usageHold: undefined as Promise<unknown> | undefined,
     usageWaiting: undefined as ((waiting: number) => void) | undefined,
@@ -146,6 +148,7 @@ export function deckWorld(on: On, saved = new Map<string, unknown>(), options: D
     return { value: undefined } as never;
   });
   on("ui.blit", async (_$, e) => {
+    state.blitTries++;
     if (state.blit === "throw") throw new Error("no repaint here");
     blits.push({ requestId: e.requestId, key: e.key, columns: e.columns, rows: e.rows, cells: "cells" in e ? e.cells : "" });
     return { value: state.blit === "deny" ? { deny: "nothing of this plugin's is mounted there" } : {} };

@@ -76,6 +76,15 @@ export const FEATURE_MASCOT_PALETTE = {
   codeQuality: 0x4560d8,
   /** Brass: the Comandante's insignia. */
   comandante: 0x898d50,
+  // the autonomous agents, the person's "Joias" set (2026-10-11); Rumo has none: Jev speaks for it
+  /** Raspberry: Portão, the gate before a commit or a push. */
+  portao: 0xcf616d,
+  /** Jade: Ensaio, which runs the app. */
+  ensaio: 0x109d7b,
+  /** Olive gold: Chaveiro, the keys to the permissions. */
+  chaveiro: 0x929300,
+  /** Steel: Oficina, the checkup of Claude Code itself. */
+  oficina: 0x758099,
 } as const;
 
 /**
@@ -106,6 +115,11 @@ export const MASCOT_SHADE: ReadonlyMap<number, number> = new Map([
   [FEATURE_MASCOT_PALETTE.contexto, 0x696053],
   [FEATURE_MASCOT_PALETTE.codeQuality, 0x293ba2],
   [FEATURE_MASCOT_PALETTE.comandante, 0x636631],
+  [FEATURE_MASCOT_PALETTE.portao, 0xa33948],
+  // jade and olive gold leave the screen's gamut 0.13 lower: their shades keep about 80% of the chroma
+  [FEATURE_MASCOT_PALETTE.ensaio, 0x007258],
+  [FEATURE_MASCOT_PALETTE.chaveiro, 0x6b6b00],
+  [FEATURE_MASCOT_PALETTE.oficina, 0x505a72],
 ]);
 export const shadeOf = (color: number): number => MASCOT_SHADE.get(color) ?? color;
 
@@ -525,6 +539,8 @@ export const DECK_DESIGN = {
       memberWidthPaddingColumns: 2,
       labelPaddingColumns: 1,
       maximumLabelColumns: 16,
+      /** A speaker's slot grows up to this many columns to show what it is doing after its name. */
+      maximumBalloonColumns: 40,
     },
     desktop: {
       memberPaddingPixels: 10,
@@ -747,6 +763,10 @@ export const GLYPH = {
   slash: "/",
   /** What a mascot on the Deck lane says, on the line under it. */
   speech: "»",
+  /** In an autonomous agent's history: a check that failed, a run held back, a proposal turned down. */
+  no: "✗",
+  /** In an autonomous agent's history: let through by the person as it was. */
+  released: "↷",
   /** The two ends of a pill button: half blocks of its ground, so without color they still close it like brackets. */
   pillStart: "▐",
   pillEnd: "▌",

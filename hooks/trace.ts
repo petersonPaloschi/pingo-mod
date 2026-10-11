@@ -376,6 +376,20 @@ export function consultEnd(
   };
 }
 
+/**
+ * What the person last asked Claude for: the messages they typed (origin "composer") in the newest run that carried
+ * any, the ones it ran together and the ones Claude read while it ran, oldest first. A plugin's own prompt (a
+ * rewrite plan, a feature's feedback) is not the person's. Empty when they asked nothing yet.
+ */
+export function lastAsked(s: TraceState): string {
+  for (const run of [...s.runs].reverse()) {
+    const typed = [run.message, ...(run.also ?? []), ...run.received.filter((message) => message.state === "delivered")]
+      .filter((message): message is TraceMessage => message?.origin === "composer" && message.text.trim() !== "");
+    if (typed.length) return typed.map((message) => message.text.trim()).join("\n");
+  }
+  return "";
+}
+
 // --- Turns ---
 
 /**

@@ -119,8 +119,24 @@ test("the terminal pet is repainted in place, on the lane the band drew", OPTION
   expect(lane?.props.columns).toBe(petLaneColumns(110));
   // the bodies' four rows and, above them, the row of names
   expect(lane?.props.rows).toBe(LANE_ROWS);
-  await threeSeconds(ui, clock, statuses);
-  await threeSeconds(ui, clock, statuses);
+  // six seconds in 150 ms steps: in each, the clock's repaint comes first, then any draw of the band it asked for
+  let shown: string | undefined;
+  let repeats = 0;
+  statuses.length = 0;
+  for (let i = 0; i < 40; i++) {
+    const sent = blits.length;
+    const drawn = draws(statuses, "band");
+    await clock.advance(150);
+    await ui.find({ type: "Text" });
+    for (const blit of blits.slice(sent)) {
+      // a frame that did not change since the host last showed the lane is not sent again
+      if (blit.cells === shown) repeats++;
+      shown = blit.cells;
+    }
+    // a draw puts the lane on screen afresh: the frame it drew is not the last one sent
+    if (draws(statuses, "band") > drawn) shown = undefined;
+  }
+  expect(repeats).toBe(0);
   expect(blits.length).toBeGreaterThan(3);
   const bytes = petLaneColumns(110) * LANE_ROWS * 12;
   for (const blit of blits) {
@@ -130,8 +146,6 @@ test("the terminal pet is repainted in place, on the lane the band drew", OPTION
     expect(blit.rows).toBe(LANE_ROWS);
     expect(blit.cells).toHaveLength(Math.ceil(bytes / 3) * 4);
   }
-  // a frame that did not change is not sent again
-  blits.slice(1).forEach((blit, i) => expect(blit.cells).not.toBe(blits[i]!.cells));
   await ui.unmount();
 });
 
@@ -191,6 +205,12 @@ test("a host with no repaint still moves the pet, with a slow redraw and never a
   await $.session.start(SESSION);
   const ui = await $.ui.mount({ ...BAND, surface: TERMINAL });
   const lane = async () => (await ui.find({ type: "Raster", key: "deck-pet" } as never))?.props.cells;
+  // the first repaint is tried when the pet first moves: Pingo alone may stand still a moment before that
+  for (let i = 0; i < 40 && !state.blitTries; i++) {
+    await clock.advance(150);
+    await ui.find({ type: "Text" });
+  }
+  expect(state.blitTries).toBe(1);
   const before = await lane();
   statuses.length = 0;
   let during: unknown;

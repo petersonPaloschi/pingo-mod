@@ -92,8 +92,8 @@ const NOTES = Array.from({ length: 8 }, (_, i) => `- mudança ${i + 1}: ${LONG.s
 
 // What the features and agents say above the prompt: one short message, then a long one, then many at once.
 test("screens: messages", LOCALE, async ($, on) => {
-  const { clock } = deckWorld(on);
-  on("model.fork", async () => ({ value: { isAnswered: true, text: `Corrija o loader.\n<<<CHANGES>>>\n${NOTES}`, usage: { input_tokens: 40, output_tokens: 12 } } }) as never);
+  const { clock, state } = deckWorld(on);
+  on("agent.register", async (_$, e) => ({ value: { agent: `jev:${e.name}` } }) as never);
   on("prompt.read", async () => ({ value: { text: "corrija o loader", cursor: 0 } }) as never);
   on("prompt.fill", async () => ({ isFilled: true }) as never);
   await $.session.start(SESSION);
@@ -110,6 +110,8 @@ test("screens: messages", LOCALE, async ($, on) => {
   await $.tool.call({ tool: "mcp__jev__farol_assumption", tool_use_id: "toolu-farol-1", assumption: "A configuração fica em src/config.ts" } as never);
   await capture("short");
   await $.command.run({ command: "lapida", args: "corrija o loader", origin: { kind: "composer" }, presentation: { isFullscreen: true, columns: 160 } } as never);
+  state.agents = [{ id: "a0", type: "jev:lapida", status: "running" } as never];
+  await $.turn.complete({ turnId: "lapida", agentId: "a0", answer: `Corrija o loader.\n<<<CHANGES>>>\n${NOTES}`, durationMs: 10, isAborted: false, reason: "answer" } as never);
   await $.tool.call({ tool: "mcp__jev__farol_assumption", tool_use_id: "toolu-farol-2", assumption: LONG } as never);
   await capture("long");
   for (const name of ["Explore o módulo de autenticação", "Mapeie as rotas", LONG]) await $.agent.spawn(spawn(name) as never).catch(() => undefined);

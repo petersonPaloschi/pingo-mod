@@ -106,7 +106,7 @@ failed.
   minutes. The desktop, which draws no Raster, shows Pingo's face as text. A terminal pane under 24 rows keeps the first
   line only, with the face.
 - **Rail.** Three folders, faint capitals, then their screens: Session (Overview 1, Live 2, Models 3), Work (Agents 4,
-  Logs 5, Flow 0, Orchestration o, Quality q, Comandante d), Settings (Configuration 6, Deck 7, Features 8, AI 9). Each
+  Logs 5, Flow 0, Orchestration o, Quality q, Comandante d, Autonomous a), Settings (Configuration 6, Deck 7, Features 8, AI 9). Each
   is a Button `tab-<id>` with its key; the open one is `▸`, bold, on the brand's ground across the rail. Under 64
   columns, or on a terminal pane under 24 rows, the rail folds into one line per folder under the header.
 - **Title.** The screen's name in the brand's color and, under it, what the screen is for.
@@ -147,10 +147,19 @@ Bodies are two-toned (their shade on the underside) over a floor shadow.
 - **Pingo**: its body in the terminal's own color; six moods by eye shape and color (routing happy, thinking spinner,
   passthrough open, failing crossed and shaking, idle flat, baseline closed); nine acts (idle, walk, run, jump, console,
   read, sleep, celebrate, alert) with their props; eleven hats and shades; every `/pingo` verb.
-- **Jev and the features**: small spheres in their colors. **Subagents**: shaped after their names (Tetra a triangle,
-  Gem a diamond, Can a can, Coil a spring, Top a spinning top). States: idle, asking, joining, done, failed.
-- **Speech**: the speaker's name in a filled balloon on the name row, its words on the line under the lane. Pingo speaks
-  for Claude; the main Claude gets no mascot.
+- **Jev**: a small sphere in the brand color. **Features**: each shaped after what it does, so no two silhouettes
+  match even without color (Clareza a light bulb, Semente a sprout, Farol a lighthouse, Vigia an owl, Sentinela a
+  shield, Prisma a prism, Lapida a cut stone, Contexto a folded page, Code Quality a clipboard, Comandante a star).
+  **Subagents**: shaped after their names (Tetra a triangle, Gem a diamond, Can a can, Coil a spring, Top a spinning
+  top). States: idle, asking, joining, done, failed.
+- **Who stands on the lane**: Pingo always; everyone else only while at work. Jev while a call of his is open, a
+  feature while it works or has something waiting on the person, a subagent while it runs. When the task ends, well
+  or not, the balloon goes at once and the mascot hops a goodbye (happy or crossed eyes) for `DECK_DESIGN.cast.leaveMs`,
+  then leaves. Farol only collects Claude's assumptions, so it comes when there are some to review.
+- **Speech**: everyone at work has a filled balloon on the name row with its name and, where the lane has room, what it
+  is doing (cut with an ellipsis, `DECK_DESIGN.cast.lane.maximumBalloonColumns` at most); the first one's words are
+  also on the line under the lane, the others' names beside them. Pingo speaks for Claude; the main Claude gets no
+  mascot.
 
 The desktop is not designed for separately: it shares the dashboard's layout and the palette, and its SVG drawings
 (the Deck rows, the dotted sphere of Pingo, the cast) keep their shapes.

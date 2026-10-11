@@ -16,6 +16,11 @@ export const DEFAULT_FEATURES: Features = {
   contexto: true,
   codeQuality: true,
   comandante: false,
+  portao: false,
+  ensaio: false,
+  rumo: false,
+  chaveiro: false,
+  oficina: false,
 };
 
 export const EFFORT = {

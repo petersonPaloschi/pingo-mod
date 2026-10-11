@@ -128,7 +128,7 @@ function harness() {
     range: 0,
     setup: { provider: "typesafe", message: "", isOk: true },
     features: { ...DEFAULT_FEATURES, agents: true },
-    preferences: { assumptionScope: "all", plainLevel: "beginner", plainReview: true, plainSound: true, petHat: "random", petShades: false, designSurface: "auto", ideaNudges: true, promptLearning: true, monitorEveryMs: 5000, trackerSummary: false, clashMinutes: 30, comandanteSources: { farol: true, semente: true, vigia: true, clareza: true, codeQuality: true } },
+    preferences: { assumptionScope: "all", plainLevel: "beginner", plainReview: true, plainSound: true, petHat: "random", petShades: false, designSurface: "auto", ideaNudges: true, promptLearning: true, monitorEveryMs: 5000, trackerSummary: false, clashMinutes: 30, comandanteSources: { farol: true, semente: true, vigia: true, clareza: true, codeQuality: true, portao: true, ensaio: true, chaveiro: true, rumo: true } },
     feed: [],
     live: {},
     now: NOW,

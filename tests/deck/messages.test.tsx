@@ -159,8 +159,8 @@ const SESSION = { surface: "terminal", isInteractive: true, cwd: "/work" } as co
 const NOTES = Array.from({ length: 8 }, (_, i) => `- change ${i + 1}: ${LONG.slice(0, 60)}`).join("\n");
 
 test("messages arriving one after another never push the stack above the prompt past the engine's rows", { options: { locale: "en" }, timeoutMs: 30_000 }, async ($, on) => {
-  const { clock } = deckWorld(on);
-  on("model.fork", async () => ({ value: { isAnswered: true, text: `Fix the loader.\n<<<CHANGES>>>\n${NOTES}`, usage: { input_tokens: 40, output_tokens: 12 } } }) as never);
+  const { clock, state } = deckWorld(on);
+  on("agent.register", async (_$, e) => ({ value: { agent: `jev:${e.name}` } }) as never);
   on("prompt.read", async () => ({ value: { text: "fix loader", cursor: 0 } }) as never);
   on("prompt.fill", async () => ({ isFilled: true }) as never);
   await $.session.start(SESSION);
@@ -183,6 +183,8 @@ test("messages arriving one after another never push the stack above the prompt 
   await measure("short");
   // a long one: Lapida's rewrite with eight notes on what it changed
   await $.command.run({ command: "lapida", args: "fix loader", origin: { kind: "composer" }, presentation: { isFullscreen: true, columns: 160 } } as never);
+  state.agents = [{ id: "a0", type: "jev:lapida", status: "running" } as never];
+  await $.turn.complete({ turnId: "lapida", agentId: "a0", answer: `Fix the loader.\n<<<CHANGES>>>\n${NOTES}`, durationMs: 10, isAborted: false, reason: "answer" } as never);
   await measure("long");
   // and more at once: another long assumption and subagents at work, each saying what it does under the lane
   await $.tool.call({ tool: "mcp__jev__farol_assumption", tool_use_id: "toolu-farol-2", assumption: LONG } as never);

@@ -25,6 +25,11 @@ const FEATURE_KEYS: readonly { id: FeatureId; name: LocaleKey; hotkey: string; d
   { id: "contexto", name: "feature.contexto.name", hotkey: "x", description: "feature.contexto.description" },
   { id: "codeQuality", name: "feature.codeQuality.name", hotkey: "k", description: "feature.codeQuality.description" },
   { id: "comandante", name: "feature.comandante.name", hotkey: "m", description: "feature.comandante.description" },
+  { id: "portao", name: "feature.portao.name", hotkey: "t", description: "feature.portao.description" },
+  { id: "rumo", name: "feature.rumo.name", hotkey: "u", description: "feature.rumo.description" },
+  { id: "ensaio", name: "feature.ensaio.name", hotkey: "n", description: "feature.ensaio.description" },
+  { id: "chaveiro", name: "feature.chaveiro.name", hotkey: "h", description: "feature.chaveiro.description" },
+  { id: "oficina", name: "feature.oficina.name", hotkey: "w", description: "feature.oficina.description" },
 ];
 
 export const features = (locale: Locale = localeFor()) => FEATURE_KEYS.map((feature) => ({
@@ -142,7 +147,7 @@ const percent = (value: number, locale: Locale) => `${formatDecimal(value * 100,
 
 /** Where a Jev call was asked from: the routing point, and what set it off (a tool, a subagent type). */
 export interface JevCaller {
-  origin: "agent" | "sift" | "setup" | "prompt" | "unit" | "context" | "comandante";
+  origin: "agent" | "sift" | "setup" | "prompt" | "unit" | "context" | "comandante" | "portao" | "ensaio" | "rumo" | "chaveiro" | "oficina";
   trigger?: string;
 }
 
@@ -155,6 +160,11 @@ const ASKED_BY: Record<JevCaller["origin"], string> = {
   unit: "offeredProfiles()",
   context: "compactContextSession()",
   comandante: "comandanteRequest()",
+  portao: "portaoRequest()",
+  ensaio: "ensaioRequest()",
+  rumo: "rumoProposeRequest()",
+  chaveiro: "chaveiroRequest()",
+  oficina: "oficinaRequest()",
 };
 
 /** What each question makes Jev judge, by its name (core/questions.ts and core/plan.ts). */

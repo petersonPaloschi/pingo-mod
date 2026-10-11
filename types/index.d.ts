@@ -25,7 +25,7 @@ export type RouteEvent = {
   jevRaw?: string[];
 };
 
-export type JevTab = "overview" | "live" | "models" | "agents" | "logs" | "configuration" | "deck" | "features" | "ai" | "flow" | "orchestration" | "quality" | "comandante";
+export type JevTab = "overview" | "live" | "models" | "agents" | "logs" | "configuration" | "deck" | "features" | "ai" | "flow" | "orchestration" | "quality" | "comandante" | "autonomos";
 
 /**
  * A message as the Live run view records it. The conversation's own rows say where it went: a prompt row
@@ -106,7 +106,7 @@ export type TraceCheckpoint = {
 /** One Jev call: where it was asked from, the model asked, and the questions it carried. */
 export type TraceConsult = {
   id: string;
-  origin: "prompt" | "tool" | "agent" | "sift" | "setup" | "unit" | "context" | "comandante";
+  origin: "prompt" | "tool" | "agent" | "sift" | "setup" | "unit" | "context" | "comandante" | "portao" | "ensaio" | "rumo" | "chaveiro" | "oficina";
   model: string;
   /** Response model and raw provider counters, when supplied; input excludes cache. */
   observed?: string;
@@ -278,6 +278,11 @@ export type FeatureFlags = {
   contexto: boolean;
   codeQuality: boolean;
   comandante: boolean;
+  portao: boolean;
+  ensaio: boolean;
+  rumo: boolean;
+  chaveiro: boolean;
+  oficina: boolean;
 };
 export type FeatureId = keyof FeatureFlags;
 
@@ -303,8 +308,12 @@ export type FeaturePreferences = {
 export type FarolAssumption = { id: number; text: string; context?: string; verdict: "open" | "right" | "wrong"; note?: string; sent: boolean; comandante?: ComandanteRuling };
 export type FarolRule = { assumption: string; correction: string };
 export type ClarezaGrade = { pass: boolean; problems: string[]; offered: string[]; fixing: boolean };
-/** Clareza's plan for an unclear answer: what may confuse, the rewrite request it would send once the person agrees, and the Comandante's ruling on it. */
-export type ClarezaProposal = { problems: string[]; prompt: string; at: number; comandante?: ComandanteRuling };
+/**
+ * Clareza's plan for an unclear answer: what may confuse, the rewrite request it would send once the person agrees, and
+ * the Comandante's ruling on it. `sent`: the Comandante approved it and sent it in the person's place; the pane shows
+ * it done, with no Enviar or Rejeitar, until the person clears it or asks something new.
+ */
+export type ClarezaProposal = { problems: string[]; prompt: string; at: number; comandante?: ComandanteRuling; sent?: boolean };
 /** One idea on Semente's shelf; `comandante` is the Comandante's ruling on keeping it, when it judged it. */
 export type SementeIdea = { id: string; text: string; source: "you" | "claude"; comandante?: ComandanteRuling };
 export type LapidaPhase = "idle" | "enhancing" | "ready" | "error";
@@ -313,11 +322,15 @@ export type PrismaQuestion = { question: string; header: string; multiSelect?: b
 export type PrismaPicker = { id: string; questions: PrismaQuestion[]; picks: string[][]; others: (string | null)[]; mix: boolean[]; answerFile: string; gallery: string };
 export type SentinelaSession = { pid: number; id: string; name: string; cwd: string; project: string; status: "working" | "waiting" | "done"; waitingFor: string; since: number };
 export type VigiaTask = { id: string; text: string; status: "pending" | "in_progress" | "completed" };
-export type VigiaSession = { id: string; root: string; startedAt: number; beatAt: number; endedAt?: number; isBusy?: boolean; turns?: number; lastPrompt?: string; lastAnswer?: string; title?: string; done?: string; doing?: string; next?: string; tasks: VigiaTask[]; files?: string[]; edits?: Record<string, number> };
+export type VigiaSession = { id: string; root: string; startedAt: number; beatAt: number; endedAt?: number; isBusy?: boolean; turns?: number; lastPrompt?: string; lastAnswer?: string; title?: string; done?: string; doing?: string; next?: string; tasks: VigiaTask[]; files?: string[]; edits?: Record<string, number>; running?: { what: "tests" | "app"; at: number } };
 /** One message or notice between two sessions of a project, as the Vigia pane lists it: `in` arrived here, `out` left from here; a message that arrived carries the Comandante's ruling, when it judged it, and `isReleased` once the person let a held one through to Claude. */
 export type VigiaMail = { id: string; at: number; way: "in" | "out"; peer: string; peerId: string; kind: "message" | "clash"; text: string; file?: string; isDelivered?: boolean; comandante?: ComandanteRuling; isReleased?: boolean };
-/** Where an alert the Comandante judges came from: a Farol assumption, a Semente idea, a Vigia message, a Clareza plan, a call of the Code Quality agent. */
-export type ComandanteSource = "farol" | "semente" | "vigia" | "clareza" | "codeQuality";
+/**
+ * Where an alert the Comandante judges came from: a Farol assumption, a Semente idea, a Vigia message, a Clareza plan, a
+ * call of the Code Quality agent, or what an autonomous agent proposes to the person (Portão's and Ensaio's requests to
+ * Claude, Chaveiro's permission rules, Rumo's goals).
+ */
+export type ComandanteSource = "farol" | "semente" | "vigia" | "clareza" | "codeQuality" | "portao" | "ensaio" | "chaveiro" | "rumo";
 /** Which sources the Comandante judges: one switch per source. */
 export type ComandanteSources = Record<ComandanteSource, boolean>;
 /** The Comandante's decision: let it through, block it, or send a question back to whoever raised it. */
@@ -352,6 +365,39 @@ export type QualityCycle = {
   skipped: QualityItem[];
   summary?: string;
 };
+
+/**
+ * What an autonomous agent offers the person, with Enviar and Rejeitar: the words that go to Claude (or what Enviar
+ * changes), and what became of it: waiting on the person, sent, rejected, or `blocked` by the Comandante, whose ruling
+ * it keeps. Enviar never acts without the person, whatever the Comandante decided.
+ */
+export type AgentProposal = { text: string; state: "waiting" | "sent" | "rejected" | "blocked"; comandante?: ComandanteRuling };
+/** One check of a Portão run: Code Quality over the files no cycle reviewed, the tests the change reaches, a security review. */
+export type PortaoCheck = { kind: "quality" | "tests" | "security"; state: "waiting" | "running" | "passed" | "failed" | "skipped"; note?: string };
+/**
+ * One Portão run: the git command it held, at the edit count it was held at (one run per change set), the checks Jev
+ * chose and how they ended. `passed` and `failed` wait on the person's proposal (redo the command; send the failures
+ * to Claude); `released` was let through anyway. `verified` is the independent review of the security reviewer's
+ * result, when one ran. `cleared`: the person's Limpar feitos hid it from the tab; it stays in the record, where the
+ * newest run still holds the gate's state and numbers the next one.
+ */
+export type PortaoRun = { n: number; at: number; endedAt?: number; command: string; verb: "commit" | "push"; generation: number; state: "checking" | "passed" | "failed" | "released"; checks: PortaoCheck[]; findings: string[]; summary?: string; proposal?: AgentProposal; verified?: boolean; cleared?: boolean };
+/**
+ * Rumo's goal: the condition taken from the person's request, the objective it belongs to, the turns it may add and
+ * has added, and where it stands: `proposed` waits on the person, `active` keeps Claude going, and it ends `met`,
+ * `impossible`, at its `limit`, `stopped` by the person or rejected. `why` is Jev's last reading.
+ */
+export type RumoGoal = { id: string; at: number; endedAt?: number; condition: string; request: string; objective?: string; turnsMax: number; turnsUsed: number; state: "proposed" | "active" | "met" | "impossible" | "limit" | "stopped" | "rejected" | "blocked"; why?: string; comandante?: ComandanteRuling };
+/**
+ * One Ensaio run: the files that changed, whether it ran the app and what it saw (`works`, `broken`, or `not_run` when
+ * it could not), the problems it found and its proposal (a fix request, or a run book when the project has none).
+ * `skipped` says why it did not start (another session runs the app or its tests).
+ */
+export type EnsaioRun = { n: number; at: number; endedAt?: number; files: string[]; state: "running" | "done" | "failed" | "skipped"; verdict?: "works" | "broken" | "not_run"; summary?: string; problems: QualityItem[]; note?: string; proposal?: AgentProposal & { kind: "fix" | "runbook" }; verified?: boolean };
+/** One permission rule Chaveiro proposes: the command it was asked for, the rule and the settings file Jev chose, how many approvals led to it. */
+export type ChaveiroRule = { id: string; at: number; tool: string; sample: string; rule: string; scope: "project" | "local" | "user"; count: number; proposal: AgentProposal };
+/** One Oficina check: why it ran (a new Claude Code version, a full context at the start), what `claude doctor` found, and its suggestion. */
+export type OficinaCheck = { id: string; at: number; version: string; reason: "version" | "context"; findings: string[]; proposal?: AgentProposal };
 
 export type FeedKind = "turn" | "step" | "jev" | "call" | "tool" | "agent" | "message" | "feature" | "error";
 export type FeedTone = "info" | "good" | "warn" | "bad" | "muted";
@@ -448,6 +494,8 @@ declare module "claude-code" {
       clarezaProposal: ClarezaProposal | null;
       clarezaReviewing: boolean;
       contextoBusy: boolean;
+      /** True while Vigia summarizes this session for the others. */
+      vigiaSummarizing: boolean;
       /** Guidance the local advisor gave this session with orchestration off, counted under limits.adviceCalls. */
       localAdviceUsed: number;
       clarezaRewrite: boolean;
@@ -465,6 +513,12 @@ declare module "claude-code" {
       vigiaSessions: VigiaSession[];
       vigiaCollapsed: boolean;
       qualityCycles: QualityCycle[];
+      /** The autonomous agents' records, newest first: Portão's runs, Rumo's goals (the first the current one), Ensaio's runs, Chaveiro's rules, Oficina's checks. */
+      portaoRuns: PortaoRun[];
+      rumoGoals: RumoGoal[];
+      ensaioRuns: EnsaioRun[];
+      chaveiroRules: ChaveiroRule[];
+      oficinaChecks: OficinaCheck[];
       vigiaMail: VigiaMail[];
       /** The Comandante's decisions of every session of the project, newest first, as last read from their files. */
       comandanteLog: ComandanteRecord[];

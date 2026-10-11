@@ -1,15 +1,16 @@
-// The features on the Deck lane as a session draws them: Clareza joins as a sphere of its own color when it has a
-// plan for an unclear answer, its name in a balloon and its words on the line under the lane; pressing the words opens
-// its pane, where the plan is shown whole and only sent to Claude when the person says so. With the Comandante on,
-// a plan it rejects is never shown, and one it questions is shown with its question.
+// The features on the Deck lane as a session draws them: a feature with no task is not there. Clareza joins in a
+// light bulb of its own color while it reviews an answer and when it has a plan for an unclear one, its name in a
+// balloon and its words on the line under the lane; pressing the words opens its pane, where the plan is shown whole
+// and only sent to Claude when the person says so, after which Clareza hops a goodbye and leaves. With the Comandante
+// on, a plan it rejects is never shown, and one it questions is shown with its question.
 import { expect, test } from "claude-code/testing";
 
 import type { Answer } from "../../hooks/core/types.ts";
-import { LANE_ROWS } from "../../hooks/deck/cast.ts";
+import { CAST_LEAVE_MS, LANE_ROWS } from "../../hooks/deck/cast.ts";
 import { petLaneColumns } from "../../hooks/deck/pet.ts";
 import { text } from "../../hooks/i18n.ts";
 import { comandanteJev, comandanteStore, PANE_PROPS, pick } from "../helpers.ts";
-import { TERMINAL, deckWorld } from "./helpers.ts";
+import { ASK, TERMINAL, deckWorld } from "./helpers.ts";
 
 declare const setTimeout: (callback: () => void, ms: number) => unknown;
 
@@ -56,30 +57,32 @@ test("Clareza joins the lane with its plan, says it under the lane, and sends it
     return { ui, row: nameRow(lane?.props.cells, columns), speech, rows: lane?.props.rows };
   };
 
-  // before any answer: Clareza stands by, quiet: no balloon, nothing said
+  // before any answer: Clareza has no task, so it is not on the lane at all
   let drawn = await band();
+  expect(drawn.row.text).not.toContain("Clareza");
   expect(drawn.row.text).not.toContain("▐");
   expect(drawn.speech).toBeUndefined();
   await drawn.ui.unmount();
 
   await $.turn.start({ turnId: "t1", text: "how is Jev called?" } as never);
   await $.turn.complete({ turnId: "t1", answer: "Through the API key.", durationMs: 5, isAborted: false, reason: "answer", usage: undefined } as never);
+  // (it may be seen at work on its review first; the plan is what is waited for)
   await settle(async () => {
     const { ui, speech } = await band();
     await ui.unmount();
-    return speech !== undefined;
+    return String(speech?.props.label ?? "").includes("'API'");
   });
 
   // the review found it unclear: a plan, and nothing sent on its own
   expect(submitted.some((text) => text.startsWith("[Clareza]"))).toBe(false);
   drawn = await band();
   expect(drawn.rows).toBe(LANE_ROWS);
-  // Clareza stands on the lane left of Jev and Pingo, its name in a balloon of its color
+  // Clareza stands on the lane left of Pingo, its name in a balloon of its color, with what it has after it
   const at = drawn.row.text.indexOf("Clareza");
   expect(at).toBeGreaterThanOrEqual(0);
-  expect(at).toBeLessThan(drawn.row.text.indexOf("Jev"));
-  expect(drawn.row.text.indexOf("Jev")).toBeLessThan(drawn.row.text.indexOf("Pingo"));
+  expect(at).toBeLessThan(drawn.row.text.indexOf("Pingo"));
   expect(drawn.row.grounds[at]).not.toBe(drawn.row.grounds[drawn.row.text.indexOf("Pingo")]);
+  expect(drawn.row.text).toContain("Clareza: I have a plan");
   // what it says, under the lane, opens its pane
   expect(String(drawn.speech?.props.label)).toContain("'API' is not explained");
   await drawn.ui.press({ key: "deck-speech-clareza" });
@@ -89,13 +92,18 @@ test("Clareza joins the lane with its plan, says it under the lane, and sends it
   const shown = JSON.stringify(await pane.drawn());
   expect(shown).toContain("'API' is not explained");
   expect(shown).toContain("[Clareza] Your last answer may confuse the user");
-  // sent when the person sends it, and then Clareza is quiet again
+  // sent when the person sends it, and then Clareza's task is done: a quiet goodbye, then it leaves
   await pane.press({ key: "clareza-send" });
   await pane.unmount();
   expect(submitted.filter((text) => text.startsWith("[Clareza]")).length).toBe(1);
   drawn = await band();
+  expect(drawn.row.text).toContain("Clareza");
   expect(drawn.row.text).not.toContain("▐");
   expect(drawn.speech).toBeUndefined();
+  await drawn.ui.unmount();
+  await world.clock.advance(CAST_LEAVE_MS + 150);
+  drawn = await band();
+  expect(drawn.row.text).not.toContain("Clareza");
   await drawn.ui.unmount();
 });
 
@@ -151,7 +159,42 @@ test("with the Comandante on, a plan it rejects is never shown; one it questions
   expect(await pane()).toContain(text("feature.comandante.tool.questioned.clareza", "en", { reason: text("feature.comandante.reason.question_vague", "en"), question: text("feature.comandante.question.question_vague", "en") }));
 });
 
-test("every feature switched on stands on the lane, quiet until it has something; one switched off is gone", LOCALE, async ($, on) => {
+test("with the Comandante on, a plan it approves goes to Claude at once: the pane tags it done, with only Limpar feitos left", LOCALE, async ($, on) => {
+  const submitted: string[] = [];
+  comandanteJev(on, { verdict: pick("approve_fits", 0.9) });
+  deckWorld(on, comandanteStore(), { promptSubmit: async (_$: unknown, e: { text: string }) => (submitted.push(e.text), { text: e.text }) });
+  on("model.complete", async () => ({ value: { isAnswered: true, text: UNCLEAR, usage: { input_tokens: 10, output_tokens: 10 } } }) as never);
+  await $.session.start(SESSION);
+  const mount = () => $.ui.mount({ plugin: "jev", surface: TERMINAL, component: "Pane", requestId: "clareza", props: { ...PANE_PROPS, title: "Clareza" } });
+  const pane = async () => {
+    const ui = await mount();
+    const drawn = JSON.stringify(await ui.drawn());
+    await ui.unmount();
+    return drawn;
+  };
+  await $.turn.start({ turnId: "t1", text: "how is Jev called?" } as never);
+  await $.turn.complete({ turnId: "t1", answer: "Through the API key.", durationMs: 5, isAborted: false, reason: "answer", usage: undefined } as never);
+  await settle(async () => submitted.some((one) => one.startsWith("[Clareza]")));
+  expect(submitted.filter((one) => one.startsWith("[Clareza]"))).toHaveLength(1);
+  // sent in the person's place: done, with nothing left to send or reject
+  const shown = await pane();
+  expect(shown).toContain(text("feature.comandante.done.clareza", "en", { reason: text("feature.comandante.reason.approve_fits", "en") }));
+  expect(shown).toContain(text("feature.comandante.tag.done", "en"));
+  expect(shown).not.toContain("clareza-send");
+  expect(shown).not.toContain("clareza-reject");
+  // nothing waits on the person, so Clareza says nothing under the lane
+  const band = await $.ui.mount({ ...BAND, surface: TERMINAL });
+  expect(await band.find({ type: "Button", key: "deck-speech-clareza" } as never)).toBeUndefined();
+  await band.unmount();
+  const ui = await mount();
+  await ui.press({ key: "clareza-clear" });
+  await ui.unmount();
+  await settle(async () => (await pane()).includes(text("feature.clareza.noPlan", "en")));
+  expect(await pane()).toContain(text("feature.clareza.noPlan", "en"));
+  expect(submitted.filter((one) => one.startsWith("[Clareza]"))).toHaveLength(1);
+});
+
+test("a feature switched on but with no task is not on the lane; with something for the person it joins; switched off it is gone", LOCALE, async ($, on) => {
   deckWorld(on);
   await $.session.start(SESSION);
   const wide = { ...BAND, props: { ...BAND.props, bodyColumns: 200 }, viewport: { columns: 210, rows: 40 } };
@@ -164,12 +207,34 @@ test("every feature switched on stands on the lane, quiet until it has something
     return { row: nameRow(lane?.props.cells, columns).text, speech };
   };
   let drawn = await names();
-  for (const name of ["Clareza", "Semente", "Farol", "Vigia", "Sentinela", "Prisma", "Lapida", "Contexto"]) expect(drawn.row).toContain(name);
-  // standing by, nobody speaks
-  expect(drawn.row).not.toContain("▐");
+  // every feature is on by default, and none has a task: Pingo stands alone
+  expect(drawn.row.trim()).toBe("Pingo");
   expect(drawn.speech).toBeUndefined();
+  // an assumption to review: Farol joins, saying so in its balloon and under the lane
+  await $.tool.call({ tool: "mcp__jev__farol_assumption", tool_use_id: "toolu-farol-1", assumption: "The config lives in src/config.ts" } as never);
+  drawn = await names();
+  expect(drawn.row).toContain("▐Farol: 1 assumption to review▌");
+  expect(String(drawn.speech?.props.label)).toContain("1 assumption to review");
+  for (const name of ["Clareza", "Semente", "Vigia", "Sentinela", "Prisma", "Lapida", "Contexto"]) expect(drawn.row).not.toContain(name);
+  // switched off, it is gone at once, with no goodbye
   await $.command.run({ command: "jev", args: "feature farol off", origin: { kind: "composer" } } as never);
   drawn = await names();
   expect(drawn.row).not.toContain("Farol");
-  expect(drawn.row).toContain("Clareza");
+  expect(drawn.speech).toBeUndefined();
+});
+
+test("Sentinela's line with nothing waiting, working or done steps aside while the lane is on screen", LOCALE, async ($, on) => {
+  deckWorld(on);
+  await $.session.start(SESSION);
+  const line = async () => {
+    const ui = await $.ui.mount({ ...BAND, surface: TERMINAL });
+    const found = await ui.find({ type: "Box", key: "sentinela-line" } as never);
+    await ui.unmount();
+    return found;
+  };
+  // no session at all: 0 waiting, 0 working, 0 done; the lane is drawn, so the line takes no row
+  expect(await line()).toBeUndefined();
+  // with the lane off the line is back, the only place Sentinela shows then
+  await $.command.run({ command: "deck", ...ASK, args: "pet off" });
+  expect(await line()).toBeDefined();
 });
