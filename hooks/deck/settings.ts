@@ -1,5 +1,6 @@
 // Deck preferences: what the band shows, how it folds, and the surface styles. Pure: the caller
 // reads and writes the store; this module only validates and shapes the saved value.
+import { isRecord } from "./model/record.ts";
 
 export const SECTIONS = ["plans", "agents", "context", "limits", "route", "pet", "clock", "weather"] as const;
 export type Section = (typeof SECTIONS)[number];
@@ -47,7 +48,6 @@ export const SIZES: readonly DeckSize[] = ["compact", "roomy"];
 export const COLLAPSED: readonly DeckCollapsed[] = ["chips", "text", "rings"];
 const STYLE_NAME_MAX = 32;
 
-const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
 const isFiniteNumber = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v);
 
 function bool(v: unknown, fallback: boolean): boolean {
