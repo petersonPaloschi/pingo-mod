@@ -1,5 +1,6 @@
 import { CLAUDE_MODEL, MODEL_NAMES, TIERS } from "../core/contracts.ts";
 import { displayWidth } from "../layout.ts";
+import { GLYPH } from "../theme.ts";
 
 export type TrailSegment = { text: string; color: string; bold?: boolean; bg?: string };
 export type Line = { text: string; color: string; bold?: boolean };
@@ -20,15 +21,18 @@ export function prettyModel(id: string | undefined): string {
 export const fit = (value: string, width: number) => {
   const line = value.replace(/\s+/g, " ");
   if (displayWidth(line) <= width) return line;
+  // too narrow for any text beside the dots: the dots alone, cut to the width, never wider than it
+  if (width <= displayWidth(GLYPH.ellipsis)) return GLYPH.ellipsis.slice(0, Math.max(1, width));
+  const room = width - displayWidth(GLYPH.ellipsis);
   let out = "";
   let used = 0;
   for (const ch of line) {
     const w = displayWidth(ch);
-    if (out && used + w > width - 1) break;
+    if (out && used + w > room) break;
     out += ch;
     used += w;
   }
-  return out + "…";
+  return out + GLYPH.ellipsis;
 };
 
 /** Wraps at word boundaries, breaks long words, and caps details to `max` lines. */
@@ -56,7 +60,7 @@ export function wrap(value: string, width: number, max = 3): string[] {
   }
   if (line) lines.push(line);
   if (lines.length <= max) return lines;
-  return [...lines.slice(0, max - 1), fit(lines.slice(max - 1).join(" ") + " …", room)];
+  return [...lines.slice(0, max - 1), fit(lines.slice(max - 1).join(" ") + " " + GLYPH.ellipsis, room)];
 }
 
 /** One thing that happened: when, its node, its sentence, and the lines under it. */

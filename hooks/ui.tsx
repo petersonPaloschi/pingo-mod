@@ -1,12 +1,13 @@
-// The Jev dashboard, drawn as a binder (DESIGN.md, Fichário): Pingo and what is going on at the top, the screens
-// filed in three folders down a rail on the left, and the open screen as cards beside it: a rounded frame, a ■ and
-// its label, the figures, a ▰▱ meter for a share. A narrow pane folds the rail into a few lines over the cards.
+// The Jev dashboard, drawn in black and white ASCII: the Jev header at the top, the screens filed in three folders
+// down a rail on the left, and the open screen as cards beside it: a classic `+-|` frame with its title written on
+// the top edge, the figures in bold, a `[####....]` meter for a share. A narrow pane folds the rail into a few lines.
 
 import type { RenderChildren } from "claude-code";
 import { formatNumber, text } from "./i18n.ts";
 import { rowsOf } from "./layout.ts";
-import { UI_DESIGN, UI_INK as INK } from "./theme.ts";
+import { GLYPH, UI_DESIGN, UI_INK as INK } from "./theme.ts";
 import { type Els, type View, type Actions } from "./ui/types.ts";
+import { SELF_EXPLAINED } from "./ui/shared/navigation.tsx";
 import { anchored, INDENT, railColumns, rail, foldedRail, railed, header, titleBar, liveLines, newestFirst } from "./ui/shared.tsx";
 import { overview, rowsAbove, logView, logEntry } from "./ui/overview.tsx";
 import { featuresView, configurationView, aiView, orchestrationView, deckView } from "./ui/settings.tsx";
@@ -33,11 +34,13 @@ export function renderPane(els: Els, view: View, act: Actions) {
     </Box>
   );
   const title = titleBar(els, inner);
+  // The title sits right on the cards of a screen that explains itself; a purpose line under it gets a blank row after.
+  const titleGap = SELF_EXPLAINED.has(view.tab) ? UI_DESIGN.space.none : UI_DESIGN.space.xs;
   // The rail beside the screen, or the screen alone; `height` clips both to the room under the header.
   const beside = (main: RenderChildren, height?: number) => (
     <Box flexDirection="row" columnGap={gap} {...(height === undefined ? {} : { height, overflow: "hidden" as const })}>
       {side ? rail(els, view, act, railWidth) : null}
-      <Box flexDirection="column" width={width} flexShrink={0} rowGap={UI_DESIGN.space.xs}>
+      <Box flexDirection="column" width={width} flexShrink={0} rowGap={titleGap}>
         {main}
       </Box>
     </Box>
@@ -51,7 +54,7 @@ export function renderPane(els: Els, view: View, act: Actions) {
     );
   }
   const room = Math.max(5, view.rows - rowsOf(top, view.width) - UI_DESIGN.space.xs);
-  const rows = Math.max(4, room - rowsOf(title, width) - UI_DESIGN.space.xs);
+  const rows = Math.max(4, room - rowsOf(title, width) - titleGap);
   const body = <Box flexDirection="column" flexShrink={0}>{tabBody(els, inner, act)}</Box>;
   const total = rowsOf(body, width);
   const max = Math.max(0, total - rows + 1);
@@ -77,7 +80,7 @@ export function renderPane(els: Els, view: View, act: Actions) {
           </Box>
           {max ? (
             <Text color={INK.faint} wrap="truncate">
-              {text("ui.scroll.footer", view.locale, { up: offset > 0 ? "▲" : " ", down: more ? "▼" : " ", percent: formatNumber((100 * offset) / max, view.locale) })}
+              {text("ui.scroll.footer", view.locale, { up: offset > 0 ? GLYPH.up : " ", down: more ? GLYPH.down : " ", percent: formatNumber((100 * offset) / max, view.locale) })}
             </Text>
           ) : null}
         </Box>,

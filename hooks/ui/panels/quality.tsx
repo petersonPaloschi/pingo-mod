@@ -1,7 +1,6 @@
 import type { QualityCycle, QualityItem } from "../../../types";
-import { hex } from "../../dots.ts";
 import { formatClock, formatNumber, text } from "../../i18n.ts";
-import { FEATURE_MASCOT_PALETTE, GLYPH, UI_DESIGN, UI_INK as INK } from "../../theme.ts";
+import { GLYPH, UI_DESIGN, UI_INK as INK } from "../../theme.ts";
 import type { Els, View, Actions } from "../types.ts";
 import { toggleButton, card, stack, section, emptyLine } from "../shared.tsx";
 
@@ -39,7 +38,7 @@ export function qualityView(els: Els, view: View, act: Actions) {
           {toggleButton(els, "feature-codeQuality", on, name, () => act.feature("codeQuality", !on), "k")}
           {on && !running ? <Button key="quality-run" label={text("feature.codeQuality.runNow", locale)} onPress={() => act.qualityRun()} /> : null}
         </Box>,
-      ], { width: view.width, rule: hex(FEATURE_MASCOT_PALETTE.codeQuality) })}
+      ], { width: view.width })}
       {section(els, text("feature.codeQuality.cycles", locale))}
       {cycles.length ? stack(els, cycles.map(cycleNode)) : emptyLine(els, text("feature.codeQuality.none", locale))}
     </Box>

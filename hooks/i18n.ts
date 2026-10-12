@@ -33,7 +33,7 @@ export function formatNumber(value: number, locale: Locale, maximumFractionDigit
 }
 
 export function formatPercent(part: number, whole: number, locale: Locale): string {
-  return whole ? new Intl.NumberFormat(TAG[locale], { style: "percent", maximumFractionDigits: 0 }).format(part / whole) : "–";
+  return whole ? new Intl.NumberFormat(TAG[locale], { style: "percent", maximumFractionDigits: 0 }).format(part / whole) : "-";
 }
 
 export function formatCompact(value: number, locale: Locale): string {

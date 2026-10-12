@@ -274,9 +274,9 @@ describe("dashboard arithmetic", () => {
     const get = (events: RouteEvent[]) => Object.fromEntries(tiles(events, "en").map((tile) => [tile.label, tile]));
     const missing = event({ reason: "jev_error: timeout", jev: undefined, usage: undefined });
     const unknown = get([missing]);
-    expect(unknown[text("tile.input.label", "en")]?.value).toBe("–");
-    expect(unknown[text("tile.output.label", "en")]?.value).toBe("–");
-    expect(unknown[text("tile.jevInput.label", "en")]?.value).toBe("–");
+    expect(unknown[text("tile.input.label", "en")]?.value).toBe("-");
+    expect(unknown[text("tile.output.label", "en")]?.value).toBe("-");
+    expect(unknown[text("tile.jevInput.label", "en")]?.value).toBe("-");
 
     const zero = event({
       reason: "no_tool_needed",

@@ -26,17 +26,17 @@ const LOCALE = { options: { locale: "en" } } as const;
 /** What Clareza's reviewer answers about an answer it finds unclear. */
 const UNCLEAR = JSON.stringify({ status: "Unclear answer", pass: false, problems: ["'API' is not explained"], explained: [] });
 
-/** The name row of a lane's cells as the host gets them: each cell's character and its ground. */
-function nameRow(cells: unknown, columns: number): { text: string; grounds: number[] } {
+/** The name row of a lane's cells as the host gets them: each cell's character and its color. */
+function nameRow(cells: unknown, columns: number): { text: string; colors: number[] } {
   const bytes = Uint8Array.from(atob(String(cells)), (char) => char.charCodeAt(0));
   const numbers = new Uint32Array(bytes.buffer);
   let text = "";
-  const grounds: number[] = [];
+  const colors: number[] = [];
   for (let i = 0; i < columns; i++) {
     text += String.fromCodePoint(numbers[i * 3]!);
-    grounds.push(numbers[i * 3 + 2]!);
+    colors.push(numbers[i * 3 + 1]!);
   }
-  return { text, grounds };
+  return { text, colors };
 }
 
 /** Waits for Clareza's review, which runs on its own after a turn ends. */
@@ -60,7 +60,7 @@ test("Clareza joins the lane with its plan, says it under the lane, and sends it
   // before any answer: Clareza has no task, so it is not on the lane at all
   let drawn = await band();
   expect(drawn.row.text).not.toContain("Clareza");
-  expect(drawn.row.text).not.toContain("▐");
+  expect(drawn.row.text).not.toContain("(");
   expect(drawn.speech).toBeUndefined();
   await drawn.ui.unmount();
 
@@ -77,11 +77,11 @@ test("Clareza joins the lane with its plan, says it under the lane, and sends it
   expect(submitted.some((text) => text.startsWith("[Clareza]"))).toBe(false);
   drawn = await band();
   expect(drawn.rows).toBe(LANE_ROWS);
-  // Clareza stands on the lane left of Pingo, its name in a balloon of its color, with what it has after it
+  // Clareza stands on the lane left of Pingo, its name in a balloon, with what it has after it
   const at = drawn.row.text.indexOf("Clareza");
   expect(at).toBeGreaterThanOrEqual(0);
   expect(at).toBeLessThan(drawn.row.text.indexOf("Pingo"));
-  expect(drawn.row.grounds[at]).not.toBe(drawn.row.grounds[drawn.row.text.indexOf("Pingo")]);
+  expect(drawn.row.text).toContain("(Clareza");
   expect(drawn.row.text).toContain("Clareza: I have a plan");
   // what it says, under the lane, opens its pane
   expect(String(drawn.speech?.props.label)).toContain("'API' is not explained");
@@ -96,9 +96,14 @@ test("Clareza joins the lane with its plan, says it under the lane, and sends it
   await pane.press({ key: "clareza-send" });
   await pane.unmount();
   expect(submitted.filter((text) => text.startsWith("[Clareza]")).length).toBe(1);
+  // its goodbye hop begins up a row, its name hidden; a moment later it stands in its place
+  drawn = await band();
+  expect(drawn.row.text).not.toContain("Clareza");
+  await drawn.ui.unmount();
+  await world.clock.advance(300);
   drawn = await band();
   expect(drawn.row.text).toContain("Clareza");
-  expect(drawn.row.text).not.toContain("▐");
+  expect(drawn.row.text).not.toContain("(");
   expect(drawn.speech).toBeUndefined();
   await drawn.ui.unmount();
   await world.clock.advance(CAST_LEAVE_MS + 150);
@@ -213,7 +218,7 @@ test("a feature switched on but with no task is not on the lane; with something 
   // an assumption to review: Farol joins, saying so in its balloon and under the lane
   await $.tool.call({ tool: "mcp__jev__farol_assumption", tool_use_id: "toolu-farol-1", assumption: "The config lives in src/config.ts" } as never);
   drawn = await names();
-  expect(drawn.row).toContain("▐Farol: 1 assumption to review▌");
+  expect(drawn.row).toContain("(Farol: 1 assumption to review)");
   expect(String(drawn.speech?.props.label)).toContain("1 assumption to review");
   for (const name of ["Clareza", "Semente", "Vigia", "Sentinela", "Prisma", "Lapida", "Contexto"]) expect(drawn.row).not.toContain(name);
   // switched off, it is gone at once, with no goodbye

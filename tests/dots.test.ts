@@ -8,12 +8,13 @@ import { AGENT_MASCOTS, MASCOT_ORDER, pickMascot } from "../hooks/mascots/agents
 const ALL_MOODS = Object.keys(MOODS) as Mood[];
 
 describe("dots", () => {
-  test("a braille cell is a 2×4 grid: dot (0,0) is ⠁, a full cell is ⣿", () => {
-    expect(brailleChar(brailleBit(0, 0))).toBe("⠁");
-    expect(brailleChar(brailleBit(1, 3))).toBe("⢀");
+  test("a dot cell is a 2x4 grid drawn by its dots: one is '.', all eight '@', none blank", () => {
+    expect(brailleChar(brailleBit(0, 0))).toBe(".");
+    expect(brailleChar(brailleBit(1, 3))).toBe(".");
+    expect(brailleChar(brailleBit(0, 0) | brailleBit(1, 3))).toBe(":");
     let all = 0;
     for (let y = 0; y < 4; y++) for (let x = 0; x < 2; x++) all |= brailleBit(x, y);
-    expect(brailleChar(all)).toBe("⣿");
+    expect(brailleChar(all)).toBe("@");
     expect(brailleChar(0)).toBe(" ");
   });
 
@@ -30,7 +31,7 @@ describe("dots", () => {
     const bottom = rows[1]!;
     expect(bottom[0]![1]).toBe(DOT.fail);
     expect(bottom.map(([text]) => text).join("")).toHaveLength(4);
-    expect(bottom.at(-1)![0]).toContain("⠤");
+    expect(bottom.at(-1)![0]).toContain("_");
   });
 });
 

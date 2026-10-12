@@ -2,11 +2,10 @@ import type { RenderChildren } from "claude-code";
 import type { FeedEntry, RouteEvent, TraceState } from "../../../types";
 import { modelName } from "../../feed.ts";
 import { status } from "../../events.ts";
-import { hex } from "../../dots.ts";
 import { traceConsults } from "../../trace.ts";
 import { formatCompact, formatNumber, localeFor, text, type Locale } from "../../i18n.ts";
 import { rowsOf } from "../../layout.ts";
-import { css, GLYPH, HUE, UI_DESIGN, UI_INK as INK } from "../../theme.ts";
+import { GLYPH, UI_DESIGN, UI_INK as INK } from "../../theme.ts";
 import { MOODS, type Mood } from "../../mascots/pingo.ts";
 import { AGENT_MASCOTS, isMascot } from "../../mascots/agents.ts";
 import { type Els, type View } from "../types.ts";
@@ -19,14 +18,14 @@ export function speaker(entry: Pick<FeedEntry, "who" | "name" | "tone" | "mascot
       return { face: GLYPH.on, name: text("ui.live.you", locale), color: INK.you };
     case "jev": {
       const mood: Mood = entry.tone === "bad" ? "failing" : entry.tone === "muted" ? "passthrough" : "routing";
-      return { face: MOODS[mood].face, name: text("ui.live.jev", locale), color: hex(MOODS[mood].color) };
+      return { face: MOODS[mood].face, name: text("ui.live.jev", locale), color: INK.ink };
     }
     case "claude":
       return { face: "", name: text("ui.live.claude", locale), color: INK.claude };
     case "agent":
       if (isMascot(entry.mascot)) {
         const mascot = AGENT_MASCOTS[entry.mascot];
-        return { face: GLYPH.on, name: mascot.name, color: hex(mascot.color) };
+        return { face: GLYPH.on, name: mascot.name, color: INK.ink };
       }
       return { face: GLYPH.on, name: entry.name ?? text("ui.live.subagent", locale), color: INK.ink };
     default:
@@ -34,7 +33,7 @@ export function speaker(entry: Pick<FeedEntry, "who" | "name" | "tone" | "mascot
   }
 }
 
-const FACE_WIDTH = 6;
+const FACE_WIDTH = 7;
 const NAME_WIDTH = 7;
 /** The finer points under a log line: one row each, cut at the edge, never wrapped under the time. */
 const DETAIL_ROWS = 3;
@@ -61,7 +60,7 @@ export function feedLine(els: Els, view: View, entry: FeedEntry, maxRows?: numbe
   const spoken = entry.who === "jev" || entry.who === "claude";
   const room = Math.max(10, view.width - gutter - metaWidth - 3);
   const jev = entry.who === "jev";
-  const detailRoom = Math.max(10, view.width - gutter - 2);
+  const detailRoom = Math.max(10, view.width - gutter - 3);
   // A single card must fit in the live log's physical viewport so the user can scroll to it whole.
   const bodyLimit = jev && maxRows !== undefined ? room * Math.max(1, Math.min(SPOKEN_ROWS, maxRows - 1)) : room * SPOKEN_ROWS;
   const body = spoken ? clip(entry.text, bodyLimit) : entry.text;
@@ -72,14 +71,14 @@ export function feedLine(els: Els, view: View, entry: FeedEntry, maxRows?: numbe
     let used = 0;
     const visible: string[] = [];
     for (const [index, row] of rows.entries()) {
-      const shown = index === 0 ? `${when} · ${row}` : clip(row, detailRoom * PROMPT_ROWS);
+      const shown = index === 0 ? `${when} - ${row}` : clip(row, detailRoom * PROMPT_ROWS);
       const height = index === 0 ? 1 : rowsOf({ type: "Text", props: { wrap: "wrap" }, children: [shown] }, detailRoom);
       if (used + height > detailBudget) break;
       visible.push(row);
       used += height;
     }
     // Completed cards keep question and answer pairs intact when the viewport runs out.
-    if (visible.at(-1)?.startsWith("?") && rows[visible.length]?.startsWith("→")) visible.pop();
+    if (visible.at(-1)?.startsWith("?") && rows[visible.length]?.startsWith("->")) visible.pop();
     rows = visible;
   }
   const detailLines = rows.length ? rows : jev && maxRows !== undefined && entry.detail ? [] : [""];
@@ -98,7 +97,7 @@ export function feedLine(els: Els, view: View, entry: FeedEntry, maxRows?: numbe
         </Box>
         <Box flexGrow={1} flexShrink={1}>
           {minor ? (
-            <Text color={INK.faint} wrap="truncate-end">{`${entry.detail ? `${entry.text} · ${entry.detail}` : entry.text} · ${when}`}</Text>
+            <Text color={INK.faint} wrap="truncate-end">{`${entry.detail ? `${entry.text} - ${entry.detail}` : entry.text} - ${when}`}</Text>
           ) : (
             <Text color={spoken && entry.tone === "info" ? INK.dim : TONE_INK[entry.tone]} bold={entry.kind === "turn" && entry.who === "you"} wrap="wrap">
               {body}
@@ -115,17 +114,17 @@ export function feedLine(els: Els, view: View, entry: FeedEntry, maxRows?: numbe
         ? detailLines.map((row, index) => (
             <Box flexDirection="row">
               <Box width={gutter} flexShrink={0} />
-              <Box width={2} flexShrink={0}>
-                <Text color={INK.faint}>{index === 0 ? "╰ " : "  "}</Text>
+              <Box width={3} flexShrink={0}>
+                <Text color={INK.faint}>{index === 0 ? `${GLYPH.branch} ` : "   "}</Text>
               </Box>
               <Box flexShrink={1} flexGrow={1}>
                 {jev && index > 0 ? (
                   // A Jev card: the prompts wrap so they can be read, Jev's answers stand out.
-                  <Text color={row.startsWith("✕") ? INK.fail : row.startsWith("→") ? (entry.tone === "bad" ? INK.fail : INK.route) : row.startsWith("?") ? INK.dim : INK.faint} wrap="wrap">
+                  <Text color={row.startsWith("x") ? INK.fail : row.startsWith("->") ? (entry.tone === "bad" ? INK.fail : INK.route) : row.startsWith("?") ? INK.dim : INK.faint} wrap="wrap">
                     {clip(row, detailRoom * PROMPT_ROWS)}
                   </Text>
                 ) : (
-                  <Text color={INK.faint} wrap="truncate-end">{index === 0 ? (row ? `${when} · ${row}` : when) : row}</Text>
+                  <Text color={INK.faint} wrap="truncate-end">{index === 0 ? (row ? `${when} - ${row}` : when) : row}</Text>
                 )}
               </Box>
             </Box>
@@ -248,15 +247,15 @@ function liveTop(els: Els, view: View) {
   return (
     <Box flexDirection="column" flexShrink={0}>
       <Text wrap="wrap">
-        {pill(els, `${mood.face} ${text("ui.live.jev", view.locale)}`, hex(mood.color))}
+        {pill(els, `${mood.face} ${text("ui.live.jev", view.locale)}`)}
         <Text color={now.asking ? INK.route : INK.dim}>{` ${now.asking ? text("ui.live.asking", view.locale) : state.title}  `}</Text>
-        {pill(els, `${GLYPH.on} ${modelName(now.model)}${now.effort ? ` · ${now.effort}` : ""}`, css(HUE.claude))}
+        {pill(els, `${GLYPH.on} ${modelName(now.model)}${now.effort ? ` - ${now.effort}` : ""}`)}
         {running.map((run) => {
           const mascot = mascotOf(run);
           return (
             <Text>
               <Text> </Text>
-              {pill(els, `${GLYPH.on} ${mascot ? mascot.name : text("ui.live.subagent", view.locale)}`, mascot ? hex(mascot.color) : css(HUE.ok))}
+              {pill(els, `${GLYPH.on} ${mascot ? mascot.name : text("ui.live.subagent", view.locale)}`)}
             </Text>
           );
         })}
@@ -265,7 +264,7 @@ function liveTop(els: Els, view: View) {
       <Text wrap="truncate" color={INK.dim}>
         {text("ui.live.session", view.locale, {
           calls: formatNumber(tally.calls, view.locale),
-          tokens: tally.tokens === undefined ? "–" : formatCompact(tally.tokens, view.locale),
+          tokens: tally.tokens === undefined ? "-" : formatCompact(tally.tokens, view.locale),
           latency: tally.latency === undefined ? "" : text("ui.live.sessionLatency", view.locale, { value: formatNumber(tally.latency, view.locale) }),
         })}
       </Text>

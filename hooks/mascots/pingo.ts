@@ -7,12 +7,12 @@ export type Mood = "routing" | "thinking" | "passthrough" | "failing" | "idle" |
 type Eyes = "happy" | "spinner" | "pill" | "x" | "line" | "closed";
 
 export const MOODS: Record<Mood, { eyes: Eyes; color: number; face: string }> = {
-  routing: { eyes: "happy", color: DOT.route, face: "(^‿^)" },
-  thinking: { eyes: "spinner", color: DOT.brand, face: "(◌_◌)" },
-  passthrough: { eyes: "pill", color: DOT.pass, face: "( •_•)" },
-  failing: { eyes: "x", color: DOT.fail, face: "(×_×)" },
-  idle: { eyes: "line", color: DOT.idle, face: "(–_–)" },
-  baseline: { eyes: "closed", color: DOT.base, face: "(-_-)ᶻ" },
+  routing: { eyes: "happy", color: DOT.route, face: "(^_^)" },
+  thinking: { eyes: "spinner", color: DOT.brand, face: "(o_o)" },
+  passthrough: { eyes: "pill", color: DOT.pass, face: "( o_o)" },
+  failing: { eyes: "x", color: DOT.fail, face: "(x_x)" },
+  idle: { eyes: "line", color: DOT.idle, face: "(-_-)" },
+  baseline: { eyes: "closed", color: DOT.base, face: "(-_-)z" },
 };
 
 type Kind = "body" | "eye" | "ring";

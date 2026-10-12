@@ -66,7 +66,7 @@ export function applyCommand(policy: OrchestrationPolicy, line: string): { polic
     }
     case "role": {
       const role = roleOf(a);
-      if (!role) return fail("role <executor|subagent|advisor> model|effort …");
+      if (!role) return fail("role <executor|subagent|advisor> model|effort ...");
       if (b === "model") {
         if (c === "auto") return edit((p) => { p.roles[role].model.mode = "auto"; });
         const model = modelOf(d);
@@ -79,7 +79,7 @@ export function applyCommand(policy: OrchestrationPolicy, line: string): { polic
         }
         if (c === "fallback") {
           const list = d === "none" || d === undefined ? [] : d.split(",").map(modelOf);
-          return list.every(Boolean) ? edit((p) => { p.roles[role].model.fallback = list as ClaudeModelId[]; }) : fail("fallback <models,…|none>");
+          return list.every(Boolean) ? edit((p) => { p.roles[role].model.fallback = list as ClaudeModelId[]; }) : fail("fallback <models,...|none>");
         }
         return fail("model auto|fixed <model>|allow <model>|fallback <models|none>");
       }
@@ -93,11 +93,11 @@ export function applyCommand(policy: OrchestrationPolicy, line: string): { polic
         }
         if (c === "fallback") {
           const list = d === "none" || d === undefined ? [] : d.split(",");
-          return list.every(isEffort) ? edit((p) => { p.roles[role].effort.fallback = list as Effort[]; }) : fail("fallback <efforts,…|none>");
+          return list.every(isEffort) ? edit((p) => { p.roles[role].effort.fallback = list as Effort[]; }) : fail("fallback <efforts,...|none>");
         }
         return fail("effort auto|fixed <level>|allow <level>|fallback <levels|none>");
       }
-      return fail("role <role> model|effort …");
+      return fail("role <role> model|effort ...");
     }
     default:
       return fail("unknown orchestration command");

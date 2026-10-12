@@ -23,17 +23,17 @@ const PINGO_ONLY = { ...DEFAULT_FEATURES, farol: false, clareza: false, prisma: 
 const TYPE = "jev:resumo";
 const GOAL = "Fix the loader retries";
 
-/** The name row of a lane's cells: each cell's character and its ground (a balloon's color, else none). */
-function nameRow(cells: unknown): { text: string; grounds: number[] } {
+/** The name row of a lane's cells: each cell's character and its color. */
+function nameRow(cells: unknown): { text: string; colors: number[] } {
   const bytes = Uint8Array.from(atob(String(cells)), (char) => char.charCodeAt(0));
   const numbers = new Uint32Array(bytes.buffer);
   let text = "";
-  const grounds: number[] = [];
+  const colors: number[] = [];
   for (let i = 0; i < COLUMNS; i++) {
     text += String.fromCodePoint(numbers[i * 3]!);
-    grounds.push(numbers[i * 3 + 2]!);
+    colors.push(numbers[i * 3 + 1]!);
   }
-  return { text, grounds };
+  return { text, colors };
 }
 
 /**
@@ -46,8 +46,7 @@ async function look($: Engine) {
   const line = (await ui.find({ type: "Button", key: "deck-speech-pingo" } as never))?.props.label as string | undefined;
   const lineName = await ui.find({ type: "Text", text: /Pingo:$/ });
   await ui.unmount();
-  const at = row.text.indexOf("Pingo");
-  return { row: row.text, inBalloon: at >= 0 && row.grounds[at] !== row.grounds[0], line, lineColor: lineName?.props.color };
+  return { row: row.text, inBalloon: row.text.includes("(Pingo"), line, lineColor: lineName?.props.color };
 }
 
 declare const setTimeout: (callback: () => void, ms: number) => unknown;

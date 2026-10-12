@@ -182,7 +182,7 @@ describe("the Comandante in a session", () => {
     expect(rejected.deny).toBe(text("feature.comandante.tool.rejected.farol", "en", { reason: text("feature.comandante.reason.reject_risky", "en") }));
     expect(jev.asked).toHaveLength(1);
     expect(jev.asked[0]!.state).toMatchObject({ alert: "Dropping the old config format is fine", context: "src/config.ts" });
-    expect(toasts.some((toast) => toast.startsWith("Comandante: rejected — Farol: Dropping the old config format is fine"))).toBe(true);
+    expect(toasts.some((toast) => toast.startsWith("Comandante: rejected - Farol: Dropping the old config format is fine"))).toBe(true);
     const [record] = ownRecords(files);
     expect(record).toMatchObject({ session: OWN, project: "workspace", source: "farol", summary: "Dropping the old config format is fine", decision: "rejected", reason: "reject_risky", confidence: 0.9 });
 
@@ -264,9 +264,10 @@ describe("the Comandante in a session", () => {
     expect(ownRecords(files)).toMatchObject([{ session: OWN, source: "farol", decision: "approved", reason: "approve_sound" }]);
     // right, and pending: Claude hears it with its next step, as with the person's ✓
     const ui = await farolPane($ as never);
-    expect(await ui.find({ type: "Text", text: "#1 The loader stays synchronous" } as never)).toBeDefined();
+    expect(await ui.find({ type: "Text", text: "The loader stays synchronous" } as never)).toBeDefined();
     expect(await ui.find({ type: "Text", text: GLYPH.ok } as never)).toBeDefined();
-    expect(await ui.find({ type: "Text", text: text("feature.farol.pending", "en") } as never)).toBeDefined();
+    expect(await ui.find({ type: "Text", text: "#1" } as never)).toBeDefined();
+    expect(await ui.find({ type: "Text", text: text("feature.comandante.tag.pending", "en") } as never)).toBeDefined();
     await ui.unmount();
   });
 
@@ -303,7 +304,7 @@ describe("the Comandante in a session", () => {
     expect(ownRecords(files)).toMatchObject([{ source: "farol", decision: "questioned", reason: "question_context" }]);
     const ruling = `${text("feature.farol.comandante", "en", { decision: text("feature.comandante.decision.questioned", "en"), reason: text("feature.comandante.reason.question_context", "en") })} ${text("feature.comandante.question.question_context", "en")}`;
     const ui = await farolPane($ as never);
-    expect(await ui.find({ type: "Text", text: "#1 The config is YAML" } as never)).toBeDefined();
+    expect(await ui.find({ type: "Text", text: "The config is YAML" } as never)).toBeDefined();
     expect(await ui.find({ type: "Text", text: GLYPH.ask } as never)).toBeDefined();
     expect(await ui.find({ type: "Text", text: ruling } as never)).toBeDefined();
     await ui.unmount();
@@ -348,15 +349,15 @@ describe("the Comandante in a session", () => {
     await ui.press({ key: "comandante-sources-all" });
     await settle(() => sources()?.farol === false);
     expect(sources()).toEqual(comandanteSourcesAll(false));
-    expect((await ui.find({ key: "comandante-sources-all" }))?.props.label).toBe(`${GLYPH.off} All`);
-    expect((await ui.find({ key: "comandante-source-vigia" }))?.props.label).toBe(`${GLYPH.off} Vigia`);
+    expect((await ui.find({ key: "comandante-sources-all" }))?.props.label).toBe(`${GLYPH.unchecked} All`);
+    expect((await ui.find({ key: "comandante-source-vigia" }))?.props.label).toBe(`${GLYPH.unchecked} Vigia`);
     expect(await ui.find({ type: "Text", text: `0 of ${COMANDANTE_SOURCES.length} on` })).toBeDefined();
 
     // one back on: "All" stays unticked until every one is; pressed then, it switches every one on
     await ui.press({ key: "comandante-source-vigia" });
     await settle(() => sources()?.vigia === true);
     expect(await ui.find({ type: "Text", text: `1 of ${COMANDANTE_SOURCES.length} on` })).toBeDefined();
-    expect((await ui.find({ key: "comandante-sources-all" }))?.props.label).toBe(`${GLYPH.off} All`);
+    expect((await ui.find({ key: "comandante-sources-all" }))?.props.label).toBe(`${GLYPH.unchecked} All`);
     await ui.press({ key: "comandante-sources-all" });
     await settle(() => sources()?.farol === true);
     expect(sources()).toEqual(comandanteSourcesAll(true));
@@ -426,13 +427,13 @@ describe("the Comandante in a session", () => {
     expect(await ui.find({ type: "Text", text: `${GLYPH.off} ${text("feature.comandante.empty", "en")}` })).toBeDefined();
 
     await farol($, "Rename every variable");
-    expect(await ui.find({ type: "Text", text: "rejected · Farol" })).toBeDefined();
+    expect(await ui.find({ type: "Text", text: "rejected - Farol" })).toBeDefined();
 
     peer(PEER, [peerRecord()]);
-    expect(await ui.find({ type: "Text", text: "approved · Semente" })).toBeUndefined();
+    expect(await ui.find({ type: "Text", text: "approved - Semente" })).toBeUndefined();
     await clock.advance(1000);
-    for (let i = 0; i < 60 && !(await ui.find({ type: "Text", text: "approved · Semente" })); i++) await wait();
-    expect(await ui.find({ type: "Text", text: "approved · Semente" })).toBeDefined();
+    for (let i = 0; i < 60 && !(await ui.find({ type: "Text", text: "approved - Semente" })); i++) await wait();
+    expect(await ui.find({ type: "Text", text: "approved - Semente" })).toBeDefined();
     await ui.unmount();
   });
 
@@ -444,22 +445,22 @@ describe("the Comandante in a session", () => {
     const ui = await $.ui.mount({ plugin: "jev", surface: "terminal", component: "Pane", requestId: "jev", props: PANE_PROPS });
     await ui.press({ key: "tab-comandante" });
     // this session's own decision, and the other session's, each naming where it came from
-    expect(await ui.find({ type: "Text", text: "rejected · Farol" })).toBeDefined();
-    expect(await ui.find({ type: "Text", text: /this session · workspace$/ })).toBeDefined();
-    expect(await ui.find({ type: "Text", text: "approved · Semente" })).toBeDefined();
-    expect(await ui.find({ type: "Text", text: /Parser fix · peer-aaa · workspace$/ })).toBeDefined();
-    expect(await ui.find({ type: "Text", text: /^1 approved · 1 rejected · 0 questioned/ })).toBeDefined();
+    expect(await ui.find({ type: "Text", text: "rejected - Farol" })).toBeDefined();
+    expect(await ui.find({ type: "Text", text: /this session - workspace$/ })).toBeDefined();
+    expect(await ui.find({ type: "Text", text: "approved - Semente" })).toBeDefined();
+    expect(await ui.find({ type: "Text", text: /Parser fix - peer-aaa - workspace$/ })).toBeDefined();
+    expect(await ui.find({ type: "Text", text: /^1 approved - 1 rejected - 0 questioned/ })).toBeDefined();
 
     await ui.select({ key: "comandante-session", value: PEER });
-    expect(await ui.find({ type: "Text", text: "approved · Semente" })).toBeDefined();
-    expect(await ui.find({ type: "Text", text: "rejected · Farol" })).toBeUndefined();
+    expect(await ui.find({ type: "Text", text: "approved - Semente" })).toBeDefined();
+    expect(await ui.find({ type: "Text", text: "rejected - Farol" })).toBeUndefined();
 
     await ui.select({ key: "comandante-decision", value: "rejected" });
     expect(await ui.find({ type: "Text", text: /No decision matches these filters\./ })).toBeDefined();
 
     await ui.select({ key: "comandante-session", value: "all" });
-    expect(await ui.find({ type: "Text", text: "rejected · Farol" })).toBeDefined();
-    expect(await ui.find({ type: "Text", text: "approved · Semente" })).toBeUndefined();
+    expect(await ui.find({ type: "Text", text: "rejected - Farol" })).toBeDefined();
+    expect(await ui.find({ type: "Text", text: "approved - Semente" })).toBeUndefined();
     await ui.unmount();
   });
 });

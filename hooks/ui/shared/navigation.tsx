@@ -1,14 +1,11 @@
-import type { ElementTable } from "claude-code";
 import type { FeatureId, JevTab } from "../../../types";
 import { status, type StatusKind } from "../../events.ts";
-import { cellsOf, hex } from "../../dots.ts";
-import { text, type Locale, type LocaleKey } from "../../i18n.ts";
+import { formatNumber, text, type Locale, type LocaleKey } from "../../i18n.ts";
 import { displayWidth } from "../../layout.ts";
-import { css, GLYPH, HUE, UI_DESIGN, UI_INK as INK } from "../../theme.ts";
+import { GLYPH, UI_DESIGN, UI_INK as INK } from "../../theme.ts";
 import { MOODS, type Mood } from "../../mascots/pingo.ts";
-import { miniPingo } from "../../mascots/pixel.ts";
 import { type Els, type View, type Actions } from "../types.ts";
-import { PILL_INK } from "./base.tsx";
+import { clip } from "./base.tsx";
 import { recentLine } from "./metrics.tsx";
 /**
  * The fourteen screens in their three folders, in the order the rail lists them, with their keys (1 to 9, then 0, o,
@@ -61,46 +58,37 @@ export function moodOf(view: Pick<View, "events" | "routing" | "now" | "live" | 
   return MOOD_OF[status(view.events, view.routing, view.now, view.locale).kind];
 }
 
-/**
- * Pingo on the dashboard, still: on the terminal its smallest pixel self, two cells tall, its eyes in the mood's color
- * and its body in the terminal's own; where a Raster does not draw (the desktop) or there is one line to spare, its
- * face as text in the mood's color. No timer moves either.
- */
-function pingoMark(els: Els, view: View, mood: Mood, oneLine = false) {
-  const { Box, Text } = els;
-  if (!oneLine && view.surface === "terminal" && "Raster" in els) {
-    const { Raster } = els as unknown as ElementTable<"terminal">;
-    const cells = miniPingo(MOODS[mood].color, mood === "baseline");
-    const columns = cells[0]!.length;
-    return (
-      <Box key="pingo" width={columns} height={cells.length} flexShrink={0}>
-        <Raster key="pingo-mark" columns={columns} rows={cells.length} cells={cellsOf(cells)} />
-      </Box>
-    );
-  }
-  return <Text key="pingo" bold color={hex(MOODS[mood].color)}>{MOODS[mood].face}</Text>;
-}
+/** Columns the host adds after a plain button for its key: a space and the key in angle quotes. */
+const HOTKEY_COLUMNS = UI_DESIGN.layout.hotkeyColumns;
 
-/**
- * One screen's button on the rail or the folded rail. The open one is marked ▸ and bold on the brand's ground, so it
- * reads without color too; the others are dim. `pad` widens the open one's ground across the rail.
- */
-function tabButton(els: Els, view: View, act: Actions, [id, label, hotkey]: readonly [JevTab, string, string], pad = 0) {
-  const { Button, Text } = els;
-  const name = text(label as LocaleKey, view.locale);
-  return view.tab === id ? (
-    <Button key={"tab-" + id} label={`${GLYPH.open} ${name}`} hotkey={hotkey} plain onPress={() => act.tab(id)}>
-      <Text bold color={PILL_INK} backgroundColor={css(HUE.brand)}>{`${GLYPH.open} ${name} `.padEnd(pad)}</Text>
-    </Button>
-  ) : (
-    <Button key={"tab-" + id} label={name} hotkey={hotkey} plain onPress={() => act.tab(id)}>
-      <Text color={INK.dim}>{`  ${name}`}</Text>
-    </Button>
+/** The mood's face as text, in the terminal's own ink: it stands where Pingo's mini picture used to. */
+function moodFace(els: Els, mood: Mood) {
+  const { Box, Text } = els;
+  const face = MOODS[mood].face;
+  return (
+    <Box key="pingo" width={displayWidth(face)} flexShrink={0}>
+      <Text key="pingo-face" color={INK.ink} wrap="truncate">{face}</Text>
+    </Box>
   );
 }
 
-/** Columns the host adds after a plain button for its key: a space and the key in angle quotes. */
-const HOTKEY_COLUMNS = UI_DESIGN.layout.hotkeyColumns;
+/** The open screen's mark on the rail, then its name: `> Name`; the others leave the mark's place empty. */
+const tabLabel = (open: boolean, name: string) => `${open ? GLYPH.open : " "} ${name}`;
+
+/**
+ * One screen's button on the rail. The open one is marked `>` and bold, so it reads without color too; the others
+ * are plain. `pad` fills the label out to the room before the host's key, so the keys line up in a column.
+ */
+function tabButton(els: Els, view: View, act: Actions, [id, label, hotkey]: readonly [JevTab, string, string], pad: number) {
+  const { Button, Text } = els;
+  const name = text(label as LocaleKey, view.locale);
+  const open = view.tab === id;
+  return (
+    <Button key={"tab-" + id} label={open ? tabLabel(true, name) : name} hotkey={hotkey} plain onPress={() => act.tab(id)}>
+      <Text bold={open} color={INK.ink}>{` ${tabLabel(open, name)}`.padEnd(pad)}</Text>
+    </Button>
+  );
+}
 
 /** The rail's width in this language: the longest screen name, its mark and its key, at least the minimum. */
 export function railColumns(locale: Locale): number {
@@ -108,14 +96,14 @@ export function railColumns(locale: Locale): number {
   return Math.max(UI_DESIGN.layout.rail.minColumns, longest + 3 + HOTKEY_COLUMNS);
 }
 
-/** The rail down the left: each folder's name, faint and in capitals, then its screens, a blank row between folders. */
+/** The rail down the left: each folder's name in bold and dim, then its screens, the folders one right after another. */
 export function rail(els: Els, view: View, act: Actions, columns: number) {
   const { Box, Text } = els;
   return (
-    <Box flexDirection="column" width={columns} flexShrink={0} rowGap={UI_DESIGN.space.xs}>
+    <Box flexDirection="column" width={columns} flexShrink={0}>
       {TABS.map((folder, i) => (
         <Box key={"folder-" + i} flexDirection="column">
-          <Text bold color={INK.faint}>{` ${text(FOLDERS[i]!, view.locale)}`}</Text>
+          <Text bold color={INK.dim}>{` ${text(FOLDERS[i]!, view.locale)}`}</Text>
           {folder.map((tab) => tabButton(els, view, act, tab, columns - HOTKEY_COLUMNS))}
         </Box>
       ))}
@@ -123,17 +111,53 @@ export function rail(els: Els, view: View, act: Actions, columns: number) {
   );
 }
 
-/** The rail folded for a narrow or short pane: one line per folder, its name and then its screens, wrapping. */
+/**
+ * The rail folded for a narrow or short pane: a line per folder, `SESSÃO: > Overview / Live / Models`, the screens
+ * separated by ` /`. The line breaks are made here, at the pane's width, so a line that wraps continues indented by
+ * two. The buttons carry no key here: the host would draw it after each one and the line would not hold three screens.
+ */
 export function foldedRail(els: Els, view: View, act: Actions) {
-  const { Box, Text } = els;
+  const { Box, Button, Text } = els;
   return (
     <Box flexDirection="column">
-      {TABS.map((folder, i) => (
-        <Box key={"folder-" + i} flexDirection="row" flexWrap="wrap" columnGap={UI_DESIGN.space.xs}>
-          <Text bold color={INK.faint}>{text(FOLDERS[i]!, view.locale)}</Text>
-          {folder.map((tab) => tabButton(els, view, act, tab))}
-        </Box>
-      ))}
+      {TABS.flatMap((folder, i) => {
+        const head = `${text(FOLDERS[i]!, view.locale)}:`;
+        const units = folder.map(([id, label], j) => {
+          const name = text(label as LocaleKey, view.locale);
+          const shown = view.tab === id ? tabLabel(true, name).trimStart() : name;
+          const last = j === folder.length - 1;
+          return { id, shown, tail: last ? "" : ` ${GLYPH.slash}`, size: displayWidth(shown) + (last ? 0 : 2) };
+        });
+        const lines: (typeof units)[] = [[]];
+        let used = displayWidth(head);
+        for (const unit of units) {
+          const line = lines.at(-1)!;
+          if (line.length && used + 1 + unit.size > view.width) {
+            lines.push([unit]);
+            used = 2 + unit.size;
+          } else {
+            line.push(unit);
+            used += 1 + unit.size;
+          }
+        }
+        // every piece has a width of its own, so the line holds as many screens as were counted for it
+        return lines.map((line, row) => (
+          <Box key={`folder-${i}-${row}`} flexDirection="row">
+            {row === 0 ? <Box width={displayWidth(head)} flexShrink={0}><Text bold color={INK.dim}>{head}</Text></Box> : <Box width={2} flexShrink={0}><Text>{"  "}</Text></Box>}
+            {line.map((unit, k) => (
+              <Box key={unit.id} flexDirection="row" width={(row === 0 || k > 0 ? 1 : 0) + unit.size} flexShrink={0}>
+                {row === 0 || k > 0 ? <Box width={1} flexShrink={0}><Text> </Text></Box> : null}
+                <Box width={displayWidth(unit.shown)} flexShrink={0}>
+                  <Button key={"tab-" + unit.id} label={unit.shown} plain onPress={() => act.tab(unit.id)}>
+                    <Text bold={view.tab === unit.id} color={INK.ink}>{unit.shown}</Text>
+                  </Button>
+                </Box>
+                {unit.tail ? <Box width={displayWidth(unit.tail)} flexShrink={0}><Text color={INK.ink}>{unit.tail}</Text></Box> : null}
+              </Box>
+            ))}
+          </Box>
+        ));
+      })}
     </Box>
   );
 }
@@ -150,9 +174,8 @@ export function routingButton(els: Els, view: View, act: Actions) {
 }
 
 /**
- * The top of the pane at every width: Pingo, then "jev" on the brand's ground and the state in bold, and under them,
- * in plain words, what is going on and the last five minutes. A short terminal pane keeps the first line only, with
- * Pingo's face.
+ * The top of the pane at every width: the mood's face, then `jev` in bold and the state, and under them, in plain
+ * words, what is going on and the last five minutes. A short terminal pane keeps the first line only.
  */
 export function header(els: Els, view: View) {
   const { Box, Text } = els;
@@ -161,22 +184,22 @@ export function header(els: Els, view: View) {
   const compact = view.surface === "terminal" && view.rows < 24;
   const said = view.live.asking ? text("ui.header.asking", view.locale) : state.title;
   const nameLine = (
-    <Text bold wrap="wrap">
-      <Text color={PILL_INK} backgroundColor={css(HUE.brand)}>{" jev "}</Text>
+    <Text wrap="wrap">
+      <Text bold color={INK.ink}>jev</Text>
       <Text color={INK.ink}>{` ${state.icon} ${said}`}</Text>
     </Text>
   );
   if (compact) {
     return (
       <Box flexDirection="row" columnGap={UI_DESIGN.space.sm}>
-        {pingoMark(els, view, mood, true)}
+        {moodFace(els, mood)}
         {nameLine}
       </Box>
     );
   }
   return (
     <Box flexDirection="row" columnGap={UI_DESIGN.space.sm}>
-      {pingoMark(els, view, mood)}
+      {moodFace(els, mood)}
       <Box flexDirection="column" flexGrow={1} flexShrink={1}>
         {nameLine}
         <Text color={INK.ink} wrap="wrap">{view.live.asking ? text("ui.header.asking", view.locale) : state.text}</Text>
@@ -186,14 +209,36 @@ export function header(els: Els, view: View) {
   );
 }
 
-/** The open screen's name in Pingo's color and, under it, what the screen is for. */
+/** The screens that say what they are for in their own first lines: the title is all the bar adds. */
+export const SELF_EXPLAINED: ReadonlySet<JevTab> = new Set(["overview", "agents", "features"]);
+
+/** The subagents' count by state, as the Agents title closes its line with; empty when there are none. */
+function agentsSummary(view: View): string {
+  if (!view.agents.length) return "";
+  const running = view.agents.filter((run) => run.state === "running").length;
+  const done = view.agents.filter((run) => run.state === "done").length;
+  return text("ui.agents.summary", view.locale, {
+    running: formatNumber(running, view.locale),
+    done: formatNumber(done, view.locale),
+    failed: formatNumber(view.agents.length - running - done, view.locale),
+  });
+}
+
+/** The open screen's name in bold and, under it, what the screen is for (the ones that explain themselves skip it). */
 export function titleBar(els: Els, view: View) {
   const { Box, Text } = els;
   const entry = TABS.flat().find(([id]) => id === view.tab) ?? TABS[0]![0]!;
+  const name = text(entry[1] as LocaleKey, view.locale);
+  const summary = view.tab === "agents" ? agentsSummary(view) : "";
+  // the summary closes the title's line when both fit, else it goes under it
+  const beside = displayWidth(name) + UI_DESIGN.space.sm + displayWidth(summary) <= view.width;
   return (
     <Box flexDirection="column">
-      <Text bold color={INK.brand}>{text(entry[1] as LocaleKey, view.locale)}</Text>
-      <Text color={INK.dim} wrap="wrap">{text(`ui.purpose.${view.tab}` as LocaleKey, view.locale)}</Text>
+      <Box flexDirection={beside ? "row" : "column"} justifyContent="space-between">
+        <Text bold color={INK.ink} wrap="truncate">{name}</Text>
+        {summary ? <Text color={INK.dim} wrap="truncate">{beside ? summary : clip(summary, view.width)}</Text> : null}
+      </Box>
+      {SELF_EXPLAINED.has(view.tab) ? null : <Text color={INK.dim} wrap="wrap">{text(`ui.purpose.${view.tab}` as LocaleKey, view.locale)}</Text>}
     </Box>
   );
 }

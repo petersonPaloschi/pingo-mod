@@ -1,7 +1,7 @@
 import type { AgentRun } from "../../../types";
 import { AGENT_MASCOTS, isMascot, MASCOT_ORDER, type MascotId } from "../../mascots/agents.ts";
 import { DECK_DESIGN, FEATURE_MASCOT_PALETTE, TERMINAL_DEFAULT } from "../../theme.ts";
-import { PET_BRAILLE } from "../pet.ts";
+import { PET_BRAILLE, PET_HOP_MS, PET_HOP_STEP_MS } from "../pet.ts";
 export type SpeakerId = keyof typeof FEATURE_MASCOT_PALETTE;
 export const SPEAKER_IDS = Object.keys(FEATURE_MASCOT_PALETTE) as SpeakerId[];
 /** Each feature mascot's name: the feature's own, the same in every language. */
@@ -31,8 +31,10 @@ export interface CastMember {
   /** "jev", "feature:<id>", or the subagent's run id. */
   id: string;
   kind: CastKind;
-  /** The name on the row above it: the mascot's, then the subagent's type. */
+  /** The name on the row above it: the mascot's, or the subagent's type. */
   label: string;
+  /** The name the desktop lane writes, where it differs: a subagent's mascot, then its type ("Tetra·Explore"). */
+  desktopLabel?: string;
   state: CastState;
   /** When that state began, in ms: a newcomer hops from here, a leaver from its end. */
   since: number;
@@ -65,6 +67,9 @@ export interface JevOnLane {
 /** A newcomer hops for this long; a member whose task ended stays this long, then leaves. */
 export const CAST_JOIN_MS = DECK_DESIGN.cast.joinMs;
 export const CAST_LEAVE_MS = DECK_DESIGN.cast.leaveMs;
+/** A leaver hops for the first of its leave (up one row, back, every step), eyes happy or crossed. */
+export const CAST_HOP_MS = PET_HOP_MS;
+export const CAST_HOP_STEP_MS = PET_HOP_STEP_MS;
 
 /** Who leaves, and how: `ended` tells done from failed. */
 const leaver = (base: Omit<CastMember, "state" | "since">, at: number, failed: boolean): CastMember => ({ ...base, state: failed ? "failed" : "done", since: at });
@@ -91,7 +96,9 @@ export function castOf(runs: readonly AgentRun[], jev: JevOnLane, now: number, s
   }
   for (const run of [...runs].sort((a, b) => a.n - b.n)) {
     const kind = isMascot(run.mascot) ? run.mascot : MASCOT_ORDER[(Math.max(1, run.n) - 1) % MASCOT_ORDER.length]!;
-    const base = { id: run.id, kind, label: `${AGENT_MASCOTS[kind].name}·${run.type}` };
+    // the terminal writes the type alone (a subagent the plugin spawns itself may come without one: its mascot's name
+    // stands in); the desktop keeps its own drawings, the mascot's name before the type
+    const base = { id: run.id, kind, label: run.type || AGENT_MASCOTS[kind].name, desktopLabel: `${AGENT_MASCOTS[kind].name}·${run.type}` };
     if (run.state === "running") {
       cast.push({ ...base, state: now - run.startedAt < CAST_JOIN_MS ? "join" : "idle", since: run.startedAt, speaking: true, ...said(run.description) });
     } else if (run.endedAt !== undefined && now - run.endedAt < CAST_LEAVE_MS) {
@@ -108,9 +115,9 @@ export function castOf(runs: readonly AgentRun[], jev: JevOnLane, now: number, s
  */
 export const castKey = (cast: readonly CastMember[]): string => cast.map((m) => `${m.id}:${m.state}:${m.label}${m.speaking ? ":says" : ""}`).join("|");
 
-// ---------- one member, in a terminal: a grid of 8 by 8 pixels, 8 cells by 4 rows ----------
+// ---------- one member, in a terminal: 8 cells by 4 rows ----------
 
-/** A member's cells in a terminal: 8 columns by 4 rows of half blocks, a grid of 8 by 8 pixels. (The name is the old braille one, kept for its importers.) */
+/** A member's cells in a terminal: 8 columns by 4 rows of text. (The name is the old braille one, kept for its importers.) */
 export const MEMBER_BRAILLE = DECK_DESIGN.pet.member;
 /** The lane's rows in a terminal: the names, then the bodies. */
 export const LANE_ROWS = PET_BRAILLE.rows + 1;

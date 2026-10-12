@@ -5,7 +5,7 @@ import { expect, test, type Engine } from "claude-code/testing";
 
 import { CAST_LEAVE_MS } from "../../hooks/deck/cast.ts";
 import { petLaneColumns } from "../../hooks/deck/pet.ts";
-import { HUE } from "../../hooks/theme.ts";
+import { TERMINAL_DEFAULT } from "../../hooks/theme.ts";
 import { comandanteStore, pick } from "../helpers.ts";
 import { TERMINAL, deckWorld, spawn } from "./helpers.ts";
 
@@ -22,8 +22,8 @@ const SESSION = { surface: "terminal", isInteractive: true, cwd: "/work" } as co
 const LOCALE = { options: { locale: "en" } } as const;
 const COLUMNS = petLaneColumns(200);
 
-/** The name row of a lane's cells as the host gets them: its text, and each cell's color. */
-function nameRow(cells: unknown): { text: string; colors: number[] } {
+/** The name row of a lane's cells as the host gets them: its text, each cell's color, and the whole lane's text. */
+function nameRow(cells: unknown): { text: string; colors: number[]; lane: string } {
   const bytes = Uint8Array.from(atob(String(cells)), (char) => char.charCodeAt(0));
   const numbers = new Uint32Array(bytes.buffer);
   let text = "";
@@ -32,7 +32,9 @@ function nameRow(cells: unknown): { text: string; colors: number[] } {
     text += String.fromCodePoint(numbers[i * 3]!);
     colors.push(numbers[i * 3 + 1]!);
   }
-  return { text, colors };
+  let lane = "";
+  for (let i = 0; i < numbers.length / 3; i++) lane += (i && i % COLUMNS === 0 ? "\n" : "") + String.fromCodePoint(numbers[i * 3]!);
+  return { text, colors, lane };
 }
 
 /** A fresh band's name row and the names on its speech line: a mounted lane is only repainted by the clock's blit. */
@@ -42,7 +44,7 @@ async function look($: Engine, requestId = "look") {
   const speech = async (id: string) => (await ui.find({ type: "Button", key: `deck-speech-${id}` } as never))?.props.label as string | undefined;
   // the color a name is written in on the lane
   const colorOf = (label: string) => name.colors[name.text.indexOf(label)];
-  return { ui, row: name.text, speech, colorOf };
+  return { ui, row: name.text, lane: name.lane, speech, colorOf };
 }
 
 async function settle(done: () => Promise<boolean>) {
@@ -79,13 +81,13 @@ test("Jev and the Comandante join while the Comandante judges through Jev, each 
   });
   drawn = await look($);
   // both at work side by side, each in its balloon, saying what it really does
-  expect(drawn.row).toContain("▐Jev: judging for the Comandante▌");
-  expect(drawn.row).toContain("▐Comandante: judging an alert (Farol)▌");
+  expect(drawn.row).toContain("(Jev: judging for the Comandante)");
+  expect(drawn.row).toContain("(Comandante: judging an alert (Farol))");
   // under the lane the first at work says its words, and the other is named, each opening its own pane
   expect(await drawn.speech("comandante")).toContain("judging an alert (Farol)");
   expect(await drawn.speech("jev")).toBe("Jev");
   // Farol has nothing yet: the assumption waits for the verdict
-  expect(drawn.row).not.toContain("▐Farol");
+  expect(drawn.row).not.toContain("(Farol:");
   await drawn.ui.unmount();
 
   release();
@@ -93,10 +95,17 @@ test("Jev and the Comandante join while the Comandante judges through Jev, each 
   drawn = await look($);
   // the verdict came: Jev and the Comandante say goodbye, quiet; the assumption it approved is kept already
   // confirmed, so Farol has nothing for the person and does not join
-  expect(drawn.row).not.toContain("▐Jev");
-  expect(drawn.row).not.toContain("▐Comandante");
+  expect(drawn.row).not.toContain("(Jev");
+  expect(drawn.row).not.toContain("(Comandante");
+  // (each hops its goodbye up a row, its name hidden, and is back in its place a quarter second on)
+  await drawn.ui.unmount();
+  await world.clock.advance(300);
+  drawn = await look($);
   expect(drawn.row).toContain("Jev");
   expect(drawn.row).toContain("Comandante");
+  // a goodbye that went well has happy eyes: Jev's sphere and the Comandante's star
+  expect(drawn.lane).toContain("/^  ^\\");
+  expect(drawn.lane).toContain("\\ ^  ^ /");
   expect(drawn.row).not.toContain("Farol");
   await drawn.ui.unmount();
   await world.clock.advance(CAST_LEAVE_MS + 150);
@@ -115,27 +124,28 @@ test("two subagents at work stand together, each saying what it does, and each l
   await $.agent.spawn(spawn("map the loader"));
   world.state.agents = [{ id: "a1", status: "running" }, { id: "a2", status: "running" }];
   let drawn = await look($);
-  expect(drawn.row).toContain("▐Tetra·Explore: explore routes▌");
-  expect(drawn.row).toContain("▐Gem·Explore: map the loader▌");
+  expect(drawn.row).toContain("(Explore: explore routes)");
+  expect(drawn.row).toContain("(Explore: map the loader)");
   // planning a subagent with no Jev key asks Jev nothing: Jev never stood on the lane, not even for a goodbye
   expect(drawn.row).not.toContain("Jev");
   expect(await drawn.speech("a1")).toContain("explore routes");
   // the line under the lane says the first one's words, and names the other, which opens its own pane
-  expect(await drawn.speech("a2")).toBe("Gem·Explore");
+  expect(await drawn.speech("a2")).toBe("Explore");
   await drawn.ui.unmount();
 
   // the first ends: it hops a goodbye and leaves, the second goes on saying what it does
   await end("a1");
   world.state.agents = [{ id: "a2", status: "running" }];
   drawn = await look($);
-  expect(drawn.row).toContain("Tetra·Explore");
   expect(drawn.row).not.toContain("explore routes");
-  expect(drawn.row).toContain("▐Gem·Explore: map the loader▌");
+  // the one leaving is still on the lane, hopping with happy eyes (its triangle's "/^  ^\" row)
+  expect(drawn.lane).toContain("/^  ^\\");
+  expect(drawn.row).toContain("(Explore: map the loader)");
   await drawn.ui.unmount();
   await world.clock.advance(CAST_LEAVE_MS + 150);
   drawn = await look($);
-  expect(drawn.row).not.toContain("Tetra");
-  expect(drawn.row).toContain("▐Gem·Explore: map the loader▌");
+  expect(drawn.row.match(/Explore/g)).toHaveLength(1);
+  expect(drawn.row).toContain("(Explore: map the loader)");
   await drawn.ui.unmount();
 
   // then the second, and nobody is left but Pingo
@@ -164,24 +174,31 @@ test("when Jev's call fails, Jev and the Comandante leave with a failed goodbye,
   const recorded = $.tool.call({ tool: "mcp__jev__farol_assumption", tool_use_id: "toolu-farol-1", assumption: "The config lives in src/config.ts" } as never);
   await settle(async () => asked > 0);
   const busy = await look($);
-  expect(busy.row).toContain("▐Jev: judging for the Comandante▌");
-  expect(busy.row).toContain("▐Comandante: judging an alert (Farol)▌");
+  expect(busy.row).toContain("(Jev: judging for the Comandante)");
+  expect(busy.row).toContain("(Comandante: judging an alert (Farol))");
   await busy.ui.unmount();
   release();
   await recorded;
   const drawn = await look($);
-  // both say goodbye, quiet, their names in the failure's red; the Comandante could not judge, so Farol keeps the
+  // both say goodbye, quiet, their names plain; the Comandante could not judge, so Farol keeps the
   // assumption for the person to review, as without the Comandante
-  expect(drawn.row).not.toContain("▐Jev");
-  expect(drawn.row).not.toContain("▐Comandante");
-  expect(drawn.colorOf("Jev")).toBe(HUE.fail);
-  expect(drawn.colorOf("Comandante")).toBe(HUE.fail);
-  expect(drawn.row).toContain("▐Farol: 1 assumption to review▌");
+  expect(drawn.row).not.toContain("(Jev");
+  expect(drawn.row).not.toContain("(Comandante");
   await drawn.ui.unmount();
+  await world.clock.advance(300);
+  const down = await look($);
+  expect(down.colorOf("Jev")).toBe(TERMINAL_DEFAULT);
+  expect(down.colorOf("Comandante")).toBe(TERMINAL_DEFAULT);
+  // a failed goodbye has crossed eyes, never happy ones: Jev's sphere and the Comandante's star
+  expect(down.lane).toContain("/x  x\\");
+  expect(down.lane).toContain("\\ x  x /");
+  expect(down.lane).not.toContain("^  ^");
+  expect(down.row).toContain("(Farol: 1 assumption to review)");
+  await down.ui.unmount();
   await world.clock.advance(CAST_LEAVE_MS + 150);
   const after = await look($);
   expect(after.row).not.toContain("Jev");
   expect(after.row).not.toContain("Comandante");
-  expect(after.row).toContain("▐Farol: 1 assumption to review▌");
+  expect(after.row).toContain("(Farol: 1 assumption to review)");
   await after.ui.unmount();
 });

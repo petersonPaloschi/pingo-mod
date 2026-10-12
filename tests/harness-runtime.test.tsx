@@ -171,7 +171,7 @@ describe("runtime without main-turn advice", () => {
     const ui = await $.ui.mount({ plugin: "jev", surface: "terminal", component: "Pane", requestId: "jev", props: PANE_PROPS });
     for (const [alias, label] of [["flow", "Flow"], ["reasons", "Logs"], ["features", "Configuration"], ["setup", "AI"], ["ai", "AI"], ["ia", "AI"], ["orch", "Orchestration"]]) {
       await $.command.run({ command: "jev", args: alias, origin: ORIGIN } as never);
-      expect(JSON.stringify(await ui.drawn())).toContain(`▸ ${label}`);
+      expect(JSON.stringify(await ui.drawn())).toContain(`> ${label}`);
     }
     expect(await $.command.run({ command: "jev", args: "baseline", origin: ORIGIN } as never)).toMatchObject({ text: expect.stringContaining("Usage:") });
     await ui.unmount();
@@ -181,9 +181,9 @@ describe("runtime without main-turn advice", () => {
     world(on);
     await $.session.start({ cwd: "/workspace" } as never).catch(() => undefined);
     const label: Record<string, string> = { overview: "Overview", flow: "Flow", models: "Models", logs: "Logs", configuration: "Configuration", ai: "AI", orchestration: "Orchestration" };
-    // "Aliases: a, b → tab; c → tab." as the help text reads; the Portuguese text lists the very same pairs
+    // "Aliases: a, b -> tab; c -> tab." as the help text reads; the Portuguese text lists the very same pairs
     const pairs = (locale: "en" | "pt", marker: string) => text("ui.command.description", locale).split(marker)[1]!.replace(/\.$/, "").split(";").flatMap((group) => {
-      const [aliases, tab] = group.split("→").map((part) => part.trim());
+      const [aliases, tab] = group.split("->").map((part) => part.trim());
       return aliases!.split(",").map((alias) => [alias.trim(), tab!] as const);
     });
     const listed = pairs("en", "Aliases:");
@@ -193,7 +193,7 @@ describe("runtime without main-turn advice", () => {
     for (const [alias, tab] of listed) {
       expect(label[tab]).toBeDefined();
       await $.command.run({ command: "jev", args: alias, origin: ORIGIN } as never);
-      expect(JSON.stringify(await ui.drawn())).toContain(`▸ ${label[tab]}`);
+      expect(JSON.stringify(await ui.drawn())).toContain(`> ${label[tab]}`);
     }
     await ui.unmount();
   });

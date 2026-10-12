@@ -93,7 +93,7 @@ for (const locale of ["en", "pt"] as const) {
     await $.turn.complete({ turnId: "t1", answer: "Done.", durationMs: 4000, isAborted: false, reason: "answer", usage: { input_tokens: 1000, output_tokens: 300, cache_read_input_tokens: 200, cache_creation_input_tokens: 0 } } as never);
     const ui = await $.ui.mount({ plugin: "jev", surface: "terminal", component: "Pane", requestId: "jev", props: PANE_PROPS });
     await ui.press({ key: "tab-live" });
-    const detail = locale === "en" ? /in 1\.2K · out 300/ : /entrada 1,2\smil · saída 300/;
+    const detail = locale === "en" ? /in 1\.2K - out 300/ : /entrada 1,2\smil - saída 300/;
     const rendered = (await ui.findAll({ type: "Text" })).map((line) => line.text ?? "").join("\n");
     expect(rendered).toMatch(detail);
     await ui.unmount();
@@ -153,7 +153,7 @@ test("persisted legacy tabs resolve to valid screens on both surfaces", () => {
     ["baseline", "logs", "Request log"],
     ["flow", "flow", "what Pingo did for each request"],
     ["orchestration", "orchestration", "Orchestration off"],
-    ["features", "features", "Integrated features"],
+    ["features", "features", "Turn each feature on or off"],
     ["reasons", "logs", "Request log"],
     ["setup", "ai", "Jev provider"],
     ["log", "logs", "Request log"],
@@ -257,10 +257,12 @@ test("the latest Jev call stays pinned on top of Live, and the band names it aft
   const feed = [call, ...Array.from({ length: ENTRIES_SHOWN * 2 }, (_, i) => feedLine(i + 2))];
   for (const fixed of [false, true]) {
     const drawn = texts(renderPane(els, view({ feed, fixed }), act));
-    const pin = drawn.indexOf("Latest Jev call · pinned");
+    const pin = drawn.indexOf("Latest Jev call - pinned");
     const lines = drawn.filter((one) => /^line \d+$/.test(one));
     expect(pin).toBeGreaterThanOrEqual(0);
-    expect(drawn.indexOf(call.text)).toBeGreaterThan(pin);
+    // a card writes its title after its body in the tree, though the title is on its top edge
+    expect(drawn.indexOf(call.text)).toBeGreaterThanOrEqual(0);
+    expect(drawn.indexOf(call.text)).toBeLessThan(pin);
     // The pin counts toward the cap; the newest other lines fill the rest under it, newest first.
     expect(lines.length).toBe(ENTRIES_SHOWN - 1);
     expect(lines[0]).toBe(`line ${ENTRIES_SHOWN * 2 + 1}`);
@@ -269,7 +271,7 @@ test("the latest Jev call stays pinned on top of Live, and the band names it aft
   expect(texts(renderBand(els, view({ feed }))).join("\n")).toContain(`Last Jev call 2 min ago: ${call.text}`);
   // No Jev call kept: Live pins nothing, and the band says so rather than leave a gap.
   const without = feed.slice(1);
-  expect(texts(renderPane(els, view({ feed: without, fixed: false }), act))).not.toContain("Latest Jev call · pinned");
+  expect(texts(renderPane(els, view({ feed: without, fixed: false }), act))).not.toContain("Latest Jev call - pinned");
   expect(texts(renderBand(els, view({ feed: without }))).join("\n")).toContain("No Jev call yet");
 });
 
@@ -333,15 +335,15 @@ test("a picture's columns are a fixed width in a row, so the text beside it has 
 });
 
 test("text is cut between code points, and only a long one after its spaces are collapsed", () => {
-  const cut = clip("a".repeat(117) + "😀😀😀", 119);
+  const cut = clip("a".repeat(114) + "😀".repeat(6), 119);
   const lone = [...cut].some((ch) => ch.length === 1 && ch.charCodeAt(0) >= 0xd800 && ch.charCodeAt(0) <= 0xdfff);
   expect(lone).toBe(false);
-  expect(cut.endsWith("😀…")).toBe(true);
+  expect(cut.endsWith("😀😀...")).toBe(true);
   expect(clip("short", 120)).toBe("short");
   const spaced = "ab    ".repeat(30);
   expect(spaced.length).toBeGreaterThan(121);
   expect(oneLine(spaced, 121)).toBe("ab ".repeat(30));
-  expect(oneLine("x ".repeat(100), 121).endsWith("…")).toBe(true);
+  expect(oneLine("x ".repeat(100), 121).endsWith("...")).toBe(true);
 });
 
 test("the outcome bar's dots add up to its room", () => {

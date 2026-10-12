@@ -68,9 +68,11 @@ test("the terminal pet blits a styled frame every 100 ms without a UI invalidati
   await clock.advance(50);
   expect(blits).toHaveLength(at100);
   await clock.advance(50);
+  // the hop changes the drawing every 250 ms (up one row, back): the next frame is sent once it has changed
+  await clock.advance(100);
 
   expect(blits.length).toBeGreaterThan(at100);
-  expect(blits.at(-1)?.cells).toBe(cellsOf(castLaneCells(expectedPet, cast, NOW + 200, columns)));
+  expect(blits.at(-1)?.cells).toBe(cellsOf(castLaneCells(expectedPet, cast, NOW + 300, columns)));
   expect(invalidations).toEqual([]);
   await ui.unmount();
 });

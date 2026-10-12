@@ -3,11 +3,12 @@ import type { Category } from "../../events.ts";
 import { DOT } from "../../dots.ts";
 import { formatClock, type Locale } from "../../i18n.ts";
 import { displayWidth } from "../../layout.ts";
-import { css, GLYPH, HUE, inkOn, PAINT, UI_DESIGN, UI_INK as INK } from "../../theme.ts";
+import { BORDER_STYLE, GLYPH, PAINT, UI_DESIGN, UI_INK as INK } from "../../theme.ts";
 import { type Els, type Frame } from "../types.ts";
+/** A switch: `[x] Label` when on, `[ ] Label` dimmed when off. */
 export function toggleButton(els: Els, key: string, on: boolean, label: string, onPress: () => void, hotkey?: string) {
   const { Button } = els;
-  return <Button key={key} label={`${on ? GLYPH.check : GLYPH.off} ${label}`} plain hotkey={hotkey} dimColor={!on} onPress={onPress} />;
+  return <Button key={key} label={`${on ? GLYPH.check : GLYPH.unchecked} ${label}`} plain hotkey={hotkey} dimColor={!on} onPress={onPress} />;
 }
 
 export const CATEGORY_DOT: Record<Category, [glyph: string, color: number]> = {
@@ -18,13 +19,15 @@ export const CATEGORY_DOT: Record<Category, [glyph: string, color: number]> = {
 
 export const clock = (time: number, locale: Locale) => formatClock(time, locale);
 
-/** At most `max` characters, cut between code points so an emoji is never split in half. */
+/** At most `max` characters, cut between code points so an emoji is never split in half; a cut ends in "...". */
 export function clip(text: string, max: number): string {
   const chars = [...text];
-  return chars.length > max ? chars.slice(0, max - 1).join("") + "…" : text;
+  if (chars.length <= max) return text;
+  const cut = GLYPH.ellipsis.length;
+  return max <= cut ? chars.slice(0, Math.max(0, max)).join("") : chars.slice(0, max - cut).join("").trimEnd() + GLYPH.ellipsis;
 }
 
-/** A text on one line: its whitespace collapsed first, then clipped, so only a long one gets "…". */
+/** A text on one line: its whitespace collapsed first, then clipped, so only a long one gets "...". */
 export const oneLine = (text: string, max: number) => clip(text.replace(/\s+/g, " "), max);
 
 const clockWidths = new Map<Locale, number>();
@@ -39,40 +42,55 @@ export function clockWidth(locale: Locale): number {
   return width;
 }
 
-/** Dark ink for a label drawn on a colored ground. */
+/** The ink a label used to take on a colored ground; in black and white it is the plain foreground. */
 export const PILL_INK = PAINT.onFill;
 
-/** The ink for words on a "#rrggbb" ground: dark, or white on a ground too dark for it (`inkOn`). */
-const inkFor = (ground: string) => (/^#[0-9a-f]{6}$/i.test(ground) ? css(inkOn(Number.parseInt(ground.slice(1), 16))) : PILL_INK);
-
-/** A label on a colored ground: a state, a model, the kind of a request. The ground is a mid-tone hex. */
-export function pill(els: Els, label: string, ground: string) {
+/**
+ * A label that stands out: a state, a model, the kind of a request. In black and white it is bold words with no
+ * ground; `ground` is kept for the callers and the desktop's own drawings, and is not drawn here.
+ */
+export function pill(els: Els, label: string, _ground?: string) {
   const { Text } = els;
-  return <Text bold color={inkFor(ground)} backgroundColor={ground}>{` ${label} `}</Text>;
+  return <Text bold color={INK.ink}>{label}</Text>;
 }
 
 /** Columns a card's frame and air take from its width: the border and one column inside it on each side. */
 export const INDENT = UI_DESIGN.layout.indent;
 
 /**
- * A card, the one part every screen is built of: a rounded frame, a ■ in its accent and its title in bold on the
- * first line, then its body. The title is alone in its Text, so a section can be found by its words. `rule` paints
- * the ■ (a mascot, a state), `color` the title, `glyph` replaces the ■; an alert draws "!" and turns the frame red.
+ * A card, the one part every screen is built of: an ASCII frame (`+`, `-`, `|`, dimmed) with its title written into
+ * the top edge, `+- Title -----+`, then its body inside. The frame is the host's own (`BORDER_STYLE`); the title is
+ * laid over its top edge from a Box placed `absolute` at the top, so it takes no row of its own. The title is alone in
+ * its Text, so a section can be found by its words. `glyph` goes before the title (a state); an alert puts "!" there.
+ * `color` and `rule` are kept for the callers: in black and white nothing is painted with them.
  */
 export function card(els: Frame, title: string, body: RenderChildren, opts: { width: number; color?: string; rule?: string; note?: string; alert?: boolean; glyph?: string }) {
   const { Box, Text } = els;
   const width = Math.max(UI_DESIGN.layout.minCardWidth, opts.width);
-  const accent = opts.alert ? INK.fail : opts.rule ?? INK.brand;
+  const mark = opts.alert ? GLYPH.warn : opts.glyph;
+  // "+- " before the words and " -+" after them: what is left is the room the title has on the edge
+  const room = Math.max(1, width - 6 - (mark ? displayWidth(mark) + 1 : 0));
   return (
-    <Box flexDirection="column" width={width} flexShrink={0} borderStyle="round" borderColor={opts.alert ? INK.fail : INK.border} paddingX={UI_DESIGN.space.xs}>
-      <Box flexDirection="row" columnGap={UI_DESIGN.space.xs}>
-        <Text bold color={accent}>{opts.alert ? GLYPH.warn : opts.glyph ?? GLYPH.on}</Text>
-        <Text bold color={opts.alert ? INK.fail : opts.color ?? INK.ink} wrap="wrap">{title}</Text>
+    <Box flexDirection="column" width={width} flexShrink={0}>
+      <Box flexDirection="column" width={width} borderStyle={BORDER_STYLE} borderColor={INK.border} paddingX={UI_DESIGN.space.xs}>
+        {opts.note ? <Text color={INK.faint} wrap="wrap">{opts.note}</Text> : null}
+        {body}
       </Box>
-      {opts.note ? <Text color={INK.faint} wrap="wrap">{opts.note}</Text> : null}
-      {body}
+      <Box position="absolute" top={0} left={1}>
+        <Text wrap="truncate">
+          <Text color={INK.border}>{GLYPH.rule + " "}</Text>
+          {mark ? <Text bold color={INK.ink}>{mark + " "}</Text> : null}
+          <Text bold color={INK.ink}>{clip(title, room)}</Text>
+          <Text color={INK.border}>{" " + GLYPH.rule}</Text>
+        </Text>
+      </Box>
     </Box>
   );
+}
+
+/** A feature's own pane as one card the pane's whole width: its name on the top edge, then what it holds. */
+export function paneBox(els: Frame, name: string, width: number, body: RenderChildren) {
+  return card(els, name, body, { width });
 }
 
 /** Cards one under the other, the whole width each. */
@@ -100,21 +118,21 @@ export function grid(els: Els, width: number, cards: readonly ((width: number) =
  * The head of a feature's own pane, in the dashboard's language: the feature's name on its mascot's color, then a line
  * of what it holds. The cards under it are the dashboard's (`sheetCard`).
  */
-export function featureHead(els: Frame, name: string, color: number, line?: string) {
+export function featureHead(els: Frame, name: string, _color: number, line?: string) {
   const { Box, Text } = els;
   return (
     <Box flexDirection="row" flexWrap="wrap" columnGap={UI_DESIGN.space.xs}>
-      <Text bold color={css(inkOn(color))} backgroundColor={css(color)}>{` ${name} `}</Text>
-      {line ? <Text color={INK.dim} wrap="wrap">{line}</Text> : null}
+      <Text bold color={INK.ink}>{name}</Text>
+      {line ? <Text bold color={INK.ink} wrap="wrap">{line}</Text> : null}
     </Box>
   );
 }
 export const sheetCard = card;
 
-/** The tab a line above the prompt starts with: a stripe in its feature's mascot color. */
-export function lineTab(els: Frame, color: number) {
+/** The tab a line above the prompt starts with: a bold `|` (the color is kept for the callers, not drawn). */
+export function lineTab(els: Frame, _color: number) {
   const { Text } = els;
-  return <Text bold color={css(color)}>{GLYPH.tab}</Text>;
+  return <Text bold color={INK.ink}>{GLYPH.tab}</Text>;
 }
 
 /** A heading inside a section: bold and dim, its words alone in the Text so they can be found as they are. */
@@ -134,7 +152,7 @@ export function step(els: Els, n: number, label: string, done: boolean, body: Re
   return (
     <Box flexDirection="column" marginTop={UI_DESIGN.space.xs}>
       <Text wrap="truncate">
-        <Text bold color={done ? css(HUE.ok) : css(HUE.neutral)}>{done ? GLYPH.ok : GLYPH.off}</Text>
+        <Text bold={done} color={done ? INK.ink : INK.dim}>{done ? GLYPH.ok : GLYPH.off}</Text>
         <Text bold color={INK.ink}>{` ${n}. ${label}`}</Text>
       </Text>
       <Box flexDirection="column" marginLeft={4}>

@@ -1,6 +1,7 @@
-import type { TraceAgent, TraceConsult, TraceMessage, TraceRun, TraceState } from "../types";
+import type { TraceAgent, TraceConsult, TraceMessage, TraceRun, TraceState } from "../../types";
 import { type RunTiming } from "./types.ts";
 import { TRACE_SCHEMA, KEPT_RUNS, TEXT_MAX } from "./constants.ts";
+import { GLYPH } from "../theme.ts";
 
 export const emptyTrace = (): TraceState => ({ schemaVersion: TRACE_SCHEMA, seq: 0, turns: 0, inbox: [], runs: [] });
 
@@ -13,7 +14,7 @@ export function traceOf(value: unknown): TraceState {
 export function clip(text: string, max = TEXT_MAX): string {
   const line = text.replace(/\s+/g, " ").trim();
   const chars = [...line];
-  return chars.length > max ? chars.slice(0, max - 1).join("") + "…" : line;
+  return chars.length > max ? chars.slice(0, Math.max(0, max - GLYPH.ellipsis.length)).join("") + GLYPH.ellipsis : line;
 }
 
 /** "builtin", "mcp:<server>" for an MCP tool (`mcp__<server>__<tool>`), or "server:<name>" for one the API ran. */

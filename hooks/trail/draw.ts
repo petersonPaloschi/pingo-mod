@@ -1,10 +1,11 @@
 import { formatClock, text, type Locale } from "../i18n.ts";
 import { displayWidth } from "../layout.ts";
+import { GLYPH } from "../theme.ts";
 import { C, type Event } from "./events.ts";
 import { wrap, type Line, type TrailSegment } from "./format.ts";
 
-/** The advisor's branch: a heavy bar in its color down the lines that belong to it. */
-const BRANCH = "┃";
+/** The advisor's branch: a bar down the lines that belong to it. */
+const BRANCH = GLYPH.tab;
 const HEAD_LINES = 2;
 const DETAIL_LINES = 3;
 

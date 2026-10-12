@@ -212,7 +212,7 @@ describe("the run record", () => {
       expect(s.inbox).toEqual([]);
       expect(s.entering).toBeUndefined();
       const shown = trailText(s);
-      expect(shown).toContain("You: “e ai?”");
+      expect(shown).toContain('You: "e ai?"');
       expect(shown).not.toContain("A turn with no linked message");
     }
   });
@@ -244,8 +244,8 @@ describe("the run record", () => {
     expect(runOf(s, "t1").received.map((one) => [one.text, one.state, one.ranIn])).toEqual([["probe B1", "linked", "t2"], ["probe B2", "linked", "t2"]]);
     expect(s.carried).toBeUndefined();
     const shown = trailText(s);
-    expect(shown).toContain("You: “probe B1”");
-    expect(shown).toContain("You: “probe B2”");
+    expect(shown).toContain('You: "probe B1"');
+    expect(shown).toContain('You: "probe B2"');
     expect(shown).toContain("ran as request 2");
     expect(shown).not.toContain("A turn with no linked message");
   });
@@ -466,20 +466,20 @@ describe("the Flow tab in the pane", () => {
       const ui = await $.ui.mount({ plugin: "jev", surface, component: "Pane", requestId: "jev", props: PANE_PROPS });
       await ui.press({ key: "tab-flow" });
       const expected = [
-        /Request 1 · /,
-        /You: “ship the login fix”/,
-        /Advisor off · simple request/,
-        /Model call 1 · Opus 5\.5/,
+        /Request 1 - /,
+        /You: "ship the login fix"/,
+        /Advisor off - simple request/,
+        /Model call 1 - Opus 5\.5/,
         /Jev did not change this call/,
-        /Edit · ok/,
-        /Bash · denied/,
+        /Edit - ok/,
+        /Bash - denied/,
         /Subagent Explore: look around/,
-        /Explore › Model call 1 · Sonnet 5\.5/,
+        /Explore > Model call 1 - Sonnet 5\.5/,
         /Explore finished in 0s/,
-        /“ok”/,
-        /Native \/advisor consulted on model call 1 · result received/,
-        /Answer · completed · 0s/,
-        /“Done\.”/,
+        /"ok"/,
+        /Native \/advisor consulted on model call 1 - result received/,
+        /Answer - completed - 0s/,
+        /"Done\."/,
       ];
       const missing: string[] = [];
       for (const line of expected) if (!(await ui.find({ type: "Text", text: line }))) missing.push(String(line));
@@ -493,7 +493,7 @@ describe("the Flow tab in the pane", () => {
     await $.session.start({ cwd: "/workspace" } as never).catch(() => undefined);
     await enter($, "rename a variable", "t1");
     const ui = await $.ui.mount({ plugin: "jev", surface: "vscode", component: "Pane", requestId: "jev", props: PANE_PROPS });
-    expect(await ui.find({ type: "Text", text: /Flow: run 1 · running · main completion/ })).toBeDefined();
+    expect(await ui.find({ type: "Text", text: /Flow: run 1 - running - main completion/ })).toBeDefined();
     await ui.unmount();
   });
 
@@ -506,7 +506,7 @@ describe("the Flow tab in the pane", () => {
     for (const surface of ["terminal", "desktop"] as const) {
       const ui = await $.ui.mount({ plugin: "jev", surface, component: "Pane", requestId: "jev", props: PANE_PROPS });
       await ui.press({ key: "tab-flow" });
-      const expected = [/Arrived during the turn: “also the tests”/, /Arrived during the turn: “and the docs”/];
+      const expected = [/Arrived during the turn: "also the tests"/, /Arrived during the turn: "and the docs"/];
       const missing: string[] = [];
       for (const line of expected) if (!(await ui.find({ type: "Text", text: line }))) missing.push(String(line));
       if (missing.length) throw new Error(`Missing ${surface} queued-message detail: ${missing.join(" | ")}`);
@@ -529,7 +529,7 @@ describe("the Flow tab in the pane", () => {
       expect(await ui.find({ type: "Text", text: "  Explore #1" })).toBeUndefined();
       await ui.press({ key: "tab-flow" });
       expect(await ui.find({ type: "Text", text: /look around/ })).toBeDefined();
-      expect(await ui.find({ type: "Text", text: /✓/ })).toBeDefined();
+      expect(await ui.find({ type: "Text", text: /[+]/ })).toBeDefined();
       await ui.unmount();
     }
   });
@@ -540,7 +540,7 @@ describe("the Flow tab in the pane", () => {
     await enter($, "a long message that must wrap in a narrow pane", "t1");
     const ui = await $.ui.mount({ plugin: "jev", surface: "terminal", component: "Pane", requestId: "jev", props: { ...PANE_PROPS, bodyColumns: 20 } as never });
     await ui.press({ key: "tab-flow" });
-    expect(await ui.find({ type: "Text", text: /^■ You: “a long/ })).toBeDefined();
+    expect(await ui.find({ type: "Text", text: /^# You: "a long/ })).toBeDefined();
     expect(await ui.find({ type: "Text", text: /Running for/ })).toBeDefined();
     await ui.unmount();
   });
@@ -553,9 +553,9 @@ describe("the Flow tab in the pane", () => {
     const ui = await $.ui.mount({ plugin: "jev", surface: "terminal", component: "Pane", requestId: "jev", props: PANE_PROPS });
     await ui.press({ key: "tab-live" });
     expect(await ui.find({ key: "flow-details" })).toBeUndefined();
-    expect(await ui.find({ type: "Text", text: /Model call 1 · Opus 5\.5/ })).toBeUndefined();
+    expect(await ui.find({ type: "Text", text: /Model call 1 - Opus 5\.5/ })).toBeUndefined();
     await ui.press({ key: "tab-flow" });
-    expect(await ui.find({ type: "Text", text: /Model call 1 · Opus 5\.5/ })).toBeDefined();
+    expect(await ui.find({ type: "Text", text: /Model call 1 - Opus 5\.5/ })).toBeDefined();
     await ui.unmount();
   });
 

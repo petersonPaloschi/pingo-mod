@@ -89,8 +89,8 @@ test("expanded HUD draws plan, context, limits and the pet on both surfaces", LO
   const term = await $.ui.mount({ ...BAND, surface: TERMINAL });
   expect(await term.find({ type: "Text", text: /^Refactor the auth/ })).toBeDefined();
   expect(await term.find({ type: "Text", text: /124k \/ 1M/ })).toBeDefined();
-  expect(await term.find({ type: "Text", text: /Session · 5h/ })).toBeDefined();
-  expect(await term.find({ type: "Text", text: /↻ 1:1\d:\d\d/ })).toBeDefined();
+  expect(await term.find({ type: "Text", text: /Session - 5h/ })).toBeDefined();
+  expect(await term.find({ type: "Text", text: /~ 1:1\d:\d\d/ })).toBeDefined();
   // the terminal pet is a braille raster in pingo's band, not a picture
   expect(await term.find({ key: "deck-pet" })).toBeDefined();
   await term.unmount();
@@ -98,7 +98,7 @@ test("expanded HUD draws plan, context, limits and the pet on both surfaces", LO
   const desk = await $.ui.mount({ ...BAND, surface: DESKTOP });
   const lane = await desk.find({ type: "Svg" });
   expect(lane?.props.source).toMatch(/@keyframes mv\d+/);
-  expect(await desk.find({ type: "Text", text: /Weekly · 7d/ })).toBeDefined();
+  expect(await desk.find({ type: "Text", text: /Weekly - 7d/ })).toBeDefined();
   await desk.unmount();
   expect(saved.get("deck")).toBeDefined();
 });
@@ -143,9 +143,9 @@ test("collapsed line puts the usage limits first", LOCALE, async ($, on) => {
   await $.session.start(SESSION);
   await $.tool.call({ tool: "TodoWrite", todos: TODOS } as never);
   const ui = await $.ui.mount({ ...BAND, surface: TERMINAL });
-  expect(await ui.find({ type: "Text", text: /^5h 31% ↻/ })).toBeDefined();
+  expect(await ui.find({ type: "Text", text: /^5h 31% ~/ })).toBeDefined();
   expect(await ui.find({ type: "Text", text: /^Fixing auth 3\/5/ })).toBeDefined();
-  expect(await ui.find({ type: "Text", text: /Session · 5h/ })).toBeUndefined();
+  expect(await ui.find({ type: "Text", text: /Session - 5h/ })).toBeUndefined();
 });
 
 test("the router's status and log become the route row", { ...LOCALE, plugins: [fakeRouter] }, async ($, on) => {
@@ -154,7 +154,7 @@ test("the router's status and log become the route row", { ...LOCALE, plugins: [
   await $.command.run({ command: "deck", ...ASK, args: "expand" });
   await $.prompt.submit({ wait: false, origin: ORIGIN, text: "rename a variable" });
   const out = await $.command.run({ command: "deck", ...ASK, args: "status" });
-  expect(out.text).toMatch(/⇄ Model route — opus (=|→) opus · effort low · jev fast 0\.87/);
+  expect(out.text).toMatch(/<> Model route - opus (=|->) opus - effort low - jev fast 0\.87/);
   const term = await $.ui.mount({ ...BAND, surface: TERMINAL });
   expect(await term.find({ type: "Text", text: /conf 0\.87/ })).toBeDefined();
   await term.unmount();
@@ -168,9 +168,9 @@ test("a suggested model the router did not apply reads as kept, not cheaper", { 
   await $.command.run({ command: "deck", ...ASK, args: "expand" });
   await $.prompt.submit({ wait: false, origin: ORIGIN, text: "rename a variable" });
   const out = await $.command.run({ command: "deck", ...ASK, args: "status" });
-  expect(out.text).toMatch(/opus = opus · effort low · jev fast 0\.91, suggested haiku, not applied \(= kept\)/);
+  expect(out.text).toMatch(/opus = opus - effort low - jev fast 0\.91, suggested haiku, not applied \(= kept\)/);
   const term = await $.ui.mount({ ...BAND, surface: TERMINAL });
-  expect(await term.find({ type: "Text", text: /jev: haiku · not applied/ })).toBeDefined();
+  expect(await term.find({ type: "Text", text: /jev: haiku - not applied/ })).toBeDefined();
 });
 
 test("a router with no answer shows the reason, not a stale route", { ...LOCALE, plugins: [brokeRouter] }, async ($, on) => {
@@ -179,7 +179,7 @@ test("a router with no answer shows the reason, not a stale route", { ...LOCALE,
   await $.command.run({ command: "deck", ...ASK, args: "expand" });
   for (let i = 0; i < 3; i++) await $.prompt.submit({ wait: false, origin: ORIGIN, text: "hi" });
   const out = await $.command.run({ command: "deck", ...ASK, args: "status" });
-  expect(out.text).toMatch(/⇄ Model route — no answer \(typesafe 402\), kept opus · check router key or credit/);
+  expect(out.text).toMatch(/<> Model route - no answer \(typesafe 402\), kept opus - check router key or credit/);
   const term = await $.ui.mount({ ...BAND, surface: TERMINAL });
   expect(await term.find({ type: "Text", text: /! typesafe 402/ })).toBeDefined();
 });
@@ -216,7 +216,7 @@ test("/deck panel draws the expanded Deck in a pane", LOCALE, async ($, on) => {
   expect(drawn).toContain('"type":"Svg"');
   // expanded even while the band is collapsed, every row at once
   expect(drawn).toContain("· 4 rows");
-  expect(drawn).toContain("Weekly · 7d");
+  expect(drawn).toContain("Weekly - 7d");
 });
 
 test("/deck version names the running version", LOCALE, async ($, on) => {
@@ -261,10 +261,10 @@ test("a permission prompt held past the delay turns the bar amber and alarms the
   await $.tool.call({ tool: "TodoWrite", todos: TODOS } as never);
   await $.tool.check({ tool: "Bash", input: { command: "rm -rf build" } });
   let out = await $.command.run({ command: "deck", ...ASK, args: "status" });
-  expect(out.text).toMatch(/^◆ Tasks — Fixing auth 3\/5/m);
+  expect(out.text).toMatch(/^\* Tasks - Fixing auth 3\/5/m);
   await clock.advance(800);
   out = await $.command.run({ command: "deck", ...ASK, args: "status" });
-  expect(out.text).toMatch(/^\? Tasks — Fixing auth 3\/5/m);
+  expect(out.text).toMatch(/^\? Tasks - Fixing auth 3\/5/m);
   expect(out.text).toMatch(/pet alert/);
 });
 
@@ -279,9 +279,9 @@ test("subagents become strips with their model, then finish", LOCALE, async ($, 
   await $.tool.call({ tool: "Grep", pattern: "auth", agentId: "a1" } as never);
   await $.tool.call({ tool: "TodoWrite", agentId: "a2", todos: TODOS.slice(0, 4) } as never);
   let out = await $.command.run({ command: "deck", ...ASK, args: "status" });
-  expect(out.text).toMatch(/Fixing auth 3\/5 · 0\/2 agents/);
-  expect(out.text).toMatch(/↳ explore routes: Grep \[running\] \{haiku\}/);
-  expect(out.text).toMatch(/↳ write fixtures: Fixing auth 3\/4 \[running\] \{sonnet\}/);
+  expect(out.text).toMatch(/Fixing auth 3\/5 - 0\/2 agents/);
+  expect(out.text).toMatch(/`- explore routes: Grep \[running\] \{haiku\}/);
+  expect(out.text).toMatch(/`- write fixtures: Fixing auth 3\/4 \[running\] \{sonnet\}/);
   await $.turn.complete({ turnId: "x", agentId: "a1", answer: "ok", durationMs: 5, isAborted: false, reason: "answer", usage: undefined });
   out = await $.command.run({ command: "deck", ...ASK, args: "status" });
   expect(out.text).toMatch(/1\/2 agents/);
@@ -290,7 +290,7 @@ test("subagents become strips with their model, then finish", LOCALE, async ($, 
   expect(await desk.find({ key: "row-bar:todo" })).toBeDefined();
   await desk.unmount();
   const term = await $.ui.mount({ ...BAND, surface: TERMINAL });
-  expect(await term.find({ type: "Text", text: / haiku / })).toBeDefined();
+  expect(await term.find({ type: "Text", text: /^haiku$/ })).toBeDefined();
 });
 
 test("agents with no live bar get their own Agents bar", LOCALE, async ($, on) => {
@@ -299,8 +299,8 @@ test("agents with no live bar get their own Agents bar", LOCALE, async ($, on) =
   await $.agent.spawn(spawn("scan the repo"));
   await $.tool.call({ tool: "Read", file_path: "a.ts", agentId: "solo" } as never);
   const out = await $.command.run({ command: "deck", ...ASK, args: "status" });
-  expect(out.text).toMatch(/^◆ Agents — Agents 0\/1/m);
-  expect(out.text).toMatch(/↳ scan the repo: Read \[running\]/);
+  expect(out.text).toMatch(/^\* Agents - Agents 0\/1/m);
+  expect(out.text).toMatch(/`- scan the repo: Read \[running\]/);
 });
 
 test("an approved plan becomes a bar with stages", LOCALE, async ($, on) => {
@@ -309,7 +309,7 @@ test("an approved plan becomes a bar with stages", LOCALE, async ($, on) => {
   const plan = "# Checkout rework\n\n## Backend\n1. Add cart table\n2. Write API\n\n## Frontend\n- Cart page\n- Pay button\n";
   await $.tool.call({ tool: "ExitPlanMode", plan } as never);
   const out = await $.command.run({ command: "deck", ...ASK, args: "status" });
-  expect(out.text).toMatch(/Checkout rework — Backend 1\/2/);
+  expect(out.text).toMatch(/Checkout rework - Backend 1\/2/);
 });
 
 test("task tools: ids and statuses come from the results, and a new batch starts a fresh bar", LOCALE, async ($, on) => {
@@ -330,7 +330,7 @@ test("task tools: ids and statuses come from the results, and a new batch starts
   for (const id of ["2", "3", "4", "5"]) await $.tool.call({ tool: "TaskUpdate", taskId: id, status: "completed" } as never);
   await $.tool.call({ tool: "TaskUpdate", taskId: "6", status: "in_progress" } as never);
   const out = await $.command.run({ command: "deck", ...ASK, args: "status" });
-  expect(out.text).toMatch(/— Run testsing 5\/6 \(73%\)/);
+  expect(out.text).toMatch(/- Run testsing 5\/6 \(73%\)/);
 });
 
 test("/deck demo runs a sample plan to the end and the pet celebrates", LOCALE, async ($, on) => {
@@ -338,10 +338,10 @@ test("/deck demo runs a sample plan to the end and the pet celebrates", LOCALE, 
   await $.session.start(SESSION);
   await $.command.run({ command: "deck", ...ASK, args: "demo" });
   let out = await $.command.run({ command: "deck", ...ASK, args: "status" });
-  expect(out.text).toMatch(/Orders module — Analysis 3\/3 · 0\/2 agents/);
+  expect(out.text).toMatch(/Orders module - Analysis 3\/3 - 0\/2 agents/);
   await clock.advance(1400 * 30);
   out = await $.command.run({ command: "deck", ...ASK, args: "status" });
-  expect(out.text).toMatch(/Orders module — Done 12\/12/);
+  expect(out.text).toMatch(/Orders module - Done 12\/12/);
 });
 
 test("a turn without a todo list gets an activity bar that follows the tools", LOCALE, async ($, on) => {
@@ -352,10 +352,10 @@ test("a turn without a todo list gets an activity bar that follows the tools", L
   await $.tool.call({ tool: "Read", file_path: "/src/auth.ts" } as never);
   await $.tool.call({ tool: "Edit", file_path: "/src/auth.ts", old_string: "a", new_string: "b" } as never);
   let out = await $.command.run({ command: "deck", ...ASK, args: "status" });
-  expect(out.text).toMatch(/◆ Fix the login bug — Editing auth\.ts 2 tools/);
+  expect(out.text).toMatch(/\* Fix the login bug - Editing auth\.ts 2 tools/);
   await $.turn.complete({ turnId: "t1", answer: "ok", durationMs: 5, isAborted: false, reason: "answer", usage: undefined });
   out = await $.command.run({ command: "deck", ...ASK, args: "status" });
-  expect(out.text).toMatch(/✓ Fix the login bug — Done 2 tools/);
+  expect(out.text).toMatch(/\+ Fix the login bug - Done 2 tools/);
   // a todo list in the next turn replaces it
   await $.turn.start({ text: "Next", turnId: "t2" });
   await $.tool.call({ tool: "TodoWrite", todos: TODOS } as never);
@@ -370,7 +370,7 @@ test("a plain chat turn shows while it thinks and goes away once answered", LOCA
   await $.prompt.submit({ wait: false, origin: ORIGIN, text: "what does this do" });
   await $.turn.start({ text: "what does this do", turnId: "t1" });
   let out = await $.command.run({ command: "deck", ...ASK, args: "status" });
-  expect(out.text).toMatch(/what does this do — Thinking/);
+  expect(out.text).toMatch(/what does this do - Thinking/);
   await $.turn.complete({ turnId: "t1", answer: "ok", durationMs: 5, isAborted: false, reason: "answer", usage: undefined });
   out = await $.command.run({ command: "deck", ...ASK, args: "status" });
   expect(out.text).not.toMatch(/what does this do/);
@@ -384,7 +384,7 @@ test("a long prompt as a bar title is cut short on Desktop", LOCALE, async ($, o
   await $.prompt.submit({ wait: false, origin: ORIGIN, text: long });
   await $.turn.start({ text: long, turnId: "t1" });
   const desk = await $.ui.mount({ ...BAND, surface: DESKTOP });
-  expect(await desk.find({ type: "Text", text: /^already updated, here…$/ })).toBeDefined();
+  expect(await desk.find({ type: "Text", text: /^already updated, he\.\.\.$/ })).toBeDefined();
   expect((await desk.find({ type: "Text", text: long }))?.props.wrap).toBe("truncate-end");
 });
 
@@ -402,10 +402,10 @@ test("agents started without a todo list show as strips under the activity bar, 
   await $.agent.spawn(spawn("Draft the migration"));
   await $.tool.call({ tool: "Grep", pattern: "orders", agentId: "a1" } as never);
   const out = await $.command.run({ command: "deck", ...ASK, args: "status" });
-  expect(out.text).toMatch(/Migrate the orders module — .* · 0\/2 agents/);
-  expect(out.text).toMatch(/↳ Map the orders tables: Grep \[running\] \{haiku\}/);
-  expect(out.text).toMatch(/↳ Draft the migration: Starting \[running\] \{sonnet\}/);
-  expect(out.text).not.toMatch(/^◆ Agents/m);
+  expect(out.text).toMatch(/Migrate the orders module - .* - 0\/2 agents/);
+  expect(out.text).toMatch(/`- Map the orders tables: Grep \[running\] \{haiku\}/);
+  expect(out.text).toMatch(/`- Draft the migration: Starting \[running\] \{sonnet\}/);
+  expect(out.text).not.toMatch(/^\* Agents/m);
 });
 
 test("a usage update with one window keeps the other", LOCALE, async ($, on) => {
@@ -413,8 +413,8 @@ test("a usage update with one window keeps the other", LOCALE, async ($, on) => 
   await $.session.start(SESSION);
   await $.session.measure({ context: { tokens: 1, window: 10, percent: 10 }, rateLimits: [{ kind: "seven_day", percentUsed: 50, resetsAt: inAnHour() }], changed: ["rateLimits"] } as never);
   const out = await $.command.run({ command: "deck", ...ASK, args: "status" });
-  expect(out.text).toMatch(/Session · 5h/);
-  expect(out.text).toMatch(/7d · 50% used/);
+  expect(out.text).toMatch(/Session - 5h/);
+  expect(out.text).toMatch(/7d - 50% used/);
 });
 
 test("bar titles use the typed words, not system reminders around them", LOCALE, async ($, on) => {
@@ -424,7 +424,7 @@ test("bar titles use the typed words, not system reminders around them", LOCALE,
   await $.turn.start({ text: "x", turnId: "t1" });
   await $.tool.call({ tool: "Read", file_path: "/a.ts" } as never);
   const out = await $.command.run({ command: "deck", ...ASK, args: "status" });
-  expect(out.text).toMatch(/◆ Use 2 subagents to list files — /);
+  expect(out.text).toMatch(/\* Use 2 subagents to list files - /);
 });
 
 test("/deck collapsed text draws one plain status line with limits first", LOCALE, async ($, on) => {
@@ -435,7 +435,8 @@ test("/deck collapsed text draws one plain status line with limits first", LOCAL
   expect((saved.get("deck") as any).collapsed).toBe("text");
   for (const surface of [TERMINAL, DESKTOP]) {
     const ui = await $.ui.mount({ ...BAND, surface });
-    expect(await ui.find({ type: "Text", text: /^5h 31% ↻/ })).toBeDefined();
+    // the terminal draws the reset mark in ASCII, the desktop keeps its own
+    expect(await ui.find({ type: "Text", text: surface === TERMINAL ? /^5h 31% ~/ : /^5h 31% ↻/ })).toBeDefined();
     expect(await ui.find({ type: "Text", text: /^Fixing auth 3\/5/ })).toBeDefined();
     await ui.unmount();
   }
@@ -461,17 +462,17 @@ test("expanding unfolds the rows one after another, and the toggle folds them aw
   await $.tool.call({ tool: "TodoWrite", todos: TODOS } as never);
   await $.command.run({ command: "deck", ...ASK, args: "expand" });
   let ui = await $.ui.mount({ ...BAND, surface: TERMINAL });
-  expect(await ui.find({ type: "Text", text: /Weekly · 7d/ })).toBeUndefined();
+  expect(await ui.find({ type: "Text", text: /Weekly - 7d/ })).toBeUndefined();
   await ui.unmount();
   await clock.advance(1000);
   ui = await $.ui.mount({ ...BAND, surface: TERMINAL });
-  expect(await ui.find({ type: "Text", text: /Weekly · 7d/ })).toBeDefined();
+  expect(await ui.find({ type: "Text", text: /Weekly - 7d/ })).toBeDefined();
   await ui.press({ key: "deck-toggle" });
   await ui.unmount();
   await clock.advance(1000);
   ui = await $.ui.mount({ ...BAND, surface: TERMINAL });
-  expect(await ui.find({ type: "Text", text: /Session · 5h/ })).toBeUndefined();
-  expect(await ui.find({ type: "Text", text: /^5h 31% ↻/ })).toBeDefined();
+  expect(await ui.find({ type: "Text", text: /Session - 5h/ })).toBeUndefined();
+  expect(await ui.find({ type: "Text", text: /^5h 31% ~/ })).toBeDefined();
 });
 
 test("desktop rows fade in while they unfold", LOCALE, async ($, on) => {
@@ -493,7 +494,7 @@ test("rings: a ring per limit with its reset, and spend when cost is on", LOCALE
   await $.command.run({ command: "deck", ...ASK, args: "collapsed rings" });
   const term = await $.ui.mount({ ...BAND, surface: TERMINAL });
   expect(await term.find({ type: "Text", text: "31%" })).toBeDefined();
-  expect(await term.find({ type: "Text", text: /^5h · resets 1h1\dm$/ })).toBeDefined();
+  expect(await term.find({ type: "Text", text: /^5h - resets 1h1\dm$/ })).toBeDefined();
   expect(await term.find({ type: "Text", text: "$0.42" })).toBeDefined();
   await term.unmount();
   const desk = await $.ui.mount({ ...BAND, surface: DESKTOP });
@@ -510,7 +511,7 @@ test("spark: limit rows carry their history and a burn rate", LOCALE, async ($, 
   await $.command.run({ command: "deck", ...ASK, args: "expand" });
   await clock.advance(1000);
   const term = await $.ui.mount({ ...BAND, surface: TERMINAL });
-  expect(await term.find({ type: "Text", text: /5h · 31% used/ })).toBeDefined();
+  expect(await term.find({ type: "Text", text: /5h - 31% used/ })).toBeDefined();
   await term.unmount();
   const desk = await $.ui.mount({ ...BAND, surface: DESKTOP });
   expect(await desk.find({ key: "row-limit:five_hour" })).toBeDefined();
@@ -522,13 +523,13 @@ test("/deck demo fills in a sample route and limits in a fresh session, and real
   const r = await $.command.run({ command: "deck", ...ASK, args: "demo" });
   expect(r.text).toMatch(/sample routing and limits/);
   let out = await $.command.run({ command: "deck", ...ASK, args: "status" });
-  expect(out.text).toMatch(/⇄ Model route — /);
-  expect(out.text).toMatch(/Session · 5h — 5h · 31% used/);
-  expect(out.text).toMatch(/Weekly · 7d — 7d · 64% used/);
+  expect(out.text).toMatch(/<> Model route - /);
+  expect(out.text).toMatch(/Session - 5h - 5h - 31% used/);
+  expect(out.text).toMatch(/Weekly - 7d - 7d - 64% used/);
   await $.session.measure({ context: { tokens: 1, window: 10, percent: 10 }, rateLimits: [{ kind: "seven_day", percentUsed: 50, resetsAt: inAnHour() }], changed: ["rateLimits"] } as never);
   out = await $.command.run({ command: "deck", ...ASK, args: "status" });
-  expect(out.text).not.toMatch(/Session · 5h/);
-  expect(out.text).toMatch(/7d · 50% used/);
+  expect(out.text).not.toMatch(/Session - 5h/);
+  expect(out.text).toMatch(/7d - 50% used/);
 });
 
 test("at 40 columns the Deck pane draws every feature switch whole, on lines of their own, within its row budget", LOCALE, async ($, on) => {
@@ -544,13 +545,13 @@ test("at 40 columns the Deck pane draws every feature switch whole, on lines of 
   expect(lines.length).toBe(DECK_DESIGN.band.defaultMaxRows);
   for (const line of lines) expect(displayWidth(line)).toBeLessThanOrEqual(40);
   const title = lines.findIndex((line) => line.trim().startsWith("Features"));
-  expect(lines[title]).toContain("▣ On  □ Off");
+  expect(lines[title]).toContain("[x] On  [ ] Off");
   // the switch lines sit under the title, only switches on them, each glyph and name whole
-  const switchLines = lines.slice(title + 1).filter((line) => /^ {2}[▣□] /.test(line));
+  const switchLines = lines.slice(title + 1).filter((line) => /^ {2}\[[x ]\] /.test(line));
   const drawn = switchLines.join("  ");
   // Agents is off by default, Lapida was just turned off
-  for (const label of ["□ Agents", "▣ Farol", "▣ Clareza", "▣ Pingo Vivo", "▣ Prisma", "▣ Semente", "□ Lapida", "▣ Sentinela", "▣ Vigia", "▣ Context"]) expect(drawn).toContain(label);
-  for (const line of switchLines) expect(line.trim().split(/ {2}/).every((part) => /^[▣□] \S/.test(part))).toBe(true);
+  for (const label of ["[ ] Agents", "[x] Farol", "[x] Clareza", "[x] Pingo Vivo", "[x] Prisma", "[x] Semente", "[ ] Lapida", "[x] Sentinela", "[x] Vigia", "[x] Context"]) expect(drawn).toContain(label);
+  for (const line of switchLines) expect(line.trim().split(/ +(?=\[)/).every((part) => /^\[[x ]\] \S/.test(part))).toBe(true);
   await pane.unmount();
 });
 

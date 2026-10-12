@@ -264,13 +264,13 @@ test("the Deck's feature switches fit whole at every width on both surfaces, and
         expect([...pressed].sort()).toEqual(ids);
         // each switch shows its state glyph and its whole name, and nothing else draws a raw string key
         const labels = elements(tree).filter((node) => node.type === "Button").map((node) => String(node.props?.label ?? ""));
-        for (const sw of band.features) expect(labels).toContain(`${sw.on ? "▣" : "□"} ${sw.name}`);
+        for (const sw of band.features) expect(labels).toContain(`${sw.on ? "[x]" : "[ ]"} ${sw.name}`);
         expect(textOf(tree).join("\n")).not.toMatch(rawLocaleKey);
         if (surface === "terminal") {
           // the terminal packs whole lines itself, counted against its row budget: no line may need the host to wrap it
           const switchLines = elements(tree).filter((node) => {
             const kids = node.type === "Box" ? childrenOf(node).filter(Boolean) as Element[] : [];
-            return kids.length > 0 && kids.every((kid) => kid.type === "Button" && /^[▣□] /.test(String(kid.props?.label)));
+            return kids.length > 0 && kids.every((kid) => kid.type === "Button" && /^\[[x ]\] /.test(String(kid.props?.label)));
           });
           expect(switchLines.length).toBeGreaterThan(0);
           for (const line of switchLines) expect(naturalWidth(line) + Number(line.props?.paddingLeft ?? 0)).toBeLessThanOrEqual(width);

@@ -33,26 +33,38 @@ export const BALLOON_ENDS = 2;
 const memberWidth = (member: CastMember) => slotWidth(member.label) + (member.speaking ? BALLOON_ENDS : 0);
 export const moreWidth = (hidden: number) => `+${hidden}`.length + 1;
 
-/** A name as one-column characters, cut to `room` with an ellipsis. */
+/** A text cut to `room` columns, with "..." (three columns) in place of what is left out. */
+const cut = (chars: readonly string[], room: number): string =>
+  chars.length <= room ? chars.join("") : room <= 3 ? chars.slice(0, Math.max(0, room)).join("") : `${chars.slice(0, room - 3).join("").trimEnd()}...`;
+
+/** A name as one-column characters (printable ASCII and accented letters), cut to `room` with "...". */
 export function clipName(label: string, room: number): string {
+  return cut([...label.normalize("NFC").replace(/[^\x20-\x7e\p{L}]/gu, "")].filter((char) => displayWidth(char) === 1), room);
+}
+
+/** A name as the desktop lane writes it (its own drawing, unchanged): printable ASCII and "·", cut with "…". */
+export function clipNameDesktop(label: string, room: number): string {
   const chars = [...label.replace(/[^\x20-\x7e·]/g, "")];
   return chars.length <= room ? chars.join("") : `${chars.slice(0, Math.max(0, room - 1)).join("")}…`;
 }
 
-/** A text's characters that take one column each: accented letters kept, wide, zero-width and control ones dropped. */
-const oneColumn = (text: string): string[] => [...text.normalize("NFC").replace(/\s+/g, " ")].filter((char) => displayWidth(char) === 1);
+/** A text's characters that take one column each: printable ASCII and accented letters kept, wide, zero-width and control ones dropped. */
+const oneColumn = (text: string): string[] => [...text.normalize("NFC").replace(/\s+/g, " ").replace(/[^\x20-\x7e\p{L}]/gu, "")].filter((char) => displayWidth(char) === 1);
+
+/** The fewest columns of its words a balloon shows after the name and ": ", the "..." included (the design drops them below 7). */
+const WORDS_MIN = 7;
 
 /**
  * What a speaker's balloon reads in `room` columns: its name (cut to a slot's widest, as the desktop shows it), then
- * what it says, cut with an ellipsis. Words only come when at least one of them shows a letter; until then, or when
- * nothing it says takes one column, the name stands alone.
+ * what it says, cut with "...". Words only come when at least one of them shows a letter; until then, or when nothing
+ * it says takes one column, the name stands alone.
  */
 export function balloonWords(slot: Pick<CastSlot, "label" | "says">, room: number): string {
   const name = clipName(slot.label, Math.min(room, SLOT_MAX));
   const words = slot.says ? oneColumn(slot.says).join("").trim() : "";
-  if (!words || room < [...name].length + 4) return name;
-  const chars = [...`${name}: ${words}`];
-  return chars.length <= room ? chars.join("") : `${chars.slice(0, Math.max(0, room - 1)).join("")}…`;
+  // a short saying needs only its own columns; a long one at least WORDS_MIN of them, the "..." included
+  if (!words || room < [...name].length + 2 + Math.min(WORDS_MIN, [...words].length)) return name;
+  return cut([...`${name}: ${words}`], room);
 }
 
 /** The columns a speaker's slot would take to show all it says, up to the cap: its balloon's words at their widest. */

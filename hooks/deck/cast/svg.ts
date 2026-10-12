@@ -4,7 +4,7 @@ import { PET_CSS, petSvgBody, type Pet } from "../pet.ts";
 import { esc } from "../theme.ts";
 import { castColor, DOTS_W, MID, perSpeaker, SVG_EYES } from "./frame.ts";
 import { castKey, type CastKind, type CastMember, type CastState } from "./model.ts";
-import { SLOT_MAX, castLayout, clipName, moreWidth, type CastSlot } from "./layout.ts";
+import { SLOT_MAX, castLayout, clipNameDesktop, moreWidth, type CastSlot } from "./layout.ts";
 
 /** The desktop lane's band for the names above the bodies, in pixels. */
 export const CAST_LABEL_PX = DECK_DESIGN.cast.lane.labelHeight;
@@ -72,8 +72,9 @@ function buildCastSvg(pet: Pet, cast: readonly CastMember[], now: number, W: num
   const gap = DECK_DESIGN.pet.lane.bodyGap;
   const { memberPaddingPixels, labelPaddingPixels, memberShadow, balloon } = DECK_DESIGN.cast.desktop;
   // the same group as the terminal's, a column being NAME_PX pixels: who fits, and how many are left out
-  const { slots, hidden } = castLayout(cast, Math.floor(W / NAME_PX), pet.speaks === true);
-  const widthOf = (slot: CastSlot) => Math.max(slot.member ? MW + memberPaddingPixels : PW, [...clipName(slot.label, SLOT_MAX)].length * NAME_PX + labelPaddingPixels + (slot.speaking ? 2 * balloon.paddingPixels : 0));
+  const named = cast.map((member) => (member.desktopLabel ? { ...member, label: member.desktopLabel } : member));
+  const { slots, hidden } = castLayout(named, Math.floor(W / NAME_PX), pet.speaks === true);
+  const widthOf = (slot: CastSlot) => Math.max(slot.member ? MW + memberPaddingPixels : PW, [...clipNameDesktop(slot.label, SLOT_MAX)].length * NAME_PX + labelPaddingPixels + (slot.speaking ? 2 * balloon.paddingPixels : 0));
   const total = slots.reduce((sum, slot) => sum + widthOf(slot), 0) + (hidden ? moreWidth(hidden) * NAME_PX : 0);
   const room = Math.max(0, W - total);
   const age = Math.max(0, now - pet.start) / 1000;
@@ -84,7 +85,7 @@ function buildCastSvg(pet: Pet, cast: readonly CastMember[], now: number, W: num
   let group = "";
   for (const slot of slots) {
     const w = widthOf(slot);
-    const clipped = clipName(slot.label, SLOT_MAX);
+    const clipped = clipNameDesktop(slot.label, SLOT_MAX);
     const name = esc(clipped);
     const speaking = slot.speaking === true;
     if (speaking) {

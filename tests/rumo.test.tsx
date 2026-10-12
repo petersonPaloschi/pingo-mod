@@ -176,7 +176,7 @@ test("above the prompt Jev speaks for Rumo: the goal waiting, then at work with 
   await settle(() => world.asked("goal") > 0);
   let band = await $.ui.mount({ ...BAND, surface: TERMINAL });
   const line = await band.find({ type: "Button", key: "rumo-open" } as never);
-  expect(String(line?.props.label)).toContain("Jev · Rumo: keep going until todos os testes do deck passarem?");
+  expect(String(line?.props.label)).toContain("Jev - Rumo: keep going until todos os testes do deck passarem?");
   await band.press({ key: "rumo-open" });
   expect(world.panes).toContain("jev");
   await band.unmount();

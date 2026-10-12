@@ -21,29 +21,28 @@ const COLUMNS = petLaneColumns(110);
 const PINGO_ONLY = { ...DEFAULT_FEATURES, farol: false, clareza: false, prisma: false, semente: false, lapida: false, sentinela: false, vigia: false, contexto: false, codeQuality: false };
 const LAPIDA_ONLY = { ...PINGO_ONLY, lapida: true };
 
-/** The name row of a lane's cells: each cell's character and its ground (a balloon's color, else none). */
-function nameRow(cells: unknown): { text: string; grounds: number[] } {
+/** The name row of a lane's cells: each cell's character and its color. */
+function nameRow(cells: unknown): { text: string; colors: number[] } {
   const bytes = Uint8Array.from(atob(String(cells)), (char) => char.charCodeAt(0));
   const numbers = new Uint32Array(bytes.buffer);
   let text = "";
-  const grounds: number[] = [];
+  const colors: number[] = [];
   for (let i = 0; i < COLUMNS; i++) {
     text += String.fromCodePoint(numbers[i * 3]!);
-    grounds.push(numbers[i * 3 + 2]!);
+    colors.push(numbers[i * 3 + 1]!);
   }
-  return { text, grounds };
+  return { text, colors };
 }
 
 /**
- * A fresh terminal band: its lane's name row, what its speech line says, and whether a name sits in a balloon. A
+ * A fresh terminal band: its lane's name row, what its speech line says, and whether a name sits in a balloon, "(Name...)". A
  * mounted lane is repainted by the Deck's clock, which the kit does not answer, so each look mounts the band anew.
  */
 async function band($: Engine, requestId: string = BAND.requestId) {
   const ui = await $.ui.mount({ ...BAND, requestId, surface: TERMINAL });
   const row = nameRow((await ui.find({ type: "Raster", key: "deck-pet" } as never))?.props.cells);
   const speech = async (id: string) => (await ui.find({ type: "Button", key: `deck-speech-${id}` } as never))?.props.label as string | undefined;
-  const blank = row.grounds[0];
-  const inBalloon = (name: string) => row.text.includes(name) && row.grounds[row.text.indexOf(name)] !== blank;
+  const inBalloon = (name: string) => row.text.includes(`(${name}`);
   return { ui, row, speech, inBalloon };
 }
 
@@ -131,11 +130,16 @@ test("idle, at work, done: a feature joins the lane while it works, says so, and
   await pressed.ui.unmount();
   drawn = await band($);
   expect(box).toBe("Fix the loader.");
-  // done: its balloon is gone at once, and it hops a goodbye in its place
+  // done: its balloon is gone at once, and it hops a goodbye (up a row, its name hidden, then back in its place)
   expect(await drawn.speech("lapida")).toBeUndefined();
   expect(drawn.inBalloon("Lapida")).toBe(false);
+  expect(drawn.row.text).not.toContain("rewriting");
+  expect(await drawn.ui.find({ type: "Text", text: "Lapida - review the rewrite" })).toBeDefined();
+  await drawn.ui.unmount();
+  await world.clock.advance(300);
+  drawn = await band($);
   expect(drawn.row.text).toContain("Lapida");
-  expect(await drawn.ui.find({ type: "Text", text: "Lapida · review the rewrite" })).toBeDefined();
+  expect(drawn.inBalloon("Lapida")).toBe(false);
   await drawn.ui.unmount();
   // then it leaves the lane
   await world.clock.advance(CAST_LEAVE_MS + 150);

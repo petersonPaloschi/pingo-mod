@@ -1,4 +1,4 @@
-import type { AgentState, TraceAdvisor, TraceAgent, TraceMessage, TraceRun, TraceState, TraceStep, TraceTool } from "../types";
+import type { AgentState, TraceAdvisor, TraceAgent, TraceMessage, TraceRun, TraceState, TraceStep, TraceTool } from "../../types";
 import { type StepStart, type StepEnd, type TurnEndReason, type ToolStart, type ToolEnd, type AgentStart } from "./types.ts";
 import { KEPT_STEPS, KEPT_TOOLS, KEPT_CONSULTS, KEPT_ADVISOR, KEPT_FILES, ANSWER_MAX } from "./constants.ts";
 import { clip, toolSource, add, omit, newRun, withRun, activeRun, runOfAgent, endRun, prune, ensureMain, ensureAgent, withAgent } from "./state.ts";

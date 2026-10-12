@@ -27,9 +27,9 @@ const saved = (store: Map<string, unknown>) => store.get("deck") as any;
 const kids = (n: any): any[] => [n?.children ?? []].flat(Infinity).filter((k) => k != null && k !== false);
 const leaves = (n: any): string => (typeof n === "string" || typeof n === "number" ? String(n) : n && typeof n === "object" ? kids(n).map(leaves).join("") : "");
 const everyNode = (n: any): any[] => (n && typeof n === "object" ? [n, ...kids(n).flatMap(everyNode)] : []);
-/** The Box under a section heading: its first child is the heading text, and nothing else. */
-// a card: its first child is its title line, the card's mark and then the heading
-const sectionOf = (tree: unknown, heading: string) => everyNode(tree).find((n) => n.type === "Box" && kids(n)[0] && leaves(kids(n)[0]).endsWith(heading));
+// a card: its title is written on its top edge, in a Box laid over the frame
+const sectionOf = (tree: unknown, heading: string) =>
+  everyNode(tree).find((n) => n.type === "Box" && kids(n).some((k) => k?.props?.position === "absolute" && leaves(k).endsWith(heading + " -")));
 
 // the control that stands for each /deck verb: a verb added to the usage block with no control here fails below
 const CONTROL_OF: Record<string, string> = {
@@ -150,11 +150,11 @@ test("a reply goes away once the settings change somewhere else", LOCALE, async 
   await ui.press({ key: "deck-band" });
   await clock.advance(1000);
   expect(await ui.find({ type: "Text", text: /Deck expanded\./ })).toBeDefined();
-  expect((await ui.find({ key: "deck-band" }))?.props.label).toBe("▣ Expanded");
+  expect((await ui.find({ key: "deck-band" }))?.props.label).toBe("[x] Expanded");
   // collapsed at the prompt: the button follows, and the reply that said "expanded" must not stay under it
   await $.command.run({ command: "deck", ...ASK, args: "collapse" });
   await clock.advance(1000);
-  expect((await ui.find({ key: "deck-band" }))?.props.label).toBe("□ Collapsed");
+  expect((await ui.find({ key: "deck-band" }))?.props.label).toBe("[ ] Collapsed");
   expect(await ui.find({ type: "Text", text: /Deck expanded\./ })).toBeUndefined();
   await ui.unmount();
 });
@@ -294,7 +294,7 @@ test("the status block names the version the plugin runs, as /deck version does"
   await ui.press({ key: "tab-deck" });
   const version = (await $.command.run({ command: "deck", ...ASK, args: "version" })).text!;
   expect(await ui.find({ type: "Text", text: new RegExp("^" + escapeRe(version) + "$") })).toBeDefined();
-  expect(await ui.find({ type: "Text", text: /^Showing: .* · Deck \d+\.\d+\.\d+$/m })).toBeDefined();
+  expect(await ui.find({ type: "Text", text: /^Showing: .* - Deck \d+\.\d+\.\d+$/m })).toBeDefined();
   await ui.unmount();
 });
 

@@ -7,5 +7,5 @@ export { tierColor, toTrackRow, toAgentRow } from "./rows/data.ts";
 export type { Cell, DrawCaches, RowDrawOptions } from "./rows/data.ts";
 export { histSquare, histCell, routeCellsTerminal, routeSvg } from "./rows/routes.ts";
 export { TRACK_H, RIGHT_W, FOLD_STEP, FOLD_FADE, ringSvg, rowSvg, fadeInSvg, rowGlyph, chipBarSvg } from "./rows/draw.ts";
-export { collapsedChips, collapsedText, collapsedRings, switchLabel, featureLines } from "./rows/display.ts";
+export { collapsedChips, collapsedText, collapsedRings, switchLabel, featureLines, SEPARATOR } from "./rows/display.ts";
 export type { ChipMini, Chip, ChipOptions, TextPart, RingItem, FeatureSwitch } from "./rows/display.ts";

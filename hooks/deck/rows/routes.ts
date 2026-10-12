@@ -1,7 +1,8 @@
 import { TIERS } from "../../core/contracts.ts";
 import { text, type Locale } from "../../i18n.ts";
 import { EFFORTS, type DeckRow, type RouteView } from "../model.ts";
-import { DECK_DESIGN, DIM, MUTED, PILL_INK, STYLE, SVG_ON_FILL, SVG_TEXT, SVG_TRACK, esc, textCells, textWidth } from "../theme.ts";
+import { DECK_DESIGN, MUTED, STYLE, SVG_ON_FILL, SVG_TEXT, SVG_TRACK, TEXT, esc, textCells, textWidth } from "../theme.ts";
+import { GLYPH } from "../../theme.ts";
 import { tierColor, type Cell } from "./data.ts";
 
 export const FONT = DECK_DESIGN.type.svg;
@@ -25,45 +26,38 @@ export function histSquare(t: string, hx: number): string {
   return `<rect x="${hx}" y="${design.applied.y}" width="${design.applied.sizePixels}" height="${design.applied.sizePixels}" rx="${design.applied.radiusPixels}" fill="${tierColor(t)}" fill-opacity="${design.applied.opacity}"/>`;
 }
 
-// the same slot as a terminal glyph and its color
+// the same slot as a terminal letter and its color: an "x" for a failure, a lowercase initial for a suggestion the router
+// did not apply, a capital initial for an applied model
 export function histCell(t: string): [string, string] {
-  if (t === "none") return ["□", STYLE.warn.fill];
-  if (t.startsWith("~")) return ["□", tierColor(t.slice(1), false)];
-  return ["■", tierColor(t, false)];
+  if (t === "none") return [GLYPH.fail, MUTED];
+  if (t.startsWith("~")) return [(t.slice(1)[0] ?? GLYPH.idle).toLowerCase(), MUTED];
+  return [(t[0] ?? GLYPH.idle).toUpperCase(), TEXT];
 }
 
-// the route as terminal cells: from, the arrow, the model, then effort, confidence and history
-export function routeCellsTerminal(row: DeckRow, routeHist: readonly string[], locale: Locale): { cells: Cell[]; dirColor: string } {
+// the route as terminal cells, in black and white: "from -> to", then what the router did (the arrow and its word), then
+// effort, confidence and speed after " - ", then the history. The row writes its title and its dismiss button around it.
+export function routeCellsTerminal(row: DeckRow, routeHist: readonly string[], locale: Locale): { cells: Cell[] } {
   const v = row.route;
   const cells: Cell[] = [];
-  const push = (s: string, color: string, bg?: string, bold?: boolean) => cells.push(...textCells(s, color, bg, bold));
-  if (!v) return { cells, dirColor: MUTED };
+  const push = (s: string, color: string = TEXT, bold?: boolean) => cells.push(...textCells(s, color, undefined, bold));
+  const note = (s: string) => push(" " + GLYPH.leader + " " + s);
+  if (!v) return { cells };
   if (v.noAnswer) {
-    push(text("deck.route.kept", locale) + " ", DIM);
-    push(" " + v.to + " ", PILL_INK, tierColor(v.to, false), true);
-    push("  ! " + v.reason, STYLE.warn.fill);
-    if (v.hint) push(" · " + v.hint, DIM);
-    push("  ", MUTED);
-    for (const t of routeHist) push(...histCell(t));
-    return { cells, dirColor: STYLE.warn.fill };
+    push(text("deck.route.kept", locale) + " " + v.to, TEXT);
+    push("  ! " + v.reason, TEXT, true);
+    if (v.hint) note(v.hint);
+  } else {
+    push(v.from + " " + (v.dir === "=" ? "=" : GLYPH.route) + " " + v.to);
+    push("  " + row.right);
+    if (v.unapplied) note(text("deck.route.suggested", locale, { want: v.want }));
+    if (v.effort) note(text("deck.route.effort", locale) + " " + v.effort);
+    if (v.conf != null) note(text("deck.route.conf", locale) + " " + v.conf.toFixed(2));
+    if (v.risky != null && v.risky > DECK_DESIGN.route.riskyDisplayThreshold) note(GLYPH.warn + " " + text("deck.route.risky", locale));
+    if (v.ms != null) note(v.ms + "ms");
   }
-  const color = dirColor(v.dir, false);
-  push(v.from + " ", DIM);
-  push(v.dir === "=" ? "= " : "→ ", color);
-  push(" " + v.to + " ", PILL_INK, tierColor(v.to, false), true);
-  if (v.unapplied) push(" " + text("deck.route.suggested", locale, { want: v.want }), DIM);
-  if (v.effort) {
-    const lvl = Math.max(1, EFFORTS.indexOf(v.effort as (typeof EFFORTS)[number]) + 1);
-    push("  " + text("deck.route.effort", locale) + " ", MUTED);
-    push("▁▃▅▇█".slice(0, Math.min(5, lvl)), STYLE.run.fill);
-    push("·".repeat(Math.max(0, 4 - lvl)) + " " + v.effort, DIM);
-  }
-  if (v.conf != null) push("  " + text("deck.route.conf", locale) + " " + v.conf.toFixed(2), v.conf >= DECK_DESIGN.route.confidence.colorThreshold ? STYLE.ok.fill : STYLE.warn.fill);
-  if (v.risky != null && v.risky > DECK_DESIGN.route.riskyDisplayThreshold) push("  ⚠ " + text("deck.route.risky", locale), STYLE.hot.fill);
-  if (v.ms != null) push("  " + v.ms + "ms", DIM);
-  push("  ", MUTED);
+  if (routeHist.length) push("  ", MUTED);
   for (const t of routeHist) push(...histCell(t));
-  return { cells, dirColor: color };
+  return { cells };
 }
 
 // the route as an SVG track: from, the three tiers, effort bars, confidence, and history on the right

@@ -4,6 +4,8 @@ import { type DeckState, type DeckRow, type PetMood, type DeckSound, type ReactC
 import { SLEEPY_MS, CELEBRATE_MS, STYLE_GLYPH } from "./constants.ts";
 import { barState } from "./bars.ts";
 import { stripTool, sectionsOn } from "./rows.ts";
+import { plain } from "../theme.ts";
+import { GLYPH } from "../../theme.ts";
 
 // collapsed: what needs you first, then limits, context, bars, the route
 export function collapsedOrder(rows: readonly DeckRow[]): DeckRow[] {
@@ -64,7 +66,7 @@ export function statusText(
   const lines: string[] = [];
   for (const r of rows) {
     if (r.kind === "route" && r.route?.noAnswer) {
-      const hint = r.route.hint ? " · " + r.route.hint : "";
+      const hint = r.route.hint ? " - " + r.route.hint : "";
       lines.push(text("deck.route.statusNoAnswer", locale, { reason: r.route.reason, to: r.route.to, hint }));
       continue;
     }
@@ -76,7 +78,7 @@ export function statusText(
       lines.push(
         text("deck.route.statusLine", locale, {
           from: v.from,
-          arrow: v.dir === "=" ? "=" : "→",
+          arrow: v.dir === "=" ? "=" : GLYPH.route,
           to: v.to,
           effort,
           tier: v.tier,
@@ -88,10 +90,10 @@ export function statusText(
       continue;
     }
     lines.push(
-      STYLE_GLYPH[r.style] + " " + r.title + " — " + (r.name ?? "") + (r.count ? " " + r.count : "") + (r.right ? " (" + r.right + ")" : ""),
+      plain(STYLE_GLYPH[r.style] + " " + r.title + " - " + (r.name ?? "") + (r.count ? " " + r.count : "") + (r.right ? " (" + r.right + ")" : "")),
     );
     for (const a of r.strips?.shown ?? []) {
-      lines.push("   ↳ " + a.title + ": " + stripTool(a, locale) + " [" + a.state + "]" + (a.model ? " {" + a.model + "}" : ""));
+      lines.push("   " + GLYPH.branch + " " + a.title + ": " + stripTool(a, locale) + " [" + a.state + "]" + (a.model ? " {" + a.model + "}" : ""));
     }
   }
   const on = sectionsOn(settings.show).map((x) => text(("deck.section." + x) as LocaleKey, locale)).join(", ") || text("deck.nothing", locale);

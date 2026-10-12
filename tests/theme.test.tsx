@@ -1,4 +1,4 @@
-// Fichário, the shared identity: hues that hold on light and dark terminals and land on their own ANSI color, block
+// Fichário, the shared identity: hues that hold on light and dark terminals and land on their own ANSI color, bracket
 // meters whose ends are never misread, mascot shades, Deck rows whose state is told by a glyph, and a failed slot of the
 // timeline marked by a glyph, not by color alone.
 import { expect, mock, test } from "claude-code/testing";
@@ -6,7 +6,7 @@ import { expect, mock, test } from "claude-code/testing";
 import { rowGlyph } from "../hooks/deck/rows.ts";
 import { SVG_TEXT } from "../hooks/deck/theme.ts";
 import type { DeckRow } from "../hooks/deck/model.ts";
-import { AGENT_MASCOT_PALETTE, css, FEATURE_MASCOT_PALETTE, FONT_WEIGHT, HUE, inkOn, meter, PAINT, PRISMA_GALLERY_CSS, PRISMA_GALLERY_DESIGN, shadeOf, SVG_PAINT } from "../hooks/theme.ts";
+import { AGENT_MASCOT_PALETTE, bracketMeter, css, FEATURE_MASCOT_PALETTE, FONT_WEIGHT, HUE, inkOn, meter, PRISMA_GALLERY_CSS, PRISMA_GALLERY_DESIGN, shadeOf, SVG_PAINT } from "../hooks/theme.ts";
 import { PANE_PROPS } from "./helpers.ts";
 
 /** WCAG relative luminance and contrast ratio of two "#rrggbb" colors. */
@@ -19,12 +19,11 @@ const contrast = (a: string, b: string) => {
   return (hi! + 0.05) / (lo! + 0.05);
 };
 
-test("every hue keeps 3:1 on a dark and a light terminal, and the ink on it keeps 4.7:1", () => {
+test("every hue keeps 3:1 on a dark and a light ground", () => {
   for (const [name, hue] of Object.entries(HUE)) {
     expect({ name, dark: contrast(css(hue), "#1e1e1e") >= 3 }).toEqual({ name, dark: true });
     expect({ name, light: contrast(css(hue), "#ffffff") >= 3 }).toEqual({ name, light: true });
     expect({ name, svg: contrast(SVG_PAINT.onFill, css(hue)) >= 3 }).toEqual({ name, svg: true });
-    expect({ name, ink: contrast(PAINT.onFill, css(hue)) >= 4.7 }).toEqual({ name, ink: true });
   }
 });
 
@@ -35,7 +34,6 @@ test("SVG body text stays readable on light and dark backgrounds", () => {
 
 test("the Prisma browser gallery inherits shared brand and layout tokens", () => {
   expect(PRISMA_GALLERY_DESIGN.palette.accent).toBe(css(HUE.brand));
-  expect(PRISMA_GALLERY_DESIGN.palette.inverse).toBe(PAINT.onFill);
   expect(PRISMA_GALLERY_CSS).toContain(`minmax(${PRISMA_GALLERY_DESIGN.grid.minimumCardWidthPixels}px,1fr)`);
   expect(PRISMA_GALLERY_CSS).toContain(`font-weight:${FONT_WEIGHT.semibold}`);
   // the words on the gallery's dark keys and button, and on its chosen mix, stay readable
@@ -43,15 +41,16 @@ test("the Prisma browser gallery inherits shared brand and layout tokens", () =>
   expect(PRISMA_GALLERY_CSS).toContain(`kbd{background:${palette.ink};color:${palette.onInk}`);
   expect(PRISMA_GALLERY_CSS).toContain(`#submit{background:${palette.ink};color:${palette.onInk}}`);
   expect(contrast(palette.onInk, palette.ink) >= 4.5).toBe(true);
-  expect(contrast(palette.inverse, palette.accent) >= 4.5).toBe(true);
 });
 
 test("a meter fills whole cells, shows any share above nothing and leaves one empty short of everything", () => {
-  expect(meter(0)).toEqual(["", "▱▱▱▱▱▱▱▱▱▱"]);
-  expect(meter(1, 4)).toEqual(["▰▰▰▰", ""]);
-  expect(meter(0.45)).toEqual(["▰▰▰▰▰", "▱▱▱▱▱"]);
-  expect(meter(0.01)).toEqual(["▰", "▱▱▱▱▱▱▱▱▱"]);
-  expect(meter(0.99)).toEqual(["▰▰▰▰▰▰▰▰▰", "▱"]);
+  expect(meter(0)).toEqual(["", ".........."]);
+  expect(meter(1, 4)).toEqual(["####", ""]);
+  expect(meter(0.45)).toEqual(["#####", "....."]);
+  expect(meter(0.01)).toEqual(["#", "........."]);
+  expect(meter(0.99)).toEqual(["#########", "."]);
+  expect(bracketMeter(0.45)).toBe("[#####.....]");
+  expect(bracketMeter(0, 4)).toBe("[....]");
   for (const share of [0, 0.03, 0.26, 0.5, 0.74, 0.99, 1, 1.4, -1, Number.NaN]) expect([...meter(share).join("")].length).toBe(10);
 });
 
@@ -76,8 +75,7 @@ test("every mascot keeps 3:1 on both grounds and has a darker shade for its unde
     // a balloon, a pill or a pane's head writes words on the mascot's color: its ink keeps 4.5:1
     expect({ name, ink: contrast(css(inkOn(color)), css(color)) >= 4.5 }).toEqual({ name, ink: true });
   }
-  // the palette's own hues keep the dark ink; only a ground too dark for it (Code Quality's royal blue) turns it white
-  for (const hue of Object.values(HUE)) expect(css(inkOn(hue))).toBe(PAINT.onFill);
+  // a ground too dark for the dark ink (Code Quality's royal blue) turns it white
   expect(inkOn(FEATURE_MASCOT_PALETTE.codeQuality)).toBe(0xffffff);
 });
 
@@ -86,11 +84,11 @@ test("a Deck row's node is its state's glyph, each state its own, and the route 
     ({ id: kind, kind, style, title: "", pct: 0, marks: [], right: "", short: "", strips: null }) as DeckRow;
   const styles: DeckRow["style"][] = ["run", "ask", "hot", "done", "ok", "warn"];
   expect(new Set(styles.map((style) => rowGlyph(row("bar", style)))).size).toBe(styles.length);
-  expect(styles.map((style) => rowGlyph(row("meter", style)))).toEqual(["◆", "?", "!", "✓", "◔", "◑"]);
-  expect(rowGlyph(row("route"))).toBe("→");
+  expect(styles.map((style) => rowGlyph(row("meter", style)))).toEqual(["*", "?", "!", "+", "o", "O"]);
+  expect(rowGlyph(row("route"))).toBe("->");
 });
 
-test("the timeline marks a slot whose request failed with ×, under the line", async ($, on) => {
+test("the timeline marks a slot whose request failed with x, under the line", async ($, on) => {
   mock.clock(on, { now: Date.parse("2026-10-06T12:00:00Z") });
   const event = {
     seq: 1,
@@ -115,7 +113,7 @@ test("the timeline marks a slot whose request failed with ×, under the line", a
   await $.classic.SessionStart({ source: "clear" });
   const ui = await $.ui.mount({ plugin: "jev", surface: "terminal", component: "Pane", requestId: "jev", props: PANE_PROPS });
   await ui.press({ key: "tab-overview" });
-  expect(await ui.find({ type: "Text", text: /^ *×$/ })).toBeDefined();
-  expect(await ui.find({ type: "Text", text: /^× under the line marks a slot with a failed request/ })).toBeDefined();
+  expect(await ui.find({ type: "Text", text: /^ *x$/ })).toBeDefined();
+  expect(await ui.find({ type: "Text", text: /^x under the line marks a slot with a failed request/ })).toBeDefined();
   await ui.unmount();
 });

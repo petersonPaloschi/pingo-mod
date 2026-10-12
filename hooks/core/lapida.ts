@@ -46,6 +46,6 @@ export function splitLapidaReply(raw: string): { text: string; notes: string[] }
   if (at < 0) return { text: "", notes: [] };
   return {
     text: raw.slice(0, at).trim(),
-    notes: raw.slice(at + LAPIDA_MARK.length).split("\n").map((line) => line.replace(/^\s*[-*•]\s*/, "").trim()).filter(Boolean).slice(0, 3).map((line) => (line.length > 80 ? `${line.slice(0, 79)}…` : line)),
+    notes: raw.slice(at + LAPIDA_MARK.length).split("\n").map((line) => line.replace(/^\s*[-*•]\s*/, "").trim()).filter(Boolean).slice(0, 3).map((line) => (line.length > 80 ? `${line.slice(0, 77)}...` : line)),
   };
 }

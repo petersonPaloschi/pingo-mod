@@ -1,4 +1,4 @@
-import type { AdvisorInfo, TraceState } from "../types";
+import type { AdvisorInfo, TraceState } from "../../types";
 import { PRESENCE_FLAGS, BOOLEAN_FLAGS, PROVIDER_FLAGS } from "./constants.ts";
 import { isDone } from "./state.ts";
 

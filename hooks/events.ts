@@ -148,6 +148,10 @@ export interface Tile {
   group: TileGroup;
   /** The note reports a problem, such as failed Jev calls. */
   alert?: boolean;
+  /** The figure reports all well (Jev calls, none failed): its block carries a `+`. */
+  ok?: boolean;
+  /** A share between 0 and 1 the value is the number of: its block draws it as a meter. */
+  fraction?: number;
 }
 
 export function tiles(events: readonly RouteEvent[], locale: Locale = localeFor(), consults?: readonly TraceConsult[]): Tile[] {
@@ -170,7 +174,7 @@ export function tiles(events: readonly RouteEvent[], locale: Locale = localeFor(
   const input = events.reduce((total, event) => total + (event.usage?.input ?? 0) + (event.usage?.cached ?? 0) + (event.usage?.cacheWrite ?? 0), 0);
   const cacheInput = completeInputReports.reduce((total, event) => total + (event.usage?.input ?? 0) + (event.usage?.cached ?? 0) + (event.usage?.cacheWrite ?? 0), 0);
   const cached = sum(completeInputReports, (event) => event.usage?.cached);
-  const cachePercent = cacheInput > 0 ? pct(cached, cacheInput, locale) : "–";
+  const cachePercent = cacheInput > 0 ? pct(cached, cacheInput, locale) : "-";
   const decided = events.filter(routed).length;
   const avgLatency = mean(latencies);
   const confidences = consults ? [] : asked.flatMap(({ jev }) => jev?.confidence === undefined ? [] : [jev.confidence]);
@@ -179,18 +183,18 @@ export function tiles(events: readonly RouteEvent[], locale: Locale = localeFor(
   return [
     { label: text("tile.requests.label", locale), value: int(events.length, locale), sub: text("tile.requests.sub", locale), group: "routing" },
     { label: text("tile.routed.label", locale), value: pct(decided, events.length, locale), sub: text("tile.routed.sub", locale, { count: int(decided, locale), requests: text(decided === 1 ? "unit.request" : "unit.requests", locale) }), group: "routing" },
-    { label: text("tile.passed.label", locale), value: pct(events.length - decided, events.length, locale), sub: text("tile.passed.sub", locale, { count: int(events.length - decided, locale), requests: text(events.length - decided === 1 ? "unit.request" : "unit.requests", locale) }), group: "routing" },
-    { label: text("tile.calls.label", locale), value: int(calls, locale), sub: failures ? text("tile.calls.failed", locale, { count: int(failures, locale) }) : text("tile.calls.noneFailed", locale), group: "jev", alert: failures > 0 },
+    { label: text("tile.calls.label", locale), value: int(calls, locale), sub: failures ? text("tile.calls.failed", locale, { count: int(failures, locale) }) : text("tile.calls.noneFailed", locale), group: "jev", alert: failures > 0, ok: calls > 0 && failures === 0 },
+    ...(consults === undefined ? [{ label: text("tile.confidence.label", locale), value: avgConfidence === undefined ? "-" : formatDecimal(avgConfidence, locale), sub: text("tile.confidence.sub", locale), group: "jev" as const, ...(avgConfidence === undefined ? {} : { fraction: Math.max(0, Math.min(1, avgConfidence)) }) }] : []),
     {
       label: text("tile.latency.label", locale),
-      value: avgLatency === undefined ? "–" : int(avgLatency, locale) + " ms",
+      value: avgLatency === undefined ? "-" : int(avgLatency, locale) + " ms",
       sub: p95 === undefined ? text("tile.latency.none", locale) : text("tile.latency.p95", locale, { value: int(p95, locale) }),
       group: "jev",
     },
-    ...(consults === undefined ? [{ label: text("tile.confidence.label", locale), value: avgConfidence === undefined ? "–" : formatDecimal(avgConfidence, locale), sub: text("tile.confidence.sub", locale), group: "jev" as const }] : []),
+    { label: text("tile.passed.label", locale), value: pct(events.length - decided, events.length, locale), sub: text("tile.passed.sub", locale, { count: int(events.length - decided, locale), requests: text(events.length - decided === 1 ? "unit.request" : "unit.requests", locale) }), group: "routing" },
     {
       label: text("tile.input.label", locale),
-      value: inputReports ? int(input, locale) : "–",
+      value: inputReports ? int(input, locale) : "-",
       sub: completeInputReports.length < events.length
         ? text("tile.input.partial", locale, { percent: cachePercent, reported: int(completeInputReports.length, locale), total: int(events.length, locale) })
         : text("tile.input.sub", locale, { percent: cachePercent }),
@@ -198,7 +202,7 @@ export function tiles(events: readonly RouteEvent[], locale: Locale = localeFor(
     },
     {
       label: text("tile.output.label", locale),
-      value: outputReports ? int(sum(events, (event) => event.usage?.output), locale) : "–",
+      value: outputReports ? int(sum(events, (event) => event.usage?.output), locale) : "-",
       sub: outputReports < events.length
         ? text("tile.output.partial", locale, { reported: int(outputReports, locale), total: int(events.length, locale) })
         : text("tile.output.sub", locale),
@@ -206,7 +210,7 @@ export function tiles(events: readonly RouteEvent[], locale: Locale = localeFor(
     },
     {
       label: text("tile.jevInput.label", locale),
-      value: reportedUsage ? int(tokens, locale) : "–",
+      value: reportedUsage ? int(tokens, locale) : "-",
       sub: reportedUsage < calls
         ? text("tile.jevInput.partial", locale, { reported: int(reportedUsage, locale), total: int(calls, locale) })
         : text("tile.jevInput.sub", locale),

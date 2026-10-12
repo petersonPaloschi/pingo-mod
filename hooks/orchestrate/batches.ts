@@ -186,7 +186,7 @@ async function reviewUnit(io: Io, batchId: string, unitId: string): Promise<void
   const next = await changeBatch(io, batchId, (b) => reviewDone(b, unitId, outcome, digest));
   if (!next) return;
   const state = next.units.find((u) => u.id === unitId)?.state;
-  await io.log(outcome.approved ? "good" : "warn", `Orchestration: ${batchId} ${unitId} review ${outcome.verdict} → ${state}`, outcome.problems.join(", ") || undefined);
+  await io.log(outcome.approved ? "good" : "warn", `Orchestration: ${batchId} ${unitId} review ${outcome.verdict} -> ${state}`, outcome.problems.join(", ") || undefined);
   await pump(io, batchId);
 }
 
@@ -203,7 +203,7 @@ async function reviewIntegration(io: Io, batchId: string): Promise<void> {
   if (!batch) return;
   const digest = claimed;
   if (!digest) {
-    await io.log("warn", `Orchestration: ${batchId} is UNVERIFIED — not every unit was approved`);
+    await io.log("warn", `Orchestration: ${batchId} is UNVERIFIED - not every unit was approved`);
     return;
   }
   const integrator = batch.integrator;
@@ -225,7 +225,7 @@ async function reviewIntegration(io: Io, batchId: string): Promise<void> {
   }, integrator, batch.limits.callTimeoutMs);
   const next = await changeBatch(io, batchId, (b) => integrationDone(b, outcome, digest));
   if (!next) return;
-  await io.log(batchVerified(next) ? "good" : "warn", `Orchestration: ${batchId} integration ${next.integration.state}${batchVerified(next) ? " — verified" : " — UNVERIFIED"}`);
+  await io.log(batchVerified(next) ? "good" : "warn", `Orchestration: ${batchId} integration ${next.integration.state}${batchVerified(next) ? " - verified" : " - UNVERIFIED"}`);
 }
 
 export function batchText(batch: Batch): string {

@@ -2,7 +2,7 @@
 // Every color comes from hooks/theme.ts: the state and tier hues, the track and tick tones, and the text tones.
 import type { AgentState as ModelAgentState } from "./model/types.ts";
 import { CLAUDE_MODEL, type Tier } from "../core/contracts.ts";
-import { css, DECK_ACCENT, DECK_DESIGN, DECK_GLYPH, HUE, PAINT, SVG_PAINT, type DeckGlyphName } from "../theme.ts";
+import { css, DECK_DESIGN, DECK_GLYPH, GLYPH, HUE, PAINT, SVG_PAINT, type DeckGlyphName } from "../theme.ts";
 export { DECK_DESIGN, DECK_STYLE_NAMES, DECK_STYLE_ORDER, type DeckStyleName } from "../theme.ts";
 export type RGB = [number, number, number];
 export type StyleName = DeckGlyphName;
@@ -70,30 +70,30 @@ export interface TextProps {
   bold?: boolean;
 }
 
-// The Deck paints with the same identity as the dashboard (hooks/theme.ts): mid-tone fills that hold on a dark
-// and a light terminal, text through theme keys, and the SVG forms apart, since an SVG cannot name a theme key.
+// The terminal Deck is black and white: a state is told by its glyph and its word, so every terminal color is the
+// theme's text key. The desktop keeps its hues (`desk`, `TIER.desk`): an SVG cannot name a theme key.
 const fill = (color: number) => css(color);
+const ink = PAINT.text;
 
 export const STYLE: Record<StyleName, Style> = {
-  run: { fill: fill(HUE.brand), on: PAINT.onFill, glyph: DECK_GLYPH.run, desk: fill(HUE.brand) },
-  ask: { fill: fill(HUE.warn), on: PAINT.onFill, glyph: DECK_GLYPH.ask, desk: fill(HUE.warn) },
-  hot: { fill: fill(HUE.fail), on: PAINT.onFill, glyph: DECK_GLYPH.hot, desk: fill(HUE.fail) },
-  done: { fill: fill(HUE.ok), on: PAINT.onFill, glyph: DECK_GLYPH.done, desk: fill(HUE.ok) },
-  ok: { fill: fill(HUE.ok), on: PAINT.onFill, glyph: DECK_GLYPH.ok, desk: fill(HUE.ok) },
-  warn: { fill: fill(HUE.warn), on: PAINT.onFill, glyph: DECK_GLYPH.warn, desk: fill(HUE.warn) },
+  run: { fill: ink, on: ink, glyph: DECK_GLYPH.run, desk: fill(HUE.brand) },
+  ask: { fill: ink, on: ink, glyph: DECK_GLYPH.ask, desk: fill(HUE.warn) },
+  hot: { fill: ink, on: ink, glyph: DECK_GLYPH.hot, desk: fill(HUE.fail) },
+  done: { fill: ink, on: ink, glyph: DECK_GLYPH.done, desk: fill(HUE.ok) },
+  ok: { fill: ink, on: ink, glyph: DECK_GLYPH.ok, desk: fill(HUE.ok) },
+  warn: { fill: ink, on: ink, glyph: DECK_GLYPH.warn, desk: fill(HUE.warn) },
 };
 
 export const AGENT_STYLE: Record<AgentState, StyleName> = { running: "run", waiting: "ask", error: "hot", done: "done" };
 
 export const TIER: Record<TierName, { term: string; desk: string }> = {
-  [CLAUDE_MODEL.HAIKU.name]: { term: fill(HUE.info), desk: fill(HUE.info) },
-  [CLAUDE_MODEL.SONNET.name]: { term: fill(HUE.brand), desk: fill(HUE.brand) },
-  [CLAUDE_MODEL.OPUS.name]: { term: fill(HUE.plum), desk: fill(HUE.plum) },
+  [CLAUDE_MODEL.HAIKU.name]: { term: ink, desk: fill(HUE.info) },
+  [CLAUDE_MODEL.SONNET.name]: { term: ink, desk: fill(HUE.brand) },
+  [CLAUDE_MODEL.OPUS.name]: { term: ink, desk: fill(HUE.plum) },
 };
 
-/** The empty part of a terminal bar: a glyph color, and the ground under a solid or pixel bar. */
+/** The empty part of a terminal bar: the dimmed foreground. */
 export const TRACK = PAINT.rule;
-export const TRACK_BG = PAINT.rule;
 /** A tick or step that is reached, and one that is not yet. */
 export const TICK_ON = PAINT.text;
 export const TICK_OFF = PAINT.muted;
@@ -102,11 +102,6 @@ export const MUTED = PAINT.muted;
 export const TEXT = PAINT.text;
 /** Body text: the chip names, the effort values, and the agent titles. */
 export const BODY = PAINT.text;
-/** Text on a terminal pill (a route tier, an agent's model); the desktop pills use white. */
-export const PILL_INK = PAINT.onFill;
-/** A running bar's head between frames, and the shine that sweeps a solid bar: the brand hue lighter and darker. */
-export const HEAD_DIM = css(DECK_ACCENT.headDim);
-export const SHINE = css(DECK_ACCENT.shine);
 /** The text tones inside the desktop SVG rows. */
 export const SVG_TEXT = { body: SVG_PAINT.muted, muted: SVG_PAINT.muted, dim: SVG_PAINT.muted } as const;
 export const SVG_ON_FILL = SVG_PAINT.onFill;
@@ -123,10 +118,33 @@ export function seedOf(id: string | number): number {
   return h;
 }
 
+/** A text cut to `n` columns; the cut is marked by "..." (three columns, counted in `n`). */
 export function trunc(s: string | null | undefined, n: number): string {
   const text = String(s ?? "").replace(/\s+/g, " ").trim();
-  return text.length > n ? text.slice(0, Math.max(1, n - 1)) + "…" : text;
+  const dots = GLYPH.ellipsis;
+  if (text.length <= n) return text;
+  return n > dots.length ? text.slice(0, n - dots.length).trimEnd() + dots : text.slice(0, Math.max(1, n));
 }
+
+const ASCII_MARKS: Record<string, string> = { "↻": "~", "·": "-", "—": "-", "→": "->", "↓": "v", "↑": "^", "⇄": "<>", "…": "...", "✕": "x", "⚠": "!" };
+
+/** A text the model made (a short, a reset, a weather line) as the terminal draws it: its few non-ASCII marks in ASCII. */
+export const plain = (s: string): string => s.replace(/[↻·—→↓↑⇄…✕⚠]/g, (c) => ASCII_MARKS[c] ?? c);
+
+/** The terminal band's measures that `DECK_DESIGN.band.terminal` does not hold: the row's name column and its meter. */
+export const TERMINAL_ROW = {
+  /** The name column is this share of the band, never narrower than the minimum, wider than the maximum. */
+  labelRatio: 0.2,
+  labelMinimumColumns: 9,
+  labelMaximumColumns: 22,
+  /** The meter's cells (its brackets come on top): this share of the band, between the two limits. */
+  meterRatio: 0.15,
+  meterMinimumCells: 4,
+  meterMaximumCells: 10,
+  /** The value after the meter ("3/5", "41%") and the gap on each side of it. */
+  valueColumns: 4,
+  gapColumns: 2,
+} as const;
 
 export function esc(s: string | number): string {
   return String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c] ?? c);

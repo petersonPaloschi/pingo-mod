@@ -1,12 +1,11 @@
 import type { RouteEvent } from "../../../types";
 import { at, categories, category, int, pct, RANGES, tally, type Category, type Tile } from "../../events.ts";
-import { hex } from "../../dots.ts";
 import { traceConsults } from "../../trace.ts";
 import { formatAge, formatCompact, formatNumber, text, type Locale } from "../../i18n.ts";
 import { displayWidth } from "../../layout.ts";
-import { GLYPH, meter, UI_DESIGN, UI_INK as INK } from "../../theme.ts";
+import { bracketMeter, GLYPH, UI_DESIGN, UI_INK as INK } from "../../theme.ts";
 import { type Els, type View, type Actions } from "../types.ts";
-import { CATEGORY_DOT } from "./base.tsx";
+import { CATEGORY_DOT, card, clip, INDENT, oneLine } from "./base.tsx";
 /** Dots per category for a strip of `room`, by largest remainders; each present category gets one when the room allows. */
 export function shares(counts: readonly number[], room: number): number[] {
   const total = counts.reduce((s, n) => s + n, 0);
@@ -37,8 +36,6 @@ export const consultsInRange = (view: View) => {
   return traceConsults(view.trace).filter((consult) => consult.startedAt >= start && consult.startedAt <= view.now);
 };
 
-export { cellsOf };
-
 /** The last five minutes: observed Jev calls, elapsed latency, usage coverage, and failures. */
 export function recentStats(view: View) {
   const since = view.now - 5 * 60e3;
@@ -66,14 +63,14 @@ function statsParts(stats: ReturnType<typeof recentStats>, locale: Locale) {
   return {
     calls: text("ui.stats.calls", locale, { count: formatNumber(stats.calls, locale) }),
     latency: stats.latency === undefined ? "" : text("ui.stats.latency", locale, { value: formatNumber(stats.latency, locale) }),
-    tokens: text("ui.stats.tokens", locale, { value: stats.tokens === undefined ? "–" : formatCompact(stats.tokens, locale) }),
+    tokens: text("ui.stats.tokens", locale, { value: stats.tokens === undefined ? "-" : formatCompact(stats.tokens, locale) }),
     failures: text("ui.stats.failures", locale, { count: formatNumber(stats.failures, locale) }),
   };
 }
 
 export function statsLine(stats: ReturnType<typeof recentStats>, locale: Locale): string {
   const parts = statsParts(stats, locale);
-  return [parts.calls, parts.latency, parts.tokens, parts.failures].filter(Boolean).join(" · ");
+  return [parts.calls, parts.latency, parts.tokens, parts.failures].filter(Boolean).join(" - ");
 }
 
 export function statsPartial(stats: ReturnType<typeof recentStats>, locale: Locale): string | undefined {
@@ -91,7 +88,7 @@ export function recentLine(els: Els, view: View) {
   return [
     <Text wrap="wrap">
       <Text color={INK.dim}>{`${text("ui.rail.recent", view.locale)}: `}</Text>
-      <Text color={INK.ink}>{`${[parts.calls, parts.latency, parts.tokens].filter(Boolean).join(" · ")} · `}</Text>
+      <Text color={INK.ink}>{`${[parts.calls, parts.latency, parts.tokens].filter(Boolean).join(" - ")} - `}</Text>
       <Text bold={stats.failures > 0} color={stats.failures > 0 ? INK.fail : INK.ink}>
         {`${stats.failures > 0 ? `${GLYPH.warn} ` : ""}${parts.failures}`}
       </Text>
@@ -115,7 +112,7 @@ export function rangePicker(els: Els, view: View, act: Actions) {
 
 /**
  * A group of figures, `width` columns wide: the label, the value in bold, and its note, in aligned columns with room
- * between them. A figure that flags a failure is red and marked "!". A label too long for its column wraps there
+ * between them. A figure that flags a failure is marked "!". A label too long for its column wraps there
  * rather than being cut; a note too narrow beside them goes under.
  */
 export function figures(els: Els, group: readonly Tile[], width: number) {
@@ -147,30 +144,28 @@ export function figures(els: Els, group: readonly Tile[], width: number) {
 }
 
 /**
- * What happened to the requests: each outcome on its own line, its glyph and name, then a ▰▱ meter of ten cells for
- * its share of all requests, with the count and share written beside it. The glyph and the words tell the outcome;
- * the color repeats them.
+ * What happened to the requests: each outcome on its own line, its glyph and name, then a `[######....]` meter of ten
+ * cells for its share of all requests, with the count and share written beside it. The glyph and the words tell the
+ * outcome.
  */
 export function outcomeBar(els: Els, events: readonly RouteEvent[], width: number, locale: Locale) {
   const { Box, Text } = els;
   const counts = new Map(tally(events.map(category)));
   const present = categories(locale).filter(([name]) => counts.get(name));
   return (
-    <Box flexDirection="column" marginBottom={1}>
+    <Box flexDirection="column">
       {present.map(([name, label]) => {
         const count = counts.get(name) ?? 0;
-        const [glyph, color] = CATEGORY_DOT[name];
-        const [filled, empty] = meter(count / Math.max(1, events.length));
+        const [glyph] = CATEGORY_DOT[name];
         return (
           <Box flexDirection="column" width={width}>
             <Text wrap="wrap">
-              <Text bold color={hex(color)}>{`${glyph} `}</Text>
+              <Text bold color={INK.ink}>{`${glyph} `}</Text>
               <Text color={INK.ink}>{label}</Text>
             </Text>
             <Text wrap="truncate">
-              <Text color={hex(color)}>{`  ${filled}`}</Text>
-              <Text color={INK.border}>{empty}</Text>
-              <Text bold color={INK.ink}>{`  ${int(count, locale)} · ${pct(count, events.length, locale)}`}</Text>
+              <Text color={INK.ink}>{`  ${bracketMeter(count / Math.max(1, events.length))}`}</Text>
+              <Text bold color={INK.ink}>{`  ${int(count, locale)} - ${pct(count, events.length, locale)}`}</Text>
             </Text>
           </Box>
         );
@@ -179,7 +174,28 @@ export function outcomeBar(els: Els, events: readonly RouteEvent[], width: numbe
   );
 }
 
-const LEVELS = "▁▂▃▄▅▆▇█";
+/** What a figure's block shows to the right of its value: `!` when it reports a problem, `+` when it reports all well. */
+const tileMark = (tile: Tile) => (tile.alert ? GLYPH.warn : tile.ok ? GLYPH.ok : "");
+
+/**
+ * One figure as a block `width` wide: its label on the top edge, its value in bold on the first line (a share as a
+ * `[########..]` meter with the number beside it, a state mark at the right edge), its note on the second.
+ */
+export function tileBlock(els: Els, tile: Tile, width: number) {
+  const { Box, Text } = els;
+  const mark = tileMark(tile);
+  const value = tile.fraction === undefined ? tile.value : `${bracketMeter(tile.fraction)}  ${tile.value}`;
+  return card(els, tile.label, [
+    <Box flexDirection="row" justifyContent="space-between" width={Math.max(1, width - INDENT)}>
+      <Text bold color={INK.ink} wrap="truncate">{clip(value, width - INDENT - (mark ? 2 : 0))}</Text>
+      {mark ? <Text bold color={INK.ink}>{mark}</Text> : null}
+    </Box>,
+    <Text color={INK.ink} wrap="truncate">{oneLine(tile.sub, width - INDENT)}</Text>,
+  ], { width });
+}
+
+/** The levels of a slot, from the lowest to the highest. */
+const LEVELS = "._-=+*#@";
 const OUTCOMES: readonly Category[] = ["passthrough", "hint", "failed"];
 
 /** A request's reported tokens, every counter it has; none when it reported none. */
@@ -191,8 +207,7 @@ function requestTokens(event: RouteEvent): number | undefined {
 
 /**
  * The range as a sparkline `width` columns wide: one column per slot of time, as tall as the tokens its requests
- * reported (by square root, so a few huge requests do not flatten the rest), in the color of its worst outcome.
- * A slot with no request is a faint dot.
+ * reported (by square root, so a few huge requests do not flatten the rest). A slot with no request is blank.
  */
 export function sparkline(els: Els, view: View, events: readonly RouteEvent[], width: number) {
   const { Box, Text } = els;
@@ -210,26 +225,14 @@ export function sparkline(els: Els, view: View, events: readonly RouteEvent[], w
     worst[slot] = Math.max(worst[slot]!, OUTCOMES.indexOf(category(event)));
   }
   const peak = Math.max(1, ...sums);
-  // runs of one color, so the row is a handful of Texts and not one per column
-  const runs: [string, string][] = [];
-  sums.forEach((sum, i) => {
-    const color = worst[i]! < 0 ? INK.faint : hex(CATEGORY_DOT[OUTCOMES[worst[i]!]!][1]);
-    const char = worst[i]! < 0 ? "·" : LEVELS[Math.min(LEVELS.length - 1, Math.floor(Math.sqrt(sum / peak) * LEVELS.length))]!;
-    const last = runs.at(-1);
-    if (last && last[1] === color) last[0] += char;
-    else runs.push([char, color]);
-  });
+  const line = sums.map((sum, i) => (worst[i]! < 0 ? " " : LEVELS[Math.min(LEVELS.length - 1, Math.floor(Math.sqrt(sum / peak) * LEVELS.length))]!)).join("");
   const complete = events.filter((event) => event.usage?.input !== undefined && event.usage.cached !== undefined && event.usage.cacheWrite !== undefined && event.usage.output !== undefined).length;
   // a slot whose worst outcome failed is marked under the line, so a failure is told by a glyph and not by color alone
   const failedSlot = OUTCOMES.indexOf("failed");
   const marks = worst.some((outcome) => outcome === failedSlot) ? worst.map((outcome) => (outcome === failedSlot ? CATEGORY_DOT.failed[0] : " ")).join("").trimEnd() : "";
   return (
     <Box flexDirection="column">
-      <Text>
-        {runs.map(([chars, color]) => (
-          <Text color={color}>{chars}</Text>
-        ))}
-      </Text>
+      <Text color={INK.ink} wrap="truncate">{line}</Text>
       {marks ? <Text bold color={INK.fail} wrap="truncate">{marks}</Text> : null}
       {marks ? <Text color={INK.fail} wrap="wrap">{text("ui.timeline.failMarks", view.locale)}</Text> : null}
       <Text color={INK.faint} wrap="wrap">

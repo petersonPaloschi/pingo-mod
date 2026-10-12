@@ -53,27 +53,27 @@ describe("the trail of one request", () => {
   test("with the advisor on: its branch, highlighted, between the message and the work, everything in the order it happened", () => {
     const lines = drawn(request(ON), 100);
     const order = [
-      /Request 1 · /,
-      /■ You: “Refatore a arquitetura/,
-      /◈ Advisor on · Sonnet 5\.5 · high/,
-      /┃ why: complex request \(score 5, turns on from 4\)/,
-      /┃ decided by local heuristic, no extra call/,
-      /┃ Signals: architecture decision, hard diagnosis, several files named/,
-      /✓ Guidance received in 2s/,
-      /┃ “Check the loader contract first\.”/,
-      /■ Jev · orchestration decision · 0s/,
-      /■ Model call 1 · Opus 5\.5 · high/,
+      /Request 1 - /,
+      /# You: "Refatore a arquitetura/,
+      /\* Advisor on - Sonnet 5\.5 - high/,
+      /\| why: complex request \(score 5, turns on from 4\)/,
+      /\| decided by local heuristic, no extra call/,
+      /\| Signals: architecture decision, hard diagnosis, several files named/,
+      /\+ Guidance received in 2s/,
+      /\| "Check the loader contract first\."/,
+      /# Jev - orchestration decision - 0s/,
+      /# Model call 1 - Opus 5\.5 - high/,
       /  model and effort chosen by orchestration/,
       /  switched from Sonnet 5\.5 to Opus 5\.5/,
-      /◈ Native \/advisor consulted on model call 1 · result received/,
-      /✓ Read · ok/,
-      /! Bash · denied/,
-      /■ Subagent Explore: look around the loader/,
-      /■ Explore › Model call 1 · Sonnet 5\.5/,
-      /✓ Explore finished in 1s · 1 model calls · 0 tools/,
-      /“The loader reads the config twice\.”/,
-      /✓ Answer · completed · 5s/,
-      /“Fixed: the loader now reads the config once\.”/,
+      /\* Native \/advisor consulted on model call 1 - result received/,
+      /\+ Read - ok/,
+      /! Bash - denied/,
+      /# Subagent Explore: look around the loader/,
+      /# Explore > Model call 1 - Sonnet 5\.5/,
+      /\+ Explore finished in 1s - 1 model calls - 0 tools/,
+      /"The loader reads the config twice\."/,
+      /\+ Answer - completed - 5s/,
+      /"Fixed: the loader now reads the config once\."/,
     ];
     const positions = order.map((pattern) => at(lines, pattern));
     expect(positions).toEqual([...positions].sort((a, b) => a - b));
@@ -83,24 +83,24 @@ describe("the trail of one request", () => {
 
   test("with the advisor off: the real path with no branch, and one line saying why", () => {
     const lines = drawn(request(OFF, "qual é a versão do node?"), 100);
-    expect(lines.some((line) => line.includes("◈ Advisor"))).toBe(false);
+    expect(lines.some((line) => line.includes("* Advisor"))).toBe(false);
     expect(lines.some((line) => line.includes("┃"))).toBe(false);
-    const off = at(lines, /□ Advisor off · simple request \(score -5, turns on from 4\)/);
+    const off = at(lines, /\. Advisor off - simple request \(score -5, turns on from 4\)/);
     expect(lines[off + 1]).toMatch(/  decided by local heuristic, no extra call/);
-    expect(off).toBeGreaterThan(at(lines, /You: “qual é a versão do node\?”/));
-    expect(off).toBeLessThan(at(lines, /Model call 1 · Opus 5\.5/));
-    expect(at(lines, /Answer · completed/)).toBeGreaterThan(at(lines, /Explore finished/));
+    expect(off).toBeGreaterThan(at(lines, /You: "qual é a versão do node\?"/));
+    expect(off).toBeLessThan(at(lines, /Model call 1 - Opus 5\.5/));
+    expect(at(lines, /Answer - completed/)).toBeGreaterThan(at(lines, /Explore finished/));
   });
 
   test("a request the advisor never saw says so; a message still entering shows its decision already", () => {
-    expect(drawn(request([]), 100).some((line) => /□ Advisor not evaluated for this request/.test(line))).toBe(true);
+    expect(drawn(request([]), 100).some((line) => /\. Advisor not evaluated for this request/.test(line))).toBe(true);
     let s = emptyTrace();
     let id = "";
     [s, id] = submitPrompt(s, { text: COMPLEX, at: NOW, origin: "composer" });
     s = noteAdvice(s, id, ON[0]!);
     const lines = drawn(s, 80);
     expect(lines[0]).toMatch(/Request entering/);
-    expect(lines.some((line) => /◈ Advisor on · Sonnet 5\.5 · high/.test(line))).toBe(true);
+    expect(lines.some((line) => /\* Advisor on - Sonnet 5\.5 - high/.test(line))).toBe(true);
     expect(lines.some((line) => /waiting for the guidance/.test(line))).toBe(true);
     // One that entered without its run tied to it is not shown as entering once a later run began.
     s = startTurn({ ...s, entering: undefined }, "t9", "something else", NOW + 1000);
@@ -114,8 +114,8 @@ describe("the trail of one request", () => {
       }
     }
     const pt = drawn(request(ON), 80, "pt");
-    expect(pt.some((line) => /◈ Advisor ligado · Sonnet 5\.5 · high/.test(line))).toBe(true);
-    expect(pt.some((line) => /Resposta · concluída/.test(line))).toBe(true);
+    expect(pt.some((line) => /\* Advisor ligado - Sonnet 5\.5 - high/.test(line))).toBe(true);
+    expect(pt.some((line) => /Resposta - concluída/.test(line))).toBe(true);
   });
 });
 
@@ -182,7 +182,7 @@ describe("the Flow tab, from a real request", () => {
     await $.session.start({ cwd: "/workspace" } as never).catch(() => undefined);
     await enter($, COMPLEX);
     const lines = await flowTab($);
-    const order = [/You: “Refatore/, /◈ Advisor on · Sonnet 5\.5 · high/, /why: complex request/, /Guidance received in/, /Model call 1 · Opus 5\.5/, /Read · ok/, /Answer · completed/, /“Done\.”/];
+    const order = [/You: "Refatore/, /\* Advisor on - Sonnet 5\.5 - high/, /why: complex request/, /Guidance received in/, /Model call 1 - Opus 5\.5/, /Read - ok/, /Answer - completed/, /"Done\."/];
     const positions = order.map((pattern) => at(lines, pattern));
     expect(positions).toEqual([...positions].sort((a, b) => a - b));
   });
@@ -192,8 +192,8 @@ describe("the Flow tab, from a real request", () => {
     await $.session.start({ cwd: "/workspace" } as never).catch(() => undefined);
     await enter($, "qual é a versão do node?");
     const lines = await flowTab($);
-    expect(lines.some((line) => line.includes("◈ Advisor"))).toBe(false);
-    const order = [/You: “qual é a versão do node\?”/, /□ Advisor off · simple request \(score -?\d+, turns on from 4\)/, /Model call 1 · Opus 5\.5/, /Read · ok/, /Answer · completed/];
+    expect(lines.some((line) => line.includes("* Advisor"))).toBe(false);
+    const order = [/You: "qual é a versão do node\?"/, /\. Advisor off - simple request \(score -?\d+, turns on from 4\)/, /Model call 1 - Opus 5\.5/, /Read - ok/, /Answer - completed/];
     const positions = order.map((pattern) => at(lines, pattern));
     expect(positions).toEqual([...positions].sort((a, b) => a - b));
   });
@@ -203,7 +203,7 @@ describe("the Flow tab, from a real request", () => {
     await $.session.start({ cwd: "/workspace" } as never).catch(() => undefined);
     await enter($, COMPLEX);
     const lines = await flowTab($);
-    at(lines, /◈ Advisor on · Sonnet 5\.5 · high/);
-    at(lines, /× Advisor failed: timeout; not counted as guidance/);
+    at(lines, /\* Advisor on - Sonnet 5\.5 - high/);
+    at(lines, /x Advisor failed: timeout; not counted as guidance/);
   });
 });

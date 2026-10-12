@@ -1,20 +1,22 @@
 import type { TraceAdvice, TraceAgent, TraceMessage, TraceRun, TraceState } from "../../types";
 import { formatCompact, formatDuration, text, type Locale, type LocaleKey } from "../i18n.ts";
-import { css, GLYPH, HUE, PAINT } from "../theme.ts";
+import { GLYPH, PAINT } from "../theme.ts";
 import { prettyModel, type Line } from "./format.ts";
 
-// Four hues of the identity name the events; text takes the person's theme.
+// Black and white: an event is told by its glyph and its words, so every role is the terminal's foreground or its
+// dimmed one. The roles keep their names for the lines that choose between them.
 export const C = {
   ink: PAINT.text,
   dim: PAINT.muted,
   rule: PAINT.rule,
-  brand: css(HUE.brand),
-  amber: css(HUE.warn),
-  rose: css(HUE.fail),
-  info: css(HUE.info),
+  brand: PAINT.text,
+  amber: PAINT.text,
+  rose: PAINT.text,
+  info: PAINT.text,
 } as const;
 
-const ADVISOR = "◈";
+/** The advisor's branch starts with a star. */
+const ADVISOR = "*";
 
 export interface Event {
   at: number;
@@ -39,8 +41,8 @@ export interface TrailInput {
 }
 
 export const since = (from: number, to: number, locale: Locale) => formatDuration(Math.max(0, to - from), locale);
-const quote = (value: string) => `“${value.replace(/\s+/g, " ").trim()}”`;
-const modelText = (model: string | undefined, effort: string | undefined) => [model ? prettyModel(model) : "", effort ?? ""].filter(Boolean).join(" · ");
+const quote = (value: string) => `"${value.replace(/\s+/g, " ").trim()}"`;
+const modelText = (model: string | undefined, effort: string | undefined) => [model ? prettyModel(model) : "", effort ?? ""].filter(Boolean).join(" - ");
 
 export function messageEvents(message: TraceMessage | undefined, run: TraceRun | undefined, locale: Locale): Event[] {
   if (!message) {
@@ -157,8 +159,8 @@ export function runEvents(run: TraceRun, now: number, locale: Locale, numberOf: 
       const usage = step.usage;
       details.push({
         text: text("trail.step.usage", locale, {
-          input: usage?.input === undefined ? "–" : formatCompact(usage.input + (usage.cacheRead ?? 0) + (usage.cacheWrite ?? 0), locale),
-          output: usage?.output === undefined ? "–" : formatCompact(usage.output, locale),
+          input: usage?.input === undefined ? "-" : formatCompact(usage.input + (usage.cacheRead ?? 0) + (usage.cacheWrite ?? 0), locale),
+          output: usage?.output === undefined ? "-" : formatCompact(usage.output, locale),
           duration: since(step.startedAt, step.endedAt, locale),
         }),
         color: C.dim,
@@ -186,7 +188,7 @@ export function runEvents(run: TraceRun, now: number, locale: Locale, numberOf: 
       head: text("trail.tool", locale, {
         tool: tool.name,
         result: text(`trail.tool.result.${result}` as LocaleKey, locale),
-        duration: tool.endedAt === undefined ? "" : ` · ${since(tool.startedAt, tool.endedAt, locale)}`,
+        duration: tool.endedAt === undefined ? "" : ` - ${since(tool.startedAt, tool.endedAt, locale)}`,
       }),
       details: [],
       ...(agent ? { agent } : {}),

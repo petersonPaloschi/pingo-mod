@@ -77,14 +77,14 @@ function proposalBlock(els: Els, view: View, proposal: AgentProposal, key: strin
   if (proposal.state === "sent") {
     const ruled = proposal.comandante?.decision === "approved" && opts.ruled
       ? text(opts.ruled, locale, { reason: text(`feature.comandante.reason.${proposal.comandante.reason}` as LocaleKey, locale) }) : undefined;
-    return markLine(els, [GLYPH.ok, INK.route], `${text("feature.comandante.tag.done", locale)} · ${ruled ?? opts.sent ?? text("ui.autonomos.proposal.sent", locale)}`, `${key}-done`);
+    return markLine(els, [GLYPH.ok, INK.route], `${text("feature.comandante.tag.done", locale)} - ${ruled ?? opts.sent ?? text("ui.autonomos.proposal.sent", locale)}`, `${key}-done`);
   }
   if (proposal.state === "rejected") return markLine(els, [GLYPH.no, INK.dim], text("ui.autonomos.proposal.rejected", locale), `${key}-done`);
   const ruling = proposal.comandante;
   return (
     <Box key={key} flexDirection="column">
-      {markLine(els, [GLYPH.ask, INK.pass], `${text("feature.comandante.tag.pending", locale)} · ${opts.summary ?? proposal.text}`, `${key}-pending`)}
-      {ruling ? markLine(els, DECISION_MARK[ruling.decision], `${text("feature.comandante.name", locale)}: ${text(`feature.comandante.decision.${ruling.decision}`, locale)} · ${text(`feature.comandante.reason.${ruling.reason}` as LocaleKey, locale)}`, `${key}-ruling`) : null}
+      {markLine(els, [GLYPH.ask, INK.pass], `${text("feature.comandante.tag.pending", locale)} - ${opts.summary ?? proposal.text}`, `${key}-pending`)}
+      {ruling ? markLine(els, DECISION_MARK[ruling.decision], `${text("feature.comandante.name", locale)}: ${text(`feature.comandante.decision.${ruling.decision}`, locale)} - ${text(`feature.comandante.reason.${ruling.reason}` as LocaleKey, locale)}`, `${key}-ruling`) : null}
       {proposal.state === "blocked" ? <Text color={INK.fail} wrap="wrap">{text("ui.autonomos.proposal.blocked", locale)}</Text> : null}
       <Box flexDirection="row" flexWrap="wrap" columnGap={UI_DESIGN.space.sm}>
         {proposal.state === "waiting" ? <Button key={`${key}-send`} label={text("ui.autonomos.send", locale)} variant="primary" onPress={act.send} /> : null}
@@ -168,7 +168,7 @@ function rumoPart(els: Els, view: View, act: Actions, goals: readonly RumoGoal[]
         : null,
       // a goal the Comandante approved was started by it: no Enviar was waited for
       !waiting && goal.comandante?.decision === "approved"
-        ? markLine(els, [GLYPH.ok, INK.route], `${text("feature.comandante.tag.done", locale)} · ${text("feature.comandante.done.rumo", locale, { reason: text(`feature.comandante.reason.${goal.comandante.reason}` as LocaleKey, locale) })}`, `rumo-${goal.id}-ruled`)
+        ? markLine(els, [GLYPH.ok, INK.route], `${text("feature.comandante.tag.done", locale)} - ${text("feature.comandante.done.rumo", locale, { reason: text(`feature.comandante.reason.${goal.comandante.reason}` as LocaleKey, locale) })}`, `rumo-${goal.id}-ruled`)
         : null,
       goal.state === "active" ? <Button key={`rumo-${goal.id}-stop`} label={text("feature.rumo.stop", locale)} role="dismiss" onPress={() => act.autonomo("rumo", "stop", goal.id)} /> : null,
     ], { width: view.width, rule: mark[1], glyph: mark[0], note: text(`feature.rumo.state.${goal.state}`, locale) });
@@ -205,7 +205,7 @@ function ensaioPart(els: Els, view: View, act: Actions, runs: readonly EnsaioRun
       <Text color={INK.faint} wrap="wrap">{text("feature.ensaio.files", locale, { files: run.files.join(", ") })}</Text>,
       run.summary ? <Text wrap="wrap">{run.summary}</Text> : null,
       run.note ? <Text color={INK.dim} wrap="wrap">{run.note}</Text> : null,
-      ...run.problems.slice(0, AUTONOMO_LINES).map((one, i) => markLine(els, [GLYPH.leader, INK.fail], one.where ? `${one.where} — ${one.text}` : one.text, `ensaio-${run.n}-problem-${i}`)),
+      ...run.problems.slice(0, AUTONOMO_LINES).map((one, i) => markLine(els, [GLYPH.leader, INK.fail], one.where ? `${one.where} - ${one.text}` : one.text, `ensaio-${run.n}-problem-${i}`)),
       run.verified === undefined ? null : markLine(els, run.verified ? [GLYPH.ok, INK.route] : [GLYPH.ask, INK.pass], text(run.verified ? "ui.autonomos.verified" : "ui.autonomos.unverified", locale)),
       run.proposal
         ? proposalBlock(els, view, run.proposal, `ensaio-${run.n}`, { send: () => act.autonomo("ensaio", "send", run.n), reject: () => act.autonomo("ensaio", "reject", run.n) },

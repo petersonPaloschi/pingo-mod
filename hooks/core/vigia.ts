@@ -19,7 +19,7 @@ export const VIGIA_MAIL_KEEP = 20;
  */
 export const vigiaMailDone = (item: VigiaMail) => item.isDelivered !== false && !(item.comandante?.decision === "rejected" && !item.isReleased);
 
-export const vigiaFlat = (value: string, max: number) => { const text = value.replace(/\s+/g, " ").trim(); return text.length > max ? `${text.slice(0, max - 1)}…` : text; };
+export const vigiaFlat = (value: string, max: number) => { const text = value.replace(/\s+/g, " ").trim(); return text.length > max ? `${text.slice(0, max - 3)}...` : text; };
 /** The conversation's words as a tagged block for an agent's request: flattened, cut to `max`, its own closing tag defused; "" when empty. */
 export const vigiaQuoted = (value: string | undefined, tag: string, max: number) => {
   const flat = vigiaFlat(value ?? "", max).replace(new RegExp(`</${tag}>`, "gi"), `</ ${tag}>`);

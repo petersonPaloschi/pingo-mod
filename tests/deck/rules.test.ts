@@ -97,7 +97,7 @@ test("a style name sets the surfaces it fits, and a name no surface has is refus
   expect(set.text).toBe("Style dots for CLI and Desktop.");
   const bad = applyDeckCommand(DEFAULT_SETTINGS, "style nope", "en");
   expect(bad.settings).toBe(DEFAULT_SETTINGS);
-  expect(bad.text).toBe('No style "nope". CLI: segments, line, solid, dots, pixel, spark · Desktop: pixel, segments, line, solid, dots, spark');
+  expect(bad.text).toBe('No style "nope". CLI: segments, line, solid, dots, pixel, spark - Desktop: pixel, segments, line, solid, dots, spark');
 });
 
 test("a section switch turns one section, and all turns every one", () => {

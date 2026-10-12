@@ -43,9 +43,9 @@ test("/deck city names the weather city, fetches its forecast and shows it", LOC
   expect(fetched).toContain("https://api.open-meteo.com/v1/forecast?latitude=38.72&longitude=-9.14&current=temperature_2m,weather_code");
   expect((saved.get("deck") as any).city).toEqual({ name: "Lisbon", lat: 38.72, lon: -9.14 });
   expect((saved.get("deck") as any).show.weather).toBe(true);
-  expect((await $.command.run(deck("status"))).text).toMatch(/ · city Lisbon · Deck /);
+  expect((await $.command.run(deck("status"))).text).toMatch(/ - city Lisbon - Deck /);
   const term = await $.ui.mount({ ...BAND, surface: TERMINAL });
-  expect(await term.find({ type: "Text", text: /21° cloudy · Lisbon/ })).toBeDefined();
+  expect(await term.find({ type: "Text", text: /21°C cloudy - Lisbon/ })).toBeDefined();
   await term.unmount();
   const desk = await $.ui.mount({ ...BAND, surface: DESKTOP });
   expect(await desk.find({ type: "Text", text: /21° Lisbon/ })).toBeDefined();
@@ -74,7 +74,7 @@ test("weather that cannot be fetched stays silent: the band shows the city while
   state.network = false;
   await $.session.start(SESSION);
   const term = await $.ui.mount({ ...BAND, surface: TERMINAL });
-  expect(await term.find({ type: "Text", text: /… Lisbon/ })).toBeDefined();
+  expect(await term.find({ type: "Text", text: /\.\.\. Lisbon/ })).toBeDefined();
 });
 
 // twenty minutes of the mock clock is eight thousand ticks of the band's loop: more than the kit's default five seconds on a busy machine
@@ -104,7 +104,7 @@ test("/deck style opens the picker, and a name that is no style says which exist
   expect(panes).toContain("deck-style");
   const bad = await $.command.run(deck("style nope"));
   expect(bad.text).toBe(
-    'No style "nope". CLI: segments, line, solid, dots, pixel, spark · Desktop: pixel, segments, line, solid, dots, spark',
+    'No style "nope". CLI: segments, line, solid, dots, pixel, spark - Desktop: pixel, segments, line, solid, dots, spark',
   );
   const set = await $.command.run(deck("style spark"));
   expect(set.text).toBe("Style spark for CLI and Desktop.");
@@ -187,7 +187,7 @@ test("/deck auto off keeps the band shut for a permission prompt", LOCALE, async
   await clock.advance(800);
   expect((saved.get("deck") as any).open).toBe(false);
   const out = await $.command.run(deck("status"));
-  expect(out.text).toMatch(/^\? Tasks — Fixing auth 3\/5/m);
+  expect(out.text).toMatch(/^\? Tasks - Fixing auth 3\/5/m);
 });
 
 test("a reply ending in a question opens the band and marks the live bar", LOCALE, async ($, on) => {
@@ -197,7 +197,7 @@ test("a reply ending in a question opens the band and marks the live bar", LOCAL
   await $.classic.Stop({ stop_hook_active: false, last_assistant_message: "Shall I run the suite?" } as never);
   await clock.advance(300);
   expect((saved.get("deck") as any).open).toBe(true);
-  expect((await $.command.run(deck("status"))).text).toMatch(/^\? Tasks — Fixing auth 3\/5/m);
+  expect((await $.command.run(deck("status"))).text).toMatch(/^\? Tasks - Fixing auth 3\/5/m);
 });
 
 test("the runtime's own report settles a subagent that finished without a turn end", LOCALE, async ($, on) => {
@@ -207,7 +207,7 @@ test("the runtime's own report settles a subagent that finished without a turn e
   expect((await $.command.run(deck("status"))).text).toMatch(/Agents 0\/1/);
   state.agents = [{ id: "a1", status: "completed" }];
   await clock.advance(2200);
-  expect((await $.command.run(deck("status"))).text).toMatch(/✓ Agents — Done 1\/1/);
+  expect((await $.command.run(deck("status"))).text).toMatch(/\+ Agents - Done 1\/1/);
 });
 
 test("the usage is read again every minute", LOCALE, async ($, on) => {
@@ -215,7 +215,7 @@ test("the usage is read again every minute", LOCALE, async ($, on) => {
   await $.session.start(SESSION);
   state.usage = { ...DEFAULT_USAGE, rateLimits: [{ kind: "five_hour", percentUsed: 45, resetsAt: inAnHour() }] };
   await clock.advance(60_000);
-  expect((await $.command.run(deck("status"))).text).toMatch(/Session · 5h — 5h · 45% used/);
+  expect((await $.command.run(deck("status"))).text).toMatch(/Session - 5h - 5h - 45% used/);
 });
 
 test("/deck clear removes the rows and says so", LOCALE, async ($, on) => {
@@ -226,7 +226,7 @@ test("/deck clear removes the rows and says so", LOCALE, async ($, on) => {
   // the bars go; the context and the limits are meters, not bars, and stay
   const out = (await $.command.run(deck("status"))).text;
   expect(out).not.toMatch(/Tasks/);
-  expect(out).toMatch(/◆ Context/);
+  expect(out).toMatch(/\* Context/);
 });
 
 test("/deck expand, collapse and the bare toggle reply and save the band's state", LOCALE, async ($, on) => {

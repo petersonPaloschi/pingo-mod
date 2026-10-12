@@ -3,6 +3,7 @@ import type { On, RenderPropsOf } from "claude-code";
 import { expect, mock, test } from "claude-code/testing";
 import { lapidaRequest, splitLapidaReply } from "../hooks/core/lapida.ts";
 import { DEFAULT_FEATURES } from "../hooks/core/plan.ts";
+import { AI_FEATURES } from "../hooks/ui/shared/navigation.tsx";
 import { en } from "../hooks/strings/en.ts";
 import { pt } from "../hooks/strings/pt.ts";
 import { ASK, DESKTOP, TERMINAL, TODOS, deckWorld } from "./deck/helpers.ts";
@@ -77,9 +78,17 @@ test("the AI tab holds every control that changes the model but orchestration's,
   expect((await ui.find({ key: "routing" }))?.props.hotkey).toBe("r");
   for (const key of ["feature-farol", "feature-prisma", "feature-vigia"]) expect((await ui.find({ key }))?.props.hotkey).toBeUndefined();
   expect((await ui.find({ key: "feature-lapida" }))?.props.hotkey).toBe("l");
+  // the Features tab lists every mascot's switch as `[x] Name`, with no key beside it
+  await ui.press({ key: "tab-features" });
+  for (const id of ["farol", "clareza", "semente", "prisma", "lapida", "sentinela", "vigia", "contexto", "codeQuality", "comandante", "portao", "ensaio", "chaveiro", "oficina", "pingoVivo"]) {
+    const found = await ui.find({ key: `feature-${id}` });
+    expect(found?.props.label).toMatch(/^\[[x ]\] \S/);
+    expect(found?.props.hotkey).toBeUndefined();
+  }
   for (const tab of ["tab-overview", "tab-live", "tab-models", "tab-agents", "tab-logs", "tab-configuration", "tab-deck", "tab-features", "tab-flow", "tab-orchestration"]) {
     await ui.press({ key: tab });
-    for (const key of ai) expect(await ui.find({ key })).toBeUndefined();
+    // the Features tab lists the mascots' switches too, so the feature switches (but the subagent model's) are there
+    for (const key of ai) if (!(tab === "tab-features" && key.startsWith("feature-") && key !== "feature-agents")) expect(await ui.find({ key })).toBeUndefined();
     for (const key of rest[tab] ?? []) expect(await ui.find({ key })).toBeDefined();
   }
   await ui.unmount();
@@ -156,11 +165,11 @@ test("Lapida rewrites in an agent of Pingo's own, read-only on Sonnet, and only 
   expect(world.spawns.map((one) => one.type)).toEqual(["jev:lapida"]);
   expect(world.spawns[0]!.prompt).toContain("<<<CHANGES>>>");
   expect(world.spawns[0]!.prompt.endsWith("<rough_prompt>\nfix loader\n</rough_prompt>")).toBe(true);
-  expect(await lapidaLine($, (line) => line === "Lapida…")).toBe("Lapida…");
+  expect(await lapidaLine($, (line) => line === "Lapida...")).toBe("Lapida...");
   expect(box).toBe("");
   await $.turn.complete(rewritten("l1", "Fix the loader.\n<<<CHANGES>>>\n- named the file"));
   expect(box).toBe("Fix the loader.");
-  expect(await lapidaLine($, (line) => line === "Lapida · review the rewrite")).toBe("Lapida · review the rewrite");
+  expect(await lapidaLine($, (line) => line === "Lapida - review the rewrite")).toBe("Lapida - review the rewrite");
 });
 
 test("Lapida gives up on a rewrite that never comes back, frees the band, and drops the late answer", async ($, on) => {
@@ -170,7 +179,7 @@ test("Lapida gives up on a rewrite that never comes back, frees the band, and dr
   on("prompt.fill", async (_$, e) => ((box = e.text), { isFilled: true }) as never);
   await $.command.run(LAPIDA_RUN);
   await world.clock.advance(60_000);
-  expect(await lapidaLine($, (line) => line === "Lapida…")).toBe("Lapida…");
+  expect(await lapidaLine($, (line) => line === "Lapida...")).toBe("Lapida...");
   await world.clock.advance(30_000);
   expect(await lapidaLine($, (line) => line.includes("timed out"))).toBe("Lapida failed: timed out after 90,000 ms");
   await $.turn.complete(rewritten("l1", "Late.\n<<<CHANGES>>>\n- too late"));
@@ -221,10 +230,10 @@ test("Lapida leaves its busy state once the rewrite is in the box, and runs agai
   const rewrite = async (take: number) => {
     expect(world.spawns).toHaveLength(take);
     await $.turn.complete(rewritten(`l${take}`, `Fix the loader, take ${take}.\n<<<CHANGES>>>\n- named the file`));
-    for (let i = 0; i < 200 && !(await band.find({ type: "Text", text: "Lapida · review the rewrite" })); i++) await new Promise<void>((resolve) => setTimeout(() => resolve(), 5));
+    for (let i = 0; i < 200 && !(await band.find({ type: "Text", text: "Lapida - review the rewrite" })); i++) await new Promise<void>((resolve) => setTimeout(() => resolve(), 5));
     expect(box).toBe(`Fix the loader, take ${take}.`);
-    expect(await band.find({ type: "Text", text: "Lapida · review the rewrite" })).toBeDefined();
-    expect(await band.find({ type: "Text", text: "Lapida…" })).toBeUndefined();
+    expect(await band.find({ type: "Text", text: "Lapida - review the rewrite" })).toBeDefined();
+    expect(await band.find({ type: "Text", text: "Lapida..." })).toBeUndefined();
     expect(await band.find({ key: "lapida-enhance" })).toBeDefined();
   };
   // the command takes what was typed: the box is empty while it runs
@@ -348,10 +357,10 @@ test("Pingo remains in the header without a frame timer", async ($, on) => {
     return { value: {} };
   });
   await $.session.start({ cwd: "/workspace" } as never).catch(() => undefined);
-  // the terminal draws Pingo as a still pixel sprite two cells tall; the desktop, which has no Raster, as its face
+  // both surfaces draw Pingo as its face, in text
   const ui = await $.ui.mount({ plugin: "jev", surface: "terminal", component: "Pane", requestId: "jev", props: PANE_PROPS });
-  const mark = await ui.find({ type: "Raster", key: "pingo-mark" } as never);
-  expect(mark?.props.rows).toBe(2);
+  expect(await ui.find({ type: "Text", text: PINGO_FACE })).toBeDefined();
+  expect(await ui.find({ type: "Raster" } as never)).toBeUndefined();
   await clock.advance(100);
   expect(blits).toEqual([]);
   await ui.unmount();
@@ -371,7 +380,7 @@ test("the band shows the status line", async ($, on) => {
   }
 });
 
-test("Overview groups its figures under headings and flags failed Jev calls on both surfaces", async ($, on) => {
+test("Overview shows each figure as a block titled with its label, and flags failed Jev calls on both surfaces", async ($, on) => {
   mock.clock(on, { now: Date.parse("2026-10-06T12:00:00Z") });
   const failure = { ...EVENT, seq: 2, mode: "passthrough", reason: "jev_error: timeout", tool: undefined, jev: undefined };
   mock.store(on, { events: [EVENT, failure] });
@@ -384,7 +393,7 @@ test("Overview groups its figures under headings and flags failed Jev calls on b
   for (const surface of ["terminal", "desktop"] as const) {
     const ui = await $.ui.mount({ plugin: "jev", surface, component: "Pane", requestId: "jev", props: PANE_PROPS });
     await ui.press({ key: "tab-overview" });
-    for (const heading of [/^Routing$/, /^Jev's answers$/, /^Token usage$/, /^Timeline$/]) {
+    for (const heading of [/^Requests$/, /^Jev calls$/, /^Jev latency$/, /^LLM input tokens$/, /^Routing$/, /^Timeline$/]) {
       expect(await ui.find({ type: "Text", text: heading })).toBeDefined();
     }
     expect(await ui.find({ type: "Text", text: "2 requests in this range" })).toBeDefined();
@@ -487,8 +496,8 @@ test("a pasted key is shown masked, tested, saved in secure plugin storage and u
   // The field holds only the mask; nothing in the tree carries the key.
   const drawn = JSON.stringify(await ui.drawn());
   expect(drawn).not.toContain("dummy-test");
-  expect(drawn).toContain("•••••••••••1234");
-  await ui.input({ key: "api-key", kind: "submit", text: "•••••••••••1234" });
+  expect(drawn).toContain("***********1234");
+  await ui.input({ key: "api-key", kind: "submit", text: "***********1234" });
   expect(auth).toEqual(["Bearer dummy-test-1234"]);
   expect(written).toEqual(["dummy-test-1234"]);
   expect(await ui.find({ type: "Text", text: /saved in Claude Code's secure plugin storage/ })).toBeDefined();
@@ -523,16 +532,16 @@ test("a saved key can be replaced, and an unsupported removal keeps it in use", 
   on("http.fetch", async () => ({ value: { status: 200, ok: true, headers: {}, text: "{}" } }));
   const ui = await $.ui.mount({ plugin: "jev", surface: "terminal", component: "Pane", requestId: "jev", props: PANE_PROPS });
   await ui.press({ key: "tab-ai" });
-  expect(await ui.find({ type: "Text", text: /••••aaaa/ })).toBeDefined();
+  expect(await ui.find({ type: "Text", text: /\*\*\*\*aaaa/ })).toBeDefined();
   await ui.input({ key: "api-key", kind: "change", text: "new-key-bbbb" });
   await ui.press({ key: "validate" });
   expect(written).toEqual(["new-key-bbbb"]);
-  expect(await ui.find({ type: "Text", text: /••••bbbb/ })).toBeDefined();
+  expect(await ui.find({ type: "Text", text: /\*\*\*\*bbbb/ })).toBeDefined();
   await ui.press({ key: "forget" });
   expect(written).toEqual(["new-key-bbbb", ""]);
   expect(await ui.find({ type: "Text", text: /could not be removed/ })).toBeDefined();
   expect(await status($)).toContain("Key source: plugin settings");
-  expect(await ui.find({ type: "Text", text: /••••bbbb/ })).toBeDefined();
+  expect(await ui.find({ type: "Text", text: /\*\*\*\*bbbb/ })).toBeDefined();
   await ui.unmount();
 });
 
@@ -543,7 +552,7 @@ test("a restarted session uses the saved key without testing it again", { option
   on("http.fetch", async () => { throw new Error("opening Setup must not revalidate a saved key"); });
   const ui = await $.ui.mount({ plugin: "jev", surface: "terminal", component: "Pane", requestId: "jev", props: PANE_PROPS });
   await ui.press({ key: "tab-ai" });
-  expect(await ui.find({ type: "Text", text: /••••1234/ })).toBeDefined();
+  expect(await ui.find({ type: "Text", text: /\*\*\*\*1234/ })).toBeDefined();
   const shown = await status($);
   expect(shown).toContain("Provider: OpenRouter");
   expect(shown).toContain("Key source: plugin settings");
@@ -636,16 +645,17 @@ for (const [locale, strings] of [["en", en], ["pt", pt]] as const) {
     mock.env(on, {});
     const ui = await $.ui.mount({ plugin: "jev", surface: "terminal", component: "Pane", requestId: "jev", props: PANE_PROPS });
     const shown = new Set<string>();
-    for (const tab of ["tab-ai", "tab-features"]) {
-      await ui.press({ key: tab });
-      for (const id of Object.keys(DEFAULT_FEATURES)) {
-        if (!(await ui.find({ key: `feature-${id}` }))) continue;
-        const description = strings[`feature.${id}.description` as keyof typeof en];
-        expect((await ui.find({ type: "Text", text: description }))?.text).toBe(description);
-        shown.add(id);
-      }
+    // the AI tab describes the features that change the model; the Features tab only lists the mascots' switches
+    await ui.press({ key: "tab-ai" });
+    for (const id of Object.keys(DEFAULT_FEATURES)) {
+      if (!(await ui.find({ key: `feature-${id}` }))) continue;
+      const description = strings[`feature.${id}.description` as keyof typeof en];
+      expect((await ui.find({ type: "Text", text: description }))?.text).toBe(description);
+      shown.add(id);
     }
-    expect([...shown].sort()).toEqual(Object.keys(DEFAULT_FEATURES).sort());
+    expect([...shown].sort()).toEqual([...AI_FEATURES].sort());
+    await ui.press({ key: "tab-features" });
+    for (const id of Object.keys(DEFAULT_FEATURES)) if (!AI_FEATURES.has(id as never)) expect(await ui.find({ key: `feature-${id}` })).toBeDefined();
     await ui.unmount();
   });
 }
@@ -668,15 +678,15 @@ test("a feature switched in the Deck is switched on the dashboard, and the rever
   for (const surface of [TERMINAL, DESKTOP]) {
     const band = await $.ui.mount({ ...DECK_BAND, surface });
     // every feature has its switch in the expanded band, named and showing its state
-    for (const id of Object.keys(DEFAULT_FEATURES)) expect((await band.find({ key: `deck-feature-${id}` }))?.props.label).toMatch(/^[▣□] \S/);
-    expect((await band.find({ key: "deck-feature-clareza" }))?.props.label).toBe("▣ Clareza");
+    for (const id of Object.keys(DEFAULT_FEATURES)) expect((await band.find({ key: `deck-feature-${id}` }))?.props.label).toMatch(/^\[[x ]\] \S/);
+    expect((await band.find({ key: "deck-feature-clareza" }))?.props.label).toBe("[x] Clareza");
     await band.press({ key: "deck-feature-clareza" });
-    expect((await band.find({ key: "deck-feature-clareza" }))?.props.label).toBe("□ Clareza");
+    expect((await band.find({ key: "deck-feature-clareza" }))?.props.label).toBe("[ ] Clareza");
     expect((await band.find({ key: "deck-feature-clareza" }))?.props.dimColor).toBe(true);
     expect((await pane.find({ key: "feature-clareza" }))?.props.dimColor).toBe(true);
     await pane.press({ key: "feature-clareza" });
     expect((await pane.find({ key: "feature-clareza" }))?.props.dimColor).toBe(false);
-    expect((await band.find({ key: "deck-feature-clareza" }))?.props.label).toBe("▣ Clareza");
+    expect((await band.find({ key: "deck-feature-clareza" }))?.props.label).toBe("[x] Clareza");
     await band.unmount();
   }
   await pane.unmount();

@@ -5,6 +5,7 @@ import type { JevAsk, JevSent } from "./core/jev.ts";
 import { EFFORT_KEY, MODEL_KEY } from "./core/plan.ts";
 import type { Answer, SystemOneResult } from "./core/types.ts";
 import { formatCompact, formatDecimal, formatNumber, localeFor, TAG, text, type Locale, type LocaleKey } from "./i18n.ts";
+import { GLYPH } from "./theme.ts";
 
 /** Each feature, its one-click toggle key, and a short description. */
 const FEATURE_KEYS: readonly { id: FeatureId; name: LocaleKey; hotkey: string; description: LocaleKey }[] = [
@@ -40,7 +41,7 @@ export const features = (locale: Locale = localeFor()) => FEATURE_KEYS.map((feat
 
 export const short = (text: string, max = 80) => {
   const line = text.replace(/\s+/g, " ").trim();
-  return line.length > max ? line.slice(0, max - 1) + "…" : line;
+  return line.length > max ? line.slice(0, Math.max(0, max - GLYPH.ellipsis.length)) + GLYPH.ellipsis : line;
 };
 
 /** A tool call in a few words: the argument that tells calls apart, never all of them. */
@@ -115,7 +116,7 @@ export function toolDetails(tool: string, input: Record<string, unknown>, locale
       }
     }
   }
-  return parts.filter(Boolean).join(" · ");
+  return parts.filter(Boolean).join(" - ");
 }
 
 /** How big a tool's output was, in a few words: "120 lines", "3.4k chars", "empty". */
@@ -203,7 +204,7 @@ function answerLine(answer: Answer | undefined, locale: Locale): string {
   return text("feed.jev.answer.choice", locale, {
     choice: short(answer.choice, 60),
     confidence: percent(answer.confidence, locale),
-    odds: probabilities.length ? text("feed.jev.answer.odds", locale, { odds: probabilities.join(" · ") }) : "",
+    odds: probabilities.length ? text("feed.jev.answer.odds", locale, { odds: probabilities.join(" - ") }) : "",
   });
 }
 
@@ -234,7 +235,7 @@ export function jevAnswered(sent: JevSent, caller: JevCaller, result: SystemOneR
   const usage = [
     result.usage.input_tokens === undefined ? "" : text("feed.jev.usage.input", locale, { value: formatCompact(result.usage.input_tokens, locale) }),
     result.usage.output_tokens === undefined ? "" : text("feed.jev.usage.output", locale, { value: formatCompact(result.usage.output_tokens, locale) }),
-  ].filter(Boolean).join(" · ");
+  ].filter(Boolean).join(" - ");
   const rows = [
     ...(usage ? [text("feed.jev.usage", locale, { usage })] : []),
     first,

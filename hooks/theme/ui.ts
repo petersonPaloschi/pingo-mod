@@ -1,23 +1,25 @@
 import { TERMINAL_DEFAULT, HUE } from "./palette.ts";
 import { FONT_WEIGHT, css } from "./deck.ts";
 
+// Black and white: the terminal draws text in its own foreground or in its dimmed one, and nothing else. A state is
+// told by its glyph and its word (and by bold), never by a hue, so every role below is one of those two theme keys.
 export const PAINT = {
   /** Values, headings, anything read first. */
   text: "text",
   /** Labels, notes and help: secondary, still readable on both grounds. */
   muted: "inactive",
   /** Card frames, tracks and separators: decoration only, never the one place a fact is written. */
-  rule: "subtle",
-  ok: "success",
-  warn: "warning",
-  fail: "error",
-  claude: "claude",
-  brand: css(HUE.brand),
-  you: css(HUE.you),
-  info: css(HUE.info),
-  plum: css(HUE.plum),
-  /** Text on a mid-tone ground (a pill, a filled bar): a warm near-black, at least 4.7:1 on every hue above. */
-  onFill: "#14110f",
+  rule: "inactive",
+  ok: "text",
+  warn: "text",
+  fail: "text",
+  claude: "text",
+  brand: "text",
+  you: "text",
+  info: "text",
+  plum: "text",
+  /** Text on a ground: there are no grounds in black and white, so it is the plain foreground. */
+  onFill: "text",
 } as const;
 
 /** Dashboard text roles and spacing tokens; the host renders the UI primitives on both surfaces. */
@@ -39,7 +41,7 @@ export const UI_DESIGN = {
     /** Columns a card's frame and air take from its width: a border and one column of air on each side. */
     indent: 4,
     /** Columns between cards side by side. */
-    gutter: 1,
+    gutter: 2,
     minCardWidth: 10,
     /** Columns the host adds after a plain button for its key: a space and the key in angle quotes. */
     hotkeyColumns: 4,
@@ -48,7 +50,7 @@ export const UI_DESIGN = {
     gridMaxColumns: 3,
     configurationTwoColumnMinWidth: 80,
     /** The rail of screens down the left: its narrowest, the pane width and height it needs, and the gap after it. */
-    rail: { minColumns: 18, minPaneWidth: 64, minRows: 24, gap: 1 },
+    rail: { minColumns: 18, minPaneWidth: 64, minRows: 24, gap: 2 },
     viewport: { minimumColumns: 40, panelColumns: 60, defaultColumns: 80, defaultRows: 30 },
   },
 } as const;
@@ -151,47 +153,68 @@ export const PET_PALETTE = {
   },
 } as const;
 
-/** Glyphs that say a state without color, and the pieces of the binder. */
+/**
+ * Glyphs that say a state without color, all 7-bit ASCII so they read the same on any terminal and font. `( )` is a
+ * mascot's balloon, `[ ]` a button, `|` the tab a line starts with, `>` the open item and whoever speaks, `*` work in
+ * progress. A glyph wider than one column is noted where it is: anything measured beside it counts its real width.
+ */
 export const GLYPH = {
-  ok: "✓",
+  ok: "+",
   warn: "!",
-  fail: "×",
+  fail: "x",
   ask: "?",
   /** What is happening now: the current step, a running agent. */
-  run: "◆",
-  baseline: "◌",
-  idle: "–",
-  /** Something on: a switch that is on, a card's label, someone speaking in the live log. */
-  on: "■",
-  /** Something off or not there yet; a switch that is off. */
-  off: "□",
-  /** A switch that is on: a ticked box beside the empty one. */
-  check: "▣",
+  run: "*",
+  baseline: "o",
+  idle: "-",
+  /** Something on: a card's mark, someone speaking in the live log. */
+  on: "#",
+  /** Something off or not there yet. */
+  off: ".",
+  /** A switch that is on (three columns). */
+  check: "[x]",
+  /** A switch that is off (three columns, as wide as `check`). */
+  unchecked: "[ ]",
   /** A filled cell of a meter. */
-  fill: "▰",
+  fill: "#",
   /** An empty cell of a meter. */
-  empty: "▱",
-  route: "→",
+  empty: ".",
+  /** Two columns. */
+  route: "->",
   /** The open screen on the rail, the chosen option in a list. */
-  open: "▸",
-  /** The tab of a line above the prompt and of a Deck row: a stripe in its color before its name. */
-  tab: "▌",
-  rule: "─",
+  open: ">",
+  /** The tab of a line above the prompt and of a Deck row, before its name. */
+  tab: "|",
+  rule: "-",
   /** Between parts of one line. */
-  leader: "·",
-  /** A child hanging off its parent (an agent under its plan). */
-  branch: "╰",
+  leader: "-",
+  /** A child hanging off its parent (an agent under its plan): two columns. */
+  branch: "`-",
   /** Between the screens' names where the rail folds into a line. */
   slash: "/",
   /** What a mascot on the Deck lane says, on the line under it. */
-  speech: "»",
+  speech: ">",
   /** In an autonomous agent's history: a check that failed, a run held back, a proposal turned down. */
-  no: "✗",
+  no: "x",
   /** In an autonomous agent's history: let through by the person as it was. */
-  released: "↷",
-  /** The two ends of a pill button: half blocks of its ground, so without color they still close it like brackets. */
-  pillStart: "▐",
-  pillEnd: "▌",
+  released: "~",
+  /** The two ends of a button the plugin draws itself, as the host draws its own: `[ label ]`. */
+  pillStart: "[",
+  pillEnd: "]",
+  /** A mascot's balloon on the Deck lane: `(Name: words)`. */
+  balloonStart: "(",
+  balloonEnd: ")",
+  /** Where a text was cut (three columns). */
+  ellipsis: "...",
+  /** The ends of a meter: `[###...]`. */
+  meterStart: "[",
+  meterEnd: "]",
+  /** Scroll marks of a fixed pane. */
+  up: "^",
+  down: "v",
 } as const;
+
+/** The host's border style for every frame: `+`, `-` and `|`. */
+export const BORDER_STYLE = "classic";
 
 /** The Deck's row marks, shared by its model status and renderers: the state of each row. */

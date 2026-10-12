@@ -1,4 +1,4 @@
-import type { TraceStep } from "../types";
+import type { TraceStep } from "../../types";
 
 export interface RunTiming {
   /** The submitted prompt time, before Jev planning when the message is linked. */

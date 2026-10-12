@@ -1,32 +1,25 @@
 import type { ComandanteFilter, ComandanteRecord, ComandanteSource } from "../../../types";
 import { pct } from "../../events.ts";
-import { hex } from "../../dots.ts";
 import { formatNumber, text, type LocaleKey } from "../../i18n.ts";
-import { FEATURE_MASCOT_PALETTE, GLYPH, UI_DESIGN, UI_INK as INK } from "../../theme.ts";
+import { UI_DESIGN, UI_INK as INK } from "../../theme.ts";
 import { COMANDANTE_ALL, COMANDANTE_DECISIONS, COMANDANTE_SOURCES, comandanteCounts, comandanteSessions, comandanteSourcesAll, filterComandante } from "../../core/comandante.ts";
 import type { Els, View, Actions } from "../types.ts";
 import { toggleButton, clock, oneLine, card, stack, section, emptyLine } from "../shared.tsx";
-import { DECISION_MARK, mascotColor } from "./shared.ts";
+import { DECISION_MARK } from "./shared.ts";
 
 /**
  * Which assistants the Comandante judges: "All" switches every one on (or, all on, off), then one switch per source,
- * each with its mascot's color stripe; on or off reads from ▣ or □, not from the color.
+ * each a switch that reads `[x]` or `[ ]`.
  */
 function comandanteSourcesCard(els: Els, view: View, act: Actions) {
-  const { Box, Text, Button } = els;
+  const { Box, Text } = els;
   const { locale } = view;
   const sources = view.preferences.comandanteSources;
   const onCount = COMANDANTE_SOURCES.filter((source) => sources[source]).length;
   const allOn = onCount === COMANDANTE_SOURCES.length;
   const toggle = (source: ComandanteSource) => {
     const on = sources[source];
-    const label = `${on ? GLYPH.check : GLYPH.off} ${text(`feature.${source}.name`, locale)}`;
-    return (
-      <Button key={`comandante-source-${source}`} label={label} plain onPress={() => act.preference("comandanteSources", { ...sources, [source]: !on })}>
-        <Text bold color={mascotColor(source)}>{GLYPH.tab}</Text>
-        <Text dimColor={!on}>{` ${label}`}</Text>
-      </Button>
-    );
+    return toggleButton(els, `comandante-source-${source}`, on, text(`feature.${source}.name`, locale), () => act.preference("comandanteSources", { ...sources, [source]: !on }));
   };
   return card(els, text("feature.comandante.sources.title", locale), [
     <Text color={INK.dim} wrap="wrap">{text("feature.comandante.sources.hint", locale)}</Text>,
@@ -51,27 +44,27 @@ export function comandanteView(els: Els, view: View, act: Actions) {
   const name = text("feature.comandante.name", locale);
   const status = !on ? "feature.comandante.off" : panel.busy ? "feature.comandante.busy" : "feature.comandante.idle";
   const sessions = comandanteSessions(panel.log);
-  const sessionName = (id: string, label: string) => (id === panel.me ? text("feature.comandante.this", locale) : `${oneLine(label, 30)} · ${id.slice(0, 8)}`);
+  const sessionName = (id: string, label: string) => (id === panel.me ? text("feature.comandante.this", locale) : `${oneLine(label, 30)} - ${id.slice(0, 8)}`);
   const kept = filterComandante(panel.log, panel.filter);
   const shown = kept.slice(0, view.width >= 70 ? 30 : 15);
   const counts = comandanteCounts(kept);
   const lineWidth = Math.max(20, view.width - 6);
   const node = (record: ComandanteRecord) => {
     const [glyph, color] = DECISION_MARK[record.decision];
-    const title = `${text(`feature.comandante.decision.${record.decision}`, locale)} · ${text(`feature.${record.source}.name`, locale)}`;
+    const title = `${text(`feature.comandante.decision.${record.decision}`, locale)} - ${text(`feature.${record.source}.name`, locale)}`;
     const origin = [
       clock(record.at, locale),
       sessionName(record.session, record.sessionName),
       record.project,
       record.agent ? text("feature.comandante.by", locale, { agent: record.agent }) : "",
-    ].filter(Boolean).join(" · ");
+    ].filter(Boolean).join(" - ");
     return card(els, title, [
       <Text wrap="wrap">{oneLine(record.summary, lineWidth * 3)}</Text>,
-      <Text color={INK.dim} wrap="wrap">{`${text(`feature.comandante.reason.${record.reason}` as LocaleKey, locale)} · ${text("feature.comandante.confidence", locale, { value: pct(record.confidence, 1, locale) })}`}</Text>,
+      <Text color={INK.dim} wrap="wrap">{`${text(`feature.comandante.reason.${record.reason}` as LocaleKey, locale)} - ${text("feature.comandante.confidence", locale, { value: pct(record.confidence, 1, locale) })}`}</Text>,
       <Text color={INK.faint} wrap="truncate">{oneLine(origin, lineWidth)}</Text>,
       // a held message the person let through to Claude anyway
       record.releasedAt !== undefined ? <Text color={INK.you} wrap="wrap">{text("feature.comandante.released", locale, { time: clock(record.releasedAt, locale) })}</Text> : null,
-    ], { width: view.width, rule: color, glyph, color });
+    ], { width: view.width, glyph, color });
   };
   return (
     <Box flexDirection="column" rowGap={UI_DESIGN.space.xs} width={view.width}>
@@ -80,7 +73,7 @@ export function comandanteView(els: Els, view: View, act: Actions) {
         <Box flexDirection="row" flexWrap="wrap" columnGap={UI_DESIGN.space.sm}>
           {toggleButton(els, "feature-comandante", on, name, () => act.feature("comandante", !on), "m")}
         </Box>,
-      ], { width: view.width, rule: hex(FEATURE_MASCOT_PALETTE.comandante) })}
+      ], { width: view.width })}
       {comandanteSourcesCard(els, view, act)}
       {section(els, text("feature.comandante.log", locale))}
       <Box flexDirection="row" flexWrap="wrap" columnGap={UI_DESIGN.space.sm}>
@@ -90,7 +83,7 @@ export function comandanteView(els: Els, view: View, act: Actions) {
           value={panel.filter.session}
           options={[
             { value: COMANDANTE_ALL, label: text("feature.comandante.filter.allSessions", locale) },
-            ...sessions.map((one) => ({ value: one.id, label: `${sessionName(one.id, one.name)}${one.project ? ` · ${one.project}` : ""}` })),
+            ...sessions.map((one) => ({ value: one.id, label: `${sessionName(one.id, one.name)}${one.project ? ` - ${one.project}` : ""}` })),
           ]}
           onSelect={(value) => act.comandanteFilter({ session: String(value) })}
         />

@@ -1,7 +1,7 @@
 import { EFFORT, MODEL_HANDLE, type ClaudeModelId, type Effort, type Role } from "../contracts.ts";
 import { readChoice } from "../selection.ts";
 import type { Answer } from "../types.ts";
-import type { EffortSetting, ModelSetting, OrchestrationPolicy, Profile } from "./policy.ts";
+import type { EffortSetting, ModelSetting, OrchestrationPolicy, Profile, TaskOverride } from "./policy.ts";
 export interface Capabilities {
   /** Catalogue models the runtime offers; undefined = not known, so all four stay possible. */
   available?: readonly ClaudeModelId[];

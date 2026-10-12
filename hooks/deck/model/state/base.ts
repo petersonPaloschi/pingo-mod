@@ -110,7 +110,7 @@ export function weatherText(weather: Weather | null, city: { name: string } | nu
   if (!weather) return city ? text("deck.weather.loading", locale, { city: city.name }) : "";
   const [, icon, key] = WMO.find(([max]) => weather.code <= max) ?? WMO[WMO.length - 1]!;
   const t = Math.round(weather.temp) + "°";
-  return desktop ? icon + " " + t + " " + weather.name : t + " " + text(key, locale) + " · " + weather.name;
+  return desktop ? icon + " " + t + " " + weather.name : t + "C " + text(key, locale) + " - " + weather.name;
 }
 
 export function limitName(kind: string, locale: Locale): [string, string] {

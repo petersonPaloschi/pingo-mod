@@ -76,7 +76,7 @@ test("a cycle's request carries the person's latest request as context, flattene
   // a long request is cut
   const long = qualityRequest([], "en", "x".repeat(5000));
   expect(long.length).toBeLessThan(QUALITY_GOAL_CHARS + 600);
-  expect(long).toContain("…</request>");
+  expect(long).toContain("...</request>");
 });
 
 test("the person's latest request is what they typed, not a prompt a plugin sent after it", () => {
@@ -135,7 +135,7 @@ test("a turn that edited code starts one review cycle; its report shows on the Q
   expect(await ui.find({ type: "Text", text: /^Moved a loose color to the theme\.$/ })).toBeDefined();
   expect(await ui.find({ type: "Text", text: /hooks\/a\.ts:12/ })).toBeDefined();
   expect(await ui.find({ type: "Text", text: /another session is rewriting this function/ })).toBeDefined();
-  expect(await ui.find({ type: "Text", text: /^fixed 1 · not fixed 1$/ })).toBeDefined();
+  expect(await ui.find({ type: "Text", text: /^fixed 1 - not fixed 1$/ })).toBeDefined();
   await ui.unmount();
 });
 

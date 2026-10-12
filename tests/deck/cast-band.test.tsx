@@ -16,7 +16,7 @@ const BAND = {
 const SESSION = { surface: "terminal", isInteractive: true, cwd: "/work" } as const;
 const LOCALE = { options: { locale: "en" } } as const;
 
-/** The name row of a lane's cells as the host gets them: each cell is its character, its color and its ground. */
+/** The name row of a lane's cells as the host gets them: each cell is its character, its color and its ground (the first is read). */
 function nameRow(cells: unknown, columns: number): string {
   const bytes = Uint8Array.from(atob(String(cells)), (char) => char.charCodeAt(0));
   const numbers = new Uint32Array(bytes.buffer);
@@ -42,15 +42,18 @@ test("the Deck's lane shows Pingo alone, then each subagent while it works, and 
 
   await $.agent.spawn(spawn("explore routes"));
   row = await names();
-  expect(row.indexOf("Tetra·Explore")).toBeGreaterThan(row.indexOf("Pingo"));
+  expect(row.indexOf("Explore")).toBeGreaterThan(row.indexOf("Pingo"));
   // its balloon says what it was sent to do
-  expect(row).toContain("▐Tetra·Explore: explore routes▌");
+  expect(row).toContain("(Explore: explore routes)");
 
   await $.turn.complete({ turnId: "x", agentId: "a1", answer: "ok", durationMs: 5, isAborted: false, reason: "answer", usage: undefined });
-  // it ends: a moment's goodbye hop in its place, its balloon gone, then it is gone
+  // it ends: its balloon is gone at once and it hops a goodbye, up a row over its name, then back in its place
   row = await names();
-  expect(row).toContain("Tetra·Explore");
   expect(row).not.toContain("explore routes");
+  await clock.advance(300);
+  row = await names();
+  expect(row).toMatch(/(^| )Explore( |$)/);
+  expect(row).not.toContain("(");
   await clock.advance(CAST_LEAVE_MS + 150);
   row = await names();
   expect(row.trim()).toBe("Pingo");

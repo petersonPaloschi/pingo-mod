@@ -24,7 +24,7 @@ export function noise(x: number, y: number): number {
   return ((h ^ (h >>> 16)) >>> 0) / 0xffffffff;
 }
 
-// --- Braille: a terminal cell as a 2×4 grid of dots (U+2800 to U+28FF) ---
+// --- Dot cells: a terminal cell as a 2x4 grid of dots, drawn in ASCII by how many of them are set ---
 
 export type BrailleCell = [char: string, color: number];
 
@@ -37,7 +37,13 @@ const BITS = [
 
 /** The bit a dot at (x, y) of its cell (x in 0..1, y in 0..3) sets. */
 export const brailleBit = (x: number, y: number) => BITS[y & 3]![x & 1]!;
-export const brailleChar = (bits: number) => (bits ? String.fromCharCode(0x2800 + bits) : " ");
+/** The cell's character for its dots, from the sparsest to the fullest: `.:-=+*#@`; a cell with no dot is blank. */
+const DENSITY = ".:-=+*#@";
+export const brailleChar = (bits: number) => {
+  let count = 0;
+  for (let rest = bits & 0xff; rest; rest &= rest - 1) count++;
+  return count ? DENSITY[count - 1]! : " ";
+};
 
 /** A run of text in one color: a row is a list of runs. */
 export type Run = [text: string, color: number];
@@ -73,7 +79,7 @@ export function constellation(
     for (let c = 0; c < columns; c++) {
       const cell = r * columns + c;
       // An empty bottom row reads as the ground line.
-      const char = bits[cell] ? brailleChar(bits[cell]!) : r === rows - 1 ? "⠤" : " ";
+      const char = bits[cell] ? brailleChar(bits[cell]!) : r === rows - 1 ? "_" : " ";
       const ink = bits[cell] ? color[cell]! : floor;
       const last = row.at(-1);
       if (last && last[1] === ink) last[0] += char;

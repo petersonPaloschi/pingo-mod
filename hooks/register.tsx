@@ -63,7 +63,7 @@ import {
   traceOf,
   type ConsultWhere,
 } from "./trace.ts";
-import { featureHead, lineTab, portaoSettled, renderAbove, renderAgentPane, renderBand, renderPane, rumoSettled, sheetCard, stackAbove, type AboveBlock, type Actions, type AutonomoId, type AutonomosPanel, type AutonomoVerb, type ComandantePanel, type DeckPanel, type QualityPanel, type View } from "./ui.tsx";
+import { lineTab, portaoSettled, renderAbove, renderAgentPane, renderBand, renderPane, rumoSettled, sheetCard, stackAbove, type AboveBlock, type Actions, type AutonomoId, type AutonomosPanel, type AutonomoVerb, type ComandantePanel, type DeckPanel, type QualityPanel, type View } from "./ui.tsx";
 import { displayWidth, rowsOf } from "./layout.ts";
 import { flowSummary } from "./flow.ts";
 import * as orch from "./orchestrate.ts";
@@ -118,13 +118,14 @@ import {
 } from "./deck/model.ts";
 import { createPet, petLaneCells, petLaneColumns, PET_BRAILLE, stepPet, type Pet } from "./deck/pet.ts";
 import { CAST_LEAVE_MS, castColor, castKey, castLaneCells, castOf, LANE_ROWS, PINGO_INK, SPEAKER_NAMES, type CastMember, type CastSpeaker, type SpeakerId } from "./deck/cast.ts";
-import { cellsOf, hex } from "./dots.ts";
+import { cellsOf } from "./dots.ts";
+import { card, INDENT, paneBox } from "./ui/shared/base.tsx";
 import { FOLD_FADE, FOLD_STEP, TRACK_H, toTrackRow, type DrawCaches } from "./deck/rows.ts";
 import { DESKTOP_STYLES, DESKTOP_STYLE_NAMES, desktopTrack } from "./deck/styles-desktop.ts";
 import { TERMINAL_STYLES, TERMINAL_STYLE_NAMES, terminalBar } from "./deck/styles-terminal.ts";
 import { applyDeckCommand, deckUsage, deckWords, openReply } from "./deck/wire.ts";
 import { DIM, runs, trunc } from "./deck/theme.ts";
-import { DECK_DESIGN, GLYPH, meter, PAINT, PRISMA_GALLERY_CSS, UI_DESIGN, type DeckStyleName } from "./theme.ts";
+import { BORDER_STYLE, DECK_DESIGN, GLYPH, meter, PAINT, PRISMA_GALLERY_CSS, UI_DESIGN, type DeckStyleName } from "./theme.ts";
 
 const PANE = "jev";
 type FeatureId = keyof FeatureFlags;
@@ -271,7 +272,7 @@ let castPingoSpeaks = false;
 let castPingoSays: string | undefined;
 /** The session's goal as Resumo last summed it up from the person's requests; empty until the first one. */
 let pingoGoal = "";
-/** When each feature now on the lane joined it, so it hops once on arrival; a feature that leaves is forgotten. */
+/** When each feature now on the lane joined it; a feature that leaves is forgotten. */
 const speakerSince = new Map<SpeakerId, number>();
 /** Each feature whose task just ended, when and how: it hops a goodbye on the lane, then is forgotten. */
 const speakerLeft = new Map<SpeakerId, { at: number; failed: boolean }>();
@@ -602,7 +603,7 @@ async function openAgentPane($: EngineInterface, run: AgentRun): Promise<void> {
 /** A subagent by its lightweight name, type, and number. */
 function agentTitle(run: AgentRun): string {
   const mascot = isMascot(run.mascot) ? AGENT_MASCOTS[run.mascot] : undefined;
-  return mascot ? `${mascot.name} · ${run.type} #${run.n}` : `${run.type} #${run.n}`;
+  return mascot ? `${mascot.name} ${GLYPH.leader} ${run.type} #${run.n}` : `${run.type} #${run.n}`;
 }
 
 /** Takes finished subagents off the Agents tab and closes their panes; running ones stay. */
@@ -2102,7 +2103,7 @@ function contextSummary(result: ContextResult, locale: Settings["locale"]): stri
   ].filter(Boolean);
   return text("feature.contexto.summary", locale, {
     reduction: contextPercent(contextReductionRatio(result)),
-    decisions: details.join(" · ") || text("feature.contexto.summary.noCalls", locale),
+    decisions: details.join(` ${GLYPH.leader} `) || text("feature.contexto.summary.noCalls", locale),
     tokens: formatCompact(stats.stateTokens, locale),
     stage: stats.stateStage || text("feature.contexto.summary.noState", locale),
     requests: formatNumber(stats.requests, locale),
@@ -2405,7 +2406,7 @@ async function loadLapidaTaste($: EngineInterface): Promise<LapidaTaste[]> {
   const value = await $.store.get(await lapidaTasteKey($)).catch(() => undefined);
   return Array.isArray(value) ? value as LapidaTaste[] : [];
 }
-const clipLapida = (value: string, max = 300) => value.length > max ? `${value.slice(0, max - 1)}…` : value;
+const clipLapida = (value: string, max = 300) => value.length > max ? `${value.slice(0, max - 3)}${GLYPH.ellipsis}` : value;
 function lapidaTasteHint(records: LapidaTaste[]) {
   if (!records.length) return "";
   const edits = records.filter((record) => record.edited);
@@ -2564,8 +2565,11 @@ const ABOVE_RANK: readonly SpeakerId[] = ["portao", "clareza", "ensaio", "chavei
 
 /** A feature's lines above the prompt, as `stackAbove` holds them to their rows; pressing its name opens its pane. */
 function aboveBlock($: EngineInterface, id: SpeakerId, lines: RenderNode[]): AboveBlock {
-  return { id, name: SPEAKER_NAMES[id], color: castColor(id), rank: ABOVE_RANK.indexOf(id), lines, open: () => void openFeaturePane($, id) };
+  return { id, name: SPEAKER_NAMES[id], color: UNTINTED, rank: ABOVE_RANK.indexOf(id), lines, open: () => void openFeaturePane($, id) };
 }
+
+/** What the tab and heading helpers take where a color went: nothing is painted, the argument is only kept. */
+const UNTINTED = 0;
 
 /** Columns a non-plain button takes: its label inside "[ " and " ]". */
 const bracketColumns = (label: string) => displayWidth(label) + 4;
@@ -2577,10 +2581,10 @@ const bracketColumns = (label: string) => displayWidth(label) + 4;
 function autonomoLine($: EngineInterface, e: { props: { hasSurvey?: boolean } }, id: SpeakerId, mark: string, said: string): AboveBlock {
   const els = renderElements($, e);
   const { Box, Button, Text } = els;
-  const label = `${mark} ${said} · ${SPEAKER_NAMES[id]}`;
+  const label = `${mark} ${said} ${GLYPH.leader} ${SPEAKER_NAMES[id]}`;
   return aboveBlock($, id, [
     <Box key={`${id}-line`} flexDirection="row" columnGap={UI_DESIGN.space.xs} overflow="hidden">
-      {lineTab(els, castColor(id))}
+      {lineTab(els, UNTINTED)}
       <Button key={`${id}-open`} label={label} plain onPress={() => void openPane($, "autonomos")}>
         <Text underline wrap="truncate-end">{label}</Text>
       </Button>
@@ -2648,16 +2652,16 @@ async function rumoAbove($: EngineInterface, e: { props: { hasSurvey?: boolean }
   const said = goal.state === "active"
     ? text("deck.speech.rumo.active", locale, { condition: goal.condition, used: formatNumber(goal.turnsUsed, locale), max: formatNumber(goal.turnsMax, locale) })
     : text("deck.speech.rumo.proposed", locale, { condition: goal.condition });
-  const label = `${goal.state === "active" ? GLYPH.run : GLYPH.ask} Jev · ${said}`;
+  const label = `${goal.state === "active" ? GLYPH.run : GLYPH.ask} Jev ${GLYPH.leader} ${said}`;
   return {
     id: "rumo",
     name: "Jev",
-    color: castColor("jev"),
+    color: UNTINTED,
     // right after Portão's: a goal waits on the person as a held command does
     rank: ABOVE_RANK.indexOf("portao") + 0.5,
     lines: [
       <Box key="rumo-line" flexDirection="row" columnGap={UI_DESIGN.space.xs} overflow="hidden">
-        {lineTab(els, castColor("jev"))}
+        {lineTab(els, UNTINTED)}
         <Button key="rumo-open" label={label} plain onPress={() => void openPane($, "autonomos")}>
           <Text underline wrap="truncate-end">{label}</Text>
         </Button>
@@ -2681,11 +2685,11 @@ async function farolAbove($: EngineInterface, e: { props: { hasSurvey?: boolean 
   const label = open
     ? text(open === 1 ? "deck.speech.farol.one" : "deck.speech.farol.many", locale, { count: formatNumber(open, locale) })
     : text(rules.length === 1 ? "feature.farol.rules.one" : "feature.farol.rules.many", locale, { count: rules.length });
-  const name = `${label} · Farol`;
+  const name = `${label} ${GLYPH.leader} Farol`;
   // a pressable line reads as one: underlined, at full strength
   return aboveBlock($, "farol", [
     <Box key="farol-line" flexDirection="row" columnGap={UI_DESIGN.space.xs} overflow="hidden">
-      {lineTab(els, castColor("farol"))}
+      {lineTab(els, UNTINTED)}
       <Button key="farol-open" label={name} plain onPress={() => void $.ui.open({ id: "farol", title: "Farol", focus: true })}>
         <Text underline wrap="truncate-end">{name}</Text>
       </Button>
@@ -2752,8 +2756,8 @@ async function clarezaAbove($: EngineInterface, e: { props: { hasSurvey?: boolea
     // with a plan waiting and no mascot to say so, the problems open Clareza's pane, where it is sent or rejected and
     // read whole; here they are cut to the line, the status before them giving way first
     const tail = ` ${GLYPH.leader} ${text("feature.clareza.seePlan", locale)}`;
-    const room = Math.max(DECK_DESIGN.band.messages.minimumTextColumns, cols - displayWidth(GLYPH.tab) - 2 * gap - displayWidth("✗ ") - displayWidth(tail) - 1);
-    const label = `✗ ${trunc(problems, room)}${tail}`;
+    const room = Math.max(DECK_DESIGN.band.messages.minimumTextColumns, cols - displayWidth(GLYPH.tab) - 2 * gap - displayWidth(`${GLYPH.fail} `) - displayWidth(tail) - 1);
+    const label = `${GLYPH.fail} ${trunc(problems, room)}${tail}`;
     verdict = (
       <Box flexShrink={0}>
         <Button key="clareza-open" label={label} plain onPress={() => void openFeaturePane($, "clareza")}>
@@ -2762,11 +2766,11 @@ async function clarezaAbove($: EngineInterface, e: { props: { hasSurvey?: boolea
       </Box>
     );
   } else if (grade) {
-    verdict = <Text color={grade.pass ? PAINT.ok : PAINT.fail} wrap="truncate-end">{grade.pass ? `${GLYPH.ok} Clareza` : `✗ ${problems}`}{grade.fixing ? ` · ${text("feature.clareza.rewriting", locale)}` : ""}</Text>;
+    verdict = <Text color={grade.pass ? PAINT.ok : PAINT.fail} wrap="truncate-end">{grade.pass ? `${GLYPH.ok} Clareza` : `${GLYPH.fail} ${problems}`}{grade.fixing ? ` ${GLYPH.leader} ${text("feature.clareza.rewriting", locale)}` : ""}</Text>;
   }
   const lines: RenderNode[] = [
     <Box key="clareza-line" flexDirection="row" columnGap={gap} overflow="hidden">
-      {lineTab(els, castColor("clareza"))}
+      {lineTab(els, UNTINTED)}
       <Text dimColor wrap="truncate-end">{line}</Text>
       {verdict}
     </Box>,
@@ -2882,11 +2886,11 @@ async function sementeAbove($: EngineInterface, e: { surface?: string; props: { 
   // them, they move whole to a row of their own. The desktop lays the row out itself, as before.
   const room = cols - gap - bracketColumns(send) - gap - bracketColumns(dismiss);
   const lead = room >= displayWidth(GLYPH.tab) + 2 * gap + displayWidth(label) + DECK_DESIGN.band.messages.minimumTextColumns ? room : cols;
-  const ideas = found.map((idea) => sementeNudgeRulings.get(idea.id)?.decision === "questioned" ? `${GLYPH.ask} ${idea.text}` : idea.text).join(" · ");
+  const ideas = found.map((idea) => sementeNudgeRulings.get(idea.id)?.decision === "questioned" ? `${GLYPH.ask} ${idea.text}` : idea.text).join(` ${GLYPH.leader} `);
   return aboveBlock($, "semente", [
     <Box key="semente-line" flexDirection="row" flexWrap="wrap" columnGap={gap}>
       <Box {...(e.surface === "terminal" ? { width: lead } : {})} flexDirection="row" columnGap={gap} overflow="hidden">
-        {lineTab(els, castColor("semente"))}
+        {lineTab(els, UNTINTED)}
         <Box flexShrink={0}>
           <Button key="semente-open" label={label} plain onPress={() => void openFeaturePane($, "semente")}>
             <Text underline>{label}</Text>
@@ -2934,14 +2938,14 @@ async function lapidaAbove($: EngineInterface, e: { props: { hasSurvey?: boolean
     await recordLapidaSend($, prompt).catch(() => {});
     await $.prompt.submit({ text: prompt, asUser: true });
   };
-  const label = phase === "enhancing" ? "Lapida…" : phase === "ready" ? text("feature.lapida.ready", locale) : phase === "error" ? await read($, lapidaNote) : "Lapida";
+  const label = phase === "enhancing" ? `Lapida${GLYPH.ellipsis}` : phase === "ready" ? text("feature.lapida.ready", locale) : phase === "error" ? await read($, lapidaNote) : "Lapida";
   const notes = phase === "ready" ? await read($, lapidaChanges) : [];
   // The node and label, then each button, move whole to the next line on a narrow band instead of being squeezed. The
-  // notes on what the rewrite changed share one row after it, cut with "…": the rewrite itself is in the prompt box.
+  // notes on what the rewrite changed share one row after it, cut with "...": the rewrite itself is in the prompt box.
   return aboveBlock($, "lapida", [
     <Box key="lapida-line" flexDirection="row" flexWrap="wrap" columnGap={UI_DESIGN.space.xs}>
       <Box flexDirection="row" columnGap={UI_DESIGN.space.xs} overflow="hidden">
-        {lineTab(els, castColor("lapida"))}
+        {lineTab(els, UNTINTED)}
         <Text dimColor wrap="truncate-end">{label}</Text>
       </Box>
       {!enhancing && <Box flexShrink={0}><Button key="lapida-enhance" label={text("feature.lapida.enhance", locale)} hotkey="e" onPress={enhanceDraft} /></Box>}
@@ -3140,7 +3144,7 @@ async function sentinelaAbove($: EngineInterface, e: { props: { hasSurvey?: bool
   return aboveBlock($, "sentinela", [
     <Box key="sentinela-line" flexDirection="row" flexWrap="wrap" columnGap={UI_DESIGN.space.sm}>
       <Box flexDirection="row" flexShrink={0} columnGap={UI_DESIGN.space.xs}>
-        {lineTab(els, castColor("sentinela"))}
+        {lineTab(els, UNTINTED)}
         <Button key="sessions" label={text("feature.sentinela.sessions", locale)} onPress={() => void toggleSentinela($)} />
       </Box>
       <Box flexShrink={0}><Text color={PAINT.fail}>{GLYPH.ask} {text("feature.sentinela.band.waiting", locale, { count: count("waiting") })}</Text></Box>
@@ -3398,9 +3402,9 @@ async function vigiaAbove($: EngineInterface, e: { props: { hasSurvey?: boolean 
   if (collapsed) {
     return aboveBlock($, "vigia", [
       <Box key="vigia-line" gap={1} overflow="hidden">
-        {lineTab(els, castColor("vigia"))}
-        <Text dimColor wrap="truncate-end">{text(others.length === 1 ? "feature.vigia.others.one" : "feature.vigia.others.many", locale, { count: others.length })} ·</Text>
-        {conflicts.length > 0 && <Text color={PAINT.fail} wrap="truncate-end">! {text(conflicts.length === 1 ? "feature.vigia.clashes.one" : "feature.vigia.clashes.many", locale, { count: conflicts.length })} ·</Text>}
+        {lineTab(els, UNTINTED)}
+        <Text dimColor wrap="truncate-end">{text(others.length === 1 ? "feature.vigia.others.one" : "feature.vigia.others.many", locale, { count: others.length })} {GLYPH.leader}</Text>
+        {conflicts.length > 0 && <Text color={PAINT.fail} wrap="truncate-end">! {text(conflicts.length === 1 ? "feature.vigia.clashes.one" : "feature.vigia.clashes.many", locale, { count: conflicts.length })} {GLYPH.leader}</Text>}
         {toggle}
       </Box>,
     ]);
@@ -3408,16 +3412,16 @@ async function vigiaAbove($: EngineInterface, e: { props: { hasSurvey?: boolean 
   // open: the clashes, then each session at work and what it is doing, one row each, as many as `stackAbove` allows
   return aboveBlock($, "vigia", [
     <Box key="vigia-line" gap={1} overflow="hidden">
-      {lineTab(els, castColor("vigia"))}
+      {lineTab(els, UNTINTED)}
       <Text dimColor wrap="truncate-end">{text("feature.vigia.title", locale)}</Text>
       {toggle}
     </Box>,
-    ...conflicts.slice(0, 2).map((conflict) => <Text key={`${conflict.other.id}-${conflict.file}`} color={PAINT.fail} wrap="truncate">  ! {text("feature.vigia.clash", locale)}: {conflict.file} · {vigiaName(conflict.other)} · {formatAge(now - conflict.at, locale)}</Text>),
+    ...conflicts.slice(0, 2).map((conflict) => <Text key={`${conflict.other.id}-${conflict.file}`} color={PAINT.fail} wrap="truncate">  ! {text("feature.vigia.clash", locale)}: {conflict.file} {GLYPH.leader} {vigiaName(conflict.other)} {GLYPH.leader} {formatAge(now - conflict.at, locale)}</Text>),
     ...others.slice(0, 3).flatMap((record) => {
       const doing = vigiaDoing(record) ?? record.lastPrompt;
       return [
-        <Box key={record.id} paddingLeft={2}><Text wrap="truncate"><Text color={record.isBusy ? PAINT.warn : PAINT.ok}>{record.isBusy ? `${GLYPH.run} ` : `${GLYPH.ask} `}</Text><Text bold>{vigiaName(record)}</Text><Text dimColor> · {text(record.isBusy ? "feature.vigia.working" : "feature.vigia.waiting", locale)}</Text></Text></Box>,
-        ...(doing ? [<Box key={`${record.id}-doing`} paddingLeft={2}><Text wrap="truncate">{GLYPH.branch} {doing}{vigiaNext(record) ? ` → ${vigiaNext(record)}` : ""}</Text></Box>] : []),
+        <Box key={record.id} paddingLeft={2}><Text wrap="truncate"><Text color={record.isBusy ? PAINT.warn : PAINT.ok}>{record.isBusy ? `${GLYPH.run} ` : `${GLYPH.ask} `}</Text><Text bold>{vigiaName(record)}</Text><Text dimColor> {GLYPH.leader} {text(record.isBusy ? "feature.vigia.working" : "feature.vigia.waiting", locale)}</Text></Text></Box>,
+        ...(doing ? [<Box key={`${record.id}-doing`} paddingLeft={2}><Text wrap="truncate">{GLYPH.branch} {doing}{vigiaNext(record) ? ` ${GLYPH.route} ${vigiaNext(record)}` : ""}</Text></Box>] : []),
       ];
     }),
   ]);
@@ -3911,7 +3915,7 @@ async function portaoAgentEnded($: EngineInterface, e: { agentId?: string; answe
   const note = ok ? undefined : report.verdict === "fail"
     ? text("feature.portao.note.securityFailed", locale, { count: formatNumber(report.issues.length, locale) })
     : text("feature.portao.note.noReport", locale);
-  await portaoCheckEnded($, open.n, "security", ok ? "passed" : "failed", note, ok ? [] : report.issues.map((issue) => (issue.where ? `${issue.where} — ${issue.text}` : issue.text)));
+  await portaoCheckEnded($, open.n, "security", ok ? "passed" : "failed", note, ok ? [] : report.issues.map((issue) => (issue.where ? `${issue.where} ${GLYPH.leader} ${issue.text}` : issue.text)));
 }
 
 /**
@@ -4263,7 +4267,7 @@ async function ensaioAgentEnded($: EngineInterface, e: { agentId?: string; answe
   const report = parseEnsaioReport(e.answer ?? "");
   const ok = agentEnding(e).ok && report.verdict !== undefined;
   const endedAt = await $.clock.now();
-  const problems = report.problems.map((one) => (one.where ? `${one.where} — ${one.text}` : one.text));
+  const problems = report.problems.map((one) => (one.where ? `${one.where} ${GLYPH.leader} ${one.text}` : one.text));
   const proposal = report.verdict === "broken" && (problems.length || report.fix)
     ? { kind: "fix" as const, text: text("feature.ensaio.prompt.fix", locale, { problems: problems.map((line) => `- ${line}`).join("\n") || "-", fix: report.fix ?? "" }), state: "waiting" as const }
     : undefined;
@@ -4982,7 +4986,7 @@ async function statusText($: EngineInterface): Promise<string> {
 }
 
 /** Keep short invalid inputs fully masked and reveal only the last four characters of longer keys. */
-const maskKey = (key: string) => (key.length > 4 ? "•".repeat(key.length - 4) + key.slice(-4) : "•".repeat(key.length));
+const maskKey = (key: string) => (key.length > 4 ? "*".repeat(key.length - 4) + key.slice(-4) : "*".repeat(key.length));
 
 /**
  * The key field changed. It is drawn masked, so what comes back is the mask plus what was typed
@@ -4992,7 +4996,7 @@ function applyTyped(value: string): void {
   const shown = maskKey(draftKey);
   if (value.startsWith(shown)) draftKey += value.slice(shown.length);
   else if (shown.startsWith(value)) draftKey = draftKey.slice(0, [...value].length);
-  else if (!value.includes("•")) draftKey = value;
+  else if (!value.includes("*")) draftKey = value;
   draftKey = draftKey.replace(/\s+/g, "");
 }
 
@@ -5622,9 +5626,9 @@ export const register: Register = (on, given) => {
     ].filter(Boolean).join(text("feed.usage.separator", locale));
     const tokens = usage && (inputComplete || outputKnown)
       ? text("feed.usage.tokens", locale, {
-          input: inputComplete ? formatCompact(totalInput(usage), locale) : "–",
-          output: counts.output !== undefined ? formatCompact(counts.output, locale) : "–",
-          cache: cache ? ` · ${cache}` : "",
+          input: inputComplete ? formatCompact(totalInput(usage), locale) : "-",
+          output: counts.output !== undefined ? formatCompact(counts.output, locale) : "-",
+          cache: cache ? ` ${GLYPH.leader} ${cache}` : "",
         })
       : "";
     if (e.agentId) {
@@ -5714,7 +5718,7 @@ export const register: Register = (on, given) => {
     await updateTrace($, (s) => toolStart(s, { id: toolUseId, ...(e.agentId ? { agentId: e.agentId } : {}), name: e.tool, at: startedAt }));
     // One line per call: written as it starts, rewritten with its outcome when it ends.
     const toolDetail = toolDetails(e.tool, input, locale);
-    const line = await log($, who, "tool", "info", `▸ ${summary}`, e.agentId, { meta: text("feed.tool.running", locale), ...(toolDetail ? { detail: toolDetail } : {}) });
+    const line = await log($, who, "tool", "info", `${GLYPH.open} ${summary}`, e.agentId, { meta: text("feed.tool.running", locale), ...(toolDetail ? { detail: toolDetail } : {}) });
     if (!e.agentId) await setLive($, { activity: text("feed.activity.running", locale, { activity: short(summary, 40) }) });
     else await updateRun($, e.agentId, (run) => ({ ...run, tools: run.tools + 1, activity: text("feed.activity.agentTool", locale, { activity: short(summary, 60) }) }));
     // The follower reads the channel every 100 ms: the command's last calls still count where it ran.
@@ -5761,14 +5765,14 @@ export const register: Register = (on, given) => {
         toolEnd(s, { id: toolUseId, ...(e.agentId ? { agentId: e.agentId } : {}), at: endedAt, result: ending, edit: EDIT_TOOLS.has(e.tool), ...(filePath ? { file: filePath } : {}) }),
       ).catch(() => undefined);
       if (result.deny !== undefined) {
-        await patch($, line, { text: `⊘ ${summary}`, tone: "warn", meta: text("feed.tool.deniedLabel", locale), detail: [toolDetail, text("feed.tool.denied", locale, { message: short(result.deny, 160) })].filter(Boolean).join("\n") });
+        await patch($, line, { text: `/ ${summary}`, tone: "warn", meta: text("feed.tool.deniedLabel", locale), detail: [toolDetail, text("feed.tool.denied", locale, { message: short(result.deny, 160) })].filter(Boolean).join("\n") });
       } else {
         const outcome = result.isError ? text("feed.tool.error", locale, { message: short(String(result.text ?? ""), 160) }) : outputSize(resultText(result.result), locale);
         await patch($, line, {
-          text: `${result.isError ? "✗" : GLYPH.ok} ${summary}`,
+          text: `${result.isError ? GLYPH.fail : GLYPH.ok} ${summary}`,
           tone: result.isError ? "bad" : "good",
           meta: took,
-          detail: [toolDetail, outcome].filter(Boolean).join(" → "),
+          detail: [toolDetail, outcome].filter(Boolean).join(` ${GLYPH.route} `),
         });
       }
       if (e.agentId) await updateRun($, e.agentId, (run) => ({ ...run, activity: text("feed.activity.waiting", locale) }));
@@ -5883,7 +5887,7 @@ export const register: Register = (on, given) => {
     await traceSpawn($, e, id, result.model).catch(() => undefined);
     await log($, actor(id), "agent", "info", text("feed.subagent.started", config.locale, { type: e.subagentType, number: formatNumber(run.n, config.locale), description: short(e.description, 80) }), undefined, {
       meta: `/jev agent ${run.n}`,
-      detail: `${chosen.join(text("feed.usage.separator", config.locale))} · ${text("feed.subagent.task", config.locale, { prompt: short(e.prompt, 220) })}`,
+      detail: `${chosen.join(text("feed.usage.separator", config.locale))} ${GLYPH.leader} ${text("feed.subagent.task", config.locale, { prompt: short(e.prompt, 220) })}`,
     });
     await setLive($, { activity: text("ui.band.agent", config.locale, { name: `${e.subagentType} (${modelName(result.model)})` }) });
     return result;
@@ -5917,7 +5921,7 @@ export const register: Register = (on, given) => {
     const loop = typeof who === "string" ? "" : text("feed.request.loop", locale, { agent: who.agent });
     if (changes.length) await log($, "jev", "step", "warn", text("feed.change.request", locale, { number: formatNumber(e.index + 1, locale), loop, changes: changes.join(text("feed.change.separator", locale)) }), e.agentId);
     // Bookkeeping: drawn faint, filled in with its tokens and time once the model answers.
-    const requestLine = await log($, "mod", "step", "muted", text("feed.request.line", locale, { number: formatNumber(e.index + 1, locale), loop, model: modelName(model), effort: effortText }), e.agentId, { minor: true, meta: "…" });
+    const requestLine = await log($, "mod", "step", "muted", text("feed.request.line", locale, { number: formatNumber(e.index + 1, locale), loop, model: modelName(model), effort: effortText }), e.agentId, { minor: true, meta: GLYPH.ellipsis });
     if (e.agentId) {
       // A teammate waking up runs again: its earlier turn marked it done.
       const mate = agentRuns.get(e.agentId);
@@ -5965,15 +5969,15 @@ export const register: Register = (on, given) => {
       }),
     );
     if (result.answer.trim()) {
-      await log($, who, "message", "info", `“${short(result.answer, 320)}”`, e.agentId);
+      await log($, who, "message", "info", `"${short(result.answer, 320)}"`, e.agentId);
     }
     if (!e.agentId && usage) {
       mainModel = usage.model ?? model;
     }
     if (executor) await orch.noteApplied(orchIo($), { model, ...(effort === undefined ? {} : { effort: String(effort) }) }, usage?.model).catch(() => undefined);
     const asked = [...new Set(result.toolUses.map((use) => use.name))];
-    const inputText = counts.input !== undefined ? formatCompact(counts.input, locale) : "–";
-    const outputText = counts.output !== undefined ? formatCompact(counts.output, locale) : "–";
+    const inputText = counts.input !== undefined ? formatCompact(counts.input, locale) : "-";
+    const outputText = counts.output !== undefined ? formatCompact(counts.output, locale) : "-";
     const cacheText = usage && inputComplete
       ? text("feed.usage.cache", locale, { percent: formatPercent(counts.cacheRead ?? 0, totalInput(usage), locale) })
       : "";
@@ -6041,7 +6045,7 @@ export const register: Register = (on, given) => {
     const locale = (await getSettings($)).locale;
     if (e.args.trim() === "clear") { await $.store.delete(await prismaDecisionKey($)); return { text: text("feature.prisma.decisions.cleared", locale, { count: decisions.length }) }; }
     if (e.args.trim()) return { text: text("feature.prisma.decisions.usage", locale) };
-    return { text: decisions.length ? `${text("feature.prisma.decisions.title", locale)}:\n${decisions.map((item, i) => `${i + 1}. ${item.question} → ${item.choice}${item.description ? ` (${item.description})` : ""}`).join("\n")}` : text("feature.prisma.decisions.none", locale) };
+    return { text: decisions.length ? `${text("feature.prisma.decisions.title", locale)}:\n${decisions.map((item, i) => `${i + 1}. ${item.question} ${GLYPH.route} ${item.choice}${item.description ? ` (${item.description})` : ""}`).join("\n")}` : text("feature.prisma.decisions.none", locale) };
   });
   on("command.run", { command: "sentinela" }, async ($) => { await toggleSentinela($); return {}; });
   on("command.run", { command: "comandante" }, async ($) => { await refreshComandante($); await openPane($, "comandante"); return {}; });
@@ -6304,30 +6308,44 @@ export const register: Register = (on, given) => {
     const { Box, Text, Button } = ui;
     const Input = "Input" in ui ? ui.Input : undefined;
     const locale = (await getSettings($)).locale;
-    if (!(await featureEnabled($, "farol"))) return <Text dimColor>{text("feature.farol.off", locale)}</Text>;
+    const width = paneColumns(e);
+    if (!(await featureEnabled($, "farol"))) return paneBox(ui, "Farol", width, <Text dimColor wrap="wrap">{text("feature.farol.off", locale)}</Text>);
     const list = await read($, farolItems);
     const rules = await read($, farolRules);
     const newest = [...list].reverse().find((item) => item.verdict === "open");
-    if (!list.length && !rules.length) return <Text dimColor>{text("feature.farol.none", locale)}</Text>;
-    const width = paneColumns(e);
-    return <Box flexDirection="column" gap={1}>
-      {featureHead(ui, "Farol", castColor("farol"), text("feature.farol.summary", locale, { assumptions: list.length, rules: rules.length }))}
-      {rules.length > 0 && sheetCard(ui, text(rules.length === 1 ? "feature.farol.rules.one" : "feature.farol.rules.many", locale, { count: rules.length }), rules.map((rule, i) => <Box key={`rule-${i}`}><Text>{GLYPH.leader} {rule.correction} <Text dimColor>({text("feature.farol.rule.not", locale)}: {rule.assumption})</Text></Text><Button key={`delete-rule-${i}`} label={text("feature.farol.delete", locale)} dimColor onPress={() => void saveFarolRules($, (all) => all.filter((item) => item !== rule))} /></Box>), { width, rule: hex(castColor("farol")) })}
-      <Text dimColor>{text("feature.farol.hint", locale)}</Text>
-      {[...list].reverse().map((item) => {
-        // approved by the Comandante, it was marked right in the person's place: no ✓ or ✗ is left to press. Each one is
-        // tagged done once Claude has it, pending until then
-        const ruled = item.comandante?.decision === "approved" && item.verdict === "right";
-        const tag = stateTag(item.sent, locale);
-        return <Box key={`assumption-${item.id}`} flexDirection="column">{sheetCard(ui, `#${item.id} ${item.text}`, [
-          item.context ? <Text dimColor wrap="wrap">{item.context}</Text> : null, item.note ? <Text wrap="wrap">{GLYPH.route} {item.note}</Text> : null,
-          item.comandante && item.comandante.decision !== "approved" ? <Text dimColor wrap="wrap">{rulingLine(item.comandante, locale)}</Text> : null,
-          <Box flexDirection="row" gap={1}>{!ruled && <Button key={`right-${item.id}`} label={`${GLYPH.ok} ${text("feature.farol.right", locale)}`} hotkey={item === newest ? "y" : undefined} onPress={() => void farolJudge($, item.id, "right")} />}{!ruled && <Button key={`wrong-${item.id}`} label={`✗ ${text("feature.farol.wrong", locale)}`} hotkey={item === newest ? "n" : undefined} onPress={() => void farolJudge($, item.id, "wrong", item.note)} />}<Text bold color={tag.color}>{tag.glyph}</Text><Text color={tag.color}>{tag.label}</Text>{(ruled || item.sent) && <Text dimColor>{text(ruled ? "feature.farol.byComandante" : "feature.farol.sent", locale)}</Text>}</Box>,
-          Input && item.verdict !== "right" ? <Input key={`fix-${item.id}`} placeholder={text("feature.farol.fix", locale)} value={item.note ?? ""} onSubmit={(value) => { if (value.trim()) void farolJudge($, item.id, "wrong", value.trim()); }} /> : null,
-        ], { width, glyph: item.verdict === "right" ? GLYPH.ok : item.verdict === "wrong" ? "✗" : GLYPH.ask, rule: item.verdict === "right" ? PAINT.ok : item.verdict === "wrong" ? PAINT.fail : PAINT.warn })}</Box>;
-      })}
-      {list.some((item) => item.sent) && <Button key="clear-reviewed" label={text("feature.farol.clear", locale)} dimColor onPress={() => void update($, farolItems, (all) => all.filter((item) => item.verdict === "open" || !item.sent))} />}
-    </Box>;
+    if (!list.length && !rules.length) return paneBox(ui, "Farol", width, <Text dimColor wrap="wrap">{text("feature.farol.none", locale)}</Text>);
+    const inner = width - INDENT;
+    const rows = [...list].reverse();
+    return paneBox(ui, "Farol", width, <Box flexDirection="column">
+      <Text bold wrap="wrap">{text("feature.farol.summary", locale, { assumptions: list.length, rules: rules.length })}</Text>
+      <Text dimColor wrap="wrap">{text("feature.farol.hint", locale)}</Text>
+      {rules.length > 0 && <Box flexDirection="column" marginTop={1}>{sheetCard(ui, text(rules.length === 1 ? "feature.farol.rules.one" : "feature.farol.rules.many", locale, { count: rules.length }), rules.map((rule, i) => <Box key={`rule-${i}`}><Text>{GLYPH.leader} {rule.correction} <Text dimColor>({text("feature.farol.rule.not", locale)}: {rule.assumption})</Text></Text><Button key={`delete-rule-${i}`} label={text("feature.farol.delete", locale)} dimColor onPress={() => void saveFarolRules($, (all) => all.filter((item) => item !== rule))} /></Box>), { width: inner })}</Box>}
+      {rows.length > 0 && <Box marginTop={1} flexDirection="column">
+        {rows.map((item) => {
+          // approved by the Comandante, it was marked right in the person's place. Each one is tagged done once Claude
+          // has it, pending until then
+          const ruled = item.comandante?.decision === "approved" && item.verdict === "right";
+          const tag = stateTag(item.sent, locale);
+          const mark = item.verdict === "right" ? GLYPH.ok : item.verdict === "wrong" ? GLYPH.fail : GLYPH.ask;
+          return <Box key={`assumption-${item.id}`} flexDirection="column">
+            <Text wrap="wrap"><Text bold>{mark}</Text> <Text bold>{`#${item.id}`}</Text> <Text dimColor>{tag.label}</Text>{"  "}<Text>{item.text}</Text></Text>
+            {item.context ? <Text dimColor wrap="wrap">{"  "}{item.context}</Text> : null}
+            {item.note ? <Text wrap="wrap">{"  "}{GLYPH.route} {item.note}</Text> : null}
+            {item.comandante && item.comandante.decision !== "approved" ? <Text dimColor wrap="wrap">{"  "}{rulingLine(item.comandante, locale)}</Text> : null}
+            {ruled || item.sent ? <Box paddingLeft={2}><Text dimColor>{text(ruled ? "feature.farol.byComandante" : "feature.farol.sent", locale)}</Text></Box> : null}
+          </Box>;
+        })}
+      </Box>}
+      {/* one row of buttons for the newest open assumption, as the hint says; its correction, typed, becomes a rule */}
+      {newest ? <Box marginTop={1} flexDirection="column">
+        <Box flexDirection="row" gap={1}>
+          <Button key={`right-${newest.id}`} label={text("feature.farol.right", locale)} hotkey="y" onPress={() => void farolJudge($, newest.id, "right")} />
+          <Button key={`wrong-${newest.id}`} label={text("feature.farol.wrong", locale)} hotkey="n" onPress={() => void farolJudge($, newest.id, "wrong", newest.note)} />
+        </Box>
+        {Input ? <Input key={`fix-${newest.id}`} placeholder={text("feature.farol.fix", locale)} value={newest.note ?? ""} onSubmit={(value) => { if (value.trim()) void farolJudge($, newest.id, "wrong", value.trim()); }} /> : null}
+      </Box> : null}
+      {list.some((item) => item.sent) && <Box marginTop={1}><Button key="clear-reviewed" label={text("feature.farol.clear", locale)} dimColor onPress={() => void update($, farolItems, (all) => all.filter((item) => item.verdict === "open" || !item.sent))} /></Box>}
+    </Box>);
   });
 
   // Clareza's plan, opened from what its mascot says: what may confuse in the last answer, the exact request Claude
@@ -6343,26 +6361,29 @@ export const register: Register = (on, given) => {
     const offered = grade?.offered ?? [];
     const terms = offered.length ? <Box flexDirection="row" flexWrap="wrap" columnGap={1}><Text dimColor>{text("feature.clareza.know", locale)}</Text>{offered.map((term) => <Button key={`clareza-pane-${term}`} label={term} dimColor onPress={() => void knowClarezaTerm($, term)} />)}</Box> : null;
     const ui = $.ui.resolve(e);
-    if (!plan) return <Box flexDirection="column" gap={1}>{featureHead(ui, "Clareza", castColor("clareza"))}<Text dimColor>{text("feature.clareza.noPlan", locale)}</Text>{status && <Text dimColor>{status}</Text>}{terms}</Box>;
-    const problems = plan.problems.length ? plan.problems : [text("feature.clareza.unclear", locale)];
     const width = paneColumns(e);
+    if (!plan) return paneBox(ui, "Clareza", width, <Box flexDirection="column"><Text dimColor wrap="wrap">{text("feature.clareza.noPlan", locale)}</Text>{status && <Text dimColor wrap="wrap">{status}</Text>}{terms}</Box>);
+    const problems = plan.problems.length ? plan.problems : [text("feature.clareza.unclear", locale)];
     const tag = stateTag(plan.sent === true, locale);
-    return <Box flexDirection="column" gap={1}>
-      {featureHead(ui, "Clareza", castColor("clareza"), text("feature.clareza.plan.title", locale))}
-      {sheetCard(ui, text("feature.clareza.plan.problems", locale), problems.map((problem, i) => <Text key={`clareza-problem-${i}`} wrap="wrap">{GLYPH.leader} {problem}</Text>), { width, glyph: GLYPH.warn, rule: PAINT.warn })}
-      {sheetCard(ui, text(plan.sent ? "feature.clareza.plan.sent" : "feature.clareza.plan.request", locale), <Text wrap="wrap">{plan.prompt}</Text>, { width, rule: hex(castColor("clareza")) })}
-      <Text wrap="wrap"><Text bold color={tag.color}>{`${tag.glyph} ${tag.label}`}</Text>{plan.comandante && <Text dimColor>{` · ${plan.sent
+    return paneBox(ui, text("feature.clareza.plan.title", locale), width, <Box flexDirection="column">
+      <Text bold wrap="wrap">{text("feature.clareza.plan.problems", locale)}</Text>
+      {problems.map((problem, i) => <Box key={`clareza-problem-${i}`} paddingLeft={2}><Text wrap="wrap">{GLYPH.leader} {problem}</Text></Box>)}
+      <Text bold wrap="wrap">{text(plan.sent ? "feature.clareza.plan.sent" : "feature.clareza.plan.request", locale)}</Text>
+      <Box paddingLeft={2}><Text wrap="wrap">{plan.prompt}</Text></Box>
+      {(plan.sent || plan.comandante) && <Text wrap="wrap"><Text bold>{`${tag.glyph} ${tag.label}`}</Text>{plan.comandante && <Text dimColor>{` ${GLYPH.leader} ${plan.sent
         ? text("feature.comandante.done.clareza", locale, { reason: text(`feature.comandante.reason.${plan.comandante.reason}` as LocaleKey, locale) })
-        : comandanteMessage("clareza", plan.comandante, locale)}`}</Text>}</Text>
+        : comandanteMessage("clareza", plan.comandante, locale)}`}</Text>}</Text>}
       {terms}
+      <Box marginTop={1}>
       {plan.sent
         // sent by the Comandante: nothing is left to send or reject, only to clear
         ? <Button key="clareza-clear" label={text("feature.comandante.clearDone", locale)} dimColor onPress={() => void update($, clarezaProposal, (current) => (current?.sent ? null : current))} />
-        : <Box flexDirection="row" gap={1}>
+        : <Box flexDirection="row" gap={2}>
           <Button key="clareza-send" label={text("feature.clareza.send", locale)} hotkey="s" variant="primary" onPress={() => void sendClareza($)} />
           <Button key="clareza-reject" label={text("feature.clareza.reject", locale)} hotkey="r" role="dismiss" onPress={() => void rejectClareza($)} />
         </Box>}
-    </Box>;
+      </Box>
+    </Box>);
   });
 
   on("ui.render", { component: "Pane", requestId: "semente" }, async ($, e) => {
@@ -6378,17 +6399,17 @@ export const register: Register = (on, given) => {
     const width = paneColumns(e);
     // the Comandante's ruling beside an idea it did not approve: on the nudge, its question; on the shelf, why
     const ruling = (one: ComandanteRuling | undefined) => one && one.decision !== "approved" ? <Text dimColor wrap="wrap">{`${one.decision === "questioned" ? GLYPH.ask : GLYPH.fail} ${rulingLine(one, locale)}`}</Text> : null;
-    return <Box flexDirection="column" gap={1}>
-      {featureHead(ui, "Semente", castColor("semente"), matching.length ? text(matching.length === 1 ? "feature.semente.fits.one" : "feature.semente.fits.many", locale, { count: matching.length }) : undefined)}
+    return paneBox(ui, "Semente", width, <Box flexDirection="column" gap={1}>
+      {matching.length > 0 && <Text bold wrap="wrap">{text(matching.length === 1 ? "feature.semente.fits.one" : "feature.semente.fits.many", locale, { count: matching.length })}</Text>}
       {matching.length > 0 && <Box key="semente-fit" flexDirection="column">{sheetCard(ui, text("feature.semente.fits.title", locale), matching.map((idea) => <Box key={`fit-${idea.id}`} flexDirection="column">
           <Text wrap="wrap">{idea.text}</Text>
           {ruling(sementeNudgeRulings.get(idea.id))}
           <Box flexDirection="row" gap={1}><Button key={`fit-send-${idea.id}`} label={text("feature.semente.send", locale)} variant="primary" onPress={() => void sendSemente($, [idea])} /><Button key={`fit-dismiss-${idea.id}`} label={text("feature.semente.dismiss", locale)} role="dismiss" onPress={() => void dismissSemente($, [idea])} /></Box>
-        </Box>), { width, rule: hex(castColor("semente")) })}</Box>}
+        </Box>), { width: width - INDENT })}</Box>}
       {Input && <Input key="new-idea" label="+ " placeholder={text("feature.semente.new", locale)} submitLabel={text("feature.semente.save", locale)} onSubmit={(value) => { if (value.trim()) void addSemente($, value); }} />}
       {!list.length && <Text dimColor>{text("feature.semente.empty", locale)}</Text>}
-      {list.map((idea) => <Box key={idea.id} flexDirection="column"><Box flexDirection="row" gap={1}><Button key={`send-${idea.id}`} label={text("feature.semente.send", locale)} onPress={() => void sendSemente($, [idea])} /><Button key={`delete-${idea.id}`} label="×" dimColor onPress={() => void saveSemente($, (all) => all.filter((item) => item.id !== idea.id))} /><Text dimColor>{idea.source === "claude" ? "Claude" : text("feature.semente.you", locale)}:</Text><Text>{idea.text}</Text></Box>{ruling(idea.comandante)}</Box>)}
-    </Box>;
+      {list.map((idea) => <Box key={idea.id} flexDirection="column"><Box flexDirection="row" gap={1}><Button key={`send-${idea.id}`} label={text("feature.semente.send", locale)} onPress={() => void sendSemente($, [idea])} /><Button key={`delete-${idea.id}`} label="x" dimColor onPress={() => void saveSemente($, (all) => all.filter((item) => item.id !== idea.id))} /><Text dimColor>{idea.source === "claude" ? "Claude" : text("feature.semente.you", locale)}:</Text><Text>{idea.text}</Text></Box>{ruling(idea.comandante)}</Box>)}
+    </Box>);
   });
 
   on("ui.render", { component: "Pane", requestId: "prisma" }, async ($, e) => {
@@ -6415,17 +6436,16 @@ export const register: Register = (on, given) => {
       if (next.questions.length === 1) finish(next);
     };
     const prefs = await readFeaturePreferences($);
-    return <Box flexDirection="column" gap={1}>
-      {featureHead(ui, "Prisma", castColor("prisma"))}
+    return paneBox(ui, "Prisma", paneColumns(e), <Box flexDirection="column" gap={1}>
       {picker.questions.map((question, qi) => <Box key={`question-${qi}`} flexDirection="column">
         <Text bold>{question.header}: {question.question}{question.multiSelect ? ` ${text("feature.prisma.pickAny", locale)}` : prismaMixing(picker, qi) ? ` ${text("feature.prisma.mixTwo", locale)}` : ""}</Text>
         <Box flexDirection="row" flexWrap="wrap" gap={1}>{question.options.map((option, oi) => {
           const selected = picker.picks[qi]?.includes(option.label) ?? false;
           const hotkey = qi + oi < 9 ? String(qi + oi + 1) : undefined;
-          return <Box key={`option-${qi}-${oi}`} flexDirection="column" width={e.surface === "terminal" ? 30 : undefined} borderStyle="round" borderColor={selected ? PAINT.ok : undefined} borderDimColor={!selected} paddingX={1}>
+          return <Box key={`option-${qi}-${oi}`} flexDirection="column" width={e.surface === "terminal" ? 30 : undefined} borderStyle={BORDER_STYLE} borderDimColor={!selected} paddingX={1}>
             {Svg && option.svg && <Svg source={option.svg} alt={option.label} width={300} />}
             {!Svg && option.svg && <Text dimColor>{text(prefs.designSurface === "pane" ? "feature.prisma.preview.browserMode" : "feature.prisma.preview.openBrowser", locale)}</Text>}
-            <Button key={`pick-${qi}-${oi}`} hotkey={hotkey} label={`${selected ? `${GLYPH.ok} ` : ""}${option.label}`} onPress={() => void choose(qi, option.label)} />
+            <Button key={`pick-${qi}-${oi}`} hotkey={hotkey} label={`${selected ? `${GLYPH.open} ` : ""}${option.label}`} onPress={() => void choose(qi, option.label)} />
             {option.description && <Text dimColor>{option.description}</Text>}
           </Box>;
         })}</Box>
@@ -6436,7 +6456,7 @@ export const register: Register = (on, given) => {
         {(picker.questions.length > 1 || picker.questions.some((question) => question.multiSelect) || picker.mix.some(Boolean)) && prismaComplete(picker) && <Button key="submit" hotkey="s" variant="primary" label={text("feature.prisma.submit", locale)} onPress={() => finish(picker)} />}
         {(prefs.designSurface !== "pane" || !Svg) && <Button key="browser" label={text("feature.prisma.openBrowser", locale)} dimColor onPress={async () => { const port = await $.fs.read(picker.gallery.replace(/index\.html$/, "port")); const url = `http://127.0.0.1:${String(port).trim()}/index.html`; const windows = await $.env.get("OS") === "Windows_NT"; const command = windows ? ["python", "-c", "import webbrowser,sys;webbrowser.open(sys.argv[1])", url] : ["python3", "-c", "import webbrowser,sys;webbrowser.open(sys.argv[1])", url]; void $.process.run(command).catch(() => {}); }} />}
       </Box>
-    </Box>;
+    </Box>);
   });
 
   on("ui.render", { component: "Pane", requestId: "sentinela" }, async ($, e) => {
@@ -6450,19 +6470,19 @@ export const register: Register = (on, given) => {
     const target = await read($, sentinelaReplyTo);
     const replying = list.find((row) => row.id === target);
     const trouble = await read($, sentinelaProblem);
-    return <Box flexDirection="column">
-      {featureHead(ui, "Sentinela", castColor("sentinela"), `${text("feature.sentinela.total", locale, { count: list.length })} · ${text("feature.sentinela.autoRefresh", locale)}`)}
+    return paneBox(ui, "Sentinela", paneColumns(e), <Box flexDirection="column">
+      <Text bold wrap="wrap">{`${text("feature.sentinela.total", locale, { count: list.length })} ${GLYPH.leader} ${text("feature.sentinela.autoRefresh", locale)}`}</Text>
       {trouble && <Text color={PAINT.fail}>{trouble}</Text>}{!list.length && <Text dimColor>{text("feature.sentinela.none", locale)}</Text>}
       {list.map((row) => {
         const isMe = row.id === sentinelaMe;
         const state = row.waitingFor || text(row.status === "waiting" ? "feature.sentinela.state.waiting" : row.status === "working" ? "feature.sentinela.state.working" : "feature.sentinela.state.done", locale);
-        return <Box key={row.id} flexDirection="row" gap={1}><Box flexGrow={1} flexShrink={1}><Text wrap="truncate-end"><Text color={row.status === "waiting" ? PAINT.fail : row.status === "working" ? PAINT.warn : PAINT.ok}>{row.status === "waiting" ? `${GLYPH.ask} ` : row.status === "working" ? `${GLYPH.on} ` : `${GLYPH.ok} `}</Text><Text bold>{sentinelaLabel(row)}</Text>{isMe && <Text dimColor>{` ${text("feature.sentinela.this", locale)}`}</Text>}<Text> · {state}</Text><Text dimColor> · {sentinelaAge(now - row.since)} · {row.project}</Text></Text></Box>
+        return <Box key={row.id} flexDirection="row" gap={1}><Box flexGrow={1} flexShrink={1}><Text wrap="truncate-end"><Text color={row.status === "waiting" ? PAINT.fail : row.status === "working" ? PAINT.warn : PAINT.ok}>{row.status === "waiting" ? `${GLYPH.ask} ` : row.status === "working" ? `${GLYPH.on} ` : `${GLYPH.ok} `}</Text><Text bold>{sentinelaLabel(row)}</Text>{isMe && <Text dimColor>{` ${text("feature.sentinela.this", locale)}`}</Text>}<Text> {GLYPH.leader} {state}</Text><Text dimColor> {GLYPH.leader} {sentinelaAge(now - row.since)} {GLYPH.leader} {row.project}</Text></Text></Box>
           {Input && !isMe && row.status === "waiting" && <Button key={`reply-${row.id}`} label={text("feature.sentinela.reply.label", locale)} plain onPress={async () => { await update($, sentinelaReplyTo, (value) => value === row.id ? "" : row.id); await resizeSentinela($); await $.ui.focus({ requestId: "sentinela", key: "reply-text" }).catch(() => {}); }} />}
           {!isMe && <Button key={`jump-${row.id}`} label={text("feature.sentinela.jump.label", locale)} plain dimColor onPress={(surface) => void jumpSentinela($, row, surface.surface)} />}
         </Box>;
       })}
-      {Input && replying && <Input key="reply-text" label={`→ ${sentinelaLabel(replying)}`} placeholder={text("feature.sentinela.reply.placeholder", locale)} submitLabel={text("feature.sentinela.reply.send", locale)} autoFocus onSubmit={(value) => void sendSentinelaReply($, value)} />}
-    </Box>;
+      {Input && replying && <Input key="reply-text" label={`${GLYPH.route} ${sentinelaLabel(replying)}`} placeholder={text("feature.sentinela.reply.placeholder", locale)} submitLabel={text("feature.sentinela.reply.send", locale)} autoFocus onSubmit={(value) => void sendSentinelaReply($, value)} />}
+    </Box>);
   });
 
   on("ui.render", { component: "Pane", requestId: "vigia" }, async ($, e) => {
@@ -6477,32 +6497,42 @@ export const register: Register = (on, given) => {
     const own = await ensureVigia($);
     const mail = await read($, vigiaMail);
     const taskBar = (tasks: VigiaTask[]) => { const done = tasks.filter((task) => task.status === "completed").length; return `${meter(done / tasks.length, Math.min(10, tasks.length)).join("")} ${done}/${tasks.length}`; };
-    return <Box flexDirection="column" gap={1}>
-      {featureHead(ui, "Vigia", castColor("vigia"), text("feature.vigia.title", locale))}
+    const width = paneColumns(e);
+    const inner = width - INDENT;
+    const clashWindow = conflicts.length > 0 ? (await readFeaturePreferences($)).clashMinutes : 0;
+    return paneBox(ui, "Vigia", width, <Box flexDirection="column" gap={1}>
+      <Text bold wrap="wrap">{text("feature.vigia.title", locale)}</Text>
       {!list.length && <Text dimColor>{text("feature.vigia.none", locale)}</Text>}
-      {conflicts.length > 0 && <Box flexDirection="column" borderStyle="round" borderColor={PAINT.fail} paddingX={1}><Text bold color={PAINT.fail}>⚠ {text("feature.vigia.clashes.title", locale)} · {text("feature.vigia.clashes.window", locale, { minutes: (await readFeaturePreferences($)).clashMinutes })}</Text>{conflicts.slice(0, 6).map((conflict) => <Text key={`${conflict.other.id}-${conflict.file}`} wrap="truncate">{conflict.file} · {vigiaName(conflict.other)} · {formatAge(now - conflict.at, locale)}</Text>)}</Box>}
-      {mail.length > 0 && <Box flexDirection="column" borderStyle="round" borderColor={PAINT.brand} paddingX={1}><Box flexDirection="row" justifyContent="space-between" gap={1}><Text bold color={PAINT.brand}>✉ {text("feature.vigia.messages", locale)}</Text>
-        {mail.some(vigiaMailDone) && <Button key="vigia-clear" label={text("feature.comandante.clearDone", locale)} dimColor onPress={() => void update($, vigiaMail, (list) => list.filter((one) => !vigiaMailDone(one)))} />}</Box>{mail.slice(0, 6).map((item) => {
-        // a message the Comandante held waits here until the person releases it to Claude
-        const held = item.comandante?.decision === "rejected" && !item.isReleased;
-        return <Box key={item.id} flexDirection="row" gap={1}><Box flexGrow={1} flexShrink={1}><Text wrap="truncate"><Text color={item.kind === "clash" ? PAINT.fail : item.way === "in" ? PAINT.brand : PAINT.you}>{item.kind === "clash" ? "⚠" : item.way === "in" ? "←" : "→"} {item.peer}</Text>: {item.kind === "clash" ? item.file : item.text}<Text dimColor> · {formatAge(now - item.at, locale)}</Text>{item.isDelivered === false && <Text color={PAINT.fail}> · {text("feature.vigia.msg.undelivered", locale)}</Text>}{held && <Text color={PAINT.fail}> · {text("feature.vigia.msg.held", locale)}</Text>}{item.isReleased && <Text dimColor> · {text("feature.vigia.msg.released", locale)}</Text>}{item.comandante?.decision === "questioned" && <Text dimColor> · {text("feature.vigia.msg.questioned", locale)}</Text>}</Text></Box>
-          {held && <Button key={`release-${item.id}`} label={text("feature.vigia.msg.release", locale)} onPress={() => void releaseVigia($, item.id)} />}</Box>;
-      })}</Box>}
+      {conflicts.length > 0 && card(ui, `${text("feature.vigia.clashes.title", locale)} ${GLYPH.leader} ${text("feature.vigia.clashes.window", locale, { minutes: clashWindow })}`, conflicts.slice(0, 6).map((conflict) => <Text key={`${conflict.other.id}-${conflict.file}`} wrap="truncate">{conflict.file} {GLYPH.leader} {vigiaName(conflict.other)} {GLYPH.leader} {formatAge(now - conflict.at, locale)}</Text>), { width: inner, alert: true })}
+      {mail.length > 0 && card(ui, text("feature.vigia.messages", locale), [
+        mail.some(vigiaMailDone) ? <Button key="vigia-clear" label={text("feature.comandante.clearDone", locale)} dimColor onPress={() => void update($, vigiaMail, (list) => list.filter((one) => !vigiaMailDone(one)))} /> : null,
+        ...mail.slice(0, 6).map((item) => {
+          // a message the Comandante held waits here until the person releases it to Claude
+          const held = item.comandante?.decision === "rejected" && !item.isReleased;
+          return <Box key={item.id} flexDirection="row" gap={1}><Box flexGrow={1} flexShrink={1}><Text wrap="truncate"><Text bold>{item.kind === "clash" ? GLYPH.warn : item.way === "in" ? "<-" : GLYPH.route} {item.peer}</Text>: {item.kind === "clash" ? item.file : item.text}<Text dimColor> {GLYPH.leader} {formatAge(now - item.at, locale)}</Text>{item.isDelivered === false && <Text bold> {GLYPH.leader} {text("feature.vigia.msg.undelivered", locale)}</Text>}{held && <Text bold> {GLYPH.leader} {text("feature.vigia.msg.held", locale)}</Text>}{item.isReleased && <Text dimColor> {GLYPH.leader} {text("feature.vigia.msg.released", locale)}</Text>}{item.comandante?.decision === "questioned" && <Text dimColor> {GLYPH.leader} {text("feature.vigia.msg.questioned", locale)}</Text>}</Text></Box>
+            {held && <Button key={`release-${item.id}`} label={text("feature.vigia.msg.release", locale)} onPress={() => void releaseVigia($, item.id)} />}</Box>;
+        }),
+      ], { width: inner })}
       {list.slice(0, 8).map((record) => {
         const isMe = record.id === own.id;
         const current = vigiaAlive(record, now);
         const overlap = isMe || !current ? [] : vigiaShared(own, record);
         const doing = vigiaDoing(record);
         const next = vigiaNext(record);
-        return <Box key={record.id} flexDirection="column" borderStyle="round" borderColor={isMe ? PAINT.you : current ? PAINT.warn : PAINT.rule} borderDimColor={!current} paddingX={1}>
-          <Box justifyContent="space-between"><Text bold wrap="truncate">{isMe ? "★ " : ""}{vigiaName(record)}</Text><Text color={current ? record.isBusy ? PAINT.warn : PAINT.ok : PAINT.muted}>{current ? record.isBusy ? `${GLYPH.run} ${text("feature.vigia.working", locale)}` : `${GLYPH.ask} ${text("feature.vigia.waiting", locale)}` : `${GLYPH.off} ${text("feature.vigia.ended", locale)} ${formatAge(now - record.beatAt, locale)}`}</Text></Box>
-          <Text dimColor>{isMe ? text("feature.vigia.thisSession", locale) : record.id.slice(0, 8)} · {text("feature.vigia.turns", locale, { count: record.turns ?? 0 })} · {formatAge(now - record.startedAt, locale)}</Text>
-          {record.done && <Text wrap="wrap"><Text color={PAINT.ok}>{GLYPH.ok} {text("feature.vigia.done", locale)}  </Text>{record.done}</Text>}{doing && <Text wrap="wrap"><Text color={PAINT.warn}>{GLYPH.run} {text("feature.vigia.doing", locale)} </Text>{doing}</Text>}{next && <Text wrap="wrap"><Text color={PAINT.brand}>{GLYPH.route} {text("feature.vigia.next", locale)}  </Text>{next}</Text>}
-          {record.tasks.length > 0 && <Text color={PAINT.plum}>☰ {text("feature.vigia.tasks", locale)} {taskBar(record.tasks)}</Text>}{!!record.files?.length && <Text dimColor wrap="truncate">✎ {text("feature.vigia.files", locale)} {record.files.slice(0, 5).join(", ")}</Text>}{!!overlap.length && <Text color={PAINT.fail} wrap="truncate">⚠ {text("feature.vigia.alsoEdited", locale)}: {overlap.join(", ")}</Text>}
-          {!current && <Text dimColor>↺ claude --resume {record.id}</Text>}
-        </Box>;
+        // this session is marked with "*" before its name; a session that ended is dimmed
+        return <Box key={record.id} flexDirection="column">{card(ui, `${isMe ? "* " : ""}${vigiaName(record)}`, [
+          <Text key="state" dimColor={!current} bold={current} wrap="truncate">{current ? record.isBusy ? `${GLYPH.run} ${text("feature.vigia.working", locale)}` : `${GLYPH.ask} ${text("feature.vigia.waiting", locale)}` : `${GLYPH.off} ${text("feature.vigia.ended", locale)} ${formatAge(now - record.beatAt, locale)}`}</Text>,
+          <Text key="meta" dimColor>{isMe ? text("feature.vigia.thisSession", locale) : record.id.slice(0, 8)} {GLYPH.leader} {text("feature.vigia.turns", locale, { count: record.turns ?? 0 })} {GLYPH.leader} {formatAge(now - record.startedAt, locale)}</Text>,
+          record.done ? <Text key="done" wrap="wrap"><Text bold>{GLYPH.ok} {text("feature.vigia.done", locale)}  </Text>{record.done}</Text> : null,
+          doing ? <Text key="doing" wrap="wrap"><Text bold>{GLYPH.run} {text("feature.vigia.doing", locale)} </Text>{doing}</Text> : null,
+          next ? <Text key="next" wrap="wrap"><Text bold>{GLYPH.route} {text("feature.vigia.next", locale)}  </Text>{next}</Text> : null,
+          record.tasks.length > 0 ? <Text key="tasks">{"="} {text("feature.vigia.tasks", locale)} {taskBar(record.tasks)}</Text> : null,
+          record.files?.length ? <Text key="files" dimColor wrap="truncate">{"~"} {text("feature.vigia.files", locale)} {record.files.slice(0, 5).join(", ")}</Text> : null,
+          overlap.length ? <Text key="overlap" bold wrap="truncate">{GLYPH.warn} {text("feature.vigia.alsoEdited", locale)}: {overlap.join(", ")}</Text> : null,
+          !current ? <Text key="resume" dimColor>{"~"} claude --resume {record.id}</Text> : null,
+        ], { width: inner })}</Box>;
       })}
-    </Box>;
+    </Box>);
   });
 
   // Each subagent's own live pane, `jev-agent-<n>`: its task, its numbers and its lines only.

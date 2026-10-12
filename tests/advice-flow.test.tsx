@@ -40,7 +40,7 @@ describe("the advisor decides per prompt while orchestration is off", () => {
     expect(submitted.context?.join("\n") ?? "").not.toMatch(/advisor guidance/);
     const line = feed().find((entry) => entry.text.startsWith("Advisor off"));
     expect(line?.text).toMatch(/simple request \(score -?\d+, turns on from 4\)/);
-    expect(line?.detail).toMatch(/decided by local heuristic, no extra call · executor native/);
+    expect(line?.detail).toMatch(/decided by local heuristic, no extra call - executor native/);
   });
 
   test("a complex prompt turns the advisor on with its chosen model, and the guidance rides along", async ($, on) => {
@@ -53,8 +53,8 @@ describe("the advisor decides per prompt while orchestration is off", () => {
     expect(calls.map(({ model, effort }) => ({ model, effort }))).toEqual([{ model: "claude-sonnet-5-5", effort: "high" }]);
     expect(calls[0]!.prompt).toContain("causa raiz");
     expect(submitted.context?.join("\n")).toMatch(/Pingo advisor guidance \(plan; optional, not approval\):\nCheck the loader contract first\./);
-    expect(feed().find((entry) => entry.text.startsWith("Advisor on"))?.text).toBe("Advisor on · Sonnet 5.5 high · complex request (score 5, turns on from 4)");
-    expect(feed().some((entry) => entry.text.startsWith("Advisor answered · Sonnet 5.5 high"))).toBe(true);
+    expect(feed().find((entry) => entry.text.startsWith("Advisor on"))?.text).toBe("Advisor on - Sonnet 5.5 high - complex request (score 5, turns on from 4)");
+    expect(feed().some((entry) => entry.text.startsWith("Advisor answered - Sonnet 5.5 high"))).toBe(true);
     // The main loop stays native: orchestration off never rewrites the executor.
     await step($ as never, { turnId: "t1", index: 0, model: "claude-opus-5-5", effort: "medium", messageCount: 1 });
     expect(setup.sent).toEqual([{ model: "claude-opus-5-5", effort: "medium" }]);
@@ -68,7 +68,7 @@ describe("the advisor decides per prompt while orchestration is off", () => {
     await $.session.start({ cwd: "/workspace" } as never).catch(() => undefined);
     await $.prompt.submit({ text: COMPLEX_PROMPT, wait: false, origin: { kind: "composer" } });
     expect(calls).toEqual([]);
-    expect(feed().some((entry) => entry.text === "Advisor off · fixed to off")).toBe(true);
+    expect(feed().some((entry) => entry.text === "Advisor off - fixed to off")).toBe(true);
     // Always on with a pinned advisor: a simple prompt gets guidance from exactly that profile.
     setup.store[ORCHESTRATION_STORE] = editPolicy(defaultPolicy(), (p) => { p.advice = "on"; p.override.advisor = { model: "claude-opus-5-5", effort: "medium" }; });
     await $.prompt.submit({ text: "hello", wait: false, origin: { kind: "composer" } });
@@ -84,7 +84,7 @@ describe("the advisor decides per prompt while orchestration is off", () => {
     await $.session.start({ cwd: "/workspace" } as never).catch(() => undefined);
     await $.prompt.submit({ text: COMPLEX_PROMPT, wait: false, origin: { kind: "composer" } });
     expect(calls).toEqual([]);
-    expect(feed().some((entry) => entry.text === "Advisor off · Jev inactive (routing off)")).toBe(true);
+    expect(feed().some((entry) => entry.text === "Advisor off - Jev inactive (routing off)")).toBe(true);
   });
 
   test("guidance stops at the advice limit for the session; a failed consult costs nothing, and /clear starts over", async ($, on) => {
@@ -124,6 +124,6 @@ describe("the advisor decides per prompt while orchestration is off", () => {
     await $.session.start({ cwd: "/workspace" } as never).catch(() => undefined);
     const submitted = await $.prompt.submit({ text: COMPLEX_PROMPT, wait: false, origin: { kind: "composer" } }) as { context?: string[] };
     expect(submitted.context?.join("\n") ?? "").not.toMatch(/advisor guidance/);
-    expect(feed().find((entry) => entry.text.startsWith("Advisor failed"))?.text).toMatch(/^Advisor failed · Sonnet 5\.5 high · timeout · /);
+    expect(feed().find((entry) => entry.text.startsWith("Advisor failed"))?.text).toMatch(/^Advisor failed - Sonnet 5\.5 high - timeout - /);
   });
 });

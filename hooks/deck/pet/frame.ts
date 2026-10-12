@@ -1,204 +1,89 @@
-import { MOODS, type Mood } from "../../mascots/pingo.ts";
-import { DETAIL, mirror, pixelGrid, put, renderPixels, stamp, type PixelCell, type PixelGrid } from "../../mascots/pixel.ts";
-import { DECK_DESIGN, HUE, PET_PALETTE, TERMINAL_DEFAULT } from "../../theme.ts";
-import { CONFETTI, PET_BRAILLE, PROP, petMoodFor, petX, type Pet, type PetAct } from "./model.ts";
+import { MOODS } from "../../mascots/pingo.ts";
+import { textCells, type PixelCell } from "../../mascots/pixel.ts";
+import { DECK_DESIGN, TERMINAL_DEFAULT } from "../../theme.ts";
+import { PET_BRAILLE, PET_HOP_MS, PET_HOP_STEP_MS, petMoodFor, petX, type Pet, type PetAct } from "./model.ts";
 
-// ---------- terminal: Pingo in pixel art, with the scene drawn into the same grid ----------
+// ---------- terminal: Pingo in ASCII, twelve columns by four rows ----------
 
-/** The sprite in pixels: two to a cell across and two rows to a cell down, 12 by 8. */
-const PIXELS_W = PET_BRAILLE.columns;
-const PIXELS_H = PET_BRAILLE.rows * 2;
-/** The row the body's top rests on: the two above it are the room for a hat and for a hop. */
-const TOP = 2;
-/** The row under the body at rest, where the floor's shadow lies. */
-const FLOOR = PIXELS_H - 1;
-/** The row the eyes start on: one under the body's top, so a hat's brim never touches them. */
-const EYE_ROW = TOP + 1;
+/** The eye each of the moods' eyes draws; the open ones ("o") also blink. */
+const EYE_OF = { happy: "^", x: "x", closed: "-", spinner: "o", pill: "o", line: "o" } as const;
 
-/** Pingo's body: the terminal's own color on top ("#"), a shade for the underside ("d"). */
-const TERMINAL_BODY = ["...######...", ".##########.", ".##########.", ".##########.", "..dddddddd.."];
-const BODY_INK = { "#": PET_PALETTE.body, d: HUE.neutral };
+/** The top row: the crown of the body, with a "z" or a "Z" rising from it while Pingo sleeps. */
+const CROWN = "  .------.  ";
+const SLEEP_CROWNS = ["  .------.z ", "  .------. Z"] as const;
+/** The rows under it: the body, the mouth (a smile, or straight while asleep and failing) and its base. */
+const BASE = " `--------' ";
+const SMILE = "|   \\__/   |";
+const STRAIGHT = "|    __    |";
+const SHADES = " /[=]-[=] \\ ";
+/** How long each z of the sleeper shows, and how long a look of the thinker holds, in ms. */
+const SLEEP_STEP_MS = 700;
+const LOOK_STEP_MS = 900;
+/** Where the thinker looks, left (-1), ahead (0) or right (1), in turn. */
+const LOOKS = [-1, 0, 1, 0] as const;
 
-/** A css "#rrggbb" of the palette as the number a pixel takes. */
-const rgb = (color: string) => Number.parseInt(color.slice(1), 16);
-
-/** Where a repeating motion stands, from 0 up to 1, `offset` seconds into its period. */
-const cycle = (t: number, period: number, offset = 0) => ((t + offset) % period) / period;
-
-/**
- * How far the body sits from its rest, in pixels (negative is up). Resting bobs a pixel now and then, walking and
- * running bob it faster, jumping and celebrating hop it up to the two rows of headroom; the desk acts keep it down.
- */
-function liftOf(act: PetAct, t: number): number {
-  const wave = (period: number) => Math.abs(Math.sin((t / period) * Math.PI * 2));
-  if (act === "idle") return cycle(t, 3.2) < 0.3 ? -1 : 0;
-  if (act === "sleep") return cycle(t, 4) < 0.4 ? -1 : 0;
-  if (act === "walk") return -Math.round(wave(0.6));
-  if (act === "run") return -Math.round(wave(0.28));
-  if (act === "jump" || act === "celebrate") {
-    const p = cycle(t, 1);
-    return p < 0.12 || p >= 0.8 ? 0 : -Math.round(2 * Math.sin(((p - 0.12) / 0.68) * Math.PI));
-  }
-  return 0;
-}
-
-type Pixels = readonly (readonly [number, number])[];
-/** The eight pixels around a three by three eye, in order; a spinner lights three in a row. */
-const RING: Pixels = [[0, 0], [1, 0], [2, 0], [2, 1], [2, 2], [1, 2], [0, 2], [0, 1]];
-
-/** An eye's pixels, from its top left corner. Three across and down; the pill is two across. */
-export function eyePixels(eyes: (typeof MOODS)[Mood]["eyes"], t: number, side: 1 | -1): Pixels {
-  switch (eyes) {
-    case "line":
-      return [[0, 1], [1, 1], [2, 1]];
-    case "closed":
-      return [[0, 1], [1, 2], [2, 1]];
-    case "happy":
-      return [[0, 2], [1, 1], [2, 2]];
-    case "x":
-      return [[0, 0], [2, 0], [1, 1], [0, 2], [2, 2]];
-    case "pill":
-      // the eyes that read as motion blink, now and then, for a moment
-      return (t * 0.9) % 4.2 < 0.14 ? [[0, 1], [1, 1]] : [[0, 0], [1, 0], [0, 1], [1, 1], [0, 2], [1, 2]];
-    case "spinner": {
-      const start = (((Math.floor(t * 6) * side) % 8) + 8) % 8;
-      return [0, 1, 2].map((i) => RING[(start + i) % 8]!);
-    }
-  }
-}
-
-/** The eyes of the pet for `act` at `t`, in the mood's color and shape, `lift` up and `shake` aside. */
-function drawEyes(grid: PixelGrid, act: PetAct, t: number, lift: number, shake: number) {
-  const mood = petMoodFor(act);
-  const { eyes, color } = MOODS[mood];
-  const look = mood === "passthrough" ? 1 : 0;
-  for (const side of [-1, 1] as const) {
-    const x0 = (side === -1 ? (eyes === "pill" ? 3 : 2) : 7) + look + shake;
-    for (const [dx, dy] of eyePixels(eyes, t, side)) put(grid, x0 + dx, EYE_ROW + dy + lift, color | DETAIL);
-  }
-}
-
-/** Sunglasses over the face, under the eyes, which still show through them in the mood's color. */
-function drawShades(grid: PixelGrid, lift: number, shake: number) {
-  const lens = rgb(PET_PALETTE.accents.glasses);
-  const edge = rgb(PET_PALETTE.accents.glassesEdge);
-  stamp(grid, shake, EYE_ROW + lift, [".eLLLLLLLLe.", "..LLL..LLL..", "...L....L..."], { L: lens, e: edge });
-}
-
-// the hats keep to the top three rows: the brim is on the body's top row, so a hat never reaches the eyes. "h" is the
-// hat's own color and "t" its second tone. The propeller turns between its two rows of blades.
-const HAT_MAPS: Readonly<Record<string, readonly string[]>> = {
-  tophat: ["....hhhh....", "....tttt....", ".hhhhhhhhhh."],
-  party: [".....tt.....", "....hhhh....", "..hhthhthh.."],
-  crown: ["..h..hh..h..", "..hhhhhhhh..", "..hthhhhth.."],
-  wizard: [".....hh.....", "....htth....", ".hhhhhhhhhh."],
-  cowboy: ["....hhhh....", "h..tttttt..h", ".hhhhhhhhhh."],
-  propeller: ["..tttttttt..", "....hhhh....", "..hhhhhhhh.."],
-  chef: ["...hh..hh...", "..hhhhhhhh..", "..tttttttt.."],
-  viking: ["t..........t", ".t.hhhhhh.t.", "..hhhhhhhh.."],
-  halo: ["...hhhhhh...", "..t......t..", "............"],
-  santa: ["......hhhtt.", "....hhhhh...", "..tttttttt.."],
-  nightcap: ["....hhh.....", "...hhhhhhtt.", "..tttttttt.t"],
+/** The hat on the crown, by name: each hat's top row, twelve columns, replacing the crown (and a sleeper's z). No hat moves. */
+const HAT_TOPS: Readonly<Record<string, string>> = {
+  tophat: "  _|####|_  ",
+  party: "  .--/\\--.  ",
+  crown: "  _/\\/\\/\\_  ",
+  wizard: "  .-/**\\-.  ",
+  cowboy: "~-.(____).-~",
+  propeller: "  .-=||=-.  ",
+  chef: "  .(####).  ",
+  viking: " \\.------./ ",
+  halo: "  .~~~~~~.  ",
+  santa: "  .--==--.o ",
+  nightcap: "  .-=-=-=.~ ",
 };
-const PROPELLER_SPIN = "...tt..tt...";
 
 /** Whether `hat` is one Pingo can wear. */
-const wears = (hat: string) => Object.hasOwn(HAT_MAPS, hat);
+const wears = (hat: string) => Object.hasOwn(HAT_TOPS, hat);
 
-function drawHat(grid: PixelGrid, hat: string, t: number, lift: number, shake: number) {
-  const rows = [...HAT_MAPS[hat]!];
-  if (hat === "propeller" && Math.floor(t * 5) % 2 === 1) rows[0] = PROPELLER_SPIN;
-  const hats: Readonly<Record<string, string>> = PET_PALETTE.hats;
-  const trims: Readonly<Record<string, string>> = PET_PALETTE.hatTrim;
-  stamp(grid, shake, lift, rows, { h: rgb(hats[hat]!), t: rgb(trims[hat]!) });
+/** Whether the open eyes are shut at `t` seconds: a quick blink every few seconds. */
+const blinking = (t: number) => (t * 0.9) % 4.2 < 0.14;
+
+/**
+ * Whether Pingo is up, one row above its rest, at `tMs` into its scene: jumping and celebrating start with the same hop
+ * as a member's goodbye, up and back every quarter second for the first second. The lane draws a body that is up over
+ * its name row.
+ */
+export function petRaised(act: PetAct, tMs: number): boolean {
+  return (act === "jump" || act === "celebrate") && tMs >= 0 && tMs < PET_HOP_MS && Math.floor(tMs / PET_HOP_STEP_MS) % 2 === 0;
 }
 
-// ---------- the props of the scene ----------
-
-/** The desk: a dark laptop in front of the body, its screen flickering between two glows (a detail: a hole without color). */
-function laptop(grid: PixelGrid, t: number) {
-  const dark = PROP.dark;
-  stamp(grid, 1, 7, ["##########"], { "#": dark });
-  put(grid, 2, 6, dark);
-  put(grid, 9, 6, dark);
-  const tick = Math.floor(t * 5);
-  for (let x = 3; x <= 8; x++) put(grid, x, 6, ((x + tick) % 3 === 0 ? PROP.glow : PROP.screen) | DETAIL);
-}
-
-/** The desk: an open book, a blue cover under two pages. */
-function book(grid: PixelGrid) {
-  stamp(grid, 1, 7, ["BBBBBBBBBB"], { B: PROP.blue });
-  stamp(grid, 2, 6, ["ppppPPPP"], { p: PROP.paper, P: PROP.page });
-}
-
-/** Two z's rising from the sleeper, one after the other, each on its own 2.4 s cycle. */
-function zs(grid: PixelGrid, t: number) {
-  for (const offset of [0, 1.2]) {
-    const q = cycle(t, 2.4, offset);
-    if (q < 0.9) put(grid, 10 + Math.round(q), TOP - Math.round(q * 2), HUE.info);
-  }
-}
-
-/** The alert badge: a small amber diamond with a "!" cut in it, shaking. */
-function badge(grid: PixelGrid, t: number) {
-  const shake = Math.floor(t * 10) % 2;
-  stamp(grid, 8 + shake, 0, [".A.", "AmA", ".A."], { A: PROP.amber, m: PROP.mark | DETAIL });
-}
-
-/** Confetti: five pixels falling past the body, each on its own 1.2 s cycle, gone by the end. */
-function confetti(grid: PixelGrid, t: number) {
-  CONFETTI.forEach((color, i) => {
-    const q = cycle(t, 1.2, i * 0.23);
-    if (q < 0.85) put(grid, 1 + i * 2.5, Math.floor(q * 9) - 1, color);
-  });
-}
-
-/** Dust kicked up behind a runner (the left, for a pet facing right): puffs that rise and fade on a 0.4 s cycle. */
-function dust(grid: PixelGrid, t: number) {
-  const q = cycle(t, 0.4);
-  if (q < 0.66) put(grid, 0, FLOOR - 1, PROP.gray);
-  if (q >= 0.33) put(grid, 0, FLOOR - 2, PROP.gray);
-}
-
-/** The scene's props for an act, drawn over the body. */
-function props(grid: PixelGrid, act: PetAct, t: number) {
-  if (act === "console") laptop(grid, t);
-  if (act === "read") book(grid);
-  if (act === "sleep") zs(grid, t);
-  if (act === "alert") badge(grid, t);
-  if (act === "celebrate") confetti(grid, t);
-  if (act === "run") dust(grid, t);
-}
+// The scene's props (laptop, book, confetti, dust, alert badge) have no drawing in this look: the state is in the eyes
+// and the z.
 
 const PET_FRAME_CACHE_LIMIT = 24;
 const petFrames = new Map<string, PixelCell[][]>();
 
+/** Where Pingo looks in `act`: the way it walks, or around while it thinks, else ahead. */
+function lookOf(act: PetAct, tMs: number, dir: 1 | -1): number {
+  if (act === "walk" || act === "run") return dir;
+  if (petMoodFor(act) === "thinking") return LOOKS[Math.floor(tMs / LOOK_STEP_MS) % LOOKS.length]!;
+  return 0;
+}
+
 /**
- * The pet as pixel cells for `act` at `tMs`, facing `dir`. Time is quantized to a tenth of a second, so two redraws
- * inside the same tenth produce the same cells. The floor's shadow, the body, the sunglasses, the eyes, the hat
- * and then the props are drawn in that order; facing left is the whole grid turned round.
+ * The pet as cells for `act` at `tMs`, facing `dir` (which only decides where a walker looks: the drawing has no
+ * left or right). Time is quantized to a tenth of a second, so two redraws inside the same tenth produce the same
+ * cells. The eyes follow the mood (happy ^, failing x, asleep -, else open and blinking), the sunglasses cover them,
+ * and a hat takes the top row. The scene has no props in the terminal: the eyes and the z tell what Pingo is doing.
  */
 export function petFrame(act: PetAct, tMs: number, dir: 1 | -1, hat = "none", shades = false): PixelCell[][] {
   const tick = Math.floor(tMs / 100);
   const key = `${act}|${tick}|${dir}|${hat}|${shades ? 1 : 0}`;
   const kept = petFrames.get(key);
   if (kept !== undefined) return kept;
-  const t = tick / 10;
-  const grid = pixelGrid(PIXELS_W, PIXELS_H);
-  const worn = wears(hat);
-  // a hat takes the room above the body, so a hatted pet bobs down instead of up (a crouch, the shade over the
-  // floor's shadow), and only a hop may rise: one row, the hat's top row going off the grid
-  const rise = liftOf(act, t);
-  const lift = !worn ? rise : act === "jump" || act === "celebrate" ? Math.max(-1, rise) : -rise;
-  const shake = petMoodFor(act) === "failing" && tick % 2 === 1 ? 1 : 0;
-  const half = act === "jump" ? 2 : 3;
-  stamp(grid, PIXELS_W / 2 - half, FLOOR, ["#".repeat(half * 2)], { "#": PET_PALETTE.floor });
-  stamp(grid, shake, TOP + lift, TERMINAL_BODY, BODY_INK);
-  if (shades) drawShades(grid, lift, shake);
-  drawEyes(grid, act, t, lift, shake);
-  if (worn) drawHat(grid, hat, t, lift, shake);
-  props(grid, act, t);
-  const result = renderPixels(dir > 0 ? grid : mirror(grid));
+  const at = tick * 100;
+  const mood = petMoodFor(act);
+  const eye = EYE_OF[MOODS[mood].eyes] === "o" && blinking(at / 1000) ? "-" : EYE_OF[MOODS[mood].eyes];
+  const look = lookOf(act, at, dir);
+  const top = wears(hat) ? HAT_TOPS[hat]! : act === "sleep" ? SLEEP_CROWNS[Math.floor(at / SLEEP_STEP_MS) % 2]! : CROWN;
+  const eyes = shades ? SHADES : look < 0 ? ` / ${eye}  ${eye}   \\ ` : look > 0 ? ` /   ${eye}  ${eye} \\ ` : ` /  ${eye}  ${eye}  \\ `;
+  const mouth = mood === "failing" || act === "sleep" ? STRAIGHT : SMILE;
+  const result = textCells([top, eyes, mouth, BASE]);
   if (petFrames.size >= PET_FRAME_CACHE_LIMIT) petFrames.delete(petFrames.keys().next().value!);
   petFrames.set(key, result);
   return result;

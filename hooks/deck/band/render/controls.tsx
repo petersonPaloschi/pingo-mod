@@ -1,9 +1,10 @@
 import type { ElementTable, RenderNode } from "claude-code";
 import { text } from "../../../i18n.ts";
 import { collapsedOrder } from "../../model.ts";
-import { chipBarSvg, collapsedChips, collapsedRings, collapsedText, featureLines, switchLabel, type Chip, type ChipMini, type FeatureSwitch, type RingItem } from "../../rows.ts";
-import { DECK_DESIGN, DIM, MUTED, TEXT, TRACK, runs } from "../../theme.ts";
-import { GLYPH, PAINT, UI_DESIGN } from "../../../theme.ts";
+import { chipBarSvg, collapsedChips, collapsedRings, collapsedText, featureLines, switchLabel, SEPARATOR, type Chip, type ChipMini, type FeatureSwitch, type RingItem, type TextPart } from "../../rows.ts";
+import { DECK_DESIGN, DIM, MUTED, TEXT, trunc } from "../../theme.ts";
+import { displayWidth } from "../../../layout.ts";
+import { GLYPH, UI_DESIGN } from "../../../theme.ts";
 import type { Surface, DeckBand } from "../types.ts";
 import { DEFAULT_MAX_ROWS, laneLines } from "./extras.tsx";
 
@@ -16,20 +17,21 @@ export function featureSwitches(els: ElementTable, band: DeckBand, desktop: bool
   const { Box, Button, Text } = els;
   if (!band.features.length) return { node: null, lines: 0 };
   const { indent, columnGap, desktopColumnGap, desktopRowGap, minimumRows, spacerRows } = DECK_DESIGN.band.features;
-  const legend = `${GLYPH.check} ${text("ui.configuration.enabledValue", band.locale)}  ${GLYPH.off} ${text("ui.configuration.disabledValue", band.locale)}`;
+  const legend = `${GLYPH.check} ${text("ui.configuration.enabledValue", band.locale)}  ${GLYPH.unchecked} ${text("ui.configuration.disabledValue", band.locale)}`;
   const title = (
     <Box key="deck-features-title" flexDirection="row" columnGap={columnGap} paddingLeft={indent}>
       <Text color={TEXT} bold>{text("deck.features.title", band.locale)}</Text>
       <Text color={MUTED} wrap="truncate">{legend}</Text>
     </Box>
   );
-  // an on switch's ▣ takes the success color, so on and off part at a glance; an off one stays dim, as on the dashboard
+  // an on switch's [x] is bold and an off one's [ ] dim, so on and off part at a glance, as on the dashboard
   const button = (sw: FeatureSwitch, label: string) => {
-    const [glyph = "", ...name] = [...label];
+    const glyph = label.slice(0, GLYPH.check.length);
+    const name = label.slice(GLYPH.check.length);
     return (
       <Button key={"deck-feature-" + sw.id} label={label} plain dimColor={!sw.on} onPress={() => band.feature(sw.id, !sw.on)}>
-        <Text color={sw.on ? PAINT.ok : MUTED} bold={sw.on}>{glyph}</Text>
-        <Text>{name.join("")}</Text>
+        <Text color={sw.on ? TEXT : MUTED} bold={sw.on}>{glyph}</Text>
+        <Text>{name}</Text>
       </Button>
     );
   };
@@ -46,7 +48,7 @@ export function featureSwitches(els: ElementTable, band: DeckBand, desktop: bool
       lines: 0,
     };
   }
-  const packed = featureLines(band.features, band.cols);
+  const { lines: packed, gap: lineGap } = featureLines(band.features, band.cols);
   // a blank row parts the switches (settings) from the rows (what is going on), when at least one row fits under it
   const room = (band.maxRows ?? DEFAULT_MAX_ROWS) - 1 - laneLines(band, hasLane);
   const spacer = band.rows.length && room - 1 - packed.length - spacerRows >= 1 ? spacerRows : 0;
@@ -56,7 +58,7 @@ export function featureSwitches(els: ElementTable, band: DeckBand, desktop: bool
       <Box key="deck-features" flexDirection="column">
         {title}
         {packed.map((line, i) => (
-          <Box key={"deck-features-" + i} flexDirection="row" flexWrap="wrap" columnGap={columnGap} paddingLeft={indent}>
+          <Box key={"deck-features-" + i} flexDirection="row" flexWrap="wrap" columnGap={lineGap} paddingLeft={indent}>
             {line.map(({ sw, label }) => button(sw, label))}
           </Box>
         ))}
@@ -76,9 +78,10 @@ export function collapsedLine(els: ElementTable, band: DeckBand, surface: Surfac
   const ordered = collapsedOrder(band.rows);
   const toggleCell = band.rows.length ? [toggle] : [];
   if (band.settings.collapsed === "text") {
-    const parts = collapsedText(ordered, band.extras, desktop);
+    const raw = collapsedText(ordered, band.extras, desktop);
+    const parts = desktop ? raw : clipParts(raw, band.cols - DECK_DESIGN.band.collapsed.terminal.reserveColumns - UI_DESIGN.space.sm);
     return (
-      <Box flexDirection="row" columnGap={UI_DESIGN.space.xs}>
+      <Box flexDirection="row" columnGap={desktop ? UI_DESIGN.space.xs : UI_DESIGN.space.sm}>
         {toggleCell}
         <Box flexDirection="row" flexShrink={1}>
           <Text wrap="truncate">
@@ -106,12 +109,11 @@ export function collapsedLine(els: ElementTable, band: DeckBand, surface: Surfac
   const { chips } = collapsedChips(ordered, {
     desktop,
     cols: band.cols,
-    extrasLength: band.extras.join("  ·  ").length,
-    terminalStyle: band.settings.style.terminal,
+    extrasLength: band.extras.join(desktop ? "  ·  " : SEPARATOR).length,
     locale: band.locale,
   });
   return (
-    <Box flexDirection="row" columnGap={UI_DESIGN.space.xs} alignItems="center">
+    <Box flexDirection="row" columnGap={desktop ? UI_DESIGN.space.xs : UI_DESIGN.space.sm} alignItems="center">
       {toggleCell}
       <Box flexDirection="row" alignItems="center">
         {chips.flatMap((chip, i) => chipEls(els, chip, i))}
@@ -120,6 +122,23 @@ export function collapsedLine(els: ElementTable, band: DeckBand, surface: Surfac
       {extrasEl}
     </Box>
   );
+}
+
+// the one-line look cut to `room` columns, the cut marked by "..." (the host's own cut would be a single glyph)
+function clipParts(parts: TextPart[], room: number): TextPart[] {
+  const out: TextPart[] = [];
+  let left = room;
+  for (const part of parts) {
+    const width = displayWidth(part.text);
+    if (width <= left) {
+      out.push(part);
+      left -= width;
+      continue;
+    }
+    if (left > 0) out.push({ ...part, text: trunc(part.text, left) });
+    break;
+  }
+  return out;
 }
 
 // one ring: a limit's ring with its percent and reset, the spend with its amount, the ask, or the busy row
@@ -165,21 +184,19 @@ function ringGlyph(els: ElementTable, item: Extract<RingItem, { kind: "limit" | 
 // one chip as flat siblings, so the chips sit against each other with the separators between
 function chipEls(els: ElementTable, chip: Chip, i: number) {
   const { Text } = els;
-  if (chip.kind === "separator") return [<Text key={"k" + i} color={TRACK}>{" │ "}</Text>];
+  if (chip.kind === "separator") return [<Text key={"k" + i} color={TEXT}>{SEPARATOR}</Text>];
   if (chip.kind === "more") return [<Text key={"k" + i} color={DIM}>{chip.text}</Text>];
   if (chip.kind === "route") return [<Text key={"k" + i} color={chip.color}>{chip.text}</Text>];
   return [
-    <Text key={`${i}g`} color={chip.glyphColor}>{chip.glyph}</Text>,
+    chip.glyph ? <Text key={`${i}g`} color={chip.glyphColor}>{chip.glyph}</Text> : null,
     <Text key={`${i}t`} color={chip.textColor} bold={chip.bold}>{chip.text}</Text>,
     chipMini(els, chip.mini, i),
   ];
 }
 
-// a chip's mini bar: a 36-by-8 track on the desktop, a few cells in the terminal
+// a chip's mini bar: a 36-by-8 track on the desktop, none in the terminal
 function chipMini(els: ElementTable, mini: ChipMini, i: number) {
-  const { Box, Text } = els;
-  if (mini.kind === "cells") return <Box key={`${i}m`} flexDirection="row">{runs(Text, mini.cells)}</Box>;
-  if (!("Svg" in els)) return null;
+  if (mini.kind === "none" || !("Svg" in els)) return null;
   const { Svg } = els as ElementTable<"desktop">;
   return <Svg key={`${i}m`} source={chipBarSvg(mini.pct, mini.color)} alt={mini.alt} width={DECK_DESIGN.miniBar.width} height={DECK_DESIGN.miniBar.height} />;
 }

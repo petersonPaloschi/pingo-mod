@@ -1,4 +1,4 @@
-import type { TraceConsult, TraceMessage, TraceState } from "../types";
+import type { TraceConsult, TraceMessage, TraceState } from "../../types";
 import { type ConsultWhere } from "./types.ts";
 import { KEPT_CONSULTS } from "./constants.ts";
 import { clip, nextId, withRun, ensureMain, ensureAgent, changeMessage } from "./state.ts";

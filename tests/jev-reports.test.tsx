@@ -148,7 +148,7 @@ describe("sift's calls in the mod", () => {
     expect(spawned[0]![0]).toBe("node");
     expect(spawned[0]!.at(-1)).toBe(channelFile(set[0]![1]));
 
-    await shown($, "tab-live", [/✓ sift · sift command — match/, /Usage: 120 input tokens · 0 output tokens/, /jev-1 · read 0 turns/, /^\? match · score 0–100%: “Does it retry\?”/, /^→ 95\.0%/]);
+    await shown($, "tab-live", [/\+ sift - sift command - match/, /Usage: 120 input tokens - 0 output tokens/, /jev-1 - read 0 turns/, /^\? match - score 0-100%: "Does it retry\?"/, /^-> 95\.0%/]);
     await shown($, "tab-live", [/recorded Jev calls: 1/]);
 
     // A second sift command keeps the channel; its follower (this one ended) reads the file again from
@@ -184,11 +184,11 @@ describe("sift's calls in the mod", () => {
     try {
       await seen(/No Jev call yet/);
       const call = $.tool.call({ tool: "Bash", command: 'node "/plugins/pingo/scripts/sift.ts" filter "Does it retry?" src', tool_use_id: "toolu-sift" } as never);
-      await seen(/Jev: Asking Jev…/);
-      await seen(/Last Jev call \S+ ago: ⟳ sift · sift command/);
+      await seen(/Jev: Asking Jev.../);
+      await seen(/Last Jev call \S+ ago: \* sift - sift command/);
       finish();
-      await seen(/Last Jev call \S+ ago: ✓ sift · sift command — match/);
-      expect(await jevStatus()).not.toContain("Asking Jev…");
+      await seen(/Last Jev call \S+ ago: \+ sift - sift command - match/);
+      expect(await jevStatus()).not.toContain("Asking Jev...");
       await call;
     } finally {
       finish();

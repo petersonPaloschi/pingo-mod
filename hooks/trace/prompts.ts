@@ -1,4 +1,4 @@
-import type { TraceAdvice, TraceMessage, TracePlan, TraceState } from "../types";
+import type { TraceAdvice, TraceMessage, TracePlan, TraceState } from "../../types";
 import { type Submitted } from "./types.ts";
 import { KEPT_ADVISOR, KEPT_INBOX, KEPT_RECEIVED, ANSWER_MAX } from "./constants.ts";
 import { clip, omit, nextId, withRun, activeRun, changeMessage } from "./state.ts";
@@ -94,7 +94,7 @@ export function queuedDelivered(s: TraceState, text: string): TraceState {
   const row = text.replace(/\s+/g, " ");
   const pool = activeRun(s)?.received ?? s.runs.flatMap((run) => run.received);
   const found = pool
-    .filter((message) => (message.state === "queued" || message.state === "withdrawn") && row.includes(message.text.replace(/…$/, "")))
+    .filter((message) => (message.state === "queued" || message.state === "withdrawn") && row.includes(message.text.replace(/(?:\.\.\.|…)$/, "")))
     .sort((a, b) => a.at - b.at)[0];
   return found ? changeMessage(s, found.id, (message) => ({ ...message, state: "delivered" })) : s;
 }

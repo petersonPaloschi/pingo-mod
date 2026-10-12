@@ -183,7 +183,7 @@ describe("orchestration in a session", () => {
     expect(reviews.every((r) => r.model === "claude-sonnet-5-5" && r.effort === "high")).toBe(true);
     // Each review went out through the one model-call path: Logs and Live show the same three lines.
     const ui = await $.ui.mount({ plugin: "jev", surface: "terminal", component: "Pane", requestId: "jev", props: PANE_PROPS });
-    const calls = async () => (await ui.findAll({ type: "Text" })).filter((line) => /^✓ Orchestration · /.test(line.text ?? "")).length;
+    const calls = async () => (await ui.findAll({ type: "Text" })).filter((line) => /^\+ Orchestration - /.test(line.text ?? "")).length;
     await ui.press({ key: "tab-logs" });
     await settle(async () => (await calls()) === 3);
     expect(await calls()).toBe(3);

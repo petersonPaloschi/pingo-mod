@@ -58,7 +58,7 @@ export async function onPromptSubmit(io: Io, e: { text: string; attachments?: re
     if (decision.failure) await io.log("warn", "Orchestration: Jev failed, AUTO did not apply; the request stays native.", decision.failure);
     const lines = [...notes];
     const executor = objective?.executor ? `${MODEL_LABEL[objective.executor.model]} ${objective.executor.effort}` : `native (${objective?.executorWhy ?? "unset"})`;
-    if (objective) await io.log(decision.held.length ? "warn" : "good", `Orchestration: ${decision.continuity} objective ${objective.id} · ${objective.workMode}${objective.workModeConfident ? "" : " (default)"} · executor ${executor}`, decision.held.length ? `held: ${decision.held.join(", ")}` : undefined);
+    if (objective) await io.log(decision.held.length ? "warn" : "good", `Orchestration: ${decision.continuity} objective ${objective.id} - ${objective.workMode}${objective.workModeConfident ? "" : " (default)"} - executor ${executor}`, decision.held.length ? `held: ${decision.held.join(", ")}` : undefined);
     if (decision.failure) {
       // Jev gave no guidance answer: the local decision stands in, counted on the objective it keeps.
       const local = await localAdvice(io, config, policy, e, "jev_failed", objective?.adviceUsed ?? 0);
@@ -144,7 +144,7 @@ async function logAdvice(io: Io, config: Settings, d: {
     text("feed.advice.decider", locale, { decider: text(`feed.advice.decider.${d.decider}`, locale) }),
     d.source ? text("feed.advice.source", locale, { source: text(`feed.advice.source.${d.source}`, locale) }) : "",
     text("feed.advice.executor", locale, { executor: d.executor }),
-  ].filter(Boolean).join(" · ");
+  ].filter(Boolean).join(" - ");
   await io.log(d.on ? "info" : "muted", head, detail);
   await io.noteAdvice?.({
     at: await io.now(),

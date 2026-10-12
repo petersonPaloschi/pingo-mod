@@ -211,20 +211,22 @@ test("a host with no repaint still moves the pet, with a slow redraw and never a
     await ui.find({ type: "Text" });
   }
   expect(state.blitTries).toBe(1);
-  const before = await lane();
   statuses.length = 0;
-  let during: unknown;
   for (let i = 0; i < 20; i++) {
     await clock.advance(150);
     await ui.find({ type: "Text" });
-    // inside the first scene, an idle one three seconds long: the pet breathes, and the same instant never comes round again
-    if (i === 8) during = await lane();
   }
   expect(blits).toHaveLength(0);
   // the band is drawn again about three times a second to carry the pet: more than the clock's one, never the frame rate
   expect(draws(statuses, "band")).toBeGreaterThan(6);
   expect(draws(statuses, "band")).toBeLessThanOrEqual(16);
-  expect(during).not.toBe(before);
+  // what the slow redraw carries is the pet itself: Pingo's drawing on the lane (at rest an ASCII Pingo is a still
+  // picture, so an idle scene may show one frame throughout; only a walk, a hop or a blink changes it)
+  const bytes = Uint8Array.from(atob(String(await lane())), (char) => char.charCodeAt(0));
+  const words = new Uint32Array(bytes.buffer);
+  let shown = "";
+  for (let i = 0; i < words.length; i += 3) shown += String.fromCodePoint(words[i]!);
+  expect(shown).toContain("`--------'");
   await ui.unmount();
 });
 

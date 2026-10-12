@@ -35,7 +35,7 @@ function providerCard(els: Els, view: View, act: Actions) {
         <Box flexDirection="column">
           {saved ? (
             <Text wrap="truncate">
-              <Text color={INK.route}>{`••••${view.key.tail}`}</Text>
+              <Text color={INK.route}>{`****${view.key.tail}`}</Text>
               <Text color={INK.dim}>{text("ui.setup.keyInUse", view.locale, { source: text(`source.${view.key.source}` as LocaleKey, view.locale) })}</Text>
             </Text>
           ) : (
@@ -64,7 +64,7 @@ function providerCard(els: Els, view: View, act: Actions) {
           </Box>
           {message ? (
             <Text bold color={view.setup.busy ? INK.dim : view.setup.isOk ? INK.route : INK.fail} wrap="truncate">
-              {`${view.setup.busy ? "◌" : view.setup.isOk ? GLYPH.on : GLYPH.fail} ${message}`}
+              {`${view.setup.busy ? GLYPH.baseline : view.setup.isOk ? GLYPH.on : GLYPH.fail} ${message}`}
             </Text>
           ) : null}
         </Box>,

@@ -27,16 +27,19 @@ export interface Pet {
 /** The pet's terminal cells: the old braille name stays for its importers. */
 export const PET_BRAILLE = DECK_DESIGN.pet.sprite;
 
+/** A hop (a leaving member's, Pingo's jump and celebration) lasts this long, up and down every step. */
+export const PET_HOP_MS = 1000;
+export const PET_HOP_STEP_MS = 250;
+
 const SPEED = DECK_DESIGN.pet.speed; // lane fractions per second
 
 // ---------- mood mapping: Deck moods and pet acts onto pingo's moods ----------
 
 /**
- * The pingo mood a Deck mood or a pet act is drawn with. Pingo's Mood sets the eyes and the color:
- * alert uses failing (x eyes, red, a jittering sphere) for attention; celebrate uses routing (happy eyes,
- * green sparks); working and the desk acts (console, read) use thinking (spinner eyes); sleepy and sleep use
- * baseline (closed eyes); calm and idle use idle (line eyes); walk, run and jump use passthrough, whose blinking
- * eyes read as motion.
+ * The pingo mood a Deck mood or a pet act is drawn with. Pingo's Mood sets the eyes (and the desktop's color):
+ * alert uses failing (x eyes) for attention; celebrate uses routing (happy ^ eyes); working and the desk acts
+ * (console, read) use thinking (open eyes looking left, ahead, right); sleepy and sleep use baseline (closed eyes and
+ * a z); calm and idle use idle; walk, run and jump use passthrough, whose eyes look the way Pingo walks.
  */
 export function petMoodFor(mood: DeckMood | PetAct): Mood {
   switch (mood) {
