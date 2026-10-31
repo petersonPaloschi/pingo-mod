@@ -98,7 +98,7 @@ export const en = {
   "feature.vigia.name": "Vigia",
   "feature.vigia.description": "Tracks sessions in this project, lets them message each other, shares their work with Claude, and holds an edit until a file another session changed is read again.",
   "feature.contexto.name": "Context",
-  "feature.contexto.description": "When the conversation gets long, Jev removes old tool results that no longer matter and keeps recent messages intact.",
+  "feature.contexto.description": "At 25% context usage by default, Jev cleans old tool results from the main agent and each subagent, keeping recent messages intact.",
   "feature.comandante.name": "Comandante",
   "feature.comandante.description": "Jev judges Farol's assumptions, Semente's ideas, Vigia's messages, Clareza's plans and the requests of the Code Quality agent in every session of this project: it lets through what holds, blocks what should not stand and sends a question back when something is unclear. Off by default.",
   "feature.comandante.off": "Comandante is off. Turn it on to have Jev judge Farol's assumptions, Semente's ideas, Vigia's messages, Clareza's plans and Code Quality's requests in every session of this project.",

@@ -71,8 +71,8 @@
     "context_compact_at_percent": {
       "type": "number",
       "title": "Context compaction threshold (%)",
-      "description": "Request Jev-guided history compaction when session context reaches this percentage. Default: 60.",
-      "default": 60,
+      "description": "Request Jev-guided history compaction when the main agent or any subagent reaches this percentage of its own context. Default: 25.",
+      "default": 25,
       "required": false
     },
     "context_min_reduction_ratio": {

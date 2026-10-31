@@ -49,7 +49,7 @@ export function resolveContextOptions(options: ContextOptions = {}): ResolvedCon
 export function resolveContextConfig(options: ContextConfigOptions = {}): ResolvedContextConfig {
   return {
     ...resolveContextOptions(options),
-    compactAtPercent: contextFinite(options.compactAtPercent, 60),
+    compactAtPercent: contextFinite(options.compactAtPercent, 25),
     minReductionRatio: contextFinite(options.minReductionRatio, 0.25),
   };
 }

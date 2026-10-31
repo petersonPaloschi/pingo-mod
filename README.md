@@ -61,7 +61,7 @@ session goes on as if the feature were off.
 | [Semente](docs/features/semente.md) | Shelves side ideas and offers them when recent work matches | Shelving, and turn end | No model | On |
 | [Prisma](docs/features/prisma.md) | Shows design questions with SVG previews as a visual picker; remembers choices | `AskUserQuestion` with SVG previews | No model | On |
 | [Sentinela](docs/features/sentinela.md) | Lists sessions across projects, resumes them, replies to waiting ones | Continuously (refresh every 2 s) | No model | On |
-| [Context](docs/core/context-compaction.md) | Asks Jev which old tool results to drop instead of summarizing | Context ≥ 60% or a compaction | Jev | On |
+| [Context](docs/core/context-compaction.md) | Asks Jev which old tool results to drop instead of summarizing | Main agent or subagent context ≥ 25%, or a compaction | Jev | On |
 | [Agent planning](docs/core/agent-planning.md) | Picks model and effort for a subagent Claude starts | Subagent spawn | Jev | Off |
 | [Orchestration](docs/core/orchestration.md) | Objectives, executor profile, managed batches with independent review | Each human prompt, when enabled | Jev + Claude | Off |
 | [Advisor guidance](docs/core/orchestration.md#advisor-guidance) | Adds optional planning advice from a stronger Claude model | A prompt that scores as complex, up to 3 per session | Claude (a local rule decides) | On while routing is on |

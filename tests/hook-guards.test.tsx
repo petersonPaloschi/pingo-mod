@@ -1,5 +1,5 @@
 // Hooks that keep working past a failure or a race of their own: a feature that cannot start leaves the others
-// started, subagents that end together compact the session once, and a subagent's end reads the same everywhere.
+// started, overlapping main turn completions compact the session once, and a subagent's end reads the same everywhere.
 import type { On } from "claude-code";
 import { expect, test } from "claude-code/testing";
 import { DEFAULT_USAGE, deckWorld, spawn } from "./deck/helpers.ts";
@@ -31,11 +31,9 @@ test("a feature that cannot start is logged, and the start goes on", LOCALE, asy
   expect(seen.live.model).toBe("claude-opus-5-5");
 });
 
-test("subagents that end together compact the session once", LOCALE, async ($, on) => {
+test("overlapping main turn completions compact the session once", LOCALE, async ($, on) => {
   let compactions = 0;
-  const world = deckWorld(on, undefined, {
-    spawn: (_$: unknown, e: { description: string }) => ({ model: "claude-sonnet-5-5", agentId: e.description }),
-  });
+  const world = deckWorld(on);
   on("session.compact", async () => {
     compactions++;
     // a compaction frees the context: a turn that ends after it finds nothing to compact
@@ -43,16 +41,14 @@ test("subagents that end together compact the session once", LOCALE, async ($, o
     return { skip: "counted" };
   });
   await $.session.start(SESSION);
-  await $.agent.spawn(spawn("a1"));
-  await $.agent.spawn(spawn("a2"));
   world.state.usage = { ...DEFAULT_USAGE, context: { tokens: 900_000, window: 1_000_000, percent: 90 } };
   // the usage is read only once both ends could be reading it: the window where both used to start a compaction
   let release = () => {};
   world.state.usageHold = new Promise<void>((resolve) => { release = resolve; });
   const bothReading = new Promise<void>((resolve) => { world.state.usageWaiting = (waiting) => { if (waiting === 2) resolve(); }; });
-  const end = (agentId: string) => $.turn.complete({ turnId: agentId, agentId, answer: "ok", durationMs: 5, isAborted: false, reason: "answer", usage: undefined });
-  const first = end("a1");
-  const second = end("a2");
+  const end = (turnId: string) => $.turn.complete({ turnId, answer: "ok", durationMs: 5, isAborted: false, reason: "answer", usage: undefined });
+  const first = end("t1");
+  const second = end("t2");
   // one end reads the usage and the other, finding a compaction under way, is done without it
   await Promise.race([bothReading, second]);
   release();

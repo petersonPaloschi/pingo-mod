@@ -494,6 +494,8 @@ declare module "claude-code" {
       clarezaProposal: ClarezaProposal | null;
       clarezaReviewing: boolean;
       contextoBusy: boolean;
+      /** The native threshold Contexto owns, retained across code reloads. */
+      contextThreshold: { previous?: string; applied: string } | null;
       /** True while Vigia summarizes this session for the others. */
       vigiaSummarizing: boolean;
       /** Guidance the local advisor gave this session with orchestration off, counted under limits.adviceCalls. */

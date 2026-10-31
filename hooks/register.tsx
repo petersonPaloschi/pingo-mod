@@ -159,6 +159,8 @@ const clarezaProposal = atom({ plugin: "jev", key: "clarezaProposal" } as const,
 const clarezaReviewing = atom({ plugin: "jev", key: "clarezaReviewing" } as const, false);
 /** Contexto is cleaning up a long conversation: its mascot is at work on the Deck lane. */
 const contextoBusy = atom({ plugin: "jev", key: "contextoBusy" } as const, false);
+/** The native threshold we replaced, retained across plugin reloads until Contexto is disabled. */
+const contextThreshold = atom({ plugin: "jev", key: "contextThreshold" } as const, null as { previous?: string; applied: string } | null);
 /** Vigia is summarizing this session for the others: its mascot is at work on the Deck lane. */
 const vigiaSummarizing = atom({ plugin: "jev", key: "vigiaSummarizing" } as const, false);
 /** Guidance the local advisor gave this session with orchestration off: capped by limits.adviceCalls, as an objective is. */
@@ -1972,6 +1974,7 @@ async function setFeature($: EngineInterface, id: FeatureId, enabled: boolean): 
   const flags = await update($, features, (current) => normalizeFeatures({ ...current, [id]: enabled }));
   tickFeatures = flags;
   await $.store.set(STORE_FEATURES, flags);
+  if (id === "contexto") await syncContextThreshold($).catch(() => undefined);
   const name = featureList(locale).find((feature) => feature.id === id)?.name ?? id;
   await log($, "you", "feature", enabled ? "good" : "muted", text("feed.feature.state", locale, { name, state: text(enabled ? "feed.feature.enabled" : "feed.feature.disabled", locale) }));
   // the Comandante, or an assistant it watches, switched on: what waits unjudged is judged now
@@ -2115,17 +2118,36 @@ async function notifyContext($: EngineInterface, message: string, tone: "good" |
   $.ui.toast(message, { timeoutMs: 15_000 });
 }
 
-/**
- * After a turn, compacts the session once its context passes the threshold. The flag is taken before the first
- * wait: subagents that end together start one compaction between them, not one each.
- */
+/** Native auto-compaction checks each loop's own window, including already running subagents. */
+async function syncContextThreshold($: EngineInterface, enabled?: boolean): Promise<void> {
+  const current = await $.env.get("CLAUDE_AUTOCOMPACT_PCT_OVERRIDE");
+  const owned = await read($, contextThreshold);
+  if (enabled ?? await featureEnabled($, "contexto")) {
+    const target = String(resolveContextConfig({ compactAtPercent: options.context_compact_at_percent }).compactAtPercent);
+    if (owned?.applied === target && current === target) return;
+    const previous = owned && current === owned.applied ? owned.previous : current;
+    const result = await $.env.set("CLAUDE_AUTOCOMPACT_PCT_OVERRIDE", target);
+    if (result.deny !== undefined) throw new Error(result.deny);
+    await update($, contextThreshold, () => ({ previous, applied: target }));
+  } else if (owned) {
+    // Preserve a setting changed by somebody else while Contexto was enabled.
+    if (current === owned.applied) {
+      const result = await $.env.set("CLAUDE_AUTOCOMPACT_PCT_OVERRIDE", owned.previous);
+      if (result.deny !== undefined) throw new Error(result.deny);
+    }
+    await update($, contextThreshold, () => null);
+  }
+}
+
+/** Between main turns, also compact on hosts that do not run preventive auto-compaction. */
 async function compactContextAfterTurn($: EngineInterface, config: ResolvedContextConfig): Promise<void> {
   if (contextCompacting) return;
   contextCompacting = true;
   try {
     if (!(await featureEnabled($, "contexto"))) return;
     const { context } = await $.session.usage();
-    if ((context.percent ?? 0) < config.compactAtPercent) return;
+    const percent = context.percent ?? (context.tokens !== undefined && context.window > 0 ? context.tokens / context.window * 100 : 0);
+    if (percent < config.compactAtPercent) return;
     await $.session.compact();
   } catch (error) {
     const reason = short(error instanceof Error ? error.message : String(error), 160);
@@ -5404,6 +5426,7 @@ export const register: Register = (on, given) => {
     await $.command.register({ name: "pingo", description: text("feature.pingoVivo.command", locale), argumentHint: "[hat <name|random>|hats|pet|dance|party|shades|hide|show]" });
     // Each feature starts on its own: one that fails is logged, and the ones after it still start.
     await startStep($, "Jev", () => restoreStoredState($));
+    await startStep($, "Contexto", () => syncContextThreshold($));
     await orch.restore(orchIo($)).catch(() => undefined);
     await registerOrchestration($).catch(() => undefined);
     await startStep($, "Farol", () => registerFarol($));
@@ -5484,6 +5507,7 @@ export const register: Register = (on, given) => {
   on("classic.SessionStart", async ($, e, next) => {
     if (e.source === "clear" || e.source === "resume" || e.source === "fork") {
       await restoreStoredState($);
+      await syncContextThreshold($).catch(() => undefined);
       mainModel = await $.session.model();
       await syncFarol($);
       await reloadSementeIdeas($);
@@ -5660,7 +5684,6 @@ export const register: Register = (on, given) => {
       await portaoAgentEnded($, e).catch(() => undefined);
       await ensaioAgentEnded($, e).catch(() => undefined);
       await setLive($, { activity: running ? text("feed.activity.agentCount", locale, { count: formatNumber(running, locale), unit: text(running === 1 ? "unit.agent" : "unit.agents", locale) }) : text("feed.activity.waiting", locale) });
-      await compactContextAfterTurn($, contextConfig);
       return next(e);
     }
     const state = e.isAborted ? "aborted" : e.reason === "error" ? "failed" : e.reason === "refusal" ? "refused" : "completed";
@@ -6556,6 +6579,7 @@ export const register: Register = (on, given) => {
 
   // a session cleared empties the rows; the rest of the state stays
   on("session.end", async ($, e, next) => {
+    if (e.reason !== "clear") await syncContextThreshold($, false).catch(() => undefined);
     if (e.reason === "clear") {
       clearRows(deckOf(await $.clock.now()));
       redrawDeck($);

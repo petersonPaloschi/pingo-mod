@@ -100,7 +100,7 @@ export const pt: Record<keyof typeof en, string> = {
   "feature.vigia.name": "Vigia",
   "feature.vigia.description": "Acompanha sessões do projeto, deixa que troquem mensagens, compartilha o trabalho delas com o Claude e segura uma edição até reler um arquivo que outra sessão alterou.",
   "feature.contexto.name": "Contexto",
-  "feature.contexto.description": "Quando a conversa fica longa, o Jev remove resultados antigos de ferramentas que não importam mais e mantém as mensagens recentes intactas.",
+  "feature.contexto.description": "A partir de 25% de contexto por padrão, o Jev limpa resultados antigos de ferramentas do agente principal e de cada subagente, mantendo as mensagens recentes intactas.",
   "feature.comandante.name": "Comandante",
   "feature.comandante.description": "O Jev julga as suposições do Farol, as ideias do Semente, as mensagens do Vigia, os planos da Clareza e os pedidos do agente do Code Quality, em todas as sessões deste projeto: deixa passar o que se sustenta, bloqueia o que não deve seguir e devolve uma pergunta quando algo não está claro. Desligado por padrão.",
   "feature.comandante.off": "O Comandante está desligado. Ligue para o Jev julgar as suposições do Farol, as ideias do Semente, as mensagens do Vigia, os planos da Clareza e os pedidos do Code Quality em todas as sessões deste projeto.",

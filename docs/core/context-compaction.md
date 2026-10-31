@@ -14,8 +14,16 @@ is small.
 
 ## When it acts
 
-- **After every turn** (main or subagent), if the context usage is at or above `context_compact_at_percent` (60% by
-  default), Pingo asks Claude Code to compact. Only one compaction runs at a time.
+- **For the main agent and every subagent**, Context sets the native `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` to
+  `context_compact_at_percent` (25% by default). Claude Code checks each loop's own context as it runs, including
+  existing subagents, nested subagents and teammates in this process. Each compaction reaches Context with that
+  loop's own transcript and `agentId`. Separate Claude Code processes need their own enabled Context feature.
+- **After every main turn**, Pingo also checks the session's context and requests compaction at or above the same
+  threshold. Only one of these requests runs at a time. A subagent finishing never compacts the main conversation.
+- Turning Context off or ending the session restores the previous native threshold, unless another writer changed
+  it. Native preventive compaction must be enabled for subagents; the override has the host's documented
+  [auto-compaction limits](https://code.claude.com/docs/en/env-vars#variables). See also
+  [subagent auto-compaction](https://code.claude.com/docs/en/sub-agents#auto-compaction).
 - **On every compaction** that reaches the `session.compact` hook. A `precompute` trigger is skipped ("Contexto compacts
   only when the compaction happens").
 
@@ -46,7 +54,7 @@ is small.
 
 ```mermaid
 flowchart TD
-  T["Turn ends"] --> U{"Context ≥ 60%<br/>and Context on?"}
+  T["Main agent or subagent context check"] --> U{"Own context ≥ 25%<br/>and Context on?"}
   U -->|"no"| N["Nothing"]
   U -->|"yes"| C["Claude Code compaction"]
   C --> H["session.compact hook"]
@@ -68,7 +76,7 @@ rest of Pingo.
 | Option | Default | Purpose |
 | --- | --- | --- |
 | `context_goal` | Empty | Task goal; empty derives it from the last three user prompts. |
-| `context_compact_at_percent` | `60` | Context usage that starts a compaction. |
+| `context_compact_at_percent` | `25` | Percentage of each agent's own context that starts a compaction. |
 | `context_min_reduction_ratio` | `0.25` | Minimum share of history characters removed before replacing Claude's summary. |
 | `context_keep_threshold` | `0.5` | Jev probability needed to keep a call or its full result. |
 | `context_preserve_recent_messages` | `6` | Newest messages left untouched. |
@@ -83,6 +91,4 @@ by status and size notes. Limits do not redact secrets inside normal content.
 
 ## To confirm
 
-- How subagent turns and `precompute` compactions are handled: another session was changing this while this document
-  was written.
 - Whether a manual `/compact` reaches the hook with a trigger other than `precompute` (inferred, not traced).

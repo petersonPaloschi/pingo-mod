@@ -124,7 +124,7 @@ describe("sift's calls in the mod", () => {
   test("a sift command names the channel for its shell, and each of its Jev calls shows in Live", async ($, on) => {
     world(on, { agents: false });
     const set: [string, string | undefined][] = [];
-    on("env.set", async (_$, e) => {
+    on("env.set", { name: "PINGO_JEV_CHANNEL" }, async (_$, e) => {
       set.push([e.name, e.value]);
       return { value: undefined } as never;
     });
@@ -203,7 +203,7 @@ describe("sift's calls in the mod", () => {
     let markSet: () => void = () => {};
     const setGate = new Promise<void>((resolve) => (releaseSet = resolve));
     const setEntered = new Promise<void>((resolve) => (markSet = resolve));
-    on("env.set", async (_$, e) => {
+    on("env.set", { name: "PINGO_JEV_CHANNEL" }, async (_$, e) => {
       set.push([e.name, e.value]);
       markSet();
       await setGate;
